@@ -1,7 +1,7 @@
 package main
 
 import (
-	_ "embed"
+	"encoding/binary"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -10,29 +10,17 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strconv"
-	"strings"
-	"syscall"
 	"time"
-	"unsafe"
 
 	"github.com/getlantern/systray"
 )
 
-//go:embed scripts/install-prereqs.ps1
-var installScript []byte
-
-// iconData 定义在 icon_gen.go（由 scripts/gen-icon.mjs 生成，base64 内嵌多尺寸 ICO）。
-
 const (
-	appName      = "DeepSeek Harness"
-	defaultPort  = 3080
-	registryPath = `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`
-	registryName = `DeepSeekHarness`
-	mutexName    = `Local\dsh-systray-single-instance`
+	appName     = "DeepSeek Harness"
+	defaultPort = 3080
 )
 
 var (
-	serverCmd  *exec.Cmd
 	logDir     string
 	webURL     string
 	harnessDir string
@@ -45,7 +33,7 @@ type appConfig struct {
 }
 
 func loadConfig() appConfig {
-	cfg := appConfig{Port: defaultPort, HarnessDir: `I:\deepseek-harness`}
+	cfg := appConfig{Port: defaultPort, HarnessDir: defaultHarnessDir()}
 	if exe, err := os.Executable(); err == nil {
 		if data, err := os.ReadFile(filepath.Join(filepath.Dir(exe), "config.json")); err == nil {
 			var f appConfig
@@ -73,7 +61,11 @@ func main() {
 	webURL = fmt.Sprintf("http://127.0.0.1:%d/", port)
 	harnessDir = cfg.HarnessDir
 
-	logDir = filepath.Join(os.Getenv("LOCALAPPDATA"), "dsh-systray", "logs")
+	cfgDir, err := os.UserConfigDir()
+	if err != nil {
+		cfgDir = os.TempDir()
+	}
+	logDir = filepath.Join(cfgDir, "dsh-systray", "logs")
 	if err := os.MkdirAll(logDir, 0o755); err == nil {
 		if f, ferr := os.OpenFile(filepath.Join(logDir, "app.log"), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644); ferr == nil {
 			defer f.Close()
@@ -82,13 +74,13 @@ func main() {
 	}
 	log.SetFlags(log.LstdFlags)
 
-	h, acquired := acquireSingleInstance()
+	release, acquired := acquireSingleInstance()
 	if !acquired {
 		// 已在运行：直接打开 Web UI 后退出，不产生第二个托盘图标。
 		openBrowser(webURL)
 		return
 	}
-	defer releaseSingleInstance(h)
+	defer release()
 
 	if !prereqsOK() {
 		log.Printf("missing prerequisites detected, running installer")
@@ -105,7 +97,7 @@ func main() {
 		if ready {
 			notifyReady()
 		} else {
-			showMessageBox("DeepSeek Harness 服务启动超时或失败，请查看日志：\n"+filepath.Join(logDir, "server.log"), appName, 0x00000010)
+			showMessageBox("DeepSeek Harness 服务启动超时或失败，请查看日志：\n"+filepath.Join(logDir, "server.log"), appName)
 		}
 	}()
 
@@ -113,13 +105,13 @@ func main() {
 }
 
 func onReady() {
-	systray.SetIcon(iconData)
+	systray.SetIcon(trayIconData())
 	systray.SetTitle(appName)
 	systray.SetTooltip(appName)
 
 	mOpen := systray.AddMenuItem("打开 Web UI", "打开网页端界面")
 	systray.AddSeparator()
-	mAuto := systray.AddMenuItem("开机自启动", "登录 Windows 时自动启动")
+	mAuto := systray.AddMenuItem("开机自启动", "登录系统时自动启动")
 	if isAutostartEnabled() {
 		mAuto.Check()
 	}
@@ -146,96 +138,6 @@ func onExit() {
 	log.Printf("tray exiting")
 }
 
-func startServer() {
-	serverLogPath := filepath.Join(logDir, "server.log")
-	f, err := os.OpenFile(serverLogPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
-	if err != nil {
-		log.Printf("cannot open server log: %v", err)
-	}
-	if f != nil {
-		defer f.Close()
-	}
-
-	cmd := exec.Command("cmd", "/c", fmt.Sprintf("pnpm dsh web --port %d --no-open", port))
-	cmd.Dir = harnessDir
-	cmd.SysProcAttr = &syscall.SysProcAttr{
-		HideWindow:    true,
-		CreationFlags: 0x08000000, // CREATE_NO_WINDOW
-	}
-	if f != nil {
-		cmd.Stdout = f
-		cmd.Stderr = f
-	}
-	cmd.Stdin = nil
-
-	if err := cmd.Start(); err != nil {
-		log.Printf("failed to start server: %v", err)
-		showMessageBox("启动 DeepSeek Harness 服务器失败："+err.Error(), appName, 0x00000010)
-		return
-	}
-	serverCmd = cmd
-	log.Printf("server started, pid=%d", cmd.Process.Pid)
-}
-
-func killServer() {
-	// 终止本应用启动的服务器进程树
-	if serverCmd != nil && serverCmd.Process != nil {
-		exec.Command("taskkill", "/PID", strconv.Itoa(serverCmd.Process.Pid), "/T", "/F").Run()
-		serverCmd = nil
-	}
-	// 终止监听本端口的 dsh web 进程（即使不是本应用启动的）
-	if pid, err := findListenerPID(port); err == nil {
-		log.Printf("killing listener pid=%d on port %d", pid, port)
-		exec.Command("taskkill", "/PID", strconv.Itoa(pid), "/T", "/F").Run()
-	}
-}
-
-// findListenerPID 返回监听指定端口（TCP LISTENING）的进程 PID。
-func findListenerPID(port int) (int, error) {
-	out, err := exec.Command("netstat", "-ano", "-p", "TCP").Output()
-	if err != nil {
-		return 0, err
-	}
-	suffix := ":" + strconv.Itoa(port)
-	for _, line := range strings.Split(string(out), "\n") {
-		f := strings.Fields(line)
-		if len(f) >= 5 && f[0] == "TCP" && strings.HasSuffix(f[1], suffix) && f[3] == "LISTENING" {
-			if pid, err := strconv.Atoi(f[4]); err == nil {
-				return pid, nil
-			}
-		}
-	}
-	return 0, fmt.Errorf("no listener on port %d", port)
-}
-
-func openBrowser(url string) {
-	cmd := exec.Command("rundll32", "url.dll,FileProtocolHandler", url)
-	cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
-	if err := cmd.Start(); err != nil {
-		log.Printf("open browser failed: %v", err)
-	}
-}
-
-func isAutostartEnabled() bool {
-	cmd := exec.Command("reg", "query", registryPath, "/v", registryName)
-	cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
-	return cmd.Run() == nil
-}
-
-func enableAutostart() {
-	exe, err := os.Executable()
-	if err != nil {
-		log.Printf("cannot resolve exe path: %v", err)
-		return
-	}
-	val := `"` + exe + `"`
-	runHidden("reg", "add", registryPath, "/v", registryName, "/t", "REG_SZ", "/d", val, "/f")
-}
-
-func disableAutostart() {
-	runHidden("reg", "delete", registryPath, "/v", registryName, "/f")
-}
-
 func toggleAutostart(item *systray.MenuItem) {
 	if isAutostartEnabled() {
 		disableAutostart()
@@ -245,15 +147,6 @@ func toggleAutostart(item *systray.MenuItem) {
 		enableAutostart()
 		item.Check()
 		log.Printf("autostart enabled")
-	}
-}
-
-func runHidden(name string, args ...string) {
-	cmd := exec.Command(name, args...)
-	cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
-	out, err := cmd.CombinedOutput()
-	if err != nil {
-		log.Printf("cmd %s %v failed: %v: %s", name, args, err, string(out))
 	}
 }
 
@@ -273,78 +166,6 @@ func prereqsOK() bool {
 	return true
 }
 
-func runInstaller() {
-	tmp := filepath.Join(os.TempDir(), "dsh-systray-install-prereqs.ps1")
-	if err := os.WriteFile(tmp, installScript, 0o644); err != nil {
-		log.Printf("write installer failed: %v", err)
-		showMessageBox("检测到缺少运行依赖，但无法写入安装脚本。", appName, 0x00000010)
-		return
-	}
-
-	ps := fmt.Sprintf(
-		`Start-Process -Verb RunAs -Wait -FilePath 'powershell.exe' -ArgumentList '-NoProfile -ExecutionPolicy Bypass -File "%s"'`,
-		tmp,
-	)
-	cmd := exec.Command("powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", ps)
-	cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
-	if err := cmd.Run(); err != nil {
-		log.Printf("installer failed: %v", err)
-	}
-
-	if !prereqsOK() {
-		showMessageBox(
-			"运行依赖安装未完成（Node.js / pnpm / harness 缺失）。\n服务器可能无法启动，详情见日志：\n"+filepath.Join(logDir, "app.log"),
-			appName, 0x00000010,
-		)
-	} else {
-		log.Printf("prerequisites now satisfied")
-	}
-}
-
-func acquireSingleInstance() (uintptr, bool) {
-	kernel32 := syscall.NewLazyDLL("kernel32.dll")
-	createMutex := kernel32.NewProc("CreateMutexW")
-	getLastError := kernel32.NewProc("GetLastError")
-	closeHandle := kernel32.NewProc("CloseHandle")
-
-	name, err := syscall.UTF16PtrFromString(mutexName)
-	if err != nil {
-		return 0, true
-	}
-	h, _, _ := createMutex.Call(0, 0, uintptr(unsafe.Pointer(name)))
-	if h == 0 {
-		return 0, true
-	}
-	errCode, _, _ := getLastError.Call()
-	if errCode == 183 { // ERROR_ALREADY_EXISTS
-		closeHandle.Call(h)
-		return 0, false
-	}
-	return h, true
-}
-
-func releaseSingleInstance(h uintptr) {
-	if h == 0 {
-		return
-	}
-	kernel32 := syscall.NewLazyDLL("kernel32.dll")
-	closeHandle := kernel32.NewProc("CloseHandle")
-	closeHandle.Call(h)
-}
-
-func messageBoxResult(text, caption string, flags uintptr) uintptr {
-	user32 := syscall.NewLazyDLL("user32.dll")
-	msgBox := user32.NewProc("MessageBoxW")
-	t, _ := syscall.UTF16PtrFromString(text)
-	c, _ := syscall.UTF16PtrFromString(caption)
-	ret, _, _ := msgBox.Call(0, uintptr(unsafe.Pointer(t)), uintptr(unsafe.Pointer(c)), flags)
-	return ret
-}
-
-func showMessageBox(text, caption string, flags uintptr) {
-	messageBoxResult(text, caption, flags)
-}
-
 func waitForServerReady(url string, timeout time.Duration) bool {
 	deadline := time.Now().Add(timeout)
 	client := &http.Client{Timeout: 3 * time.Second}
@@ -362,8 +183,41 @@ func waitForServerReady(url string, timeout time.Duration) bool {
 }
 
 func notifyReady() {
-	ret := messageBoxResult("DeepSeek Harness 服务已就绪。\n是否立即打开 Web UI？", appName, 0x00000004|0x00000040|0x00010000|0x00040000)
-	if ret == 6 { // IDYES
-		openBrowser(webURL)
+	showReadyPrompt(webURL)
+}
+
+// extractLargestPNG 从 ICO 中提取最大尺寸的 PNG 条目（macOS 菜单栏需要 PNG 格式）。
+func extractLargestPNG(ico []byte) []byte {
+	if len(ico) < 6 {
+		return ico
 	}
+	count := int(binary.LittleEndian.Uint16(ico[4:6]))
+	var best []byte
+	bestPixels := 0
+	for i := 0; i < count; i++ {
+		off := 6 + i*16
+		if off+16 > len(ico) {
+			break
+		}
+		w, h := int(ico[off]), int(ico[off+1])
+		if w == 0 {
+			w = 256
+		}
+		if h == 0 {
+			h = 256
+		}
+		size := int(binary.LittleEndian.Uint32(ico[off+8 : off+12]))
+		dataOff := int(binary.LittleEndian.Uint32(ico[off+12 : off+16]))
+		if dataOff+size > len(ico) {
+			continue
+		}
+		if w*h > bestPixels {
+			bestPixels = w * h
+			best = ico[dataOff : dataOff+size]
+		}
+	}
+	if best == nil {
+		return ico
+	}
+	return best
 }
