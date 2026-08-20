@@ -10,7 +10,7 @@ Windows / macOS 托盘应用：双击后后台启动 DeepSeek Harness Web 本地
   - **打开 Web UI**：用默认浏览器打开 `http://127.0.0.1:<port>/`
   - **开机自启动**：可开关，启用时显示打勾（写入 `HKCU\...\CurrentVersion\Run`）
   - **退出**：关闭后台服务器进程树（含外部启动的 dsh web 服务）并退出托盘
-- 单实例：已在运行时再次双击只会打开 Web UI，不产生第二个托盘图标
+- 单实例：已在运行时再次双击会弹窗提示「已在运行中」，不产生第二个托盘图标
 - 依赖自检：启动时检查 node / pnpm / harness 源码，缺失则弹出 UAC 并运行内置安装脚本（含 `git clone` 拉取 harness 源码）
 
 ## 配置
