@@ -5,11 +5,11 @@ Windows 托盘应用：双击后后台启动 DeepSeek Harness Web 本地服务�
 ## 功能
 
 - 双击启动：无窗口、后台拉起 harness 的 `pnpm dsh web --port <port> --no-open`
-- 启动 loading 窗口：服务启动期间显示加载窗口，就绪后弹窗提示（可一键打开 Web UI）
+- 启动 loading 窗口：显示加载窗口（可最小化/关闭，或点「确定」提前关闭），就绪后弹窗提示（可一键打开 Web UI）
 - 托盘右键菜单：
   - **打开 Web UI**：用默认浏览器打开 `http://127.0.0.1:<port>/`
   - **开机自启动**：可开关，启用时显示打勾（写入 `HKCU\...\CurrentVersion\Run`）
-  - **退出**：关闭后台服务器进程树并退出托盘
+  - **退出**：关闭后台服务器进程树（含外部启动的 dsh web 服务）并退出托盘
 - 单实例：已在运行时再次双击只会打开 Web UI，不产生第二个托盘图标
 - 依赖自检：启动时检查 node / pnpm / harness 源码，缺失则弹出 UAC 并运行内置安装脚本（含 `git clone` 拉取 harness 源码）
 
