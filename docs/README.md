@@ -1,6 +1,6 @@
 # dsh-systray
 
-Windows 托盘应用：双击后后台启动 DeepSeek Harness Web 本地服务器（不显示窗口），并在系统托盘显示白底黑鲸鱼图标。
+Windows / macOS 托盘应用：双击后后台启动 DeepSeek Harness Web 本地服务器（不显示窗口），并在系统托盘显示白底黑鲸鱼图标。
 
 ## 功能
 
@@ -47,6 +47,14 @@ go build -trimpath -ldflags '-s -w -H=windowsgui' -o dist\dsh-systray.exe .
 
 - 产物：`dist\dsh-systray.exe`，绿色免安装，双击即用（无需 Go / Node 运行时）
 - 日志：`%LOCALAPPDATA%\dsh-systray\logs\`（`app.log` 为托盘日志，`server.log` 为服务器输出）
+
+## macOS 支持
+
+- 需在 **macOS 上构建**（托盘依赖 Cocoa，需 cgo，无法从 Windows 交叉编译）：`CGO_ENABLED=1 go build -o dist/dsh-systray .`
+- 默认 harness 目录：`~/deepseek-harness`（Windows 为 `I:\deepseek-harness`）
+- 开机自启动：写入 `~/Library/LaunchAgents/com.deepseek.dsh-systray.plist`（launchd）
+- loading / 就绪提示：用 `osascript` 通知与弹窗（macOS 无 Windows 式 loading 窗口与 MessageBox）
+- 退出时用 `lsof` 找监听进程并 `SIGTERM` 终止
 
 ## 说明与限制
 
