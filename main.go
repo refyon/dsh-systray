@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"syscall"
 	"time"
 	"unsafe"
@@ -177,14 +178,34 @@ func startServer() {
 }
 
 func killServer() {
-	if serverCmd == nil || serverCmd.Process == nil {
-		return
+	// 终止本应用启动的服务器进程树
+	if serverCmd != nil && serverCmd.Process != nil {
+		exec.Command("taskkill", "/PID", strconv.Itoa(serverCmd.Process.Pid), "/T", "/F").Run()
+		serverCmd = nil
 	}
-	pid := serverCmd.Process.Pid
-	log.Printf("stopping server tree pid=%d", pid)
-	exec.Command("taskkill", "/PID", strconv.Itoa(pid), "/T", "/F").Run()
-	_ = serverCmd.Process.Kill()
-	serverCmd = nil
+	// 终止监听本端口的 dsh web 进程（即使不是本应用启动的）
+	if pid, err := findListenerPID(port); err == nil {
+		log.Printf("killing listener pid=%d on port %d", pid, port)
+		exec.Command("taskkill", "/PID", strconv.Itoa(pid), "/T", "/F").Run()
+	}
+}
+
+// findListenerPID 返回监听指定端口（TCP LISTENING）的进程 PID。
+func findListenerPID(port int) (int, error) {
+	out, err := exec.Command("netstat", "-ano", "-p", "TCP").Output()
+	if err != nil {
+		return 0, err
+	}
+	suffix := ":" + strconv.Itoa(port)
+	for _, line := range strings.Split(string(out), "\n") {
+		f := strings.Fields(line)
+		if len(f) >= 5 && f[0] == "TCP" && strings.HasSuffix(f[1], suffix) && f[3] == "LISTENING" {
+			if pid, err := strconv.Atoi(f[4]); err == nil {
+				return pid, nil
+			}
+		}
+	}
+	return 0, fmt.Errorf("no listener on port %d", port)
 }
 
 func openBrowser(url string) {
