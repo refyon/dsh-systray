@@ -7,24 +7,27 @@ import (
 )
 
 const (
-	wmClose   = 0x0010
-	wmDestroy = 0x0002
-	wmSetFont = 0x0030
+	wmClose    = 0x0010
+	wmDestroy  = 0x0002
+	wmCommand  = 0x0111
+	wmSetFont  = 0x0030
 
-	swShow    = 5
-	wsPopup   = 0x80000000
-	wsBorder  = 0x00800000
-	wsChild   = 0x40000000
-	wsVisible = 0x10000000
-	ssCenter  = 0x00000001
-	csHRedraw = 0x0002
-	csVRedraw = 0x0001
-	idcArrow  = 32512
-	colorWin  = 6 // COLOR_WINDOW + 1
-	smCX      = 0
-	smCY      = 1
+	swShow       = 5
+	wsCaption    = 0x00C00000
+	wsSysMenu    = 0x00080000
+	wsMinimizeBox = 0x00020000
+	wsChild      = 0x40000000
+	wsVisible    = 0x10000000
+	wsTabStop    = 0x00010000
+	ssCenter     = 0x00000001
+	csHRedraw    = 0x0002
+	csVRedraw    = 0x0001
+	idcArrow     = 32512
+	colorWin     = 6 // COLOR_WINDOW + 1
+	smCX         = 0
+	smCY         = 1
 
-	wsExTopmost = 0x00000008
+	idOkButton = 1
 
 	defaultCharset = 1
 	cleartypeQual  = 5
@@ -80,6 +83,12 @@ type msg struct {
 
 func splashWndProc(hwnd, uMsg, wParam, lParam uintptr) uintptr {
 	switch uMsg {
+	case wmCommand:
+		// 确定按钮被点击（BN_CLICKED，低 16 位为控件 ID）
+		if wParam&0xFFFF == idOkButton {
+			pDestroyWindow.Call(hwnd)
+			return 0
+		}
 	case wmClose:
 		pDestroyWindow.Call(hwnd)
 		return 0
@@ -121,15 +130,16 @@ func createSplashWindow(text string) uintptr {
 	title, _ := syscall.UTF16PtrFromString("DeepSeek Harness")
 	sw, _, _ := pGetSystemMetrics.Call(smCX)
 	sh, _, _ := pGetSystemMetrics.Call(smCY)
-	w, h := int32(440), int32(96)
+	w, h := int32(360), int32(130)
 	x := (int32(sw) - w) / 2
 	y := (int32(sh) - h) / 2
 
+	// 普通窗口：标题栏 + 最小化 + 关闭；不带 WS_MAXIMIZEBOX（最大化按钮灰显不可用）
 	hwnd, _, _ := pCreateWindowExW.Call(
-		wsExTopmost,
+		0,
 		uintptr(unsafe.Pointer(cls)),
 		uintptr(unsafe.Pointer(title)),
-		wsPopup|wsBorder,
+		wsCaption|wsSysMenu|wsMinimizeBox,
 		uintptr(x), uintptr(y), uintptr(w), uintptr(h),
 		0, 0, moduleHandle(), 0,
 	)
@@ -137,6 +147,9 @@ func createSplashWindow(text string) uintptr {
 		return 0
 	}
 
+	font := splashFont()
+
+	// 静态文本
 	staticCls, _ := syscall.UTF16PtrFromString("STATIC")
 	t, _ := syscall.UTF16PtrFromString(text)
 	staticHwnd, _, _ := pCreateWindowExW.Call(
@@ -144,11 +157,26 @@ func createSplashWindow(text string) uintptr {
 		uintptr(unsafe.Pointer(staticCls)),
 		uintptr(unsafe.Pointer(t)),
 		wsChild|wsVisible|ssCenter,
-		10, 34, uintptr(w)-20, 28,
+		10, 14, uintptr(w)-20, 28,
 		hwnd, 0, moduleHandle(), 0,
 	)
 	if staticHwnd != 0 {
-		pSendMessageW.Call(staticHwnd, wmSetFont, splashFont(), 1)
+		pSendMessageW.Call(staticHwnd, wmSetFont, font, 1)
+	}
+
+	// 确定按钮
+	btnCls, _ := syscall.UTF16PtrFromString("BUTTON")
+	btnText, _ := syscall.UTF16PtrFromString("确定")
+	btnHwnd, _, _ := pCreateWindowExW.Call(
+		0,
+		uintptr(unsafe.Pointer(btnCls)),
+		uintptr(unsafe.Pointer(btnText)),
+		wsChild|wsVisible|wsTabStop,
+		uintptr((w-100)/2), 58, 100, 30,
+		hwnd, idOkButton, moduleHandle(), 0,
+	)
+	if btnHwnd != 0 {
+		pSendMessageW.Call(btnHwnd, wmSetFont, font, 1)
 	}
 
 	pShowWindow.Call(hwnd, swShow)
