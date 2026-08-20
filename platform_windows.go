@@ -163,19 +163,19 @@ func runInstaller() {
 func acquireSingleInstance() (func(), bool) {
 	kernel32 := syscall.NewLazyDLL("kernel32.dll")
 	createMutex := kernel32.NewProc("CreateMutexW")
-	getLastError := kernel32.NewProc("GetLastError")
 	closeHandle := kernel32.NewProc("CloseHandle")
 
 	name, err := syscall.UTF16PtrFromString(mutexName)
 	if err != nil {
 		return func() {}, true
 	}
-	h, _, _ := createMutex.Call(0, 0, uintptr(unsafe.Pointer(name)))
+	h, _, callErr := createMutex.Call(0, 0, uintptr(unsafe.Pointer(name)))
 	if h == 0 {
 		return func() {}, true
 	}
-	errCode, _, _ := getLastError.Call()
-	if errCode == 183 { // ERROR_ALREADY_EXISTS
+	// 用 Call 返回的 err（GetLastError 的即时值）判断互斥体是否已存在。
+	// 不要单独再调 GetLastError：期间运行时可能重置 last-error，导致误判。
+	if callErr == syscall.ERROR_ALREADY_EXISTS {
 		closeHandle.Call(h)
 		return func() {}, false
 	}
