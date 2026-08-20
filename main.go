@@ -5,11 +5,13 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strconv"
 	"syscall"
+	"time"
 	"unsafe"
 
 	"github.com/getlantern/systray"
@@ -92,7 +94,19 @@ func main() {
 		runInstaller()
 	}
 
+	closeSplash := startSplash("正在启动 DeepSeek Harness 服务，请稍候…")
+
 	startServer()
+
+	go func() {
+		ready := waitForServerReady(webURL, 90*time.Second)
+		closeSplash()
+		if ready {
+			notifyReady()
+		} else {
+			showMessageBox("DeepSeek Harness 服务启动超时或失败，请查看日志：\n"+filepath.Join(logDir, "server.log"), appName, 0x00000010)
+		}
+	}()
 
 	systray.Run(onReady, onExit)
 }
@@ -297,10 +311,38 @@ func releaseSingleInstance(h uintptr) {
 	closeHandle.Call(h)
 }
 
-func showMessageBox(text, caption string, flags uintptr) {
+func messageBoxResult(text, caption string, flags uintptr) uintptr {
 	user32 := syscall.NewLazyDLL("user32.dll")
 	msgBox := user32.NewProc("MessageBoxW")
 	t, _ := syscall.UTF16PtrFromString(text)
 	c, _ := syscall.UTF16PtrFromString(caption)
-	msgBox.Call(0, uintptr(unsafe.Pointer(t)), uintptr(unsafe.Pointer(c)), flags)
+	ret, _, _ := msgBox.Call(0, uintptr(unsafe.Pointer(t)), uintptr(unsafe.Pointer(c)), flags)
+	return ret
+}
+
+func showMessageBox(text, caption string, flags uintptr) {
+	messageBoxResult(text, caption, flags)
+}
+
+func waitForServerReady(url string, timeout time.Duration) bool {
+	deadline := time.Now().Add(timeout)
+	client := &http.Client{Timeout: 3 * time.Second}
+	for time.Now().Before(deadline) {
+		resp, err := client.Get(url)
+		if err == nil {
+			resp.Body.Close()
+			if resp.StatusCode < 500 {
+				return true
+			}
+		}
+		time.Sleep(1 * time.Second)
+	}
+	return false
+}
+
+func notifyReady() {
+	ret := messageBoxResult("DeepSeek Harness 服务已就绪。\n是否立即打开 Web UI？", appName, 0x00000004|0x00000040|0x00010000|0x00040000)
+	if ret == 6 { // IDYES
+		openBrowser(webURL)
+	}
 }
