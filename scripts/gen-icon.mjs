@@ -22,9 +22,10 @@ if (!existsSync(svgPath)) {
 }
 
 let svg = readFileSync(svgPath, 'utf8')
-// 去掉 dark-mode 的 <style>（librsvg 本来也不理会媒体查询），并强制鲸鱼为纯黑。
+// 去掉 dark-mode 的 <style>，强制鲸鱼为纯黑，并在其下铺白色圆角背景。
 svg = svg.replace(/<style>[\s\S]*?<\/style>/, '')
 svg = svg.replace(/\sfill="[^"]*"/g, '')
+svg = svg.replace('<path id="path"', '<rect x="0" y="0" width="50" height="50" rx="11" fill="#ffffff"/><path id="path"')
 svg = svg.replace('<path id="path"', '<path id="path" fill="#000000"')
 
 const sizes = [16, 32]
@@ -67,7 +68,7 @@ const go =
   '\n' +
   'import "encoding/base64"\n' +
   '\n' +
-  '// iconData 是黑色鲸鱼托盘图标（多尺寸 ICO，PNG 压缩条目）。\n' +
+  '// iconData 是白底黑鲸鱼托盘图标（多尺寸 ICO，PNG 压缩条目）。\n' +
   'var iconData = mustDecodeIcon()\n' +
   '\n' +
   'func mustDecodeIcon() []byte {\n' +
@@ -81,4 +82,9 @@ const go =
 
 const out = process.argv[2] ? resolve(process.argv[2]) : join(__dirname, '..', 'icon_gen.go')
 writeFileSync(out, go)
+
+// 预览图（便于肉眼检查）
+const preview = await sharp(Buffer.from(svg), { density: 384 }).resize(256, 256).png().toBuffer()
+writeFileSync(join(dirname(out), 'preview.png'), preview)
+
 console.log('wrote', out, '| ico bytes:', ico.length, '| go bytes:', go.length)
