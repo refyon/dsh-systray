@@ -76,8 +76,8 @@ func main() {
 
 	release, acquired := acquireSingleInstance()
 	if !acquired {
-		// 已在运行：直接打开 Web UI 后退出，不产生第二个托盘图标。
-		openBrowser(webURL)
+		// 已在运行：弹窗提示后退出，不产生第二个托盘图标。
+		showMessageBox("DeepSeek Harness 已在运行中，请使用系统托盘图标操作。", appName)
 		return
 	}
 	defer release()
