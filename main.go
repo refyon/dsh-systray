@@ -89,7 +89,12 @@ func main() {
 
 	closeSplash := startSplash("正在启动 DeepSeek Harness 服务，请稍候…")
 
-	startServer()
+	// 若服务已在运行（端口被占用），不再重复启动，直接复用
+	if serverResponding(webURL) {
+		log.Printf("server already running on %s, skipping spawn", webURL)
+	} else {
+		startServer()
+	}
 
 	go func() {
 		ready := waitForServerReady(webURL, 90*time.Second)
@@ -180,6 +185,17 @@ func waitForServerReady(url string, timeout time.Duration) bool {
 		time.Sleep(1 * time.Second)
 	}
 	return false
+}
+
+// serverResponding 快速探测服务是否已在运行（端口是否已被占用）。
+func serverResponding(url string) bool {
+	client := &http.Client{Timeout: 2 * time.Second}
+	resp, err := client.Get(url)
+	if err != nil {
+		return false
+	}
+	resp.Body.Close()
+	return resp.StatusCode < 500
 }
 
 func notifyReady() {
