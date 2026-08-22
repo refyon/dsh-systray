@@ -9,30 +9,34 @@ import (
 )
 
 const (
-	wmClose    = 0x0010
-	wmDestroy  = 0x0002
-	wmCommand  = 0x0111
-	wmSetFont  = 0x0030
+	wmClose          = 0x0010
+	wmDestroy        = 0x0002
+	wmCommand        = 0x0111
+	wmSetFont        = 0x0030
+	wmCtlColorStatic = 0x0138
 
-	swShow       = 5
-	wsCaption    = 0x00C00000
-	wsSysMenu    = 0x00080000
+	swShow        = 5
+	wsCaption     = 0x00C00000
+	wsSysMenu     = 0x00080000
 	wsMinimizeBox = 0x00020000
-	wsChild      = 0x40000000
-	wsVisible    = 0x10000000
-	wsTabStop    = 0x00010000
-	ssCenter     = 0x00000001
-	csHRedraw    = 0x0002
-	csVRedraw    = 0x0001
-	idcArrow     = 32512
-	colorWin     = 6 // COLOR_WINDOW + 1
-	smCX         = 0
-	smCY         = 1
+	wsChild       = 0x40000000
+	wsVisible     = 0x10000000
+	wsTabStop     = 0x00010000
+	ssCenter      = 0x00000001
+	csHRedraw     = 0x0002
+	csVRedraw     = 0x0001
+	idcArrow      = 32512
+	colorWin      = 6 // COLOR_WINDOW + 1
+	smCX          = 0
+	smCY          = 1
 
 	idOkButton = 1
 
 	defaultCharset = 1
 	cleartypeQual  = 5
+
+	bkTransparent = 1
+	whiteBrush    = 0
 )
 
 var (
@@ -55,6 +59,9 @@ var (
 	pSendMessageW     = modUser32.NewProc("SendMessageW")
 	pGetModuleHandleW = modKernel32.NewProc("GetModuleHandleW")
 	pCreateFontW      = modGdi32.NewProc("CreateFontW")
+	pGetStockObject   = modGdi32.NewProc("GetStockObject")
+	pSetTextColor     = modGdi32.NewProc("SetTextColor")
+	pSetBkMode        = modGdi32.NewProc("SetBkMode")
 )
 
 type wndClassExW struct {
@@ -97,6 +104,12 @@ func splashWndProc(hwnd, uMsg, wParam, lParam uintptr) uintptr {
 	case wmDestroy:
 		pPostQuitMessage.Call(0)
 		return 0
+	case wmCtlColorStatic:
+		// 静态文本：文字用黑色、背景透明（配合白色画刷），与窗口背景一致
+		pSetTextColor.Call(wParam, 0)
+		pSetBkMode.Call(wParam, bkTransparent)
+		h, _, _ := pGetStockObject.Call(whiteBrush)
+		return h
 	}
 	ret, _, _ := pDefWindowProcW.Call(hwnd, uMsg, wParam, lParam)
 	return ret
@@ -132,7 +145,7 @@ func createSplashWindow(text string) uintptr {
 	title, _ := syscall.UTF16PtrFromString("DeepSeek Harness")
 	sw, _, _ := pGetSystemMetrics.Call(smCX)
 	sh, _, _ := pGetSystemMetrics.Call(smCY)
-	w, h := int32(360), int32(130)
+	w, h := int32(400), int32(176)
 	x := (int32(sw) - w) / 2
 	y := (int32(sh) - h) / 2
 
@@ -159,7 +172,7 @@ func createSplashWindow(text string) uintptr {
 		uintptr(unsafe.Pointer(staticCls)),
 		uintptr(unsafe.Pointer(t)),
 		wsChild|wsVisible|ssCenter,
-		10, 14, uintptr(w)-20, 28,
+		18, 16, uintptr(w)-36, 92,
 		hwnd, 0, moduleHandle(), 0,
 	)
 	if staticHwnd != 0 {
@@ -174,7 +187,7 @@ func createSplashWindow(text string) uintptr {
 		uintptr(unsafe.Pointer(btnCls)),
 		uintptr(unsafe.Pointer(btnText)),
 		wsChild|wsVisible|wsTabStop,
-		uintptr((w-100)/2), 58, 100, 30,
+		uintptr((w-100)/2), 128, 100, 30,
 		hwnd, idOkButton, moduleHandle(), 0,
 	)
 	if btnHwnd != 0 {
