@@ -51,6 +51,7 @@ git push origin v1.0.0
 - **windows-latest**：编译 `dsh-systray.exe`（`-H=windowsgui`，无控制台窗口）
 - **macos-latest**：编译 arm64 + amd64 两个架构并用 `lipo` 合并为 **universal** 通用二进制（Intel / Apple Silicon 均可直接运行）
 - 产物打包为 zip 上传到 Release 页面，并附带 `SHA256SUMS.txt` 校验和
+- 发布资产全部由 CI 构建生成，**无需再手动上传本地编译的二进制**（本地 `go build` 产物仅用于自测）
 - 不满足标签条件时，也可在 Actions 页面「Run workflow」手动触发，仅产出可下载的构建产物，不创建 Release
 - 未配置代码签名/公证，Windows 首次运行可能出现 SmartScreen 提示、macOS 首次运行需右键「打开」绕过 Gatekeeper
 
