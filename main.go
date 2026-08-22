@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/binary"
 	"encoding/json"
 	"fmt"
@@ -92,6 +93,22 @@ func main() {
 		return
 	}
 
+	// 兼容：harness 已 clone 但未执行 pnpm run build（缺少前端/客户端产物）——自动补构建
+	if !harnessBuiltOK() {
+		log.Printf("harness build outputs missing, running pnpm run build")
+		closeBuild := startSplash("检测到 deepseek-harness 尚未构建，正在自动执行 pnpm run build（首次约需 1-3 分钟）…")
+		err := runHarnessBuild()
+		closeBuild()
+		if err != nil {
+			showMessageBox("harness 自动构建失败：\n"+err.Error()+"\n\n构建日志："+filepath.Join(logDir, "build.log"), appName)
+			return
+		}
+		if !harnessBuiltOK() {
+			showMessageBox("harness 构建后产物仍缺失，请查看构建日志：\n"+filepath.Join(logDir, "build.log"), appName)
+			return
+		}
+	}
+
 	closeSplash := startSplash("正在启动 DeepSeek Harness 服务，请稍候…")
 
 	// 若服务已在运行（端口被占用），不再重复启动，直接复用
@@ -181,6 +198,48 @@ func prereqsOK() bool {
 		return false
 	}
 	return true
+}
+
+// harnessBuiltOK 判断 harness 是否已完成完整构建（web 前端 dist、client 构建记录、host 库产物齐全）。
+func harnessBuiltOK() bool {
+	checks := []string{
+		filepath.Join(harnessDir, ".dsh-build", "client-build-environment.json"),
+		filepath.Join(harnessDir, "apps", "web", "dist"),
+		filepath.Join(harnessDir, "packages", "interaction", "commands", "lib", "typert.host.js"),
+	}
+	for _, p := range checks {
+		if _, err := os.Stat(p); err != nil {
+			log.Printf("harness build output missing: %s", p)
+			return false
+		}
+	}
+	return true
+}
+
+// runHarnessBuild 执行 pnpm run build（输出写入 build.log），超时 10 分钟。
+func runHarnessBuild() error {
+	buildLogPath := filepath.Join(logDir, "build.log")
+	f, err := os.OpenFile(buildLogPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+	if err != nil {
+		f = nil // 无法写日志不阻塞构建
+	}
+	if f != nil {
+		defer f.Close()
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "pnpm", "run", "build")
+	cmd.Dir = harnessDir
+	if f != nil {
+		cmd.Stdout = f
+		cmd.Stderr = f
+	}
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("pnpm run build failed: %w（构建日志：%s）", err, buildLogPath)
+	}
+	log.Printf("harness build completed")
+	return nil
 }
 
 func waitForServerReady(url string, timeout time.Duration) bool {
