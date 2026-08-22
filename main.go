@@ -86,14 +86,26 @@ func main() {
 		log.Printf("missing prerequisites detected, running installer")
 		runInstaller()
 	}
+	// 安装后仍缺少依赖，则不启动：避免在缺失目录上 fork 失败、loading 卡住
+	if !prereqsOK() {
+		showMessageBox("运行依赖（Node.js / pnpm / harness 源码）仍缺失，无法启动 DeepSeek Harness。\n请检查网络后重试，或查看日志：\n"+filepath.Join(logDir, "app.log"), appName)
+		return
+	}
 
 	closeSplash := startSplash("正在启动 DeepSeek Harness 服务，请稍候…")
 
 	// 若服务已在运行（端口被占用），不再重复启动，直接复用
+	started := false
 	if serverResponding(webURL) {
 		log.Printf("server already running on %s, skipping spawn", webURL)
+		started = true
 	} else {
-		startServer()
+		started = startServer()
+	}
+	if !started {
+		closeSplash()
+		showMessageBox("启动 DeepSeek Harness 服务失败，请查看日志：\n"+filepath.Join(logDir, "app.log"), appName)
+		return
 	}
 
 	go func() {

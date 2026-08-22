@@ -37,13 +37,17 @@ if (-not (Test-Cmd 'pnpm')) {
     }
 }
 
-# 4) harness 源码：缺失则拉取
+# 4) harness 源码：缺失则拉取（shallow 克隆更快、更不易中断；失败时清理残留）
 if (-not (Test-Path (Join-Path $harnessDir 'package.json'))) {
     if (Test-Cmd 'git') {
-        Write-Host "Harness source missing, cloning $harnessRepo ..."
-        git clone --branch $harnessBranch $harnessRepo $harnessDir
+        Write-Host "Harness source missing, cloning (shallow) $harnessRepo ..."
+        git clone --depth 1 --branch $harnessBranch $harnessRepo $harnessDir
+        if ($LASTEXITCODE -ne 0) {
+            Write-Host "ERROR: git clone failed (exit $LASTEXITCODE); check network or repo url."
+            if (Test-Path $harnessDir) { Remove-Item $harnessDir -Recurse -Force -ErrorAction SilentlyContinue }
+        }
     } else {
-        Write-Host 'Harness source missing and git unavailable; cannot clone.'
+        Write-Host 'ERROR: git unavailable, cannot clone harness source.'
     }
 }
 

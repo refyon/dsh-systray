@@ -34,7 +34,13 @@ func trayIconData() []byte {
 	return iconData
 }
 
-func startServer() {
+func startServer() bool {
+	// 防御性检查：harness 目录必须存在，否则 cmd.Dir 指向无效目录会导致 fork 失败
+	if _, err := os.Stat(filepath.Join(harnessDir, "package.json")); err != nil {
+		log.Printf("harness not found at %s: %v", harnessDir, err)
+		return false
+	}
+
 	serverLogPath := filepath.Join(logDir, "server.log")
 	f, err := os.OpenFile(serverLogPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
 	if err != nil {
@@ -58,11 +64,11 @@ func startServer() {
 
 	if err := cmd.Start(); err != nil {
 		log.Printf("failed to start server: %v", err)
-		showMessageBox("启动 DeepSeek Harness 服务器失败："+err.Error(), appName)
-		return
+		return false
 	}
 	serverCmd = cmd
 	log.Printf("server started, pid=%d", cmd.Process.Pid)
+	return true
 }
 
 func killServer() {
@@ -150,13 +156,11 @@ func runInstaller() {
 		log.Printf("installer failed: %v", err)
 	}
 
-	if !prereqsOK() {
-		showMessageBox(
-			"运行依赖安装未完成（Node.js / pnpm / harness 缺失）。\n服务器可能无法启动，详情见日志：\n"+filepath.Join(logDir, "app.log"),
-			appName,
-		)
-	} else {
+	// 结果由 main() 重新检查 prereqsOK 后统一处理
+	if prereqsOK() {
 		log.Printf("prerequisites now satisfied")
+	} else {
+		log.Printf("prerequisites still missing after installer")
 	}
 }
 

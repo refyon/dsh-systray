@@ -12,8 +12,12 @@ command -v pnpm >/dev/null 2>&1 || npm install -g pnpm@11.7.0
 command -v git  >/dev/null 2>&1 || brew install git
 
 if [ ! -f "${HARNESS_DIR}/package.json" ]; then
-  echo "拉取 harness 源码..."
-  git clone --branch "${HARNESS_BRANCH}" "${HARNESS_REPO}" "${HARNESS_DIR}"
+  echo "拉取 harness 源码（shallow）..."
+  if ! git clone --depth 1 --branch "${HARNESS_BRANCH}" "${HARNESS_REPO}" "${HARNESS_DIR}"; then
+    echo "ERROR: git clone 失败，请检查网络或仓库地址"
+    rm -rf "${HARNESS_DIR}"
+    exit 1
+  fi
 fi
 
 if [ -f "${HARNESS_DIR}/package.json" ] && [ ! -d "${HARNESS_DIR}/node_modules" ]; then
