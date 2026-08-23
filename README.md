@@ -20,12 +20,14 @@ Windows / macOS 托盘应用：双击后后台启动 DeepSeek Harness Web 本地
 ```json
 {
   "port": 3080,
-  "harnessDir": "/path/to/deepseek-harness"
+  "harnessDir": "/path/to/deepseek-harness",
+  "startupTimeoutSec": 300
 }
 ```
 
 - `port`：服务器端口，默认 3080（可用环境变量 `DSH_SYSTRAY_PORT` 覆盖）
 - `harnessDir`：harness 源码目录，建议显式配置为实际路径（未配置时按平台取默认值）
+- `startupTimeoutSec`：服务启动等待超时（秒），默认 300（可用环境变量 `DSH_SYSTRAY_STARTUP_TIMEOUT` 覆盖）；超时后若服务进程仍在运行会继续后台等待并二次提示
 
 ## 构建
 

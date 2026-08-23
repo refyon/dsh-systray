@@ -74,11 +74,11 @@ func trayIconData() []byte {
 	return iconData
 }
 
-func startServer() bool {
+func startServer() (bool, <-chan error) {
 	// 防御性检查：harness 目录必须存在，否则 cmd.Dir 指向无效目录会导致 fork 失败
 	if _, err := os.Stat(filepath.Join(harnessDir, "package.json")); err != nil {
 		log.Printf("harness not found at %s: %v", harnessDir, err)
-		return false
+		return false, nil
 	}
 
 	serverLogPath := filepath.Join(logDir, "server.log")
@@ -104,11 +104,13 @@ func startServer() bool {
 
 	if err := cmd.Start(); err != nil {
 		log.Printf("failed to start server: %v", err)
-		return false
+		return false, nil
 	}
 	serverCmd = cmd
+	exitCh := make(chan error, 1)
+	go func() { exitCh <- cmd.Wait() }()
 	log.Printf("server started, pid=%d", cmd.Process.Pid)
-	return true
+	return true, exitCh
 }
 
 func killServer() {

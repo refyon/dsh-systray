@@ -11,6 +11,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strconv"
+	"sync/atomic"
 	"time"
 
 	"github.com/getlantern/systray"
@@ -22,19 +23,22 @@ const (
 )
 
 var (
-	logDir     string
-	webURL     string
-	harnessDir string
-	port       int
+	logDir         string
+	webURL         string
+	harnessDir     string
+	port           int
+	startupTimeout time.Duration
+	quitting       atomic.Bool
 )
 
 type appConfig struct {
-	Port       int    `json:"port"`
-	HarnessDir string `json:"harnessDir"`
+	Port              int    `json:"port"`
+	HarnessDir        string `json:"harnessDir"`
+	StartupTimeoutSec int    `json:"startupTimeoutSec"`
 }
 
 func loadConfig() appConfig {
-	cfg := appConfig{Port: defaultPort, HarnessDir: defaultHarnessDir()}
+	cfg := appConfig{Port: defaultPort, HarnessDir: defaultHarnessDir(), StartupTimeoutSec: 300}
 	if exe, err := os.Executable(); err == nil {
 		if data, err := os.ReadFile(filepath.Join(filepath.Dir(exe), "config.json")); err == nil {
 			var f appConfig
@@ -44,6 +48,9 @@ func loadConfig() appConfig {
 				}
 				if f.HarnessDir != "" {
 					cfg.HarnessDir = f.HarnessDir
+				}
+				if f.StartupTimeoutSec != 0 {
+					cfg.StartupTimeoutSec = f.StartupTimeoutSec
 				}
 			}
 		}
@@ -55,6 +62,11 @@ func loadConfig() appConfig {
 	}
 	if d := os.Getenv("DSH_SYSTRAY_HARNESS_DIR"); d != "" {
 		cfg.HarnessDir = d
+	}
+	if t := os.Getenv("DSH_SYSTRAY_STARTUP_TIMEOUT"); t != "" {
+		if n, err := strconv.Atoi(t); err == nil && n > 0 {
+			cfg.StartupTimeoutSec = n
+		}
 	}
 	return cfg
 }
@@ -78,6 +90,7 @@ func main() {
 	port = cfg.Port
 	webURL = fmt.Sprintf("http://127.0.0.1:%d/", port)
 	harnessDir = cfg.HarnessDir
+	startupTimeout = time.Duration(cfg.StartupTimeoutSec) * time.Second
 
 	cfgDir, err := os.UserConfigDir()
 	if err != nil {
@@ -141,11 +154,12 @@ func main() {
 
 	// 若服务已在运行（端口被占用），不再重复启动，直接复用
 	started := false
+	var serverExitCh <-chan error
 	if serverResponding(webURL) {
 		log.Printf("server already running on %s, skipping spawn", webURL)
 		started = true
 	} else {
-		started = startServer()
+		started, serverExitCh = startServer()
 	}
 	if !started {
 		closeSplash()
@@ -154,12 +168,25 @@ func main() {
 	}
 
 	go func() {
-		ready := waitForServerReady(webURL, 90*time.Second)
+		ready, why := waitForServerReady(webURL, serverExitCh, startupTimeout)
 		closeSplash()
+		if quitting.Load() {
+			return
+		}
 		if ready {
 			notifyReady()
-		} else {
-			showMessageBox("DeepSeek Harness 服务启动超时或失败，请查看日志：\n"+filepath.Join(logDir, "server.log"), appName)
+			return
+		}
+		if why == "exited" {
+			showMessageBox("DeepSeek Harness 服务启动失败（进程已退出），请查看日志：\n"+filepath.Join(logDir, "server.log"), appName)
+			return
+		}
+		// 超时但服务进程仍在运行：慢机器/首次启动常见，继续后台等待，就绪后再次提示
+		showMessageBox("DeepSeek Harness 服务启动较慢（首次启动或机器性能较低时属正常现象），已继续在后台启动，就绪后会再次提示。\n日志："+filepath.Join(logDir, "server.log"), appName)
+		if ready2, _ := waitForServerReady(webURL, serverExitCh, 15*time.Minute); ready2 && !quitting.Load() {
+			notifyReady()
+		} else if !quitting.Load() {
+			showMessageBox("DeepSeek Harness 服务最终未能就绪，请查看日志：\n"+filepath.Join(logDir, "server.log"), appName)
 		}
 	}()
 
@@ -196,6 +223,7 @@ func onReady() {
 }
 
 func onExit() {
+	quitting.Store(true)
 	killServer()
 	log.Printf("tray exiting")
 }
@@ -270,20 +298,29 @@ func runHarnessBuild() error {
 	return nil
 }
 
-func waitForServerReady(url string, timeout time.Duration) bool {
+// waitForServerReady 等待服务就绪：ready=true 表示已响应；
+// ready=false 时 why 为 "exited"（服务进程已退出，快速失败）或 "timeout"（超时但进程仍在运行）。
+func waitForServerReady(url string, serverExited <-chan error, timeout time.Duration) (bool, string) {
 	deadline := time.Now().Add(timeout)
 	client := &http.Client{Timeout: 3 * time.Second}
-	for time.Now().Before(deadline) {
-		resp, err := client.Get(url)
-		if err == nil {
-			resp.Body.Close()
-			if resp.StatusCode < 500 {
-				return true
+	ticker := time.NewTicker(1 * time.Second)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-serverExited:
+			return false, "exited"
+		case <-ticker.C:
+			if time.Now().After(deadline) {
+				return false, "timeout"
+			}
+			if resp, err := client.Get(url); err == nil {
+				resp.Body.Close()
+				if resp.StatusCode < 500 {
+					return true, ""
+				}
 			}
 		}
-		time.Sleep(1 * time.Second)
 	}
-	return false
 }
 
 // serverResponding 快速探测服务是否已在运行（端口是否已被占用）。
