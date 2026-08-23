@@ -27,7 +27,47 @@ const (
 var serverCmd *exec.Cmd
 
 func defaultHarnessDir() string {
-	return `I:\deepseek-harness`
+	home, _ := os.UserHomeDir()
+	return filepath.Join(home, "deepseek-harness")
+}
+
+type browseInfoW struct {
+	hwndOwner      uintptr
+	pidlRoot       uintptr
+	pszDisplayName *uint16
+	lpszTitle      *uint16
+	ulFlags        uint32
+	lpfn           uintptr
+	lParam         uintptr
+	iImage         int32
+}
+
+// pickHarnessDir 弹出目录选择对话框（经典 SHBrowseForFolder，无需 COM 初始化），返回用户选择的目录；取消返回 ""。
+func pickHarnessDir(title, initial string) string {
+	modShell32 := syscall.NewLazyDLL("shell32.dll")
+	browse := modShell32.NewProc("SHBrowseForFolderW")
+	getPath := modShell32.NewProc("SHGetPathFromIDListW")
+	free := syscall.NewLazyDLL("ole32.dll").NewProc("CoTaskMemFree")
+
+	titlePtr, _ := syscall.UTF16PtrFromString(title)
+	var display [260]uint16
+	bi := browseInfoW{
+		hwndOwner:      0,
+		lpszTitle:      titlePtr,
+		pszDisplayName: &display[0],
+		ulFlags:        0x0001, // BIF_RETURNONLYFSDIRS：仅返回文件系统目录
+	}
+	pidl, _, _ := browse.Call(uintptr(unsafe.Pointer(&bi)))
+	if pidl == 0 {
+		return ""
+	}
+	defer free.Call(pidl)
+
+	var pathBuf [260]uint16
+	if r, _, _ := getPath.Call(pidl, uintptr(unsafe.Pointer(&pathBuf[0]))); r == 0 {
+		return ""
+	}
+	return syscall.UTF16ToString(pathBuf[:])
 }
 
 func trayIconData() []byte {
@@ -140,7 +180,8 @@ func runHidden(name string, args ...string) {
 
 func runInstaller() {
 	tmp := filepath.Join(os.TempDir(), "dsh-systray-install-prereqs.ps1")
-	if err := os.WriteFile(tmp, installScript, 0o644); err != nil {
+	script := strings.ReplaceAll(string(installScript), "{{HARNESS_DIR}}", harnessDir)
+	if err := os.WriteFile(tmp, []byte(script), 0o644); err != nil {
 		log.Printf("write installer failed: %v", err)
 		showMessageBox("检测到缺少运行依赖，但无法写入安装脚本。", appName)
 		return

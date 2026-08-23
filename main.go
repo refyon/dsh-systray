@@ -53,7 +53,24 @@ func loadConfig() appConfig {
 			cfg.Port = n
 		}
 	}
+	if d := os.Getenv("DSH_SYSTRAY_HARNESS_DIR"); d != "" {
+		cfg.HarnessDir = d
+	}
 	return cfg
+}
+
+// saveConfig 将配置写回 exe 同目录的 config.json，便于记住用户选择的目录。
+func saveConfig(cfg appConfig) {
+	if exe, err := os.Executable(); err == nil {
+		p := filepath.Join(filepath.Dir(exe), "config.json")
+		if data, err := json.MarshalIndent(cfg, "", "  "); err == nil {
+			if err := os.WriteFile(p, data, 0o644); err != nil {
+				log.Printf("cannot write config.json: %v", err)
+			} else {
+				log.Printf("wrote config.json: %s", p)
+			}
+		}
+	}
 }
 
 func main() {
@@ -82,6 +99,17 @@ func main() {
 		return
 	}
 	defer release()
+
+	// 兼容：默认/配置的 harness 目录不可用时，让用户选择工作目录（新机器默认路径可能不存在）
+	if _, err := os.Stat(filepath.Join(harnessDir, "package.json")); err != nil {
+		log.Printf("harness source not found at %s, prompting user to choose", harnessDir)
+		if chosen := pickHarnessDir("未找到 DeepSeek Harness 源码目录。\n请选择已有的 harness 源码目录，或选择即将自动安装到的文件夹：", harnessDir); chosen != "" {
+			harnessDir = chosen
+			cfg.HarnessDir = chosen
+			saveConfig(cfg)
+			log.Printf("harness dir set to %s", harnessDir)
+		}
+	}
 
 	if !prereqsOK() {
 		log.Printf("missing prerequisites detected, running installer")

@@ -1,6 +1,7 @@
 # dsh-systray 运行依赖安装脚本（以管理员身份运行）
 $ErrorActionPreference = 'Continue'
-$harnessDir    = 'I:\deepseek-harness'
+$harnessDir    = '{{HARNESS_DIR}}'
+if ($harnessDir -eq '{{HARNESS_DIR}}') { $harnessDir = Join-Path $env:USERPROFILE 'deepseek-harness' }
 $harnessRepo   = 'https://github.com/deepseek-ai/deepseek-harness.git'
 $harnessBranch = 'master'
 

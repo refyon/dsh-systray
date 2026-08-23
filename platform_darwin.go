@@ -26,6 +26,17 @@ func defaultHarnessDir() string {
 	return filepath.Join(home, "deepseek-harness")
 }
 
+// pickHarnessDir 弹出目录选择对话框（macOS choose folder），返回用户选择的目录；取消返回 ""。
+func pickHarnessDir(title, initial string) string {
+	script := fmt.Sprintf(`POSIX path of (choose folder with prompt "%s")`, escapeAppleScript(title))
+	out, err := runAppleScript(script)
+	if err != nil {
+		return ""
+	}
+	p := strings.TrimSpace(string(out))
+	return strings.TrimSuffix(p, "/")
+}
+
 func trayIconData() []byte {
 	// macOS 菜单栏需要 PNG；从 ICO 中提取最大尺寸的 PNG 条目。
 	return extractLargestPNG(iconData)
@@ -140,7 +151,8 @@ func disableAutostart() {
 
 func runInstaller() {
 	tmp := filepath.Join(os.TempDir(), "dsh-systray-install-prereqs.sh")
-	if err := os.WriteFile(tmp, installScript, 0o755); err != nil {
+	script := strings.ReplaceAll(string(installScript), "{{HARNESS_DIR}}", harnessDir)
+	if err := os.WriteFile(tmp, []byte(script), 0o755); err != nil {
 		log.Printf("write installer failed: %v", err)
 		showMessageBox("检测到缺少运行依赖，但无法写入安装脚本。", appName)
 		return

@@ -1,7 +1,8 @@
 #!/bin/bash
 # dsh-systray 运行依赖安装脚本（macOS）
 set -e
-HARNESS_DIR="${HOME}/deepseek-harness"
+HARNESS_DIR="{{HARNESS_DIR}}"
+if [ "$HARNESS_DIR" = "{{HARNESS_DIR}}" ]; then HARNESS_DIR="${HOME}/deepseek-harness"; fi
 HARNESS_REPO="https://github.com/deepseek-ai/deepseek-harness.git"
 HARNESS_BRANCH="master"
 
