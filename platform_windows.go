@@ -3,15 +3,19 @@
 package main
 
 import (
+	"context"
 	_ "embed"
 	"fmt"
+	"io"
 	"log"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
 	"syscall"
+	"time"
 	"unsafe"
 )
 
@@ -27,8 +31,187 @@ const (
 var serverCmd *exec.Cmd
 
 func defaultHarnessDir() string {
-	home, _ := os.UserHomeDir()
-	return filepath.Join(home, "deepseek-harness")
+	base := os.Getenv("LOCALAPPDATA")
+	if base == "" {
+		if home, err := os.UserHomeDir(); err == nil {
+			base = home
+		} else {
+			base = os.TempDir()
+		}
+	}
+	return filepath.Join(base, "Programs", "dsh-systray-harness")
+}
+
+const nodeDownloadURL = "https://nodejs.org/dist/v24.9.0/node-v24.9.0-win-x64.zip"
+
+// ---- 便携运行环境（无管理员权限、无窗口、后台静默） ----
+
+func runtimeDir() string {
+	base := os.Getenv("LOCALAPPDATA")
+	if base == "" {
+		base = os.TempDir()
+	}
+	return filepath.Join(base, "Programs", "dsh-systray-runtime")
+}
+
+func nodeDir() string { return filepath.Join(runtimeDir(), "node") }
+func nodeExe() string { return filepath.Join(nodeDir(), "node.exe") }
+func pnpmExe() string { return filepath.Join(runtimeDir(), "pnpm.cmd") }
+
+func fileExists(p string) bool {
+	_, err := os.Stat(p)
+	return err == nil
+}
+
+func nodeAvailable() bool {
+	if fileExists(nodeExe()) {
+		return true
+	}
+	_, err := exec.LookPath("node")
+	return err == nil
+}
+
+func pnpmAvailable() bool {
+	if fileExists(pnpmExe()) {
+		return true
+	}
+	_, err := exec.LookPath("pnpm")
+	return err == nil
+}
+
+// nodeCmd / pnpmCmd 优先返回便携运行时路径，其次系统 PATH。
+func nodeCmd() string {
+	if fileExists(nodeExe()) {
+		return nodeExe()
+	}
+	return "node"
+}
+
+func pnpmCmd() string {
+	if fileExists(pnpmExe()) {
+		return pnpmExe()
+	}
+	return "pnpm"
+}
+
+func runtimeOK() bool { return nodeAvailable() && pnpmAvailable() }
+
+// hideCmdWindow 隐藏子进程窗口（win32 GUI 应用无控制台，避免闪窗）。
+func hideCmdWindow(cmd *exec.Cmd) {
+	cmd.SysProcAttr = &syscall.SysProcAttr{
+		HideWindow:    true,
+		CreationFlags: 0x08000000, // CREATE_NO_WINDOW
+	}
+}
+
+// refreshEnvPath 把便携运行时加入当前进程 PATH 并持久化到用户 PATH（无需管理员）。
+func refreshEnvPath() {
+	dirs := []string{nodeDir(), runtimeDir()}
+	cur := os.Getenv("PATH")
+	lower := strings.ToLower(cur)
+	for _, d := range dirs {
+		if !strings.Contains(lower, strings.ToLower(d)) {
+			cur = d + ";" + cur
+		}
+	}
+	os.Setenv("PATH", cur)
+	ps := fmt.Sprintf("$p=[Environment]::GetEnvironmentVariable('Path','User'); if($p -notlike '*%s*'){ [Environment]::SetEnvironmentVariable('Path','%s;'+$p,'User') }", runtimeDir(), runtimeDir())
+	runHidden("powershell", "-NoProfile", "-WindowStyle", "Hidden", "-Command", ps)
+}
+
+// downloadFile 带进度回调的下载。
+func downloadFile(url, dest string, splash *SplashState, from, to float64) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
+	if err != nil {
+		return err
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("HTTP %d", resp.StatusCode)
+	}
+	out, err := os.Create(dest)
+	if err != nil {
+		return err
+	}
+	defer out.Close()
+	buf := make([]byte, 256*1024)
+	var done int64
+	total := resp.ContentLength
+	for {
+		n, rerr := resp.Body.Read(buf)
+		if n > 0 {
+			if _, werr := out.Write(buf[:n]); werr != nil {
+				return werr
+			}
+			done += int64(n)
+			if splash != nil && total > 0 {
+				pct := float64(done) / float64(total)
+				splash.Update(fmt.Sprintf("正在下载 Node.js 运行时（%.0f%%）…", pct*100), from+(to-from)*pct)
+			}
+		}
+		if rerr == io.EOF {
+			break
+		}
+		if rerr != nil {
+			return rerr
+		}
+	}
+	return nil
+}
+
+func extractZip(zipPath, destDir string) error {
+	cmd := exec.Command("tar", "-xf", zipPath, "-C", destDir)
+	hideCmdWindow(cmd)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("%w: %s", err, string(out))
+	}
+	return nil
+}
+
+// ensureRuntime 下载便携 Node.js + 安装 pnpm（后台静默，无 UAC）。
+func ensureRuntime(splash *SplashState) error {
+	if err := os.MkdirAll(runtimeDir(), 0o755); err != nil {
+		return err
+	}
+	if !nodeAvailable() {
+		splash.Update("正在下载 Node.js 运行时（约 30MB）…", 0.10)
+		zipPath := filepath.Join(runtimeDir(), "node.zip")
+		if err := downloadFile(nodeDownloadURL, zipPath, splash, 0.10, 0.22); err != nil {
+			return fmt.Errorf("下载 Node.js 失败：%w", err)
+		}
+		splash.Update("正在解压 Node.js 运行时…", 0.24)
+		if err := extractZip(zipPath, runtimeDir()); err != nil {
+			return fmt.Errorf("解压 Node.js 失败：%w", err)
+		}
+		_ = os.Remove(zipPath)
+		src := filepath.Join(runtimeDir(), "node-v24.9.0-win-x64")
+		if err := os.Rename(src, nodeDir()); err != nil && !fileExists(nodeExe()) {
+			return fmt.Errorf("整理 Node.js 目录失败：%w", err)
+		}
+	}
+	if !pnpmAvailable() {
+		splash.Update("正在安装 pnpm 包管理器…", 0.26)
+		logPath := filepath.Join(logDir, "install.log")
+		f, _ := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+		cmd := exec.Command(filepath.Join(nodeDir(), "npm.cmd"), "install", "-g", "pnpm@10.34.5", "--prefix", runtimeDir(), "--loglevel", "error")
+		hideCmdWindow(cmd)
+		if f != nil {
+			cmd.Stdout = f
+			cmd.Stderr = f
+		}
+		if err := cmd.Run(); err != nil {
+			return fmt.Errorf("安装 pnpm 失败：%w（日志：%s）", err, logPath)
+		}
+	}
+	splash.Update("运行环境就绪", 0.30)
+	return nil
 }
 
 type browseInfoW struct {
@@ -75,10 +258,12 @@ func trayIconData() []byte {
 }
 
 func startServer() (bool, <-chan error) {
-	// 防御性检查：harness 目录必须存在，否则 cmd.Dir 指向无效目录会导致 fork 失败
-	if _, err := os.Stat(filepath.Join(harnessDir, "package.json")); err != nil {
-		log.Printf("harness not found at %s: %v", harnessDir, err)
-		return false, nil
+	// 防御性检查：目录必须存在，否则 cmd.Dir 指向无效目录会导致 fork 失败
+	if !isNpmHarnessReady() {
+		if _, err := os.Stat(filepath.Join(harnessDir, "package.json")); err != nil {
+			log.Printf("harness not found at %s: %v", harnessDir, err)
+			return false, nil
+		}
 	}
 
 	serverLogPath := filepath.Join(logDir, "server.log")
@@ -90,12 +275,17 @@ func startServer() (bool, <-chan error) {
 		defer f.Close()
 	}
 
-	cmd := exec.Command("cmd", "/c", fmt.Sprintf("pnpm dsh web --port %d --no-open", port))
-	cmd.Dir = harnessDir
-	cmd.SysProcAttr = &syscall.SysProcAttr{
-		HideWindow:    true,
-		CreationFlags: 0x08000000, // CREATE_NO_WINDOW
+	var cmd *exec.Cmd
+	if isNpmHarnessReady() {
+		// npm 预构建产物：直接用 node 启动 @deepseek-ai/dsh 入口
+		bin := filepath.Join(harnessDir, "node_modules", "@deepseek-ai", "dsh", "lib", "bin.js")
+		cmd = exec.Command(nodeCmd(), bin, "web", "--no-open", "--host", "127.0.0.1", "--port", strconv.Itoa(port))
+	} else {
+		// 源码 checkout：pnpm dsh web
+		cmd = exec.Command(pnpmCmd(), "dsh", "web", "--port", strconv.Itoa(port), "--no-open")
 	}
+	cmd.Dir = harnessDir
+	hideCmdWindow(cmd)
 	if f != nil {
 		cmd.Stdout = f
 		cmd.Stderr = f

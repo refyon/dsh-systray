@@ -23,12 +23,13 @@ const (
 )
 
 var (
-	logDir         string
-	webURL         string
-	harnessDir     string
-	port           int
-	startupTimeout time.Duration
-	quitting       atomic.Bool
+	logDir             string
+	webURL             string
+	harnessDir         string
+	port               int
+	startupTimeout     time.Duration
+	quitting           atomic.Bool
+	harnessDirExplicit bool
 )
 
 type appConfig struct {
@@ -48,6 +49,7 @@ func loadConfig() appConfig {
 				}
 				if f.HarnessDir != "" {
 					cfg.HarnessDir = f.HarnessDir
+					harnessDirExplicit = true
 				}
 				if f.StartupTimeoutSec != 0 {
 					cfg.StartupTimeoutSec = f.StartupTimeoutSec
@@ -62,6 +64,7 @@ func loadConfig() appConfig {
 	}
 	if d := os.Getenv("DSH_SYSTRAY_HARNESS_DIR"); d != "" {
 		cfg.HarnessDir = d
+		harnessDirExplicit = true
 	}
 	if t := os.Getenv("DSH_SYSTRAY_STARTUP_TIMEOUT"); t != "" {
 		if n, err := strconv.Atoi(t); err == nil && n > 0 {
@@ -113,8 +116,8 @@ func main() {
 	}
 	defer release()
 
-	// 兼容：默认/配置的 harness 目录不可用时，让用户选择工作目录（新机器默认路径可能不存在）
-	if _, err := os.Stat(filepath.Join(harnessDir, "package.json")); err != nil {
+	// 显式配置的 harness 目录不可用时让用户重新选择；默认目录则静默自动部署
+	if _, err := os.Stat(filepath.Join(harnessDir, "package.json")); err != nil && harnessDirExplicit {
 		log.Printf("harness source not found at %s, prompting user to choose", harnessDir)
 		if chosen := pickHarnessDir("未找到 DeepSeek Harness 源码目录。\n请选择已有的 harness 源码目录，或选择即将自动安装到的文件夹：", harnessDir); chosen != "" {
 			harnessDir = chosen
@@ -124,35 +127,49 @@ func main() {
 		}
 	}
 
-	if !prereqsOK() {
-		log.Printf("missing prerequisites detected, running installer")
-		runInstaller()
-	}
-	// 安装后仍缺少依赖，则不启动：避免在缺失目录上 fork 失败、loading 卡住
-	if !prereqsOK() {
-		showMessageBox("运行依赖（Node.js / pnpm / harness 源码）仍缺失，无法启动 DeepSeek Harness。\n请检查网络后重试，或查看日志：\n"+filepath.Join(logDir, "app.log"), appName)
-		return
+	splash := startSplash("正在准备运行环境…")
+
+	// 1) 运行环境：优先便携 Node.js / pnpm（无管理员权限、无窗口、后台静默）
+	if !runtimeOK() {
+		splash.Update("正在下载 Node.js / pnpm 运行时（首次约 1-3 分钟）…", 0.08)
+		if err := ensureRuntime(splash); err != nil {
+			splash.Close()
+			showMessageBox("下载运行环境失败：\n"+err.Error()+"\n\n请检查网络后重试；日志："+filepath.Join(logDir, "app.log"), appName)
+			return
+		}
+		refreshEnvPath()
 	}
 
-	// 兼容：harness 已 clone 但未执行 pnpm run build（缺少前端/客户端产物）——自动补构建
-	if !harnessBuiltOK() {
-		log.Printf("harness build outputs missing, running pnpm run build")
-		closeBuild := startSplash("检测到 deepseek-harness 尚未构建，正在自动执行 pnpm run build（首次约需 1-3 分钟）…")
-		err := runHarnessBuild()
-		closeBuild()
-		if err != nil {
-			showMessageBox("harness 自动构建失败：\n"+err.Error()+"\n\n构建日志："+filepath.Join(logDir, "build.log"), appName)
-			return
+	// 2) DeepSeek Harness 本体：源码 checkout 走 pnpm 构建；全新机器走 npm 预构建产物（免 git / 免构建）
+	switch harnessMode() {
+	case "source":
+		if !sourceDepsInstalled() {
+			splash.Update("正在安装 harness 依赖（首次约 2-5 分钟）…", 0.35)
+			if err := runSourceDepsInstall(); err != nil {
+				splash.Close()
+				showMessageBox("安装 harness 依赖失败：\n"+err.Error()+"\n\n日志："+filepath.Join(logDir, "install.log"), appName)
+				return
+			}
 		}
 		if !harnessBuiltOK() {
-			showMessageBox("harness 构建后产物仍缺失，请查看构建日志：\n"+filepath.Join(logDir, "build.log"), appName)
+			splash.Update("正在构建 harness 前端产物（首次约 1-3 分钟）…", 0.55)
+			if err := runHarnessBuild(); err != nil {
+				splash.Close()
+				showMessageBox("harness 构建失败：\n"+err.Error()+"\n\n日志："+filepath.Join(logDir, "build.log"), appName)
+				return
+			}
+		}
+	case "missing":
+		splash.Update("正在安装 DeepSeek Harness（首次约 2-5 分钟）…", 0.35)
+		if err := ensureNpmHarness(); err != nil {
+			splash.Close()
+			showMessageBox("安装 DeepSeek Harness 失败：\n"+err.Error()+"\n\n日志："+filepath.Join(logDir, "install.log"), appName)
 			return
 		}
 	}
 
-	closeSplash := startSplash("正在启动 DeepSeek Harness 服务，请稍候…")
-
-	// 若服务已在运行（端口被占用），不再重复启动，直接复用
+	// 3) 启动服务
+	splash.Update("正在启动服务…", 0.9)
 	started := false
 	var serverExitCh <-chan error
 	if serverResponding(webURL) {
@@ -162,10 +179,11 @@ func main() {
 		started, serverExitCh = startServer()
 	}
 	if !started {
-		closeSplash()
+		splash.Close()
 		showMessageBox("启动 DeepSeek Harness 服务失败，请查看日志：\n"+filepath.Join(logDir, "app.log"), appName)
 		return
 	}
+	closeSplash := splash.Close
 
 	go func() {
 		ready, why := waitForServerReady(webURL, serverExitCh, startupTimeout)
@@ -285,8 +303,14 @@ func runHarnessBuild() error {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, "pnpm", "run", "build")
+	cmd := exec.CommandContext(ctx, pnpmCmd(), "run", "build")
 	cmd.Dir = harnessDir
+	cmd.Env = append(os.Environ(), pnpmTunedEnv()...)
+	if _, err := os.Stat(filepath.Join(harnessDir, ".git")); err != nil {
+		// 非 git 部署（如 zip 解压）：提供占位提交哈希，避免构建脚本依赖 git
+		cmd.Env = append(cmd.Env, "DSH_CLIENT_COMMIT_HASH=0000000")
+	}
+	hideCmdWindow(cmd)
 	if f != nil {
 		cmd.Stdout = f
 		cmd.Stderr = f
@@ -295,6 +319,111 @@ func runHarnessBuild() error {
 		return fmt.Errorf("pnpm run build failed: %w（构建日志：%s）", err, buildLogPath)
 	}
 	log.Printf("harness build completed")
+	return nil
+}
+
+// isNpmHarnessReady 是否为 npm 预构建产物形态（@deepseek-ai/dsh）。
+func isNpmHarnessReady() bool {
+	_, err := os.Stat(filepath.Join(harnessDir, "node_modules", "@deepseek-ai", "dsh", "lib", "bin.js"))
+	return err == nil
+}
+
+// isSourceHarnessDir 是否为 harness 源码 checkout。
+func isSourceHarnessDir() bool {
+	if isNpmHarnessReady() {
+		return false
+	}
+	for _, p := range []string{"apps", "packages", ".dsh-build"} {
+		if _, err := os.Stat(filepath.Join(harnessDir, p)); err == nil {
+			return true
+		}
+	}
+	return false
+}
+
+// harnessMode 返回 "npm"（预构建产物）/ "source"（源码 checkout）/ "missing"（需安装）。
+func harnessMode() string {
+	if isNpmHarnessReady() {
+		return "npm"
+	}
+	if isSourceHarnessDir() {
+		return "source"
+	}
+	return "missing"
+}
+
+func sourceDepsInstalled() bool {
+	_, err := os.Stat(filepath.Join(harnessDir, "node_modules"))
+	return err == nil
+}
+
+// pnpmTunedEnv 慢机器调优：限制并发、克隆式安装（参考 dsh-desktop）。
+func pnpmTunedEnv() []string {
+	return []string{
+		"PNPM_MAX_WORKERS=1",
+		"npm_config_child_concurrency=1",
+		"npm_config_package_import_method=clone-or-copy",
+		"npm_config_side_effects_cache=false",
+	}
+}
+
+// runSourceDepsInstall 源码模式：pnpm install（输出写入 install.log）。
+func runSourceDepsInstall() error {
+	logPath := filepath.Join(logDir, "install.log")
+	f, _ := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+	if f != nil {
+		defer f.Close()
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Minute)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, pnpmCmd(), "install")
+	cmd.Dir = harnessDir
+	cmd.Env = append(os.Environ(), pnpmTunedEnv()...)
+	hideCmdWindow(cmd)
+	if f != nil {
+		cmd.Stdout = f
+		cmd.Stderr = f
+	}
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("pnpm install failed: %w（日志：%s）", err, logPath)
+	}
+	return nil
+}
+
+// ensureNpmHarness 全新机器：安装 npm 预构建产物 @deepseek-ai/dsh（免 git / 免构建）。
+func ensureNpmHarness() error {
+	if err := os.MkdirAll(harnessDir, 0o755); err != nil {
+		return err
+	}
+	pkgPath := filepath.Join(harnessDir, "package.json")
+	if _, err := os.Stat(pkgPath); err != nil {
+		pkg := "{\n  \"name\": \"dsh-systray-harness\",\n  \"private\": true\n}\n"
+		if err := os.WriteFile(pkgPath, []byte(pkg), 0o644); err != nil {
+			return err
+		}
+	}
+	logPath := filepath.Join(logDir, "install.log")
+	f, _ := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+	if f != nil {
+		defer f.Close()
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Minute)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, pnpmCmd(), "add", "@deepseek-ai/dsh@0.1.1-rc.2", "--save-exact")
+	cmd.Dir = harnessDir
+	cmd.Env = append(os.Environ(), pnpmTunedEnv()...)
+	hideCmdWindow(cmd)
+	if f != nil {
+		cmd.Stdout = f
+		cmd.Stderr = f
+	}
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("安装 @deepseek-ai/dsh 失败：%w（日志：%s）", err, logPath)
+	}
+	if !isNpmHarnessReady() {
+		return fmt.Errorf("安装后未找到 dsh 入口：%s", filepath.Join(harnessDir, "node_modules", "@deepseek-ai", "dsh", "lib", "bin.js"))
+	}
+	log.Printf("npm harness installed at %s", harnessDir)
 	return nil
 }
 

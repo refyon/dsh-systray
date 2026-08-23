@@ -14,6 +14,7 @@ const (
 	wmCommand        = 0x0111
 	wmSetFont        = 0x0030
 	wmCtlColorStatic = 0x0138
+	wmSetText        = 0x000C
 
 	swShow        = 5
 	wsCaption     = 0x00C00000
@@ -30,13 +31,26 @@ const (
 	smCX          = 0
 	smCY          = 1
 
-	idOkButton = 1
-
 	defaultCharset = 1
 	cleartypeQual  = 5
 
 	bkTransparent = 1
 	whiteBrush    = 0
+
+	// 控件 ID
+	idStatus = 10
+	idTrack  = 11
+	idFill   = 12
+
+	// 布局（客户区坐标）
+	pad      = 18
+	contentW = 424
+	statusY  = 16
+	statusH  = 30
+	trackY   = 64
+	trackH   = 10
+	fillY    = 66
+	fillH    = 6
 )
 
 var (
@@ -63,11 +77,25 @@ var (
 	pSetTextColor       = modGdi32.NewProc("SetTextColor")
 	pSetBkMode          = modGdi32.NewProc("SetBkMode")
 	pAdjustWindowRectEx = modUser32.NewProc("AdjustWindowRectEx")
-	pGetDC              = modUser32.NewProc("GetDC")
-	pReleaseDC          = modUser32.NewProc("ReleaseDC")
-	pDrawTextW          = modUser32.NewProc("DrawTextW")
-	pSelectObject       = modGdi32.NewProc("SelectObject")
+	pMoveWindow         = modUser32.NewProc("MoveWindow")
+	pCreateSolidBrush   = modGdi32.NewProc("CreateSolidBrush")
+	pDeleteObject       = modGdi32.NewProc("DeleteObject")
 )
+
+// 当前进度窗口的控件句柄与画刷（同一时间只有一个 splash）
+var (
+	splashStatusHwnd uintptr
+	splashTrackHwnd  uintptr
+	splashFillHwnd   uintptr
+	splashTrackBrush uintptr
+	splashFillBrush  uintptr
+)
+
+// SplashState 进度窗口控制器。
+type SplashState struct {
+	Update func(text string, fraction float64)
+	Close  func()
+}
 
 type wndClassExW struct {
 	cbSize        uint32
@@ -102,19 +130,29 @@ type msg struct {
 func splashWndProc(hwnd, uMsg, wParam, lParam uintptr) uintptr {
 	switch uMsg {
 	case wmCommand:
-		// 确定按钮被点击（BN_CLICKED，低 16 位为控件 ID）
-		if wParam&0xFFFF == idOkButton {
-			pDestroyWindow.Call(hwnd)
+		if wParam&0xFFFF == idTrack {
 			return 0
 		}
 	case wmClose:
 		pDestroyWindow.Call(hwnd)
 		return 0
 	case wmDestroy:
+		if splashTrackBrush != 0 {
+			pDeleteObject.Call(splashTrackBrush)
+		}
+		if splashFillBrush != 0 {
+			pDeleteObject.Call(splashFillBrush)
+		}
 		pPostQuitMessage.Call(0)
 		return 0
 	case wmCtlColorStatic:
-		// 静态文本：文字用黑色、背景透明（配合白色画刷），与窗口背景一致
+		// 进度条轨道/填充用各自画刷，状态文本用白色（与窗口一致）
+		switch lParam {
+		case splashTrackHwnd:
+			return splashTrackBrush
+		case splashFillHwnd:
+			return splashFillBrush
+		}
 		pSetTextColor.Call(wParam, 0)
 		pSetBkMode.Call(wParam, bkTransparent)
 		h, _, _ := pGetStockObject.Call(whiteBrush)
@@ -133,22 +171,6 @@ func splashFont() uintptr {
 	face, _ := syscall.UTF16PtrFromString("Segoe UI")
 	h, _, _ := pCreateFontW.Call(18, 0, 0, 0, 400, 0, 0, 0, defaultCharset, 0, 0, cleartypeQual, 0, uintptr(unsafe.Pointer(face)))
 	return h
-}
-
-// measureTextHeight 用 GDI 计算文本在指定宽度下按词换行后的实际像素高度。
-func measureTextHeight(text string, width int, font uintptr) int {
-	dc, _, _ := pGetDC.Call(0)
-	if dc == 0 {
-		return 24
-	}
-	defer pReleaseDC.Call(0, dc)
-	old, _, _ := pSelectObject.Call(dc, font)
-	defer pSelectObject.Call(dc, old)
-	rc := rect{0, 0, int32(width), 0}
-	t, _ := syscall.UTF16PtrFromString(text)
-	// DT_CALCRECT(0x0400) | DT_WORDBREAK(0x0010)：只计算换行后的矩形高度
-	pDrawTextW.Call(dc, uintptr(unsafe.Pointer(t)), ^uintptr(0), uintptr(unsafe.Pointer(&rc)), 0x0400|0x0010)
-	return int(rc.bottom - rc.top)
 }
 
 func createSplashWindow(text string) uintptr {
@@ -170,20 +192,8 @@ func createSplashWindow(text string) uintptr {
 	title, _ := syscall.UTF16PtrFromString("DeepSeek Harness")
 	font := splashFont()
 
-	// 自适应：按文本在固定宽度下换行后的实际高度决定窗口高度，确保“确定”按钮始终可见
-	const textW = 360
-	contentW := int32(textW)
-	textH := measureTextHeight(text, textW, font)
-	if textH < 24 {
-		textH = 24
-	}
-	const staticY, btnH = 16, 30
-	staticH := int32(textH) + 12
-	btnY := staticY + int32(textH) + 26
-	clientH := btnY + btnH + 16
-	winW := contentW + 36
-
-	// 用 AdjustWindowRectEx 把目标客户区换算为包含标题栏/边框的实际窗口尺寸
+	winW := int32(contentW + pad*2)
+	clientH := int32(trackY + trackH + 16)
 	r := rect{0, 0, winW, clientH}
 	pAdjustWindowRectEx.Call(uintptr(unsafe.Pointer(&r)), wsCaption|wsSysMenu|wsMinimizeBox, 0, 0)
 	winH := r.bottom - r.top
@@ -205,43 +215,51 @@ func createSplashWindow(text string) uintptr {
 		return 0
 	}
 
-	// 静态文本（多行自动换行）
+	// 状态文本
 	staticCls, _ := syscall.UTF16PtrFromString("STATIC")
 	t, _ := syscall.UTF16PtrFromString(text)
-	staticHwnd, _, _ := pCreateWindowExW.Call(
+	splashStatusHwnd, _, _ = pCreateWindowExW.Call(
 		0,
 		uintptr(unsafe.Pointer(staticCls)),
 		uintptr(unsafe.Pointer(t)),
 		wsChild|wsVisible|ssCenter,
-		18, uintptr(staticY), uintptr(contentW), uintptr(staticH),
-		hwnd, 0, moduleHandle(), 0,
+		uintptr(pad), uintptr(statusY), uintptr(contentW), uintptr(statusH),
+		hwnd, idStatus, moduleHandle(), 0,
 	)
-	if staticHwnd != 0 {
-		pSendMessageW.Call(staticHwnd, wmSetFont, font, 1)
+	if splashStatusHwnd != 0 {
+		pSendMessageW.Call(splashStatusHwnd, wmSetFont, font, 1)
 	}
 
-	// 确定按钮（置于文本下方）
-	btnCls, _ := syscall.UTF16PtrFromString("BUTTON")
-	btnText, _ := syscall.UTF16PtrFromString("确定")
-	btnHwnd, _, _ := pCreateWindowExW.Call(
+	// 进度条轨道（灰色）
+	splashTrackHwnd, _, _ = pCreateWindowExW.Call(
 		0,
-		uintptr(unsafe.Pointer(btnCls)),
-		uintptr(unsafe.Pointer(btnText)),
-		wsChild|wsVisible|wsTabStop,
-		uintptr((contentW-100)/2+18), uintptr(btnY), 100, uintptr(btnH),
-		hwnd, idOkButton, moduleHandle(), 0,
+		uintptr(unsafe.Pointer(staticCls)),
+		0,
+		wsChild|wsVisible,
+		uintptr(pad), uintptr(trackY), uintptr(contentW), uintptr(trackH),
+		hwnd, idTrack, moduleHandle(), 0,
 	)
-	if btnHwnd != 0 {
-		pSendMessageW.Call(btnHwnd, wmSetFont, font, 1)
-	}
+
+	// 进度条填充（品牌蓝，初始宽度 0）
+	splashFillHwnd, _, _ = pCreateWindowExW.Call(
+		0,
+		uintptr(unsafe.Pointer(staticCls)),
+		0,
+		wsChild|wsVisible,
+		uintptr(pad), uintptr(fillY), 0, uintptr(fillH),
+		hwnd, idFill, moduleHandle(), 0,
+	)
+
+	splashTrackBrush, _, _ = pCreateSolidBrush.Call(0xD9D9D9)
+	splashFillBrush, _, _ = pCreateSolidBrush.Call(0xFE6B4D) // DeepSeek 蓝
 
 	pShowWindow.Call(hwnd, swShow)
 	pUpdateWindow.Call(hwnd)
 	return hwnd
 }
 
-// startSplash 在独立线程显示 loading 窗口，返回关闭函数。
-func startSplash(text string) func() {
+// startSplash 显示带进度条的等待窗口，返回控制器。
+func startSplash(text string) *SplashState {
 	done := make(chan uintptr, 1)
 	go func() {
 		runtime.LockOSThread()
@@ -262,9 +280,28 @@ func startSplash(text string) func() {
 		}
 	}()
 	hwnd := <-done
-	return func() {
+
+	st := &SplashState{}
+	st.Update = func(t string, f float64) {
+		if splashStatusHwnd != 0 && t != "" {
+			tp, _ := syscall.UTF16PtrFromString(t)
+			pSendMessageW.Call(splashStatusHwnd, wmSetText, 0, uintptr(unsafe.Pointer(tp)))
+		}
+		if splashFillHwnd != 0 {
+			if f < 0 {
+				f = 0
+			}
+			if f > 1 {
+				f = 1
+			}
+			w := uintptr(float64(contentW) * f)
+			pMoveWindow.Call(splashFillHwnd, uintptr(pad), uintptr(fillY), w, uintptr(fillH), 1)
+		}
+	}
+	st.Close = func() {
 		if hwnd != 0 {
 			pPostMessageW.Call(hwnd, wmClose, 0, 0)
 		}
 	}
+	return st
 }

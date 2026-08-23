@@ -37,16 +37,43 @@ func pickHarnessDir(title, initial string) string {
 	return strings.TrimSuffix(p, "/")
 }
 
+// ---- 运行环境（macOS 依赖 Homebrew 安装的 node/pnpm） ----
+
+func nodeCmd() string { return "node" }
+func pnpmCmd() string { return "pnpm" }
+
+func runtimeOK() bool {
+	_, e1 := exec.LookPath("node")
+	_, e2 := exec.LookPath("pnpm")
+	return e1 == nil && e2 == nil
+}
+
+// ensureRuntime macOS：调用 brew 安装脚本（install-prereqs.sh）。
+func ensureRuntime(splash *SplashState) error {
+	runInstaller()
+	if runtimeOK() {
+		return nil
+	}
+	return fmt.Errorf("运行依赖（Node.js / pnpm）仍缺失，请手动安装后重试")
+}
+
+func refreshEnvPath() {}
+
+// hideCmdWindow macOS 无窗口概念，占位实现。
+func hideCmdWindow(cmd *exec.Cmd) {}
+
 func trayIconData() []byte {
 	// macOS 菜单栏需要 PNG；从 ICO 中提取最大尺寸的 PNG 条目。
 	return extractLargestPNG(iconData)
 }
 
 func startServer() (bool, <-chan error) {
-	// 防御性检查：harness 目录必须存在，否则 cmd.Dir 指向无效目录会导致 fork 失败
-	if _, err := os.Stat(filepath.Join(harnessDir, "package.json")); err != nil {
-		log.Printf("harness not found at %s: %v", harnessDir, err)
-		return false, nil
+	// 防御性检查：目录必须存在，否则 cmd.Dir 指向无效目录会导致 fork 失败
+	if !isNpmHarnessReady() {
+		if _, err := os.Stat(filepath.Join(harnessDir, "package.json")); err != nil {
+			log.Printf("harness not found at %s: %v", harnessDir, err)
+			return false, nil
+		}
 	}
 
 	serverLogPath := filepath.Join(logDir, "server.log")
@@ -58,7 +85,15 @@ func startServer() (bool, <-chan error) {
 		defer f.Close()
 	}
 
-	cmd := exec.Command("sh", "-c", fmt.Sprintf("pnpm dsh web --port %d --no-open", port))
+	var cmd *exec.Cmd
+	if isNpmHarnessReady() {
+		// npm 预构建产物：直接用 node 启动 @deepseek-ai/dsh 入口
+		bin := filepath.Join(harnessDir, "node_modules", "@deepseek-ai", "dsh", "lib", "bin.js")
+		cmd = exec.Command(nodeCmd(), bin, "web", "--no-open", "--host", "127.0.0.1", "--port", strconv.Itoa(port))
+	} else {
+		// 源码 checkout：pnpm dsh web
+		cmd = exec.Command("sh", "-c", fmt.Sprintf("%s dsh web --port %d --no-open", pnpmCmd(), port))
+	}
 	cmd.Dir = harnessDir
 	if f != nil {
 		cmd.Stdout = f
