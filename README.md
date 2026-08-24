@@ -15,7 +15,10 @@ Windows / macOS 托盘应用：双击后后台启动 DeepSeek Harness Web 本地
 
 ## 配置
 
-在可执行文件同目录放置 `config.json`（可选，缺失时用默认值）：
+`config.json` 位于用户配置目录（可选，缺失时用默认值）：
+- Windows：`%APPDATA%\dsh-systray\config.json`
+- macOS：`~/Library/Application Support/dsh-systray/config.json`
+（旧版本 exe 同目录的 config.json 仍可被兼容读取）
 
 ```json
 {

@@ -192,10 +192,12 @@ func createSplashWindow(text string) uintptr {
 	title, _ := syscall.UTF16PtrFromString("DeepSeek Harness")
 	font := splashFont()
 
-	winW := int32(contentW + pad*2)
+	clientW := int32(contentW + pad*2)
 	clientH := int32(trackY + trackH + 16)
-	r := rect{0, 0, winW, clientH}
+	r := rect{0, 0, clientW, clientH}
 	pAdjustWindowRectEx.Call(uintptr(unsafe.Pointer(&r)), wsCaption|wsSysMenu|wsMinimizeBox, 0, 0)
+	// 用换算后的外框尺寸，避免客户区被边框挤压导致进度条裁切
+	winW := r.right - r.left
 	winH := r.bottom - r.top
 
 	sw, _, _ := pGetSystemMetrics.Call(smCX)

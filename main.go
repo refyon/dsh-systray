@@ -38,24 +38,59 @@ type appConfig struct {
 	StartupTimeoutSec int    `json:"startupTimeoutSec"`
 }
 
+// configFilePath 用户配置目录下的 config.json（Windows: %APPDATA%\dsh-systray；macOS: ~/Library/Application Support/dsh-systray）。
+func configFilePath() string {
+	if dir, err := os.UserConfigDir(); err == nil {
+		return filepath.Join(dir, "dsh-systray", "config.json")
+	}
+	return ""
+}
+
+// legacyConfigPath 旧版本保存在 exe 同目录的 config.json（仅作兼容读取）。
+func legacyConfigPath() string {
+	if exe, err := os.Executable(); err == nil {
+		return filepath.Join(filepath.Dir(exe), "config.json")
+	}
+	return ""
+}
+
+func applyConfigFile(cfg *appConfig, path string) {
+	if path == "" {
+		return
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return
+	}
+	var f appConfig
+	if json.Unmarshal(data, &f) != nil {
+		return
+	}
+	if f.Port != 0 {
+		cfg.Port = f.Port
+	}
+	if f.HarnessDir != "" {
+		cfg.HarnessDir = f.HarnessDir
+		harnessDirExplicit = true
+	}
+	if f.StartupTimeoutSec != 0 {
+		cfg.StartupTimeoutSec = f.StartupTimeoutSec
+	}
+}
+
 func loadConfig() appConfig {
 	cfg := appConfig{Port: defaultPort, HarnessDir: defaultHarnessDir(), StartupTimeoutSec: 300}
-	if exe, err := os.Executable(); err == nil {
-		if data, err := os.ReadFile(filepath.Join(filepath.Dir(exe), "config.json")); err == nil {
-			var f appConfig
-			if json.Unmarshal(data, &f) == nil {
-				if f.Port != 0 {
-					cfg.Port = f.Port
-				}
-				if f.HarnessDir != "" {
-					cfg.HarnessDir = f.HarnessDir
-					harnessDirExplicit = true
-				}
-				if f.StartupTimeoutSec != 0 {
-					cfg.StartupTimeoutSec = f.StartupTimeoutSec
-				}
-			}
+	// 优先读用户配置目录；不存在时兼容读取 exe 同目录旧配置
+	userPath := configFilePath()
+	loaded := false
+	if userPath != "" {
+		if _, err := os.Stat(userPath); err == nil {
+			applyConfigFile(&cfg, userPath)
+			loaded = true
 		}
+	}
+	if !loaded {
+		applyConfigFile(&cfg, legacyConfigPath())
 	}
 	if p := os.Getenv("DSH_SYSTRAY_PORT"); p != "" {
 		if n, err := strconv.Atoi(p); err == nil {
@@ -74,16 +109,22 @@ func loadConfig() appConfig {
 	return cfg
 }
 
-// saveConfig 将配置写回 exe 同目录的 config.json，便于记住用户选择的目录。
+// saveConfig 将配置写入用户配置目录的 config.json，便于记住用户选择的目录。
 func saveConfig(cfg appConfig) {
-	if exe, err := os.Executable(); err == nil {
-		p := filepath.Join(filepath.Dir(exe), "config.json")
-		if data, err := json.MarshalIndent(cfg, "", "  "); err == nil {
-			if err := os.WriteFile(p, data, 0o644); err != nil {
-				log.Printf("cannot write config.json: %v", err)
-			} else {
-				log.Printf("wrote config.json: %s", p)
-			}
+	p := configFilePath()
+	if p == "" {
+		log.Printf("cannot resolve config path")
+		return
+	}
+	if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+		log.Printf("cannot create config dir: %v", err)
+		return
+	}
+	if data, err := json.MarshalIndent(cfg, "", "  "); err == nil {
+		if err := os.WriteFile(p, data, 0o644); err != nil {
+			log.Printf("cannot write config.json: %v", err)
+		} else {
+			log.Printf("wrote config.json: %s", p)
 		}
 	}
 }
