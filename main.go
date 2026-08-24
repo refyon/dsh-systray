@@ -11,6 +11,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"sync/atomic"
 	"time"
 
@@ -165,6 +166,16 @@ func main() {
 			cfg.HarnessDir = chosen
 			saveConfig(cfg)
 			log.Printf("harness dir set to %s", harnessDir)
+		}
+	}
+
+	// 未显式配置时：自动探测已存在的 harness 源码 checkout（如 I:\deepseek-harness），避免重复安装
+	if !harnessDirExplicit {
+		if found := findExistingHarnessDir(); found != "" {
+			harnessDir = found
+			cfg.HarnessDir = found
+			saveConfig(cfg)
+			log.Printf("detected existing harness at %s", found)
 		}
 	}
 
@@ -393,6 +404,24 @@ func harnessMode() string {
 	return "missing"
 }
 
+// findExistingHarnessDir 在常见位置探测已存在的 harness 源码 checkout。
+func findExistingHarnessDir() string {
+	for _, d := range candidateHarnessDirs() {
+		if d == "" || d == harnessDir {
+			continue
+		}
+		if _, err := os.Stat(filepath.Join(d, "package.json")); err != nil {
+			continue
+		}
+		for _, p := range []string{"apps", "packages", ".dsh-build"} {
+			if _, err := os.Stat(filepath.Join(d, p)); err == nil {
+				return d
+			}
+		}
+	}
+	return ""
+}
+
 func sourceDepsInstalled() bool {
 	_, err := os.Stat(filepath.Join(harnessDir, "node_modules"))
 	return err == nil
@@ -436,10 +465,31 @@ func ensureNpmHarness() error {
 	if err := os.MkdirAll(harnessDir, 0o755); err != nil {
 		return err
 	}
+	// package.json：声明需执行的构建脚本（原生依赖），避免 pnpm 默认忽略导致失败
 	pkgPath := filepath.Join(harnessDir, "package.json")
-	if _, err := os.Stat(pkgPath); err != nil {
-		pkg := "{\n  \"name\": \"dsh-systray-harness\",\n  \"private\": true\n}\n"
+	pkg := "{\n  \"name\": \"dsh-systray-harness\",\n  \"private\": true,\n  \"pnpm\": {\n    \"onlyBuiltDependencies\": [\n      \"@deepseek-ai/dsh-subprocess-local\",\n      \"@google/genai\",\n      \"koffi\",\n      \"node-pty\",\n      \"protobufjs\"\n    ]\n  }\n}\n"
+	write := false
+	if data, err := os.ReadFile(pkgPath); err != nil {
+		write = true
+	} else if !strings.Contains(string(data), "onlyBuiltDependencies") {
+		write = true
+	}
+	if write {
 		if err := os.WriteFile(pkgPath, []byte(pkg), 0o644); err != nil {
+			return err
+		}
+	}
+	// pnpm-workspace.yaml：pnpm 11 的 allowBuilds 白名单，消除 ERR_PNPM_IGNORED_BUILDS
+	wsPath := filepath.Join(harnessDir, "pnpm-workspace.yaml")
+	ws := "allowBuilds:\n  '@deepseek-ai/dsh-subprocess-local': true\n  '@google/genai': true\n  koffi: true\n  node-pty: true\n  protobufjs: true\n"
+	writeWS := false
+	if data, err := os.ReadFile(wsPath); err != nil {
+		writeWS = true
+	} else if strings.Contains(string(data), "set this to true or false") || !strings.Contains(string(data), ": true") {
+		writeWS = true
+	}
+	if writeWS {
+		if err := os.WriteFile(wsPath, []byte(ws), 0o644); err != nil {
 			return err
 		}
 	}
@@ -459,7 +509,12 @@ func ensureNpmHarness() error {
 		cmd.Stderr = f
 	}
 	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("安装 @deepseek-ai/dsh 失败：%w（日志：%s）", err, logPath)
+		// 构建脚本已白名单；若 dsh 入口已就绪，则即便 pnpm 因个别原生构建失败也视为安装完成
+		if isNpmHarnessReady() {
+			log.Printf("npm harness installed (pnpm reported: %v)", err)
+		} else {
+			return fmt.Errorf("安装 @deepseek-ai/dsh 失败：%w（日志：%s）", err, logPath)
+		}
 	}
 	if !isNpmHarnessReady() {
 		return fmt.Errorf("安装后未找到 dsh 入口：%s", filepath.Join(harnessDir, "node_modules", "@deepseek-ai", "dsh", "lib", "bin.js"))

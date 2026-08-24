@@ -30,6 +30,23 @@ const (
 
 var serverCmd *exec.Cmd
 
+// candidateHarnessDirs 探测候选：所有盘符的 \deepseek-harness + 用户主目录 + 默认目录。
+func candidateHarnessDirs() []string {
+	var out []string
+	for c := 'A'; c <= 'Z'; c++ {
+		root := string(c) + ":\\"
+		if _, err := os.Stat(root); err != nil {
+			continue
+		}
+		out = append(out, filepath.Join(root, "deepseek-harness"))
+	}
+	if home, err := os.UserHomeDir(); err == nil {
+		out = append(out, filepath.Join(home, "deepseek-harness"))
+	}
+	out = append(out, defaultHarnessDir())
+	return out
+}
+
 func defaultHarnessDir() string {
 	base := os.Getenv("LOCALAPPDATA")
 	if base == "" {

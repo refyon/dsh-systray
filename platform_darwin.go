@@ -21,6 +21,16 @@ const launchAgentLabel = "com.deepseek.dsh-systray"
 
 var serverCmd *exec.Cmd
 
+// candidateHarnessDirs 探测候选：用户主目录 + 默认目录。
+func candidateHarnessDirs() []string {
+	var out []string
+	if home, err := os.UserHomeDir(); err == nil {
+		out = append(out, filepath.Join(home, "deepseek-harness"))
+	}
+	out = append(out, defaultHarnessDir())
+	return out
+}
+
 func defaultHarnessDir() string {
 	home, _ := os.UserHomeDir()
 	return filepath.Join(home, "deepseek-harness")
