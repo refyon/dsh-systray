@@ -58,8 +58,6 @@ const (
 	titleY   = 22
 	titleH   = 28
 	statusY  = 54
-	statusH  = 20
-	barY     = 90
 	barH     = 6
 )
 
@@ -108,6 +106,8 @@ var (
 	splashFillHwnd   uintptr
 	splashTrackBrush uintptr
 	splashFillBrush  uintptr
+	splashStatusH    int32
+	splashBarY       int32
 )
 
 // SplashState 进度窗口控制器。
@@ -219,8 +219,19 @@ func createSplashWindow(statusText string) uintptr {
 	titleFont := makeFont(17, 600)
 	statusFont := makeFont(13, 400)
 
+	// 状态文本换行高度自适应，进度条随之下移
+	msgH := measureMultilineHeight(statusText, contentW, statusFont)
+	if msgH < 20 {
+		msgH = 20
+	}
+	if msgH > 64 {
+		msgH = 64
+	}
+	splashStatusH = int32(msgH)
+	splashBarY = int32(statusY) + splashStatusH + 14
+
 	clientW := int32(contentW + pad*2)
-	clientH := int32(barY + barH + 22)
+	clientH := splashBarY + int32(barH) + 22
 	r := rect{0, 0, clientW, clientH}
 	pAdjustWindowRectEx.Call(uintptr(unsafe.Pointer(&r)), wsCaption|wsSysMenu, 0, 0)
 	winW := r.right - r.left
@@ -268,7 +279,7 @@ func createSplashWindow(statusText string) uintptr {
 		uintptr(unsafe.Pointer(staticCls)),
 		uintptr(unsafe.Pointer(t)),
 		wsChild|wsVisible|ssCenter,
-		uintptr(pad), uintptr(statusY), uintptr(contentW), uintptr(statusH),
+		uintptr(pad), uintptr(statusY), uintptr(contentW), uintptr(splashStatusH),
 		hwnd, idStatus, moduleHandle(), 0,
 	)
 	if splashStatusHwnd != 0 {
@@ -281,7 +292,7 @@ func createSplashWindow(statusText string) uintptr {
 		uintptr(unsafe.Pointer(staticCls)),
 		0,
 		wsChild|wsVisible,
-		uintptr(pad), uintptr(barY), uintptr(contentW), uintptr(barH),
+		uintptr(pad), uintptr(splashBarY), uintptr(contentW), uintptr(barH),
 		hwnd, idTrack, moduleHandle(), 0,
 	)
 
@@ -291,7 +302,7 @@ func createSplashWindow(statusText string) uintptr {
 		uintptr(unsafe.Pointer(staticCls)),
 		0,
 		wsChild|wsVisible,
-		uintptr(pad), uintptr(barY), 0, uintptr(barH),
+		uintptr(pad), uintptr(splashBarY), 0, uintptr(barH),
 		hwnd, idFill, moduleHandle(), 0,
 	)
 
@@ -340,7 +351,7 @@ func startSplash(text string) *SplashState {
 				f = 1
 			}
 			w := uintptr(float64(contentW) * f)
-			pMoveWindow.Call(splashFillHwnd, uintptr(pad), uintptr(barY), w, uintptr(barH), 1)
+			pMoveWindow.Call(splashFillHwnd, uintptr(pad), uintptr(splashBarY), w, uintptr(barH), 1)
 		}
 	}
 	st.Close = func() {
@@ -366,9 +377,9 @@ const (
 
 	dlgPad    = 24
 	dlgW      = 380
-	dlgBtnH   = 36
-	dlgBtnW   = 110
-	dlgBtnGap = 12
+	dlgBtnH   = 30
+	dlgBtnW   = 84
+	dlgBtnGap = 16
 
 	dialogColorMsg   = 0x0080726B // #6B7280
 	dialogColorTxt   = 0x00515137 // #374151
@@ -491,7 +502,7 @@ func dialogWndProc(hwnd, uMsg, wParam, lParam uintptr) uintptr {
 		hPen, _, _ := pCreatePen.Call(psSolid, 1, dialogColorBorder)
 		oldPen, _, _ := pSelectObject.Call(hdc, hPen)
 		oldBrush, _, _ := pSelectObject.Call(hdc, fill)
-		pRoundRect.Call(hdc, uintptr(dis.rcItem.left), uintptr(dis.rcItem.top), uintptr(dis.rcItem.right), uintptr(dis.rcItem.bottom), 14, 14)
+		pRoundRect.Call(hdc, uintptr(dis.rcItem.left), uintptr(dis.rcItem.top), uintptr(dis.rcItem.right), uintptr(dis.rcItem.bottom), 8, 8)
 		pSelectObject.Call(hdc, oldBrush)
 		pSelectObject.Call(hdc, oldPen)
 		pDeleteObject.Call(hPen)
@@ -542,6 +553,21 @@ func runModernDialog(caption, message string, buttons []string, primary int) int
 	return <-resultCh
 }
 
+// measureTextWidth 计算单行文本宽度（用于弹窗宽度自适应）。
+func measureTextWidth(text string, font uintptr) int {
+	dc, _, _ := pGetDC.Call(0)
+	if dc == 0 {
+		return 20
+	}
+	defer pReleaseDC.Call(0, dc)
+	old, _, _ := pSelectObject.Call(dc, font)
+	defer pSelectObject.Call(dc, old)
+	rc := rect{0, 0, int32(dlgW), 0}
+	t, _ := syscall.UTF16PtrFromString(text)
+	pDrawTextW.Call(dc, uintptr(unsafe.Pointer(t)), ^uintptr(0), uintptr(unsafe.Pointer(&rc)), dtCalcRect|dtSingle)
+	return int(rc.right - rc.left)
+}
+
 func createDialogWindow(caption, message string) uintptr {
 	cls, _ := syscall.UTF16PtrFromString(dialogCls)
 	cb := syscall.NewCallback(dialogWndProc)
@@ -561,14 +587,23 @@ func createDialogWindow(caption, message string) uintptr {
 		dialogClassRegister = true
 	}
 
-	// 消息高度自适应
-	msgH := measureMultilineHeight(message, int(dlgW), dialogMsgFont)
+	// 宽度/高度均按文本自适应：短文本收窄，长文本按内容列宽换行
+	msgW := measureTextWidth(message, dialogMsgFont)
+	totalBtnW := len(buttonsW())*dlgBtnW + (len(buttonsW())-1)*dlgBtnGap
+	innerW := int32(dlgW)
+	needed := int32(msgW)
+	if needed < int32(totalBtnW) {
+		needed = int32(totalBtnW)
+	}
+	if needed+2*dlgPad < innerW {
+		innerW = needed
+	}
+	clientW := innerW + 2*dlgPad
+	msgH := measureMultilineHeight(message, int(innerW), dialogMsgFont)
 	if msgH < 20 {
 		msgH = 20
 	}
-	totalBtnW := len(buttonsW())*dlgBtnW + (len(buttonsW())-1)*dlgBtnGap
 	btnY := int32(dlgPad) + int32(msgH) + 18
-	clientW := int32(dlgW)
 	clientH := btnY + int32(dlgBtnH) + int32(dlgPad)
 
 	r := rect{0, 0, clientW, clientH}
@@ -605,7 +640,7 @@ func createDialogWindow(caption, message string) uintptr {
 		uintptr(unsafe.Pointer(staticCls)),
 		uintptr(unsafe.Pointer(mt)),
 		wsChild|wsVisible|ssCenter,
-		uintptr(dlgPad), uintptr(dlgPad), uintptr(dlgW), uintptr(msgH),
+		uintptr(dlgPad), uintptr(dlgPad), uintptr(innerW), uintptr(msgH),
 		hwnd, 200, moduleHandle(), 0,
 	)
 
@@ -615,7 +650,7 @@ func createDialogWindow(caption, message string) uintptr {
 	dialogGrayBrush, _, _ = pCreateSolidBrush.Call(dialogColorGray)
 	dialogGraySelBrush, _, _ = pCreateSolidBrush.Call(dialogColorGraySel)
 	btnCls, _ := syscall.UTF16PtrFromString("BUTTON")
-	btnStartX := (int32(dlgW) - int32(totalBtnW)) / 2
+	btnStartX := int32(dlgPad) + (innerW-int32(totalBtnW))/2
 	for i, label := range dialogLabels {
 		bt, _ := syscall.UTF16PtrFromString(label)
 		btnX := int32(btnStartX) + int32(i)*(dlgBtnW+dlgBtnGap)
