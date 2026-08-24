@@ -12,6 +12,8 @@ import (
 	"strconv"
 	"strings"
 	"syscall"
+
+	"github.com/getlantern/systray"
 )
 
 //go:embed scripts/install-prereqs.sh
@@ -75,6 +77,11 @@ func hideCmdWindow(cmd *exec.Cmd) {}
 func trayIconData() []byte {
 	// macOS 菜单栏需要 PNG；从 ICO 中提取最大尺寸的 PNG 条目。
 	return extractLargestPNG(iconData)
+}
+
+// setTemplateIcon macOS：菜单栏使用模板图标（自动适配深浅色）。
+func setTemplateIcon() {
+	systray.SetTemplateIcon(iconDataTemplate, extractLargestPNG(iconData))
 }
 
 func startServer() (bool, <-chan error) {

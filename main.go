@@ -265,6 +265,7 @@ func main() {
 
 func onReady() {
 	systray.SetIcon(trayIconData())
+	setTemplateIcon()
 	systray.SetTitle(appName)
 	systray.SetTooltip(appName)
 

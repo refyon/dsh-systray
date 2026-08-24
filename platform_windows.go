@@ -274,6 +274,9 @@ func trayIconData() []byte {
 	return iconData
 }
 
+// setTemplateIcon Windows 无需模板图标，占位实现。
+func setTemplateIcon() {}
+
 func startServer() (bool, <-chan error) {
 	// 防御性检查：目录必须存在，否则 cmd.Dir 指向无效目录会导致 fork 失败
 	if !isNpmHarnessReady() {

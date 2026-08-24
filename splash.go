@@ -16,20 +16,18 @@ const (
 	wmCtlColorStatic = 0x0138
 	wmSetText        = 0x000C
 
-	swShow        = 5
-	wsCaption     = 0x00C00000
-	wsSysMenu     = 0x00080000
-	wsMinimizeBox = 0x00020000
-	wsChild       = 0x40000000
-	wsVisible     = 0x10000000
-	wsTabStop     = 0x00010000
-	ssCenter      = 0x00000001
-	csHRedraw     = 0x0002
-	csVRedraw     = 0x0001
-	idcArrow      = 32512
-	colorWin      = 6 // COLOR_WINDOW + 1
-	smCX          = 0
-	smCY          = 1
+	swShow    = 5
+	wsCaption = 0x00C00000
+	wsSysMenu = 0x00080000
+	wsChild   = 0x40000000
+	wsVisible = 0x10000000
+	ssCenter  = 0x00000001
+	csHRedraw = 0x0002
+	csVRedraw = 0x0001
+	idcArrow  = 32512
+	colorWin  = 6 // COLOR_WINDOW + 1（白色窗口背景）
+	smCX      = 0
+	smCY      = 1
 
 	defaultCharset = 1
 	cleartypeQual  = 5
@@ -37,53 +35,67 @@ const (
 	bkTransparent = 1
 	whiteBrush    = 0
 
+	// DWM 圆角（Windows 11）
+	dwmcWindowCornerPreference = 33
+	dwmcRound                  = 2
+
 	// 控件 ID
-	idStatus = 10
-	idTrack  = 11
-	idFill   = 12
+	idTitle  = 10
+	idStatus = 11
+	idTrack  = 12
+	idFill   = 13
+
+	// 苹果风浅色界面令牌（COLORREF = 0xBBGGRR）
+	colorTitle  = 0x00271811 // #111827 标题近黑
+	colorStatus = 0x0080726B // #6B7280 次要灰
+	colorTrack  = 0x00EBE7E5 // #E5E7EB 轨道浅灰
+	colorFill   = 0x00FE6B4D // #4D6BFE DeepSeek 蓝
 
 	// 布局（客户区坐标）
-	pad      = 18
-	contentW = 424
-	statusY  = 16
-	statusH  = 30
-	trackY   = 64
-	trackH   = 10
-	fillY    = 66
-	fillH    = 6
+	pad      = 20
+	contentW = 380
+	titleY   = 22
+	titleH   = 28
+	statusY  = 54
+	statusH  = 20
+	barY     = 90
+	barH     = 6
 )
 
 var (
-	modUser32           = syscall.NewLazyDLL("user32.dll")
-	modKernel32         = syscall.NewLazyDLL("kernel32.dll")
-	modGdi32            = syscall.NewLazyDLL("gdi32.dll")
-	pRegisterClassExW   = modUser32.NewProc("RegisterClassExW")
-	pCreateWindowExW    = modUser32.NewProc("CreateWindowExW")
-	pDefWindowProcW     = modUser32.NewProc("DefWindowProcW")
-	pGetMessageW        = modUser32.NewProc("GetMessageW")
-	pTranslateMessage   = modUser32.NewProc("TranslateMessage")
-	pDispatchMessageW   = modUser32.NewProc("DispatchMessageW")
-	pPostQuitMessage    = modUser32.NewProc("PostQuitMessage")
-	pShowWindow         = modUser32.NewProc("ShowWindow")
-	pUpdateWindow       = modUser32.NewProc("UpdateWindow")
-	pDestroyWindow      = modUser32.NewProc("DestroyWindow")
-	pGetSystemMetrics   = modUser32.NewProc("GetSystemMetrics")
-	pLoadCursorW        = modUser32.NewProc("LoadCursorW")
-	pPostMessageW       = modUser32.NewProc("PostMessageW")
-	pSendMessageW       = modUser32.NewProc("SendMessageW")
-	pGetModuleHandleW   = modKernel32.NewProc("GetModuleHandleW")
-	pCreateFontW        = modGdi32.NewProc("CreateFontW")
-	pGetStockObject     = modGdi32.NewProc("GetStockObject")
-	pSetTextColor       = modGdi32.NewProc("SetTextColor")
-	pSetBkMode          = modGdi32.NewProc("SetBkMode")
-	pAdjustWindowRectEx = modUser32.NewProc("AdjustWindowRectEx")
-	pMoveWindow         = modUser32.NewProc("MoveWindow")
-	pCreateSolidBrush   = modGdi32.NewProc("CreateSolidBrush")
-	pDeleteObject       = modGdi32.NewProc("DeleteObject")
+	modUser32              = syscall.NewLazyDLL("user32.dll")
+	modKernel32            = syscall.NewLazyDLL("kernel32.dll")
+	modGdi32               = syscall.NewLazyDLL("gdi32.dll")
+	modDwmapi              = syscall.NewLazyDLL("dwmapi.dll")
+	pRegisterClassExW      = modUser32.NewProc("RegisterClassExW")
+	pCreateWindowExW       = modUser32.NewProc("CreateWindowExW")
+	pDefWindowProcW        = modUser32.NewProc("DefWindowProcW")
+	pGetMessageW           = modUser32.NewProc("GetMessageW")
+	pTranslateMessage      = modUser32.NewProc("TranslateMessage")
+	pDispatchMessageW      = modUser32.NewProc("DispatchMessageW")
+	pPostQuitMessage       = modUser32.NewProc("PostQuitMessage")
+	pShowWindow            = modUser32.NewProc("ShowWindow")
+	pUpdateWindow          = modUser32.NewProc("UpdateWindow")
+	pDestroyWindow         = modUser32.NewProc("DestroyWindow")
+	pGetSystemMetrics      = modUser32.NewProc("GetSystemMetrics")
+	pLoadCursorW           = modUser32.NewProc("LoadCursorW")
+	pPostMessageW          = modUser32.NewProc("PostMessageW")
+	pSendMessageW          = modUser32.NewProc("SendMessageW")
+	pGetModuleHandleW      = modKernel32.NewProc("GetModuleHandleW")
+	pCreateFontW           = modGdi32.NewProc("CreateFontW")
+	pGetStockObject        = modGdi32.NewProc("GetStockObject")
+	pSetTextColor          = modGdi32.NewProc("SetTextColor")
+	pSetBkMode             = modGdi32.NewProc("SetBkMode")
+	pAdjustWindowRectEx    = modUser32.NewProc("AdjustWindowRectEx")
+	pMoveWindow            = modUser32.NewProc("MoveWindow")
+	pCreateSolidBrush      = modGdi32.NewProc("CreateSolidBrush")
+	pDeleteObject          = modGdi32.NewProc("DeleteObject")
+	pDwmSetWindowAttribute = modDwmapi.NewProc("DwmSetWindowAttribute")
 )
 
 // 当前进度窗口的控件句柄与画刷（同一时间只有一个 splash）
 var (
+	splashTitleHwnd  uintptr
 	splashStatusHwnd uintptr
 	splashTrackHwnd  uintptr
 	splashFillHwnd   uintptr
@@ -129,10 +141,6 @@ type msg struct {
 
 func splashWndProc(hwnd, uMsg, wParam, lParam uintptr) uintptr {
 	switch uMsg {
-	case wmCommand:
-		if wParam&0xFFFF == idTrack {
-			return 0
-		}
 	case wmClose:
 		pDestroyWindow.Call(hwnd)
 		return 0
@@ -146,17 +154,22 @@ func splashWndProc(hwnd, uMsg, wParam, lParam uintptr) uintptr {
 		pPostQuitMessage.Call(0)
 		return 0
 	case wmCtlColorStatic:
-		// 进度条轨道/填充用各自画刷，状态文本用白色（与窗口一致）
 		switch lParam {
 		case splashTrackHwnd:
 			return splashTrackBrush
 		case splashFillHwnd:
 			return splashFillBrush
+		case splashTitleHwnd:
+			pSetTextColor.Call(wParam, colorTitle)
+			pSetBkMode.Call(wParam, bkTransparent)
+			h, _, _ := pGetStockObject.Call(whiteBrush)
+			return h
+		case splashStatusHwnd:
+			pSetTextColor.Call(wParam, colorStatus)
+			pSetBkMode.Call(wParam, bkTransparent)
+			h, _, _ := pGetStockObject.Call(whiteBrush)
+			return h
 		}
-		pSetTextColor.Call(wParam, 0)
-		pSetBkMode.Call(wParam, bkTransparent)
-		h, _, _ := pGetStockObject.Call(whiteBrush)
-		return h
 	}
 	ret, _, _ := pDefWindowProcW.Call(hwnd, uMsg, wParam, lParam)
 	return ret
@@ -167,13 +180,19 @@ func moduleHandle() uintptr {
 	return h
 }
 
-func splashFont() uintptr {
-	face, _ := syscall.UTF16PtrFromString("Segoe UI")
-	h, _, _ := pCreateFontW.Call(18, 0, 0, 0, 400, 0, 0, 0, defaultCharset, 0, 0, cleartypeQual, 0, uintptr(unsafe.Pointer(face)))
-	return h
+// makeFont 创建 Segoe UI 字体（height 像素、weight 400/600）。
+func makeFont(height, weight int32) uintptr {
+	face, _ := syscall.UTF16PtrFromString("Segoe UI Variable Display")
+	h, _, _ := pCreateFontW.Call(uintptr(height), 0, 0, 0, uintptr(weight), 0, 0, 0, defaultCharset, 0, 0, cleartypeQual, 0, uintptr(unsafe.Pointer(face)))
+	if h != 0 {
+		return h
+	}
+	face2, _ := syscall.UTF16PtrFromString("Segoe UI")
+	h2, _, _ := pCreateFontW.Call(uintptr(height), 0, 0, 0, uintptr(weight), 0, 0, 0, defaultCharset, 0, 0, cleartypeQual, 0, uintptr(unsafe.Pointer(face2)))
+	return h2
 }
 
-func createSplashWindow(text string) uintptr {
+func createSplashWindow(statusText string) uintptr {
 	cls, _ := syscall.UTF16PtrFromString("DSH_Systray_Splash")
 	cb := syscall.NewCallback(splashWndProc)
 	cur, _, _ := pLoadCursorW.Call(0, idcArrow)
@@ -189,14 +208,14 @@ func createSplashWindow(text string) uintptr {
 	}
 	pRegisterClassExW.Call(uintptr(unsafe.Pointer(&wc)))
 
-	title, _ := syscall.UTF16PtrFromString("DeepSeek Harness")
-	font := splashFont()
+	titleText, _ := syscall.UTF16PtrFromString("DeepSeek Harness")
+	titleFont := makeFont(17, 600)
+	statusFont := makeFont(13, 400)
 
 	clientW := int32(contentW + pad*2)
-	clientH := int32(trackY + trackH + 16)
+	clientH := int32(barY + barH + 22)
 	r := rect{0, 0, clientW, clientH}
-	pAdjustWindowRectEx.Call(uintptr(unsafe.Pointer(&r)), wsCaption|wsSysMenu|wsMinimizeBox, 0, 0)
-	// 用换算后的外框尺寸，避免客户区被边框挤压导致进度条裁切
+	pAdjustWindowRectEx.Call(uintptr(unsafe.Pointer(&r)), wsCaption|wsSysMenu, 0, 0)
 	winW := r.right - r.left
 	winH := r.bottom - r.top
 
@@ -208,8 +227,8 @@ func createSplashWindow(text string) uintptr {
 	hwnd, _, _ := pCreateWindowExW.Call(
 		0,
 		uintptr(unsafe.Pointer(cls)),
-		uintptr(unsafe.Pointer(title)),
-		wsCaption|wsSysMenu|wsMinimizeBox,
+		uintptr(unsafe.Pointer(titleText)),
+		wsCaption|wsSysMenu,
 		uintptr(x), uintptr(y), uintptr(winW), uintptr(winH),
 		0, 0, moduleHandle(), 0,
 	)
@@ -217,9 +236,26 @@ func createSplashWindow(text string) uintptr {
 		return 0
 	}
 
-	// 状态文本
+	// Windows 11 圆角窗口（旧系统忽略失败）
+	corner := uintptr(dwmcRound)
+	pDwmSetWindowAttribute.Call(hwnd, dwmcWindowCornerPreference, uintptr(unsafe.Pointer(&corner)), unsafe.Sizeof(corner))
+
+	// 标题（固定）
 	staticCls, _ := syscall.UTF16PtrFromString("STATIC")
-	t, _ := syscall.UTF16PtrFromString(text)
+	splashTitleHwnd, _, _ = pCreateWindowExW.Call(
+		0,
+		uintptr(unsafe.Pointer(staticCls)),
+		uintptr(unsafe.Pointer(titleText)),
+		wsChild|wsVisible|ssCenter,
+		uintptr(pad), uintptr(titleY), uintptr(contentW), uintptr(titleH),
+		hwnd, idTitle, moduleHandle(), 0,
+	)
+	if splashTitleHwnd != 0 {
+		pSendMessageW.Call(splashTitleHwnd, wmSetFont, titleFont, 1)
+	}
+
+	// 状态文本（随阶段更新）
+	t, _ := syscall.UTF16PtrFromString(statusText)
 	splashStatusHwnd, _, _ = pCreateWindowExW.Call(
 		0,
 		uintptr(unsafe.Pointer(staticCls)),
@@ -229,16 +265,16 @@ func createSplashWindow(text string) uintptr {
 		hwnd, idStatus, moduleHandle(), 0,
 	)
 	if splashStatusHwnd != 0 {
-		pSendMessageW.Call(splashStatusHwnd, wmSetFont, font, 1)
+		pSendMessageW.Call(splashStatusHwnd, wmSetFont, statusFont, 1)
 	}
 
-	// 进度条轨道（灰色）
+	// 进度条轨道（浅灰细条）
 	splashTrackHwnd, _, _ = pCreateWindowExW.Call(
 		0,
 		uintptr(unsafe.Pointer(staticCls)),
 		0,
 		wsChild|wsVisible,
-		uintptr(pad), uintptr(trackY), uintptr(contentW), uintptr(trackH),
+		uintptr(pad), uintptr(barY), uintptr(contentW), uintptr(barH),
 		hwnd, idTrack, moduleHandle(), 0,
 	)
 
@@ -248,19 +284,19 @@ func createSplashWindow(text string) uintptr {
 		uintptr(unsafe.Pointer(staticCls)),
 		0,
 		wsChild|wsVisible,
-		uintptr(pad), uintptr(fillY), 0, uintptr(fillH),
+		uintptr(pad), uintptr(barY), 0, uintptr(barH),
 		hwnd, idFill, moduleHandle(), 0,
 	)
 
-	splashTrackBrush, _, _ = pCreateSolidBrush.Call(0xD9D9D9)
-	splashFillBrush, _, _ = pCreateSolidBrush.Call(0xFE6B4D) // DeepSeek 蓝
+	splashTrackBrush, _, _ = pCreateSolidBrush.Call(colorTrack)
+	splashFillBrush, _, _ = pCreateSolidBrush.Call(colorFill)
 
 	pShowWindow.Call(hwnd, swShow)
 	pUpdateWindow.Call(hwnd)
 	return hwnd
 }
 
-// startSplash 显示带进度条的等待窗口，返回控制器。
+// startSplash 显示苹果风进度窗口，返回控制器。
 func startSplash(text string) *SplashState {
 	done := make(chan uintptr, 1)
 	go func() {
@@ -297,7 +333,7 @@ func startSplash(text string) *SplashState {
 				f = 1
 			}
 			w := uintptr(float64(contentW) * f)
-			pMoveWindow.Call(splashFillHwnd, uintptr(pad), uintptr(fillY), w, uintptr(fillH), 1)
+			pMoveWindow.Call(splashFillHwnd, uintptr(pad), uintptr(barY), w, uintptr(barH), 1)
 		}
 	}
 	st.Close = func() {
