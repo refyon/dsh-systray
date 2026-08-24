@@ -21,6 +21,7 @@ const (
 	wsSysMenu = 0x00080000
 	wsChild   = 0x40000000
 	wsVisible = 0x10000000
+	wsTabStop = 0x00010000
 	ssCenter  = 0x00000001
 	csHRedraw = 0x0002
 	csVRedraw = 0x0001
@@ -91,6 +92,12 @@ var (
 	pCreateSolidBrush      = modGdi32.NewProc("CreateSolidBrush")
 	pDeleteObject          = modGdi32.NewProc("DeleteObject")
 	pDwmSetWindowAttribute = modDwmapi.NewProc("DwmSetWindowAttribute")
+	pGetDC                 = modUser32.NewProc("GetDC")
+	pReleaseDC             = modUser32.NewProc("ReleaseDC")
+	pDrawTextW             = modUser32.NewProc("DrawTextW")
+	pCreatePen             = modGdi32.NewProc("CreatePen")
+	pSelectObject          = modGdi32.NewProc("SelectObject")
+	pRoundRect             = modGdi32.NewProc("RoundRect")
 )
 
 // 当前进度窗口的控件句柄与画刷（同一时间只有一个 splash）
@@ -342,4 +349,296 @@ func startSplash(text string) *SplashState {
 		}
 	}
 	return st
+}
+
+// ==================== 现代弹窗（苹果风：圆角窗口 + 圆角按钮） ====================
+const (
+	dialogCls   = "DSH_Systray_Dialog"
+	wmDrawItem  = 0x002B
+	bsOwnDraw   = 0x000B
+	odsSelected = 0x0001
+	psSolid     = 0
+	dtCenter    = 0x0001
+	dtVCenter   = 0x0004
+	dtSingle    = 0x0020
+	dtWordBreak = 0x0010
+	dtCalcRect  = 0x0400
+
+	dlgPad    = 24
+	dlgW      = 380
+	dlgBtnH   = 36
+	dlgBtnW   = 110
+	dlgBtnGap = 12
+
+	dialogColorMsg   = 0x0080726B // #6B7280
+	dialogColorTxt   = 0x00515137 // #374151
+	dialogColorWhite = 0x00FFFFFF
+	// 主/次按钮填充（COLORREF=0xBBGGRR）
+	dialogColorPrim    = 0x00FE6B4D // #4D6BFE
+	dialogColorPrimSel = 0x00E04F3A // #3A4FE0
+	dialogColorGray    = 0x00F6F4F3 // #F3F4F6
+	dialogColorGraySel = 0x00EBE7E5 // #E5E7EB
+	dialogColorBorder  = 0x00D5D1DB // #D1D5DB
+)
+
+type drawItemStruct struct {
+	ctlType    uint32
+	ctlID      uint32
+	itemID     uint32
+	itemAction uint32
+	itemState  uint32
+	hwndItem   uintptr
+	hDC        uintptr
+	rcItem     rect
+	itemData   uintptr
+}
+
+var (
+	dialogHwnd          uintptr
+	dialogButtons       []uintptr
+	dialogLabels        []string
+	dialogPrimary       int
+	dialogResult        int
+	dialogBlueBrush     uintptr
+	dialogBlueSelBrush  uintptr
+	dialogGrayBrush     uintptr
+	dialogGraySelBrush  uintptr
+	dialogMsgFont       uintptr
+	dialogClassRegister bool
+)
+
+// measureMultilineHeight 计算多行文本换行后高度。
+func measureMultilineHeight(text string, width int, font uintptr) int {
+	dc, _, _ := pGetDC.Call(0)
+	if dc == 0 {
+		return 20
+	}
+	defer pReleaseDC.Call(0, dc)
+	old, _, _ := pSelectObject.Call(dc, font)
+	defer pSelectObject.Call(dc, old)
+	rc := rect{0, 0, int32(width), 0}
+	t, _ := syscall.UTF16PtrFromString(text)
+	pDrawTextW.Call(dc, uintptr(unsafe.Pointer(t)), ^uintptr(0), uintptr(unsafe.Pointer(&rc)), dtCalcRect|dtWordBreak)
+	return int(rc.bottom - rc.top)
+}
+
+func dialogWndProc(hwnd, uMsg, wParam, lParam uintptr) uintptr {
+	switch uMsg {
+	case wmCommand:
+		id := int(wParam & 0xFFFF)
+		if id >= 1000 && id-1000 < len(dialogButtons) {
+			dialogResult = id - 1000
+			pDestroyWindow.Call(hwnd)
+			return 0
+		}
+	case wmClose:
+		dialogResult = -1
+		pDestroyWindow.Call(hwnd)
+		return 0
+	case wmDestroy:
+		if dialogBlueBrush != 0 {
+			pDeleteObject.Call(dialogBlueBrush)
+		}
+		if dialogBlueSelBrush != 0 {
+			pDeleteObject.Call(dialogBlueSelBrush)
+		}
+		if dialogGrayBrush != 0 {
+			pDeleteObject.Call(dialogGrayBrush)
+		}
+		if dialogGraySelBrush != 0 {
+			pDeleteObject.Call(dialogGraySelBrush)
+		}
+		pPostQuitMessage.Call(0)
+		return 0
+	case wmCtlColorStatic:
+		pSetTextColor.Call(wParam, dialogColorMsg)
+		pSetBkMode.Call(wParam, bkTransparent)
+		h, _, _ := pGetStockObject.Call(whiteBrush)
+		return h
+	case wmDrawItem:
+		if lParam == 0 {
+			break
+		}
+		dis := *(*drawItemStruct)(unsafe.Add(unsafe.Pointer(nil), lParam))
+		idx := -1
+		for i, h := range dialogButtons {
+			if h == dis.hwndItem {
+				idx = i
+				break
+			}
+		}
+		if idx < 0 {
+			break
+		}
+		primary := idx == dialogPrimary
+		pressed := dis.itemState&odsSelected != 0
+		var fill uintptr
+		var textColor uintptr
+		if primary {
+			fill = dialogBlueBrush
+			if pressed {
+				fill = dialogBlueSelBrush
+			}
+			textColor = dialogColorWhite
+		} else {
+			fill = dialogGrayBrush
+			if pressed {
+				fill = dialogGraySelBrush
+			}
+			textColor = dialogColorTxt
+		}
+		hdc := dis.hDC
+		hPen, _, _ := pCreatePen.Call(psSolid, 1, dialogColorBorder)
+		oldPen, _, _ := pSelectObject.Call(hdc, hPen)
+		oldBrush, _, _ := pSelectObject.Call(hdc, fill)
+		pRoundRect.Call(hdc, uintptr(dis.rcItem.left), uintptr(dis.rcItem.top), uintptr(dis.rcItem.right), uintptr(dis.rcItem.bottom), 14, 14)
+		pSelectObject.Call(hdc, oldBrush)
+		pSelectObject.Call(hdc, oldPen)
+		pDeleteObject.Call(hPen)
+		pSetTextColor.Call(hdc, textColor)
+		pSetBkMode.Call(hdc, bkTransparent)
+		label, _ := syscall.UTF16PtrFromString(dialogLabels[idx])
+		pDrawTextW.Call(hdc, uintptr(unsafe.Pointer(label)), ^uintptr(0), uintptr(unsafe.Pointer(&dis.rcItem)), dtCenter|dtVCenter|dtSingle)
+		return 1
+	}
+	ret, _, _ := pDefWindowProcW.Call(hwnd, uMsg, wParam, lParam)
+	return ret
+}
+
+// runModernDialog 显示现代弹窗，返回被点按钮索引（-1=关闭）。
+func runModernDialog(caption, message string, buttons []string, primary int) int {
+	if len(buttons) == 0 {
+		buttons = []string{"确定"}
+	}
+	if primary < 0 || primary >= len(buttons) {
+		primary = 0
+	}
+	dialogLabels = buttons
+	dialogPrimary = primary
+	dialogButtons = nil
+	dialogResult = -1
+	dialogMsgFont = makeFont(13, 400)
+
+	resultCh := make(chan int, 1)
+	go func() {
+		runtime.LockOSThread()
+		defer runtime.UnlockOSThread()
+		hwnd := createDialogWindow(caption, message)
+		if hwnd == 0 {
+			resultCh <- -1
+			return
+		}
+		for {
+			var m msg
+			ret, _, _ := pGetMessageW.Call(uintptr(unsafe.Pointer(&m)), 0, 0, 0)
+			if int32(ret) <= 0 {
+				break
+			}
+			pTranslateMessage.Call(uintptr(unsafe.Pointer(&m)))
+			pDispatchMessageW.Call(uintptr(unsafe.Pointer(&m)))
+		}
+		resultCh <- dialogResult
+	}()
+	return <-resultCh
+}
+
+func createDialogWindow(caption, message string) uintptr {
+	cls, _ := syscall.UTF16PtrFromString(dialogCls)
+	cb := syscall.NewCallback(dialogWndProc)
+	cur, _, _ := pLoadCursorW.Call(0, idcArrow)
+
+	if !dialogClassRegister {
+		wc := wndClassExW{
+			cbSize:        uint32(unsafe.Sizeof(wndClassExW{})),
+			style:         csHRedraw | csVRedraw,
+			lpfnWndProc:   cb,
+			hInstance:     moduleHandle(),
+			hCursor:       cur,
+			hbrBackground: colorWin,
+			lpszClassName: cls,
+		}
+		pRegisterClassExW.Call(uintptr(unsafe.Pointer(&wc)))
+		dialogClassRegister = true
+	}
+
+	// 消息高度自适应
+	msgH := measureMultilineHeight(message, int(dlgW), dialogMsgFont)
+	if msgH < 20 {
+		msgH = 20
+	}
+	totalBtnW := len(buttonsW())*dlgBtnW + (len(buttonsW())-1)*dlgBtnGap
+	btnY := int32(dlgPad) + int32(msgH) + 18
+	clientW := int32(dlgW)
+	clientH := btnY + int32(dlgBtnH) + int32(dlgPad)
+
+	r := rect{0, 0, clientW, clientH}
+	pAdjustWindowRectEx.Call(uintptr(unsafe.Pointer(&r)), wsCaption|wsSysMenu, 0, 0)
+	winW := r.right - r.left
+	winH := r.bottom - r.top
+
+	sw, _, _ := pGetSystemMetrics.Call(smCX)
+	sh, _, _ := pGetSystemMetrics.Call(smCY)
+	x := (int32(sw) - winW) / 2
+	y := (int32(sh) - winH) / 2
+
+	capPtr, _ := syscall.UTF16PtrFromString(caption)
+	hwnd, _, _ := pCreateWindowExW.Call(
+		0,
+		uintptr(unsafe.Pointer(cls)),
+		uintptr(unsafe.Pointer(capPtr)),
+		wsCaption|wsSysMenu,
+		uintptr(x), uintptr(y), uintptr(winW), uintptr(winH),
+		0, 0, moduleHandle(), 0,
+	)
+	if hwnd == 0 {
+		return 0
+	}
+	dialogHwnd = hwnd
+	corner := uintptr(dwmcRound)
+	pDwmSetWindowAttribute.Call(hwnd, dwmcWindowCornerPreference, uintptr(unsafe.Pointer(&corner)), unsafe.Sizeof(corner))
+
+	// 消息文本
+	staticCls, _ := syscall.UTF16PtrFromString("STATIC")
+	mt, _ := syscall.UTF16PtrFromString(message)
+	pCreateWindowExW.Call(
+		0,
+		uintptr(unsafe.Pointer(staticCls)),
+		uintptr(unsafe.Pointer(mt)),
+		wsChild|wsVisible|ssCenter,
+		uintptr(dlgPad), uintptr(dlgPad), uintptr(dlgW), uintptr(msgH),
+		hwnd, 200, moduleHandle(), 0,
+	)
+
+	// 圆角按钮（自绘）
+	dialogBlueBrush, _, _ = pCreateSolidBrush.Call(dialogColorPrim)
+	dialogBlueSelBrush, _, _ = pCreateSolidBrush.Call(dialogColorPrimSel)
+	dialogGrayBrush, _, _ = pCreateSolidBrush.Call(dialogColorGray)
+	dialogGraySelBrush, _, _ = pCreateSolidBrush.Call(dialogColorGraySel)
+	btnCls, _ := syscall.UTF16PtrFromString("BUTTON")
+	btnStartX := (int32(dlgW) - int32(totalBtnW)) / 2
+	for i, label := range dialogLabels {
+		bt, _ := syscall.UTF16PtrFromString(label)
+		btnX := int32(btnStartX) + int32(i)*(dlgBtnW+dlgBtnGap)
+		hb, _, _ := pCreateWindowExW.Call(
+			0,
+			uintptr(unsafe.Pointer(btnCls)),
+			uintptr(unsafe.Pointer(bt)),
+			wsChild|wsVisible|wsTabStop|bsOwnDraw,
+			uintptr(btnX), uintptr(btnY), uintptr(dlgBtnW), uintptr(dlgBtnH),
+			hwnd, uintptr(1000+i), moduleHandle(), 0,
+		)
+		dialogButtons = append(dialogButtons, hb)
+	}
+
+	pShowWindow.Call(hwnd, swShow)
+	pUpdateWindow.Call(hwnd)
+	return hwnd
+}
+
+// buttonsW 兼容旧调用：未初始化时返回固定 1。
+func buttonsW() []string {
+	if len(dialogLabels) == 0 {
+		return []string{"确定"}
+	}
+	return dialogLabels
 }

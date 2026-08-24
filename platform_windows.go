@@ -449,12 +449,12 @@ func messageBoxResult(text, caption string, flags uintptr) uintptr {
 }
 
 func showMessageBox(text, caption string) {
-	messageBoxResult(text, caption, 0x00000010) // MB_ICONERROR
+	runModernDialog(caption, text, []string{"确定"}, 0)
 }
 
 func showReadyPrompt(url string) {
-	ret := messageBoxResult("DeepSeek Harness 服务已就绪。\n是否立即打开 Web UI？", appName, 0x00000004|0x00000040|0x00010000|0x00040000)
-	if ret == 6 { // IDYES
+	ret := runModernDialog(appName, "DeepSeek Harness 服务已就绪。\n是否立即打开 Web UI？", []string{"打开", "取消"}, 0)
+	if ret == 0 {
 		openBrowser(url)
 	}
 }
