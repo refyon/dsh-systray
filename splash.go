@@ -221,12 +221,13 @@ func createSplashWindow(statusText string) uintptr {
 
 	// 状态文本换行高度自适应，进度条随之下移
 	msgH := measureMultilineHeight(statusText, contentW, statusFont)
-	if msgH < 20 {
-		msgH = 20
+	if msgH < 24 {
+		msgH = 24
 	}
 	if msgH > 64 {
 		msgH = 64
 	}
+	msgH += 4
 	splashStatusH = int32(msgH)
 	splashBarY = int32(statusY) + splashStatusH + 14
 
@@ -591,19 +592,22 @@ func createDialogWindow(caption, message string) uintptr {
 	msgW := measureTextWidth(message, dialogMsgFont)
 	totalBtnW := len(buttonsW())*dlgBtnW + (len(buttonsW())-1)*dlgBtnGap
 	innerW := int32(dlgW)
-	needed := int32(msgW)
+	// 宽度头部余量，避免文本贴着控件边缘被强迫换行而裁切
+	needed := int32(msgW) + 28
 	if needed < int32(totalBtnW) {
 		needed = int32(totalBtnW)
 	}
-	if needed+2*dlgPad < innerW {
+	if needed < innerW {
 		innerW = needed
 	}
 	clientW := innerW + 2*dlgPad
 	msgH := measureMultilineHeight(message, int(innerW), dialogMsgFont)
-	if msgH < 20 {
-		msgH = 20
+	if msgH < 22 {
+		msgH = 22
 	}
-	btnY := int32(dlgPad) + int32(msgH) + 18
+	// 高度余量：容纳多行文本的 descender 与偶发多一行
+	msgH += 10
+	btnY := int32(dlgPad) + int32(msgH) + 14
 	clientH := btnY + int32(dlgBtnH) + int32(dlgPad)
 
 	r := rect{0, 0, clientW, clientH}
