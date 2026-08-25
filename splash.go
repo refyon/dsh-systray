@@ -35,6 +35,7 @@ const (
 	cleartypeQual  = 5
 
 	bkTransparent = 1
+	bkOpaque      = 0
 	whiteBrush    = 0
 
 	// DWM 圆角（Windows 11）
@@ -49,6 +50,7 @@ const (
 
 	// 单色冷灰令牌（COLORREF = 0xBBGGRR，与图标配色一致）
 	colorTitle  = 0x00242120 // #202124 标题近黑
+	colorWhite  = 0x00FFFFFF
 	colorStatus = 0x0068635F // #5F6368 次要灰
 	colorTrack  = 0x00EDEAE8 // #E8EAED 轨道浅灰
 	colorFill   = 0x00FE6B4D // #4D6BFE 进度填充品牌蓝
@@ -86,6 +88,7 @@ var (
 	pGetStockObject        = modGdi32.NewProc("GetStockObject")
 	pSetTextColor          = modGdi32.NewProc("SetTextColor")
 	pSetBkMode             = modGdi32.NewProc("SetBkMode")
+	pSetBkColor            = modGdi32.NewProc("SetBkColor")
 	pAdjustWindowRectEx    = modUser32.NewProc("AdjustWindowRectEx")
 	pMoveWindow            = modUser32.NewProc("MoveWindow")
 	pCreateSolidBrush      = modGdi32.NewProc("CreateSolidBrush")
@@ -170,12 +173,14 @@ func splashWndProc(hwnd, uMsg, wParam, lParam uintptr) uintptr {
 			return splashFillBrush
 		case splashTitleHwnd:
 			pSetTextColor.Call(wParam, colorTitle)
-			pSetBkMode.Call(wParam, bkTransparent)
+			pSetBkColor.Call(wParam, colorWhite)
+			pSetBkMode.Call(wParam, bkOpaque)
 			h, _, _ := pGetStockObject.Call(whiteBrush)
 			return h
 		case splashStatusHwnd:
 			pSetTextColor.Call(wParam, colorStatus)
-			pSetBkMode.Call(wParam, bkTransparent)
+			pSetBkColor.Call(wParam, colorWhite)
+			pSetBkMode.Call(wParam, bkOpaque)
 			h, _, _ := pGetStockObject.Call(whiteBrush)
 			return h
 		}
@@ -442,6 +447,7 @@ var (
 	dialogGrayBrush     uintptr
 	dialogGraySelBrush  uintptr
 	dialogMsgFont       uintptr
+	dialogBtnFont       uintptr
 	dialogClassRegister bool
 )
 
@@ -490,7 +496,8 @@ func dialogWndProc(hwnd, uMsg, wParam, lParam uintptr) uintptr {
 		return 0
 	case wmCtlColorStatic:
 		pSetTextColor.Call(wParam, dialogColorMsg)
-		pSetBkMode.Call(wParam, bkTransparent)
+		pSetBkColor.Call(wParam, colorWhite)
+		pSetBkMode.Call(wParam, bkOpaque) // ClearType 子像素渲染（网页级）
 		h, _, _ := pGetStockObject.Call(whiteBrush)
 		return h
 	case wmDrawItem:
@@ -529,12 +536,17 @@ func dialogWndProc(hwnd, uMsg, wParam, lParam uintptr) uintptr {
 		hPen, _, _ := pCreatePen.Call(psSolid, 1, dialogColorBorder)
 		oldPen, _, _ := pSelectObject.Call(hdc, hPen)
 		oldBrush, _, _ := pSelectObject.Call(hdc, fill)
-		pRoundRect.Call(hdc, uintptr(dis.rcItem.left), uintptr(dis.rcItem.top), uintptr(dis.rcItem.right), uintptr(dis.rcItem.bottom), 8, 8)
+		// 胶囊圆角（rx=ry=高度一半，与网站 border-radius:999px 一致）
+		capR := int32(dlgBtnH / 2)
+		pRoundRect.Call(hdc, uintptr(dis.rcItem.left), uintptr(dis.rcItem.top), uintptr(dis.rcItem.right), uintptr(dis.rcItem.bottom), uintptr(capR), uintptr(capR))
 		pSelectObject.Call(hdc, oldBrush)
 		pSelectObject.Call(hdc, oldPen)
 		pDeleteObject.Call(hPen)
 		pSetTextColor.Call(hdc, textColor)
 		pSetBkMode.Call(hdc, bkTransparent)
+		if dialogBtnFont != 0 {
+			pSelectObject.Call(hdc, dialogBtnFont)
+		}
 		label, _ := syscall.UTF16PtrFromString(dialogLabels[idx])
 		pDrawTextW.Call(hdc, uintptr(unsafe.Pointer(label)), ^uintptr(0), uintptr(unsafe.Pointer(&dis.rcItem)), dtCenter|dtVCenter|dtSingle)
 		return 1
@@ -556,6 +568,7 @@ func runModernDialog(caption, message string, buttons []string, primary int) int
 	dialogButtons = nil
 	dialogResult = -1
 	dialogMsgFont = makeFont(13, 400)
+	dialogBtnFont = makeFont(13, 600)
 
 	resultCh := make(chan int, 1)
 	go func() {
@@ -662,10 +675,10 @@ func createDialogWindow(caption, message string) uintptr {
 	corner := uintptr(dwmcRound)
 	pDwmSetWindowAttribute.Call(hwnd, dwmcWindowCornerPreference, uintptr(unsafe.Pointer(&corner)), unsafe.Sizeof(corner))
 
-	// 消息文本
+	// 消息文本（应用与网站一致的字体）
 	staticCls, _ := syscall.UTF16PtrFromString("STATIC")
 	mt, _ := syscall.UTF16PtrFromString(message)
-	pCreateWindowExW.Call(
+	msgHwnd, _, _ := pCreateWindowExW.Call(
 		0,
 		uintptr(unsafe.Pointer(staticCls)),
 		uintptr(unsafe.Pointer(mt)),
@@ -673,6 +686,9 @@ func createDialogWindow(caption, message string) uintptr {
 		uintptr(dlgPad), uintptr(dlgPad), uintptr(innerW), uintptr(msgH),
 		hwnd, 200, moduleHandle(), 0,
 	)
+	if msgHwnd != 0 {
+		pSendMessageW.Call(msgHwnd, wmSetFont, dialogMsgFont, 1)
+	}
 
 	// 圆角按钮（自绘）
 	dialogBlueBrush, _, _ = pCreateSolidBrush.Call(dialogColorPrim)
@@ -692,6 +708,9 @@ func createDialogWindow(caption, message string) uintptr {
 			uintptr(btnX), uintptr(btnY), uintptr(dlgBtnW), uintptr(dlgBtnH),
 			hwnd, uintptr(1000+i), moduleHandle(), 0,
 		)
+		if hb != 0 {
+			pSendMessageW.Call(hb, wmSetFont, dialogBtnFont, 1)
+		}
 		dialogButtons = append(dialogButtons, hb)
 	}
 
