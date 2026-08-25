@@ -34,20 +34,21 @@ const whaleBlack = whaleBase.replace('<path', '<path fill="#000000"')
 // ---- 主图标（Windows 托盘）：拟物键盘按键（深灰键帽 + 顶部微高光）+ DeepSeek 经典蓝鲸 ----
 const keyGradient = '<defs>' +
   '<linearGradient id="key" x1="0" y1="0" x2="0" y2="50" gradientUnits="userSpaceOnUse">' +
-  '<stop offset="0" stop-color="#3E3E42"/>' +
-  '<stop offset="1" stop-color="#232327"/>' +
+  '<stop offset="0" stop-color="#262626"/>' +
+  '<stop offset="1" stop-color="#1C1C1B"/>' +
   '</linearGradient>' +
   '<linearGradient id="keytop" x1="0" y1="0" x2="0" y2="50" gradientUnits="userSpaceOnUse">' +
-  '<stop offset="0" stop-color="#FFFFFF" stop-opacity="0.10"/>' +
-  '<stop offset="0.35" stop-color="#FFFFFF" stop-opacity="0"/>' +
+  '<stop offset="0" stop-color="#FFFFFF" stop-opacity="0.06"/>' +
+  '<stop offset="0.30" stop-color="#FFFFFF" stop-opacity="0"/>' +
   '</linearGradient>' +
   '<linearGradient id="whale" x1="0" y1="0" x2="0" y2="50" gradientUnits="userSpaceOnUse">' +
-  '<stop offset="0" stop-color="#6E8BFF"/>' +
-  '<stop offset="1" stop-color="#3A4FE0"/>' +
+  '<stop offset="0" stop-color="#FFFFFF"/>' +
+  '<stop offset="1" stop-color="#E4E4E2"/>' +
   '</linearGradient>' +
   '</defs>'
-const keycap = '<rect x="0.75" y="0.75" width="48.5" height="48.5" rx="10" fill="url(#key)"/>' +
-  '<rect x="0.75" y="0.75" width="48.5" height="48.5" rx="10" fill="url(#keytop)"/>'
+const keycap = '<rect x="0.75" y="0.75" width="48.5" height="48.5" rx="11.5" fill="url(#key)"/>' +
+  '<rect x="0.9" y="0.9" width="48.2" height="48.2" rx="11.2" fill="none" stroke="#FFFFFF" stroke-opacity="0.07" stroke-width="1"/>' +
+  '<rect x="0.75" y="0.75" width="48.5" height="48.5" rx="11.5" fill="url(#keytop)"/>'
 // 鲸鱼缩小至 86% 并居中，留出苹果式呼吸边距（whaleWhite/whaleBlack 见上）
 const mainSvg = '<svg xmlns="http://www.w3.org/2000/svg" width="50" height="50" viewBox="0 0 50 50">' + keyGradient + keycap + whaleKey + '</g></svg>'
 
