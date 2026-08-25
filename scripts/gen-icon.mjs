@@ -33,36 +33,31 @@ const whaleBlack = whaleBase.replace('<path', '<path fill="#000000"')
 
 // ---- 主图标（Windows 托盘）：拟物键盘按键（深灰键帽 + 顶部微高光）+ DeepSeek 经典蓝鲸 ----
 // ---- 主图标（Windows 托盘）：拟物 macOS 文件夹（深灰渐变 + 纸张条 + 软阴影 + 浅灰鲸鱼） ----
-const folderDefs = '<defs>' +
+// ---- 主图标（Windows 托盘）：参考文件夹配色/高光/阴影的圆角方块 + 居中浅灰鲸鱼 ----
+const sqDefs = '<defs>' +
   '<linearGradient id="front" x1="0" y1="0" x2="0" y2="50" gradientUnits="userSpaceOnUse">' +
   '<stop offset="0" stop-color="#5A5A5A"/>' +
   '<stop offset="1" stop-color="#3E3E3E"/>' +
   '</linearGradient>' +
-  '<linearGradient id="tab" x1="0" y1="0" x2="0" y2="50" gradientUnits="userSpaceOnUse">' +
-  '<stop offset="0" stop-color="#434343"/>' +
-  '<stop offset="1" stop-color="#303030"/>' +
-  '</linearGradient>' +
-  '<linearGradient id="paper" x1="0" y1="0" x2="0" y2="50" gradientUnits="userSpaceOnUse">' +
-  '<stop offset="0" stop-color="#DEDEDE"/>' +
-  '<stop offset="1" stop-color="#C8C8C8"/>' +
+  '<linearGradient id="sheen" x1="0" y1="0" x2="0" y2="50" gradientUnits="userSpaceOnUse">' +
+  '<stop offset="0" stop-color="#FFFFFF" stop-opacity="0.08"/>' +
+  '<stop offset="0.35" stop-color="#FFFFFF" stop-opacity="0"/>' +
   '</linearGradient>' +
   '<linearGradient id="whale" x1="0" y1="0" x2="0" y2="50" gradientUnits="userSpaceOnUse">' +
-  '<stop offset="0" stop-color="#E8E8E8"/>' +
-  '<stop offset="1" stop-color="#C4C4C4"/>' +
+  '<stop offset="0" stop-color="#E9E9E9"/>' +
+  '<stop offset="1" stop-color="#C3C3C3"/>' +
   '</linearGradient>' +
   '<filter id="sh" x="-25%" y="-25%" width="150%" height="150%">' +
   '<feGaussianBlur stdDeviation="1.8"/>' +
   '</filter>' +
   '</defs>'
-const folderShape =
-  '<rect x="8" y="21" width="37.5" height="27.5" rx="7" fill="#000000" opacity="0.25" filter="url(#sh)"/>' +
-  '<rect x="6" y="10" width="38" height="34" rx="6.5" fill="url(#tab)"/>' +
-  '<rect x="8.5" y="28" width="33" height="11" rx="3.2" fill="url(#paper)"/>' +
-  '<rect x="6" y="34" width="38" height="15" rx="5.2" fill="url(#front)"/>' +
-  '<rect x="6" y="47" width="38" height="2.2" rx="1.1" fill="#2A2A2A"/>'
-// 鲸鱼：缩至 26% 居中放在前板上（参考图 Logo 比例）
-const whaleFolder = whaleClean.replace('<path id="path"', '<g transform="translate(17.4 33.9) scale(0.30)"><path fill="url(#whale)"')
-const mainSvg = '<svg xmlns="http://www.w3.org/2000/svg" width="50" height="50" viewBox="0 0 50 50">' + folderDefs + folderShape + whaleFolder + '</g></svg>'
+const sqShape =
+  '<rect x="5" y="6.5" width="40" height="40" rx="11.5" fill="#000000" opacity="0.22" filter="url(#sh)"/>' +
+  '<rect x="4.5" y="4.5" width="41" height="41" rx="11.5" fill="url(#front)"/>' +
+  '<rect x="4.9" y="4.9" width="40.2" height="40.2" rx="11.2" fill="none" stroke="#FFFFFF" stroke-opacity="0.08" stroke-width="1"/>' +
+  '<rect x="4.5" y="4.5" width="41" height="41" rx="11.5" fill="url(#sheen)"/>'
+const whaleC = whaleClean.replace('<path id="path"', '<g transform="translate(11.25 11.25) scale(0.55)"><path fill="url(#whale)"')
+const mainSvg = '<svg xmlns="http://www.w3.org/2000/svg" width="50" height="50" viewBox="0 0 50 50">' + sqDefs + sqShape + whaleC + '</g></svg>'
 
 // ---- 模板图标（macOS 菜单栏）：纯黑鲸鱼、透明背景 ----
 const templateSvg = '<svg xmlns="http://www.w3.org/2000/svg" width="50" height="50" viewBox="0 0 50 50">' + whaleBlack + '</g></svg>'
