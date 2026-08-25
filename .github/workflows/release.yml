@@ -68,23 +68,23 @@ jobs:
             mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
             cp dist/dsh-systray "$APP/Contents/MacOS/dsh-systray"
             cat > "$APP/Contents/Info.plist" <<PLIST
-            <?xml version="1.0" encoding="UTF-8"?>
-            <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-            <plist version="1.0">
-            <dict>
-            	<key>CFBundleName</key><string>dsh-systray</string>
-            	<key>CFBundleDisplayName</key><string>dsh-systray</string>
-            	<key>CFBundleIdentifier</key><string>com.deepseek.dsh-systray</string>
-            	<key>CFBundlePackageType</key><string>APPL</string>
-            	<key>CFBundleIconFile</key><string>AppIcon</string>
-            	<key>CFBundleExecutable</key><string>dsh-systray</string>
-            	<key>CFBundleShortVersionString</key><string>${VERSION}</string>
-            	<key>CFBundleVersion</key><string>${VERSION}</string>
-            	<key>LSMinimumSystemVersion</key><string>11.0</string>
-            	<key>NSHighResolutionCapable</key><true/>
-            </dict>
-            </plist>
-            PLIST
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+          	<key>CFBundleName</key><string>dsh-systray</string>
+          	<key>CFBundleDisplayName</key><string>dsh-systray</string>
+          	<key>CFBundleIdentifier</key><string>com.deepseek.dsh-systray</string>
+          	<key>CFBundlePackageType</key><string>APPL</string>
+          	<key>CFBundleIconFile</key><string>AppIcon</string>
+          	<key>CFBundleExecutable</key><string>dsh-systray</string>
+          	<key>CFBundleShortVersionString</key><string>${VERSION}</string>
+          	<key>CFBundleVersion</key><string>${VERSION}</string>
+          	<key>LSMinimumSystemVersion</key><string>11.0</string>
+          	<key>NSHighResolutionCapable</key><true/>
+          </dict>
+          </plist>
+          PLIST
             mkdir -p "$APP/Contents/Resources/AppIcon.iconset"
             for s in 16 32 128 256 512; do
               sips -z $s $s app-icon.png --out "$APP/Contents/Resources/AppIcon.iconset/icon_${s}x${s}.png" >/dev/null
@@ -93,9 +93,8 @@ jobs:
             done
             iconutil -c icns "$APP/Contents/Resources/AppIcon.iconset" -o "$APP/Contents/Resources/AppIcon.icns"
             rm -rf "$APP/Contents/Resources/AppIcon.iconset"
-                        zip -r "${{ matrix.artifact }}" "$APP"
+            zip -r "${{ matrix.artifact }}" "$APP"
           fi
-
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
