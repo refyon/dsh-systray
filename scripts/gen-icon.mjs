@@ -45,8 +45,8 @@ const sqDefs = '<defs>' +
   '<stop offset="0.35" stop-color="#FFFFFF" stop-opacity="0"/>' +
   '</linearGradient>' +
   '<linearGradient id="whale" x1="0" y1="0" x2="0" y2="50" gradientUnits="userSpaceOnUse">' +
-  '<stop offset="0" stop-color="#6E8BFF"/>' +
-  '<stop offset="1" stop-color="#3A4FE0"/>' +
+  '<stop offset="0" stop-color="#E9E9E9"/>' +
+  '<stop offset="1" stop-color="#C3C3C3"/>' +
   '</linearGradient>' +
   '<filter id="sh" x="-25%" y="-25%" width="150%" height="150%">' +
   '<feGaussianBlur stdDeviation="1.8"/>' +
@@ -123,6 +123,11 @@ const go =
 
 const out = process.argv[2] ? resolve(process.argv[2]) : join(__dirname, '..', 'icon_gen.go')
 writeFileSync(out, go)
+
+// 可执行文件图标资源（Windows .exe 用 .ico；macOS .icns 由 1024px PNG 转）
+writeFileSync(join(dirname(out), 'icon.ico'), ico)
+const appIcon = await sharp(Buffer.from(mainSvg), { density: 384 }).resize(1024, 1024).png().toBuffer()
+writeFileSync(join(dirname(out), 'app-icon.png'), appIcon)
 
 // 预览图（便于肉眼检查）
 const preview = await sharp(Buffer.from(mainSvg), { density: 384 }).resize(256, 256).png().toBuffer()
