@@ -4,6 +4,7 @@ package main
 
 import (
 	"runtime"
+	"strings"
 	"syscall"
 	"unsafe"
 )
@@ -93,6 +94,7 @@ var (
 	pGetDC                 = modUser32.NewProc("GetDC")
 	pReleaseDC             = modUser32.NewProc("ReleaseDC")
 	pDrawTextW             = modUser32.NewProc("DrawTextW")
+	pGetTextFaceW          = modGdi32.NewProc("GetTextFaceW")
 	pCreatePen             = modGdi32.NewProc("CreatePen")
 	pSelectObject          = modGdi32.NewProc("SelectObject")
 	pRoundRect             = modGdi32.NewProc("RoundRect")
@@ -188,15 +190,39 @@ func moduleHandle() uintptr {
 }
 
 // makeFont 创建 Segoe UI 字体（height 像素、weight 400/600）。
-func makeFont(height, weight int32) uintptr {
-	face, _ := syscall.UTF16PtrFromString("Segoe UI Variable Display")
-	h, _, _ := pCreateFontW.Call(uintptr(height), 0, 0, 0, uintptr(weight), 0, 0, 0, defaultCharset, 0, 0, cleartypeQual, 0, uintptr(unsafe.Pointer(face)))
-	if h != 0 {
-		return h
+// fontCandidates 与网站 CSS 字体栈一致：Google Sans → Product Sans → Roboto → Segoe UI
+var fontCandidates = []string{"Google Sans", "Product Sans", "Roboto", "Segoe UI"}
+
+func selectedFace() string {
+	for _, name := range fontCandidates {
+		face, _ := syscall.UTF16PtrFromString(name)
+		h, _, _ := pCreateFontW.Call(20, 0, 0, 0, 400, 0, 0, 0, defaultCharset, 0, 0, cleartypeQual, 0, uintptr(unsafe.Pointer(face)))
+		if h == 0 {
+			continue
+		}
+		dc, _, _ := pGetDC.Call(0)
+		if dc == 0 {
+			pDeleteObject.Call(h)
+			continue
+		}
+		old, _, _ := pSelectObject.Call(dc, h)
+		var buf [64]uint16
+		n, _, _ := pGetTextFaceW.Call(dc, 64, uintptr(unsafe.Pointer(&buf[0])))
+		pSelectObject.Call(dc, old)
+		pReleaseDC.Call(0, dc)
+		pDeleteObject.Call(h)
+		if n > 0 && strings.EqualFold(syscall.UTF16ToString(buf[:n]), name) {
+			return name
+		}
 	}
-	face2, _ := syscall.UTF16PtrFromString("Segoe UI")
-	h2, _, _ := pCreateFontW.Call(uintptr(height), 0, 0, 0, uintptr(weight), 0, 0, 0, defaultCharset, 0, 0, cleartypeQual, 0, uintptr(unsafe.Pointer(face2)))
-	return h2
+	return "Microsoft YaHei UI"
+}
+
+// makeFont 创建与网站同源的字体（height 像素、weight 400/600）。
+func makeFont(height, weight int32) uintptr {
+	face, _ := syscall.UTF16PtrFromString(selectedFace())
+	h, _, _ := pCreateFontW.Call(uintptr(height), 0, 0, 0, uintptr(weight), 0, 0, 0, defaultCharset, 0, 0, cleartypeQual, 0, uintptr(unsafe.Pointer(face)))
+	return h
 }
 
 func createSplashWindow(statusText string) uintptr {
