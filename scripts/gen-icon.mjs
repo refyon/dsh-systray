@@ -29,7 +29,8 @@ if (!whaleMatch) throw new Error('whale path not found')
 const whaleClean = whaleMatch[0].replace(/\sfill="[^"]*"/g, '').replace(/\sfill-opacity="[^"]*"/g, '')
 const whaleBase = whaleClean.replace('<path id="path"', '<g transform="translate(3.5 3.5) scale(0.86)"><path')
 const whaleKey = whaleBase.replace('<path', '<path fill="url(#whale)"')
-const whaleBlack = whaleBase.replace('<path', '<path fill="#000000"')
+// 模板鲸鱼：居中 60%（与主图标同款居中比例，适配 macOS 菜单栏）
+const whaleBlack = whaleClean.replace('<path id="path"', '<g transform="translate(10 10) scale(0.60)"><path fill="#000000"')
 
 // ---- 主图标（Windows 托盘）：拟物键盘按键（深灰键帽 + 顶部微高光）+ DeepSeek 经典蓝鲸 ----
 // ---- 主图标（Windows 托盘）：拟物 macOS 文件夹（深灰渐变 + 纸张条 + 软阴影 + 浅灰鲸鱼） ----
