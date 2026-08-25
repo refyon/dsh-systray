@@ -30,6 +30,7 @@ var (
 	port               int
 	startupTimeout     time.Duration
 	quitting           atomic.Bool
+	keepServerRunning  atomic.Bool
 	harnessDirExplicit bool
 )
 
@@ -286,6 +287,12 @@ func onReady() {
 			case <-mAuto.ClickedCh:
 				toggleAutostart(mAuto)
 			case <-mQuit.ClickedCh:
+				// 退出前询问是否停止后台 Web 服务：0=停止并退出 1=保留服务 -1=取消退出
+				choice := askStopServer()
+				if choice < 0 {
+					return
+				}
+				keepServerRunning.Store(choice == 1)
 				systray.Quit()
 				return
 			}
@@ -295,7 +302,11 @@ func onReady() {
 
 func onExit() {
 	quitting.Store(true)
-	killServer()
+	if !keepServerRunning.Load() {
+		killServer()
+	} else {
+		log.Printf("quit with backend server kept running")
+	}
 	log.Printf("tray exiting")
 }
 

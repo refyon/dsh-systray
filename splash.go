@@ -3,6 +3,7 @@
 package main
 
 import (
+	"math"
 	"runtime"
 	"strings"
 	"syscall"
@@ -58,9 +59,9 @@ const (
 	// 布局（客户区坐标）
 	pad      = 20
 	contentW = 380
-	titleY   = 22
-	titleH   = 28
-	statusY  = 54
+	titleY   = 18
+	titleH   = 30
+	statusY  = 56
 	barH     = 6
 )
 
@@ -94,13 +95,28 @@ var (
 	pCreateSolidBrush      = modGdi32.NewProc("CreateSolidBrush")
 	pDeleteObject          = modGdi32.NewProc("DeleteObject")
 	pDwmSetWindowAttribute = modDwmapi.NewProc("DwmSetWindowAttribute")
-	pGetDC                 = modUser32.NewProc("GetDC")
-	pReleaseDC             = modUser32.NewProc("ReleaseDC")
-	pDrawTextW             = modUser32.NewProc("DrawTextW")
-	pGetTextFaceW          = modGdi32.NewProc("GetTextFaceW")
-	pCreatePen             = modGdi32.NewProc("CreatePen")
-	pSelectObject          = modGdi32.NewProc("SelectObject")
-	pRoundRect             = modGdi32.NewProc("RoundRect")
+	// GDI+（抗锯齿绘图）
+	modGdiplus    = syscall.NewLazyDLL("gdiplus.dll")
+	gpStartup     = modGdiplus.NewProc("GdiplusStartup")
+	gpShutdown    = modGdiplus.NewProc("GdiplusShutdown")
+	gpFromHDC     = modGdiplus.NewProc("GdipCreateFromHDC")
+	gpDelGraphics = modGdiplus.NewProc("GdipDeleteGraphics")
+	gpSmooth      = modGdiplus.NewProc("GdipSetSmoothingMode")
+	gpCreatePath  = modGdiplus.NewProc("GdipCreatePath")
+	gpDelPath     = modGdiplus.NewProc("GdipDeletePath")
+	gpAddArc      = modGdiplus.NewProc("GdipAddPathArc")
+	gpCloseFig    = modGdiplus.NewProc("GdipClosePathFigure")
+	gpCreateSolid = modGdiplus.NewProc("GdipCreateSolidFill")
+	gpDelBrush    = modGdiplus.NewProc("GdipDeleteBrush")
+	gpFillPath    = modGdiplus.NewProc("GdipFillPath")
+	pGetDC        = modUser32.NewProc("GetDC")
+	pReleaseDC    = modUser32.NewProc("ReleaseDC")
+	pDrawTextW    = modUser32.NewProc("DrawTextW")
+	pGetTextFaceW = modGdi32.NewProc("GetTextFaceW")
+	pFillRect     = modUser32.NewProc("FillRect")
+	pCreatePen    = modGdi32.NewProc("CreatePen")
+	pSelectObject = modGdi32.NewProc("SelectObject")
+	pRoundRect    = modGdi32.NewProc("RoundRect")
 )
 
 // 当前进度窗口的控件句柄与画刷（同一时间只有一个 splash）
@@ -247,23 +263,23 @@ func createSplashWindow(statusText string) uintptr {
 	pRegisterClassExW.Call(uintptr(unsafe.Pointer(&wc)))
 
 	titleText, _ := syscall.UTF16PtrFromString("DeepSeek Harness")
-	titleFont := makeFont(17, 600)
-	statusFont := makeFont(13, 400)
+	titleFont := makeFont(18, 600)
+	statusFont := makeFont(14, 400)
 
 	// 状态文本换行高度自适应，进度条随之下移
 	msgH := measureMultilineHeight(statusText, contentW, statusFont)
-	if msgH < 24 {
-		msgH = 24
+	if msgH < 22 {
+		msgH = 22
 	}
 	if msgH > 64 {
 		msgH = 64
 	}
-	msgH += 4
+	msgH += 2
 	splashStatusH = int32(msgH)
-	splashBarY = int32(statusY) + splashStatusH + 14
+	splashBarY = int32(statusY) + splashStatusH + 10
 
 	clientW := int32(contentW + pad*2)
-	clientH := splashBarY + int32(barH) + 22
+	clientH := splashBarY + int32(barH) + 16
 	r := rect{0, 0, clientW, clientH}
 	pAdjustWindowRectEx.Call(uintptr(unsafe.Pointer(&r)), wsCaption|wsSysMenu, 0, 0)
 	winW := r.right - r.left
@@ -407,7 +423,7 @@ const (
 	dtWordBreak = 0x0010
 	dtCalcRect  = 0x0400
 
-	dlgPad    = 24
+	dlgPad    = 20
 	dlgW      = 380
 	dlgBtnH   = 30
 	dlgBtnW   = 84
@@ -466,6 +482,78 @@ func measureMultilineHeight(text string, width int, font uintptr) int {
 	return int(rc.bottom - rc.top)
 }
 
+var (
+	gdiplusToken uintptr
+	gdiplusReady bool
+)
+
+// fb 把 float32 转成 GDI+ 需要的 REAL 参数。
+func fb(f float32) uintptr { return uintptr(math.Float32bits(f)) }
+
+// ensureGdiplus 一次性启动 GDI+。
+func ensureGdiplus() bool {
+	if gdiplusReady {
+		return true
+	}
+	input := struct {
+		gdiplusVersion           uint32
+		debugEventCallback       uintptr
+		suppressBackgroundThread uint32
+		suppressExternalCodecs   uint32
+	}{1, 0, 0, 0}
+	if ret, _, _ := gpStartup.Call(uintptr(unsafe.Pointer(&gdiplusToken)), uintptr(unsafe.Pointer(&input)), 0); ret != 0 {
+		return false
+	}
+	gdiplusReady = true
+	return true
+}
+
+// fillRoundedRectAA 用 GDI+ 抗锯齿绘制圆角矩形（r 上限为高度一半）。
+func fillRoundedRectAA(hdc uintptr, rc rect, radius int32, argb uint32) {
+	if !ensureGdiplus() {
+		return
+	}
+	var g uintptr
+	if gpFromHDC.Call(hdc, uintptr(unsafe.Pointer(&g))); g == 0 {
+		return
+	}
+	defer gpDelGraphics.Call(g)
+	gpSmooth.Call(g, 2) // SmoothingModeAntiAlias
+
+	w := rc.right - rc.left
+	h := rc.bottom - rc.top
+	r := radius
+	if r > h/2 {
+		r = h / 2
+	}
+	if r < 1 {
+		r = 1
+	}
+	var path uintptr
+	if gpCreatePath.Call(0, uintptr(unsafe.Pointer(&path))); path == 0 {
+		return
+	}
+	defer gpDelPath.Call(path)
+	d := 2 * r
+	gpAddArc.Call(path, fb(float32(rc.left)), fb(float32(rc.top)), fb(float32(d)), fb(float32(d)), fb(180), fb(90))
+	gpAddArc.Call(path, fb(float32(rc.left+w-d)), fb(float32(rc.top)), fb(float32(d)), fb(float32(d)), fb(270), fb(90))
+	gpAddArc.Call(path, fb(float32(rc.left+w-d)), fb(float32(rc.top+h-d)), fb(float32(d)), fb(float32(d)), fb(0), fb(90))
+	gpAddArc.Call(path, fb(float32(rc.left)), fb(float32(rc.top+h-d)), fb(float32(d)), fb(float32(d)), fb(90), fb(90))
+	gpCloseFig.Call(path)
+
+	var brush uintptr
+	if gpCreateSolid.Call(uintptr(argb), uintptr(unsafe.Pointer(&brush))); brush == 0 {
+		return
+	}
+	defer gpDelBrush.Call(brush)
+	gpFillPath.Call(g, brush, path)
+}
+
+// colorRefToARGB 把 COLORREF（0xBBGGRR）转为 ARGB。
+func colorRefToARGB(c uintptr) uint32 {
+	return 0xFF000000 | uint32((c&0xFF)<<16) | uint32(c&0xFF00) | uint32((c&0xFF0000)>>16)
+}
+
 func dialogWndProc(hwnd, uMsg, wParam, lParam uintptr) uintptr {
 	switch uMsg {
 	case wmCommand:
@@ -515,33 +603,32 @@ func dialogWndProc(hwnd, uMsg, wParam, lParam uintptr) uintptr {
 		if idx < 0 {
 			break
 		}
+		// 蓝色填充胶囊按钮（GDI+ 抗锯齿）+ 文字背景色 = 按钮填充色（无任何色差）
 		primary := idx == dialogPrimary
 		pressed := dis.itemState&odsSelected != 0
-		var fill uintptr
+		var fillColor uintptr
 		var textColor uintptr
 		if primary {
-			fill = dialogBlueBrush
+			fillColor = dialogColorPrim
 			if pressed {
-				fill = dialogBlueSelBrush
+				fillColor = dialogColorPrimSel
 			}
 			textColor = dialogColorWhite
 		} else {
-			fill = dialogGrayBrush
+			fillColor = dialogColorGray
 			if pressed {
-				fill = dialogGraySelBrush
+				fillColor = dialogColorGraySel
 			}
 			textColor = dialogColorTxt
 		}
 		hdc := dis.hDC
-		hPen, _, _ := pCreatePen.Call(psSolid, 1, dialogColorBorder)
-		oldPen, _, _ := pSelectObject.Call(hdc, hPen)
-		oldBrush, _, _ := pSelectObject.Call(hdc, fill)
-		// 胶囊圆角（rx=ry=高度一半，与网站 border-radius:999px 一致）
-		capR := int32(dlgBtnH / 2)
-		pRoundRect.Call(hdc, uintptr(dis.rcItem.left), uintptr(dis.rcItem.top), uintptr(dis.rcItem.right), uintptr(dis.rcItem.bottom), uintptr(capR), uintptr(capR))
-		pSelectObject.Call(hdc, oldBrush)
-		pSelectObject.Call(hdc, oldPen)
-		pDeleteObject.Call(hPen)
+		// 铺上与窗口背景一致的白色底，覆盖按钮控件自带的默认底色（消除圆角外色差）
+		if wb, _, _ := pGetStockObject.Call(whiteBrush); wb != 0 {
+			pFillRect.Call(hdc, uintptr(unsafe.Pointer(&dis.rcItem)), wb)
+		}
+		// 抗锯齿胶囊填充（圆角 20，上限高度一半）
+		fillRoundedRectAA(hdc, dis.rcItem, 20, colorRefToARGB(fillColor))
+		// 文字：透明背景绘制——文字背后直接就是按钮填充色，零色差且不会产生方形角块
 		pSetTextColor.Call(hdc, textColor)
 		pSetBkMode.Call(hdc, bkTransparent)
 		if dialogBtnFont != 0 {
@@ -567,8 +654,8 @@ func runModernDialog(caption, message string, buttons []string, primary int) int
 	dialogPrimary = primary
 	dialogButtons = nil
 	dialogResult = -1
-	dialogMsgFont = makeFont(13, 400)
-	dialogBtnFont = makeFont(13, 600)
+	dialogMsgFont = makeFont(14, 400)
+	dialogBtnFont = makeFont(14, 600)
 
 	resultCh := make(chan int, 1)
 	go func() {
@@ -641,12 +728,12 @@ func createDialogWindow(caption, message string) uintptr {
 	}
 	clientW := innerW + 2*dlgPad
 	msgH := measureMultilineHeight(message, int(innerW), dialogMsgFont)
-	if msgH < 22 {
-		msgH = 22
+	if msgH < 20 {
+		msgH = 20
 	}
-	// 高度余量：容纳多行文本的 descender 与偶发多一行
-	msgH += 10
-	btnY := int32(dlgPad) + int32(msgH) + 14
+	// 高度余量：容纳 descender 与偶发多一行
+	msgH += 6
+	btnY := int32(dlgPad) + int32(msgH) + 12
 	clientH := btnY + int32(dlgBtnH) + int32(dlgPad)
 
 	r := rect{0, 0, clientW, clientH}

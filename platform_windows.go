@@ -452,6 +452,11 @@ func showMessageBox(text, caption string) {
 	runModernDialog(caption, text, []string{"确定"}, 0)
 }
 
+// askStopServer 退出前询问是否停止后台 Web 服务：0=停止并退出，1=保留服务，-1=取消退出。
+func askStopServer() int {
+	return runModernDialog(appName, "是否停止后台 Web 服务？\n\n「确定」将停止服务并退出；\n「保留后台服务」仅关闭托盘，服务继续运行。", []string{"确定", "保留后台服务"}, 0)
+}
+
 func showReadyPrompt(url string) {
 	ret := runModernDialog(appName, "DeepSeek Harness 服务已就绪。\n是否立即打开 Web UI？", []string{"打开", "取消"}, 0)
 	if ret == 0 {

@@ -263,6 +263,23 @@ func showMessageBox(text, caption string) {
 	_, _ = runAppleScript(script)
 }
 
+// askStopServer 退出前询问是否停止后台 Web 服务：0=停止并退出，1=保留服务，-1=取消退出。
+func askStopServer() int {
+	script := fmt.Sprintf(`display dialog "%s" with title "%s" buttons {"确定", "保留后台服务"} default button "确定"`,
+		escapeAppleScript("是否停止后台 Web 服务？确定将停止服务并退出；保留后台服务仅关闭托盘，服务继续运行。"), appName)
+	out, err := runAppleScript(script)
+	if err != nil {
+		return -1
+	}
+	if strings.Contains(out, "确定") {
+		return 0
+	}
+	if strings.Contains(out, "保留后台服务") {
+		return 1
+	}
+	return -1
+}
+
 func showReadyPrompt(url string) {
 	script := fmt.Sprintf(`display dialog "%s" with title "%s" buttons {"打开", "取消"} default button "打开"`, escapeAppleScript("DeepSeek Harness 服务已就绪。是否立即打开 Web UI？"), appName)
 	out, err := runAppleScript(script)
