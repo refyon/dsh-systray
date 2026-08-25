@@ -290,7 +290,7 @@ func onReady() {
 				// 退出前询问是否停止后台 Web 服务：0=停止并退出 1=保留服务 -1=取消退出
 				choice := askStopServer()
 				if choice < 0 {
-					return
+					continue // 取消退出：菜单事件循环继续，托盘保持可用
 				}
 				keepServerRunning.Store(choice == 1)
 				systray.Quit()
