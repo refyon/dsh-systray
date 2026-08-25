@@ -28,24 +28,28 @@ if (!whaleMatch) throw new Error('whale path not found')
 // 去掉自带 fill（避免重复属性导致 XML 解析失败），并按用途分别填充
 const whaleClean = whaleMatch[0].replace(/\sfill="[^"]*"/g, '').replace(/\sfill-opacity="[^"]*"/g, '')
 const whaleBase = whaleClean.replace('<path id="path"', '<g transform="translate(3.5 3.5) scale(0.86)"><path')
-const whaleWhite = whaleBase.replace('<path', '<path fill="#FFFFFF"')
+const whaleKey = whaleBase.replace('<path', '<path fill="url(#whale)"')
 const whaleBlack = whaleBase.replace('<path', '<path fill="#000000"')
 
-// ---- 主图标（Windows 托盘）：苹果风 squircle + DeepSeek 蓝渐变 + 白色鲸鱼 + 顶部高光 ----
-const bgGradient = '<defs>' +
-  '<linearGradient id="bg" x1="0" y1="0" x2="0" y2="50" gradientUnits="userSpaceOnUse">' +
+// ---- 主图标（Windows 托盘）：拟物键盘按键（深灰键帽 + 顶部微高光）+ DeepSeek 经典蓝鲸 ----
+const keyGradient = '<defs>' +
+  '<linearGradient id="key" x1="0" y1="0" x2="0" y2="50" gradientUnits="userSpaceOnUse">' +
+  '<stop offset="0" stop-color="#3E3E42"/>' +
+  '<stop offset="1" stop-color="#232327"/>' +
+  '</linearGradient>' +
+  '<linearGradient id="keytop" x1="0" y1="0" x2="0" y2="50" gradientUnits="userSpaceOnUse">' +
+  '<stop offset="0" stop-color="#FFFFFF" stop-opacity="0.10"/>' +
+  '<stop offset="0.35" stop-color="#FFFFFF" stop-opacity="0"/>' +
+  '</linearGradient>' +
+  '<linearGradient id="whale" x1="0" y1="0" x2="0" y2="50" gradientUnits="userSpaceOnUse">' +
   '<stop offset="0" stop-color="#6E8BFF"/>' +
   '<stop offset="1" stop-color="#3A4FE0"/>' +
   '</linearGradient>' +
-  '<radialGradient id="hl" cx="0.5" cy="0.05" r="1.1" gradientUnits="objectBoundingBox">' +
-  '<stop offset="0" stop-color="#FFFFFF" stop-opacity="0.32"/>' +
-  '<stop offset="1" stop-color="#FFFFFF" stop-opacity="0"/>' +
-  '</radialGradient>' +
   '</defs>'
-const squircle = '<rect x="0.5" y="0.5" width="49" height="49" rx="11.5" fill="url(#bg)"/>' +
-  '<rect x="0.5" y="0.5" width="49" height="49" rx="11.5" fill="url(#hl)"/>'
+const keycap = '<rect x="0.75" y="0.75" width="48.5" height="48.5" rx="10" fill="url(#key)"/>' +
+  '<rect x="0.75" y="0.75" width="48.5" height="48.5" rx="10" fill="url(#keytop)"/>'
 // 鲸鱼缩小至 86% 并居中，留出苹果式呼吸边距（whaleWhite/whaleBlack 见上）
-const mainSvg = '<svg xmlns="http://www.w3.org/2000/svg" width="50" height="50" viewBox="0 0 50 50">' + bgGradient + squircle + whaleWhite + '</g></svg>'
+const mainSvg = '<svg xmlns="http://www.w3.org/2000/svg" width="50" height="50" viewBox="0 0 50 50">' + keyGradient + keycap + whaleKey + '</g></svg>'
 
 // ---- 模板图标（macOS 菜单栏）：纯黑鲸鱼、透明背景 ----
 const templateSvg = '<svg xmlns="http://www.w3.org/2000/svg" width="50" height="50" viewBox="0 0 50 50">' + whaleBlack + '</g></svg>'
