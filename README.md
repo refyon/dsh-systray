@@ -1,6 +1,6 @@
 # dsh-systray
 
-Windows / macOS 托盘应用：双击后后台启动 DeepSeek Harness Web 本地服务器（不显示窗口），并在系统托盘显示白底黑鲸鱼图标。
+Windows / macOS 托盘应用：双击后后台启动 DeepSeek Harness Web 本地服务器，并在系统托盘显示白底黑鲸鱼图标。
 
 ## 功能
 
@@ -40,9 +40,6 @@ Windows / macOS 托盘应用：双击后后台启动 DeepSeek Harness Web 本地
 | --- | --- |
 | Windows | `go build -trimpath -ldflags '-s -w -H=windowsgui' -o dist\dsh-systray.exe .` |
 | macOS | `CGO_ENABLED=1 go build -o dist/dsh-systray .` |
-
-> macOS 的托盘依赖 Cocoa（cgo），需在 macOS 上构建，无法从 Windows 交叉编译。
-> Windows 也可直接运行 `scripts\build.ps1`。
 
 ## 平台差异
 
