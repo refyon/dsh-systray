@@ -45,8 +45,8 @@ const sqDefs = '<defs>' +
   '<stop offset="0.35" stop-color="#FFFFFF" stop-opacity="0"/>' +
   '</linearGradient>' +
   '<linearGradient id="whale" x1="0" y1="0" x2="0" y2="50" gradientUnits="userSpaceOnUse">' +
-  '<stop offset="0" stop-color="#E9E9E9"/>' +
-  '<stop offset="1" stop-color="#C3C3C3"/>' +
+  '<stop offset="0" stop-color="#6E8BFF"/>' +
+  '<stop offset="1" stop-color="#3A4FE0"/>' +
   '</linearGradient>' +
   '<filter id="sh" x="-25%" y="-25%" width="150%" height="150%">' +
   '<feGaussianBlur stdDeviation="1.8"/>' +

@@ -50,7 +50,7 @@ const (
 	colorTitle  = 0x00242120 // #202124 标题近黑
 	colorStatus = 0x0068635F // #5F6368 次要灰
 	colorTrack  = 0x00EDEAE8 // #E8EAED 轨道浅灰
-	colorFill   = 0x004A4A4A // #4A4A4A 进度填充炭灰
+	colorFill   = 0x00FE6B4D // #4D6BFE 进度填充品牌蓝
 
 	// 布局（客户区坐标）
 	pad      = 20
@@ -386,8 +386,8 @@ const (
 	dialogColorTxt   = 0x00242120 // #202124
 	dialogColorWhite = 0x00FFFFFF
 	// 主/次按钮填充（COLORREF=0xBBGGRR）
-	dialogColorPrim    = 0x004F4F4F // #4F4F4F 主按钮炭灰（与图标一致）
-	dialogColorPrimSel = 0x003A3A3A // #3A3A3A 按压加深
+	dialogColorPrim    = 0x00FE6B4D // #4D6BFE 主按钮品牌蓝
+	dialogColorPrimSel = 0x00E04F3A // #3A4FE0 按压加深
 	dialogColorGray    = 0x00F6F4F3 // #F3F4F6
 	dialogColorGraySel = 0x00EBE7E5 // #E5E7EB
 	dialogColorBorder  = 0x00D5D1DB // #D1D5DB
