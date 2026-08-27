@@ -1,6 +1,6 @@
 # dsh-systray
 
-Windows / macOS 托盘应用：双击后后台启动 DeepSeek Harness Web 本地服务器，并在系统托盘显示白底黑鲸鱼图标。
+Windows / macOS 托盘应用：双击后后台启动 DeepSeek Harness Web 本地服务器，并在系统托盘显示鲸鱼图标（随系统主题自动切换深/浅配色）。
 
 ## 功能
 
@@ -11,6 +11,7 @@ Windows / macOS 托盘应用：双击后后台启动 DeepSeek Harness Web 本地
   - **开机自启动**：可开关，启用时显示打勾（写入系统登录自启动项）
   - **退出**：关闭后台服务器进程树（含外部启动的 dsh web 服务）并退出托盘
 - 单实例：已在运行时再次双击会弹窗提示「已在运行中」，不产生第二个托盘图标
+- 启动自更新：启动时检查 GitHub Release 最新版本，发现新版本弹窗询问；确认后自动下载新版本、替换 exe 并以新版本重启（仅 Windows；dev 构建跳过检查；下载失败或用户取消则继续正常启动）
 - 依赖自检：启动时检查 node / pnpm / harness 源码，缺失时运行内置安装脚本（含 `git clone` 拉取 harness 源码）
 
 ## 配置
@@ -38,8 +39,10 @@ Windows / macOS 托盘应用：双击后后台启动 DeepSeek Harness Web 本地
 
 | 平台 | 构建命令 |
 | --- | --- |
-| Windows | `go build -trimpath -ldflags '-s -w -H=windowsgui' -o dist\dsh-systray.exe .` |
-| macOS | `CGO_ENABLED=1 go build -o dist/dsh-systray .` |
+| Windows | `go build -trimpath -ldflags '-s -w -H=windowsgui -X main.version=vX.Y.Z' -o dist\dsh-systray.exe .` |
+| macOS | `CGO_ENABLED=1 go build -ldflags "-X main.version=vX.Y.Z" -o dist/dsh-systray .` |
+
+版本号通过 `-X main.version` 注入：`scripts/build.ps1` 自动取最近 git 标签，CI 打 `v*` 标签时注入标签名；未注入时为 `dev`（跳过自更新检查，避免开发构建误提示升级）。
 
 ## 平台差异
 
@@ -51,6 +54,7 @@ Windows / macOS 托盘应用：双击后后台启动 DeepSeek Harness Web 本地
 | 退出杀外部服务 | `netstat` + `taskkill` | `lsof` + `SIGTERM` |
 | 提示方式 | MessageBox | `osascript` 通知/弹窗 |
 | loading 界面 | 原生 Win32 窗口 | 系统通知 |
+| 自更新 | 启动检查 Release，确认后下载并自替换重启 | 暂不支持（跳过检查） |
 
 ## 运行与日志
 
@@ -63,4 +67,4 @@ Windows / macOS 托盘应用：双击后后台启动 DeepSeek Harness Web 本地
 
 - 服务器启动依赖 **Node.js + pnpm + harness 源码**。缺 node/pnpm 时会尝试自动安装（需授权）；缺 harness 源码时会自动 `git clone https://github.com/deepseek-ai/deepseek-harness.git`（分支 master）到默认目录并执行 `pnpm install`。
 - `dsh web` 需要已构建的前端产物；若首次启动报错，先在 harness 目录执行一次 `pnpm install` 和 `pnpm run build`。
-- 托盘图标为白底黑鲸鱼，任何主题下都清晰可见；已内嵌在 `icon_gen.go`（由 `scripts\gen-icon.mjs` 生成），无需每次构建重新生成。
+- 托盘图标为鲸鱼图形：浅色任务栏用深色鲸鱼、深色任务栏用浅色鲸鱼，启动即适配当前主题，并通过 `RegNotifyChangeKeyValue` 监听主题变化实时切换；已内嵌在 `icon_gen.go`（由 `scripts\gen-icon.mjs` 生成，纯 Node 零依赖），无需每次构建重新生成。
