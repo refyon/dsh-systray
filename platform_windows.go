@@ -17,6 +17,8 @@ import (
 	"syscall"
 	"time"
 	"unsafe"
+
+	"github.com/getlantern/systray"
 )
 
 //go:embed scripts/install-prereqs.ps1
@@ -26,6 +28,8 @@ const (
 	registryPath = `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`
 	registryName = `DeepSeekHarness`
 	mutexName    = `Local\dsh-systray-single-instance`
+	// registryPersonalizeKey 系统主题个性化键：SystemUsesLightTheme=1 浅色任务栏，0 深色任务栏。
+	registryPersonalizeKey = `Software\Microsoft\Windows\CurrentVersion\Themes\Personalize`
 )
 
 var serverCmd *exec.Cmd
@@ -271,11 +275,106 @@ func pickHarnessDir(title, initial string) string {
 }
 
 func trayIconData() []byte {
+	// 启动即适配当前主题：浅色任务栏用深色鲸鱼，深色任务栏用浅色鲸鱼。
+	if taskbarLight() {
+		return iconDataDark
+	}
 	return iconData
 }
 
 // setTemplateIcon Windows 无需模板图标，占位实现。
 func setTemplateIcon() {}
+
+// startIconThemeWatch 监听系统主题变化（RegNotifyChangeKeyValue 事件驱动），
+// 主题翻转时切换托盘图标配色（浅色任务栏 ↔ 深色任务栏）。
+func startIconThemeWatch() {
+	go func() {
+		for {
+			if !waitThemeChange(3 * time.Second) {
+				// 通知失败或超时：短暂退避后重试，避免热循环。
+				time.Sleep(3 * time.Second)
+				continue
+			}
+			systray.SetIcon(trayIconData())
+		}
+	}()
+}
+
+// themeDWORD 读取主题注册表 DWORD 值；读取失败返回 (0, false)。
+func themeDWORD(name string) (uint32, bool) {
+	modAdvapi := syscall.NewLazyDLL("advapi32.dll")
+	regOpenKeyEx := modAdvapi.NewProc("RegOpenKeyExW")
+	regQueryValueEx := modAdvapi.NewProc("RegQueryValueExW")
+	regCloseKey := modAdvapi.NewProc("RegCloseKey")
+
+	subKey, _ := syscall.UTF16PtrFromString(registryPersonalizeKey)
+	var hkey uintptr
+	ret, _, _ := regOpenKeyEx.Call(uintptr(syscall.HKEY_CURRENT_USER), uintptr(unsafe.Pointer(subKey)), 0, 0x0001 /* KEY_QUERY_VALUE */, uintptr(unsafe.Pointer(&hkey)))
+	if ret != 0 {
+		return 0, false
+	}
+	defer regCloseKey.Call(hkey)
+
+	valueName, _ := syscall.UTF16PtrFromString(name)
+	var data uint32
+	var size uint32 = 4
+	ret, _, _ = regQueryValueEx.Call(hkey, uintptr(unsafe.Pointer(valueName)), 0, 0, uintptr(unsafe.Pointer(&data)), uintptr(unsafe.Pointer(&size)))
+	if ret != 0 {
+		return 0, false
+	}
+	return data, true
+}
+
+// taskbarLight 判断任务栏是否为浅色：优先 SystemUsesLightTheme，失败回退 AppsUseLightTheme；仍失败默认浅色。
+func taskbarLight() bool {
+	if v, ok := themeDWORD("SystemUsesLightTheme"); ok {
+		return v == 1
+	}
+	if v, ok := themeDWORD("AppsUseLightTheme"); ok {
+		return v == 1
+	}
+	return true
+}
+
+// waitThemeChange 阻塞等待主题相关注册表值变化（异步通知 + 事件 + 超时）；
+// 返回 true 表示检测到变化（主题可能已翻转）。
+func waitThemeChange(timeout time.Duration) bool {
+	modAdvapi := syscall.NewLazyDLL("advapi32.dll")
+	modKernel := syscall.NewLazyDLL("kernel32.dll")
+	regOpenKeyEx := modAdvapi.NewProc("RegOpenKeyExW")
+	regNotify := modAdvapi.NewProc("RegNotifyChangeKeyValue")
+	regCloseKey := modAdvapi.NewProc("RegCloseKey")
+	createEvent := modKernel.NewProc("CreateEventW")
+	waitForSingleObject := modKernel.NewProc("WaitForSingleObject")
+	closeHandle := modKernel.NewProc("CloseHandle")
+
+	subKey, _ := syscall.UTF16PtrFromString(registryPersonalizeKey)
+	var hkey uintptr
+	const keyNotify = 0x0010 // KEY_NOTIFY
+	ret, _, _ := regOpenKeyEx.Call(uintptr(syscall.HKEY_CURRENT_USER), uintptr(unsafe.Pointer(subKey)), 0, keyNotify, uintptr(unsafe.Pointer(&hkey)))
+	if ret != 0 {
+		return false
+	}
+	defer regCloseKey.Call(hkey)
+
+	evt, _, _ := createEvent.Call(0, 0, 0, 0)
+	if evt == 0 {
+		return false
+	}
+	defer closeHandle.Call(evt)
+
+	const regNotifyChangeLastSet = 0x00000004
+	ret, _, _ = regNotify.Call(hkey, 0, regNotifyChangeLastSet, evt, 1) // fAsynchronous=TRUE
+	if ret != 0 {
+		return false
+	}
+	ms := uintptr(timeout / time.Millisecond)
+	if ms <= 0 {
+		ms = 3000
+	}
+	waitRet, _, _ := waitForSingleObject.Call(evt, ms)
+	return waitRet == 0 // WAIT_OBJECT_0：事件已触发
+}
 
 func startServer() (bool, <-chan error) {
 	// 防御性检查：目录必须存在，否则 cmd.Dir 指向无效目录会导致 fork 失败

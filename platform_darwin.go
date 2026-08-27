@@ -84,6 +84,9 @@ func setTemplateIcon() {
 	systray.SetTemplateIcon(iconDataTemplate, extractLargestPNG(iconData))
 }
 
+// startIconThemeWatch macOS：菜单栏模板图标由系统自动适配深浅色，无需监听主题。
+func startIconThemeWatch() {}
+
 func startServer() (bool, <-chan error) {
 	// 防御性检查：目录必须存在，否则 cmd.Dir 指向无效目录会导致 fork 失败
 	if !isNpmHarnessReady() {

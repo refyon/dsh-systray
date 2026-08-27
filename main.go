@@ -170,7 +170,7 @@ func main() {
 		}
 	}
 
-	// 未显式配置时：自动探测已存在的 harness 源码 checkout（如 I:\deepseek-harness），避免重复安装
+	// 未显式配置时：自动探测已存在的 harness 源码 checkout（如各盘符根目录下的 deepseek-harness），避免重复安装
 	if !harnessDirExplicit {
 		if found := findExistingHarnessDir(); found != "" {
 			harnessDir = found
@@ -267,6 +267,7 @@ func main() {
 func onReady() {
 	systray.SetIcon(trayIconData())
 	setTemplateIcon()
+	startIconThemeWatch()
 	systray.SetTitle(appName)
 	systray.SetTooltip(appName)
 

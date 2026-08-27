@@ -1,88 +1,188 @@
-import { readFileSync, writeFileSync, existsSync } from 'node:fs'
+// scripts/gen-icon.mjs — 图标生成：纯 Node、零外部依赖（不依赖外部 SVG / sharp）。
+//
+// 输入：icon_gen.go 中已嵌入的浅色鲸鱼 ICO（iconDataB64）与 macOS 模板 PNG（iconTemplateB64）。
+// 输出：icon_gen.go（浅色 + 深色双主题 ICO + 模板 PNG）、icon.ico、preview-dark.png。
+// 用法：node scripts/gen-icon.mjs [输出路径]
+
+import { readFileSync, writeFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { dirname, join, resolve } from 'node:path'
-import { createRequire } from 'node:module'
+import { deflateSync, inflateSync } from 'node:zlib'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
-const svgPath = 'I:/deepseek-harness/apps/web/public/favicon.svg'
-const sharpEntry = 'I:/deepseek-harness/node_modules/.pnpm/sharp@0.35.3_@types+node@22.20.0/node_modules/sharp/dist/index.cjs'
+const root = join(__dirname, '..')
 
-function loadSharp() {
-  const req = createRequire(import.meta.url)
-  for (const t of ['sharp', sharpEntry]) {
-    try { return req(t) } catch { /* try next */ }
+// ---- 从现有 icon_gen.go 提取已嵌入的图标数据（主 ICO + 模板 PNG） ----
+const genPath = join(root, 'icon_gen.go')
+const genSrc = readFileSync(genPath, 'utf8')
+function extractConst(name) {
+  const marker = 'const ' + name + ' = `'
+  const start = genSrc.indexOf(marker)
+  if (start < 0) throw new Error(name + ' not found in icon_gen.go')
+  const b64Start = start + marker.length
+  const end = genSrc.indexOf('`', b64Start)
+  if (end < 0) throw new Error(name + ' unterminated in icon_gen.go')
+  return genSrc.slice(b64Start, end)
+}
+const icoLight = Buffer.from(extractConst('iconDataB64'), 'base64')
+const template = Buffer.from(extractConst('iconTemplateB64'), 'base64')
+
+// ---- 纯 Node PNG 编解码（zlib deflate/inflate，无 sharp 依赖） ----
+const CRC_TABLE = (() => {
+  const t = new Int32Array(256)
+  for (let n = 0; n < 256; n++) {
+    let c = n
+    for (let k = 0; k < 8; k++) c = c & 1 ? 0xEDB88320 ^ (c >>> 1) : c >>> 1
+    t[n] = c
   }
-  throw new Error('sharp not found; tried sharp / ' + sharpEntry)
+  return t
+})()
+function crc32(buf) {
+  let c = 0xFFFFFFFF
+  for (let i = 0; i < buf.length; i++) c = CRC_TABLE[(c ^ buf[i]) & 0xFF] ^ (c >>> 8)
+  return (c ^ 0xFFFFFFFF) >>> 0
+}
+function chunk(type, data) {
+  const len = Buffer.alloc(4)
+  len.writeUInt32BE(data.length)
+  const t = Buffer.from(type, 'ascii')
+  const crc = Buffer.alloc(4)
+  crc.writeUInt32BE(crc32(Buffer.concat([t, data])))
+  return Buffer.concat([len, t, data, crc])
+}
+function encodePNG(width, height, rgba) {
+  const stride = width * 4
+  const raw = Buffer.alloc((stride + 1) * height)
+  for (let y = 0; y < height; y++) {
+    raw[y * (stride + 1)] = 0
+    rgba.copy(raw, y * (stride + 1) + 1, y * stride, (y + 1) * stride)
+  }
+  const ihdr = Buffer.alloc(13)
+  ihdr.writeUInt32BE(width, 0)
+  ihdr.writeUInt32BE(height, 4)
+  ihdr[8] = 8
+  ihdr[9] = 6 // RGBA
+  const sig = Buffer.from([0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A])
+  return Buffer.concat([sig, chunk('IHDR', ihdr), chunk('IDAT', deflateSync(raw, { level: 9 })), chunk('IEND', Buffer.alloc(0))])
+}
+function decodePNG(buf) {
+  if (buf.length < 8 || buf.readUInt32BE(0) !== 0x89504E47) throw new Error('not a png')
+  let width = 0
+  let height = 0
+  let bit = 0
+  let color = 0
+  const idat = []
+  let off = 8
+  while (off + 8 <= buf.length) {
+    const len = buf.readUInt32BE(off)
+    const type = buf.toString('ascii', off + 4, off + 8)
+    const data = buf.subarray(off + 8, off + 8 + len)
+    if (type === 'IHDR') {
+      width = data.readUInt32BE(0)
+      height = data.readUInt32BE(4)
+      bit = data[8]
+      color = data[9]
+    } else if (type === 'IDAT') {
+      idat.push(data)
+    } else if (type === 'IEND') {
+      break
+    }
+    off += 12 + len
+  }
+  if (bit !== 8 || color !== 6) throw new Error('unsupported png bit=' + bit + ' color=' + color)
+  const raw = inflateSync(Buffer.concat(idat))
+  const stride = width * 4
+  const out = Buffer.alloc(width * height * 4)
+  const paeth = (a, b, c) => {
+    const p = a + b - c
+    const pa = Math.abs(p - a)
+    const pb = Math.abs(p - b)
+    const pc = Math.abs(p - c)
+    return pa <= pb && pa <= pc ? a : pb <= pc ? b : c
+  }
+  for (let y = 0; y < height; y++) {
+    const f = raw[y * (stride + 1)]
+    const line = raw.subarray(y * (stride + 1) + 1, (y + 1) * (stride + 1))
+    const prev = y > 0 ? out.subarray((y - 1) * stride, y * stride) : null
+    for (let x = 0; x < stride; x++) {
+      const a = x >= 4 ? line[x - 4] : 0
+      const b = prev ? prev[x] : 0
+      const c = x >= 4 && prev ? prev[x - 4] : 0
+      let v = line[x]
+      if (f === 1) v = (v + a) & 0xFF
+      else if (f === 2) v = (v + b) & 0xFF
+      else if (f === 3) v = (v + ((a + b) >> 1)) & 0xFF
+      else if (f === 4) v = (v + paeth(a, b, c)) & 0xFF
+      out[y * stride + x] = v
+    }
+  }
+  return { width, height, data: out }
+}
+function parseICO(ico) {
+  const count = ico.readUInt16LE(4)
+  const out = []
+  for (let i = 0; i < count; i++) {
+    const off = 6 + i * 16
+    let w = ico[off]
+    let h = ico[off + 1]
+    if (w === 0) w = 256
+    if (h === 0) h = 256
+    const size = ico.readUInt32LE(off + 8)
+    const dataOff = ico.readUInt32LE(off + 12)
+    out.push({ size: w, data: ico.subarray(dataOff, dataOff + size) })
+  }
+  return out
+}
+function makeICO(pngs) {
+  const header = Buffer.alloc(6)
+  header.writeUInt16LE(0, 0)
+  header.writeUInt16LE(1, 2)
+  header.writeUInt16LE(pngs.length, 4)
+  let offset = 6 + 16 * pngs.length
+  const entries = []
+  for (const { size, data } of pngs) {
+    const e = Buffer.alloc(16)
+    e[0] = size >= 256 ? 0 : size
+    e[1] = size >= 256 ? 0 : size
+    e[2] = 0
+    e[3] = 0
+    e.writeUInt16LE(1, 4)
+    e.writeUInt16LE(32, 6)
+    e.writeUInt32LE(data.length, 8)
+    e.writeUInt32LE(offset, 12)
+    entries.push(e)
+    offset += data.length
+  }
+  return Buffer.concat([header, ...entries, ...pngs.map((p) => p.data)])
+}
+// 将 PNG 中不透明像素重着色为垂直渐变（顶部 topRGB → 底部 botRGB），保留 alpha。
+function recolorPNG(png, topRGB, botRGB) {
+  const { width, height, data } = decodePNG(png)
+  const out = Buffer.from(data)
+  for (let y = 0; y < height; y++) {
+    const k = height > 1 ? y / (height - 1) : 0
+    const r = Math.round(topRGB[0] + (botRGB[0] - topRGB[0]) * k)
+    const g = Math.round(topRGB[1] + (botRGB[1] - topRGB[1]) * k)
+    const b = Math.round(topRGB[2] + (botRGB[2] - topRGB[2]) * k)
+    for (let x = 0; x < width; x++) {
+      const i = (y * width + x) * 4
+      if (out[i + 3] > 0) {
+        out[i] = r
+        out[i + 1] = g
+        out[i + 2] = b
+      }
+    }
+  }
+  return encodePNG(width, height, out)
 }
 
-const sharp = loadSharp()
+// ---- 深色鲸鱼 ICO：浅色任务栏使用（同款深灰渐变 #4A4A4A → #2B2B2B） ----
+const icoDark = makeICO(parseICO(icoLight).map(({ size, data }) => ({
+  size,
+  data: recolorPNG(data, [0x4A, 0x4A, 0x4A], [0x2B, 0x2B, 0x2B]),
+})))
 
-if (!existsSync(svgPath)) {
-  throw new Error('favicon.svg not found at ' + svgPath)
-}
-
-const src = readFileSync(svgPath, 'utf8')
-// 提取鲸鱼路径（去掉样式与 fill，供自定义配色）
-const whaleMatch = src.replace(/<style>[\s\S]*?<\/style>/, '').match(/<path id="path"[^/]*\/>/)
-if (!whaleMatch) throw new Error('whale path not found')
-// 去掉自带 fill（避免重复属性导致 XML 解析失败），并按用途分别填充
-const whaleClean = whaleMatch[0].replace(/\sfill="[^"]*"/g, '').replace(/\sfill-opacity="[^"]*"/g, '')
-const whaleBase = whaleClean.replace('<path id="path"', '<g transform="translate(3.5 3.5) scale(0.86)"><path')
-const whaleKey = whaleBase.replace('<path', '<path fill="url(#whale)"')
-// 模板鲸鱼：居中 60%（与主图标同款居中比例，适配 macOS 菜单栏）
-const whaleBlack = whaleClean.replace('<path id="path"', '<g transform="translate(0 0) scale(1.0)"><path fill="#000000"')
-
-// ---- 主图标（Windows 托盘）：拟物键盘按键（深灰键帽 + 顶部微高光）+ DeepSeek 经典蓝鲸 ----
-// ---- 主图标（Windows 托盘）：拟物 macOS 文件夹（深灰渐变 + 纸张条 + 软阴影 + 浅灰鲸鱼） ----
-// ---- 主图标（Windows 托盘）：参考文件夹配色/高光/阴影的圆角方块 + 居中浅灰鲸鱼 ----
-// ---- 主图标：鲸鱼 100% 占满图标（无背景底块） ----
-// ---- 主图标：圆角方块整体放大（底块 ~94% 画布）+ 鲸鱼 58%（占底块约 62%）----
-// ---- 主图标（Windows 托盘）：鲸鱼 100% 占满图标（无底块） ----
-const whaleFullDefs = '<defs>' +
-  '<linearGradient id="whale" x1="0" y1="0" x2="0" y2="50" gradientUnits="userSpaceOnUse">' +
-  '<stop offset="0" stop-color="#E9E9E9"/>' +
-  '<stop offset="1" stop-color="#C3C3C3"/>' +
-  '</linearGradient>' +
-  '</defs>'
-const whaleFull = whaleClean.replace('<path id="path"', '<g transform="translate(0 0) scale(1.0)"><path fill="url(#whale)"')
-const mainSvg = '<svg xmlns="http://www.w3.org/2000/svg" width="50" height="50" viewBox="0 0 50 50">' + whaleFullDefs + whaleFull + '</g></svg>'
-
-// ---- 模板图标（macOS 菜单栏）：纯黑鲸鱼、透明背景 ----
-const templateSvg = '<svg xmlns="http://www.w3.org/2000/svg" width="50" height="50" viewBox="0 0 50 50">' + whaleBlack + '</g></svg>'
-
-// 主 ICO 多尺寸（PNG 条目，Vista+）
-const sizes = [16, 20, 24, 32, 40, 48, 64, 256]
-const pngs = []
-for (const s of sizes) {
-  const data = await sharp(Buffer.from(mainSvg), { density: 384 }).resize(s, s).png().toBuffer()
-  pngs.push({ size: s, data })
-}
-
-const header = Buffer.alloc(6)
-header.writeUInt16LE(0, 0)
-header.writeUInt16LE(1, 2)
-header.writeUInt16LE(pngs.length, 4)
-
-let offset = 6 + 16 * pngs.length
-const entries = []
-for (const { size, data } of pngs) {
-  const e = Buffer.alloc(16)
-  e[0] = size >= 256 ? 0 : size
-  e[1] = size >= 256 ? 0 : size
-  e[2] = 0
-  e[3] = 0
-  e.writeUInt16LE(1, 4)
-  e.writeUInt16LE(32, 6)
-  e.writeUInt32LE(data.length, 8)
-  e.writeUInt32LE(offset, 12)
-  entries.push(e)
-  offset += data.length
-}
-const ico = Buffer.concat([header, ...entries, ...pngs.map((p) => p.data)])
-
-// macOS 模板 PNG（44x44，Retina 菜单栏）
-const template = await sharp(Buffer.from(templateSvg), { density: 384 }).resize(44, 44).png().toBuffer()
-
+// ---- 写出 icon_gen.go（浅色 + 深色 + 模板） ----
 const b64 = (buf) => buf.toString('base64').match(/.{1,96}/g).join('\n')
 const go =
   '// Code generated by scripts/gen-icon.mjs; DO NOT EDIT.\n' +
@@ -90,13 +190,18 @@ const go =
   '\n' +
   'import "encoding/base64"\n' +
   '\n' +
-  '// iconData 主图标（Windows 托盘）：苹果风蓝渐变 squircle + 白色鲸鱼（多尺寸 ICO）。\n' +
+  '// iconData 浅色鲸鱼主图标（深色任务栏 / macOS 回退），多尺寸 ICO。\n' +
   'var iconData = mustDecodeIcon(iconDataB64)\n' +
+  '\n' +
+  '// iconDataDark 深色鲸鱼主图标（浅色任务栏，配合主题自适应切换）。\n' +
+  'var iconDataDark = mustDecodeIcon(iconDataDarkB64)\n' +
   '\n' +
   '// iconDataTemplate macOS 菜单栏模板图标：纯黑鲸鱼、透明背景。\n' +
   'var iconDataTemplate = mustDecodeIcon(iconTemplateB64)\n' +
   '\n' +
-  'const iconDataB64 = `' + b64(ico) + '`\n' +
+  'const iconDataB64 = `' + b64(icoLight) + '`\n' +
+  '\n' +
+  'const iconDataDarkB64 = `' + b64(icoDark) + '`\n' +
   '\n' +
   'const iconTemplateB64 = `' + b64(template) + '`\n' +
   '\n' +
@@ -108,18 +213,12 @@ const go =
   '    return b\n' +
   '}\n'
 
-const out = process.argv[2] ? resolve(process.argv[2]) : join(__dirname, '..', 'icon_gen.go')
+const out = process.argv[2] ? resolve(process.argv[2]) : genPath
 writeFileSync(out, go)
 
-// 可执行文件图标资源（Windows .exe 用 .ico；macOS .icns 由 1024px PNG 转）
-writeFileSync(join(dirname(out), 'icon.ico'), ico)
-const appIcon = await sharp(Buffer.from(mainSvg), { density: 384 }).resize(1024, 1024).png().toBuffer()
-writeFileSync(join(dirname(out), 'app-icon.png'), appIcon)
+// 可执行文件图标资源与预览图（浅色主图标保持不变；深色预览便于肉眼检查）
+writeFileSync(join(root, 'icon.ico'), icoLight)
+const darkBest = parseICO(icoDark).sort((a, b) => b.size - a.size)[0]
+writeFileSync(join(root, 'preview-dark.png'), darkBest.data)
 
-// 预览图（便于肉眼检查）
-const preview = await sharp(Buffer.from(mainSvg), { density: 384 }).resize(256, 256).png().toBuffer()
-writeFileSync(join(dirname(out), 'preview.png'), preview)
-const previewT = await sharp(Buffer.from(templateSvg), { density: 384 }).resize(128, 128).png().toBuffer()
-writeFileSync(join(dirname(out), 'preview-template.png'), previewT)
-
-console.log('wrote', out, '| ico bytes:', ico.length, '| template bytes:', template.length, '| go bytes:', go.length)
+console.log('wrote', out, '| icoLight:', icoLight.length, '| icoDark:', icoDark.length, '| template:', template.length, '| go:', go.length)
