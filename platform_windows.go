@@ -326,18 +326,24 @@ func startServer() (bool, <-chan error) {
 func killServer() {
 	// 终止本应用启动的服务器进程树
 	if serverCmd != nil && serverCmd.Process != nil {
-		exec.Command("taskkill", "/PID", strconv.Itoa(serverCmd.Process.Pid), "/T", "/F").Run()
+		cmd := exec.Command("taskkill", "/PID", strconv.Itoa(serverCmd.Process.Pid), "/T", "/F")
+		hideCmdWindow(cmd)
+		_ = cmd.Run()
 		serverCmd = nil
 	}
 	// 终止监听本端口的 dsh web 进程（即使不是本应用启动的）
 	if pid, err := findListenerPID(port); err == nil {
 		log.Printf("killing listener pid=%d on port %d", pid, port)
-		exec.Command("taskkill", "/PID", strconv.Itoa(pid), "/T", "/F").Run()
+		cmd := exec.Command("taskkill", "/PID", strconv.Itoa(pid), "/T", "/F")
+		hideCmdWindow(cmd)
+		_ = cmd.Run()
 	}
 }
 
 func findListenerPID(port int) (int, error) {
-	out, err := exec.Command("netstat", "-ano", "-p", "TCP").Output()
+	cmd := exec.Command("netstat", "-ano", "-p", "TCP")
+	hideCmdWindow(cmd)
+	out, err := cmd.Output()
 	if err != nil {
 		return 0, err
 	}
