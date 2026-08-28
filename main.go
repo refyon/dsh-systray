@@ -132,14 +132,6 @@ func saveConfig(cfg appConfig) {
 }
 
 func main() {
-	// 自更新替换模式：dsh-systray.exe --update-swap <旧进程PID> <目标exe路径>
-	if len(os.Args) >= 4 && os.Args[1] == updateSwapFlag {
-		if oldPID, err := strconv.Atoi(os.Args[2]); err == nil {
-			runUpdateSwap(oldPID, os.Args[3])
-			return
-		}
-	}
-
 	cfg := loadConfig()
 	port = cfg.Port
 	webURL = fmt.Sprintf("http://127.0.0.1:%d/", port)
@@ -167,6 +159,10 @@ func main() {
 	}
 	defer release()
 
+	// 清理上次更新遗留的旧程序文件；启动 30 秒后静默检查新版本并提示更新
+	cleanupStaleUpdateFiles()
+	startAutoUpdateCheck()
+
 	// 显式配置的 harness 目录不可用时让用户重新选择；默认目录则静默自动部署
 	if _, err := os.Stat(filepath.Join(harnessDir, "package.json")); err != nil && harnessDirExplicit {
 		log.Printf("harness source not found at %s, prompting user to choose", harnessDir)
@@ -189,11 +185,6 @@ func main() {
 	}
 
 	splash := startSplash("正在准备运行环境…")
-
-	// 0) 启动时检查新版本：确认升级则中断正常启动流程（下载 → 自替换 → 重启）
-	if runUpdateFlow(splash) {
-		return
-	}
 
 	// 1) 运行环境：优先便携 Node.js / pnpm（无管理员权限、无窗口、后台静默）
 	if !runtimeOK() {

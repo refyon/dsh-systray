@@ -43,14 +43,19 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p dist
+          if [ "$GITHUB_REF_TYPE" = "tag" ]; then
+            VERSION="${GITHUB_REF_NAME#v}"
+          else
+            VERSION="dev"
+          fi
           if [ "$RUNNER_OS" = "Windows" ]; then
             # Windows: systray 为纯 Go 实现（无需 cgo）；-H=windowsgui 隐藏控制台窗口
-            go build -trimpath -ldflags "-s -w -H=windowsgui -X main.version=${GITHUB_REF_NAME}" -o dist/dsh-systray.exe .
+            go build -trimpath -ldflags "-s -w -H=windowsgui -X main.appVersion=${VERSION}" -o dist/dsh-systray.exe .
           else
             # macOS: systray 依赖 Cocoa（cgo），必须在 macOS runner 上构建；
             # 同时编译 arm64 + amd64 并用 lipo 合并为 universal 通用二进制（Intel/Apple Silicon 均可运行）
-            CGO_ENABLED=1 go build -trimpath -ldflags "-s -w -X main.version=${GITHUB_REF_NAME}" -o dist/dsh-systray-arm64 .
-            CGO_ENABLED=1 GOARCH=amd64 go build -trimpath -ldflags "-s -w -X main.version=${GITHUB_REF_NAME}" -o dist/dsh-systray-amd64 .
+            CGO_ENABLED=1 go build -trimpath -ldflags "-s -w -X main.appVersion=${VERSION}" -o dist/dsh-systray-arm64 .
+            CGO_ENABLED=1 GOARCH=amd64 go build -trimpath -ldflags "-s -w -X main.appVersion=${VERSION}" -o dist/dsh-systray-amd64 .
             lipo -create -output dist/dsh-systray dist/dsh-systray-arm64 dist/dsh-systray-amd64
             rm dist/dsh-systray-arm64 dist/dsh-systray-amd64
           fi

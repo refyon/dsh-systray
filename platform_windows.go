@@ -568,3 +568,35 @@ func showReadyPrompt(url string) {
 		openBrowser(url)
 	}
 }
+
+// askUpdateDialog 提示用户发现新版本：true=立即更新。
+func askUpdateDialog(newVer string) bool {
+	msg := fmt.Sprintf("发现新版本 v%s（当前版本 v%s）。\n是否立即下载并更新？", newVer, appVersion)
+	return runModernDialog(appName, msg, []string{"立即更新", "稍后"}, 0) == 0
+}
+
+// replaceAndRelaunch 替换当前 exe 并重启。Windows 不允许覆盖正在运行的 exe，
+// 采用「改名旧程序 → 换入新程序 → 重启」方案（minio/selfupdate 同款思路）。
+func replaceAndRelaunch(newExe string) error {
+	exe, err := os.Executable()
+	if err != nil {
+		return fmt.Errorf("无法定位当前程序路径：%w", err)
+	}
+	oldPath := exe + ".old"
+	_ = os.Remove(oldPath)
+	if err := os.Rename(exe, oldPath); err != nil {
+		return fmt.Errorf("无法重命名当前程序（所在目录可能无写权限）：%w", err)
+	}
+	if err := os.Rename(newExe, exe); err != nil {
+		_ = os.Rename(oldPath, exe) // 回滚，恢复旧程序
+		return fmt.Errorf("无法写入新程序：%w", err)
+	}
+	cmd := exec.Command(exe)
+	cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
+	if err := cmd.Start(); err != nil {
+		return fmt.Errorf("更新完成但重启失败：%w", err)
+	}
+	log.Printf("update applied, relaunching %s", exe)
+	os.Exit(0)
+	return nil
+}

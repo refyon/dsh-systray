@@ -290,3 +290,69 @@ func showReadyPrompt(url string) {
 		openBrowser(url)
 	}
 }
+
+// askUpdateDialog 提示用户发现新版本：true=立即更新。
+func askUpdateDialog(newVer string) bool {
+	msg := fmt.Sprintf("发现新版本 v%s（当前版本 v%s）。\n是否立即下载并更新？", newVer, appVersion)
+	script := fmt.Sprintf(`display dialog "%s" with title "%s" buttons {"稍后", "立即更新"} default button "立即更新"`,
+		escapeAppleScript(msg), appName)
+	out, err := runAppleScript(script)
+	if err != nil {
+		return false
+	}
+	return strings.Contains(out, "立即更新")
+}
+
+// replaceAndRelaunch 替换当前 .app 并重启（自定义更新方案的辅助工具思路）：
+// 写入一个等待 2 秒的 shell 脚本，由它在本进程退出后 rm 旧 .app、mv 新 .app、open 重新打开。
+func replaceAndRelaunch(newApp string) error {
+	cur, err := os.Executable()
+	if err != nil {
+		return fmt.Errorf("无法定位当前程序路径：%w", err)
+	}
+	bundle := appBundleDir(cur)
+	if bundle == "" {
+		return fmt.Errorf("无法定位当前 .app 包路径")
+	}
+	if err := checkWritable(filepath.Dir(bundle)); err != nil {
+		return fmt.Errorf("程序所在目录无写权限（%s）：%w", filepath.Dir(bundle), err)
+	}
+	script := "#!/bin/bash\nsleep 2\nrm -rf \"$2\"\nmv \"$1\" \"$2\"\nopen \"$2\"\n"
+	scriptPath := filepath.Join(os.TempDir(), "dsh-systray-updater.sh")
+	if err := os.WriteFile(scriptPath, []byte(script), 0o755); err != nil {
+		return err
+	}
+	cmd := exec.Command("sh", scriptPath, newApp, bundle)
+	if err := cmd.Start(); err != nil {
+		return fmt.Errorf("启动更新脚本失败：%w", err)
+	}
+	log.Printf("update applied via helper, relaunching %s", bundle)
+	os.Exit(0)
+	return nil
+}
+
+// appBundleDir 从可执行文件路径向上查找 .app 包目录；未处于 .app 内时返回 ""。
+func appBundleDir(exe string) string {
+	d := filepath.Dir(exe)
+	for {
+		if strings.HasSuffix(strings.ToLower(d), ".app") {
+			return d
+		}
+		parent := filepath.Dir(d)
+		if parent == d {
+			return ""
+		}
+		d = parent
+	}
+}
+
+// checkWritable 探测目录可写性（用于更新前预检，避免替换静默失败）。
+func checkWritable(dir string) error {
+	f, err := os.CreateTemp(dir, ".dsh-systray-write-test-*")
+	if err != nil {
+		return err
+	}
+	name := f.Name()
+	f.Close()
+	return os.Remove(name)
+}
