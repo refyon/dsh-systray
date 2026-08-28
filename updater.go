@@ -17,9 +17,14 @@ import (
 	"time"
 )
 
-// appVersion 当前程序版本，由构建注入：-X main.appVersion=vX.Y.Z。
+// appVersion 当前程序版本，由构建注入：-X main.appVersion=X.Y.Z（可带 v，运行时统一去掉前导 v）。
 // 本地开发 / CI 手动触发（非 tag）构建时为 "dev"，此时跳过自动更新检查。
 var appVersion = "dev"
+
+func init() {
+	// 归一化版本号：无论构建注入的是 v0.3.1 还是 0.3.1，所有展示/比较均不带前导 v。
+	appVersion = strings.TrimPrefix(appVersion, "v")
+}
 
 const (
 	updateRepoOwner   = "refyon"
@@ -61,7 +66,7 @@ func autoCheckUpdate() {
 		return
 	}
 	if !isNewerVersion(rel.TagName, appVersion) {
-		log.Printf("update check: current v%s is up to date (latest %s)", appVersion, rel.TagName)
+		log.Printf("update check: current %s is up to date (latest %s)", appVersion, rel.TagName)
 		return
 	}
 	log.Printf("update available: %s (current %s)", rel.TagName, appVersion)
@@ -72,6 +77,28 @@ func autoCheckUpdate() {
 	if err := downloadAndApplyUpdate(rel); err != nil {
 		log.Printf("update failed: %v", err)
 		showMessageBox("更新失败：\n"+err.Error()+"\n\n请稍后重试，或前往 GitHub Releases 手动下载。", appName)
+	}
+}
+
+// checkForUpdatesManual 手动检查更新（设置页触发）：有新版弹确认并更新，无新版提示已是最新。
+func checkForUpdatesManual() {
+	if appVersion == "" || appVersion == "dev" {
+		showMessageBox("当前为开发版本（dev），未启用自动更新。", appName)
+		return
+	}
+	rel, err := fetchLatestRelease()
+	if err != nil {
+		showMessageBox("检查更新失败：\n"+err.Error()+"\n\n请检查网络后重试。", appName)
+		return
+	}
+	if !isNewerVersion(rel.TagName, appVersion) {
+		showMessageBox(fmt.Sprintf("当前已是最新版本（%s）。", appVersion), appName)
+		return
+	}
+	if askUpdateDialog(strings.TrimPrefix(rel.TagName, "v")) {
+		if err := downloadAndApplyUpdate(rel); err != nil {
+			showMessageBox("更新失败：\n"+err.Error()+"\n\n请稍后重试，或前往 GitHub Releases 手动下载。", appName)
+		}
 	}
 }
 

@@ -293,7 +293,7 @@ func showReadyPrompt(url string) {
 
 // askUpdateDialog 提示用户发现新版本：true=立即更新。
 func askUpdateDialog(newVer string) bool {
-	msg := fmt.Sprintf("发现新版本 v%s（当前版本 v%s）。\n是否立即下载并更新？", newVer, appVersion)
+	msg := fmt.Sprintf("发现新版本 %s（当前版本 %s）。\n是否立即下载并更新？", newVer, appVersion)
 	script := fmt.Sprintf(`display dialog "%s" with title "%s" buttons {"稍后", "立即更新"} default button "立即更新"`,
 		escapeAppleScript(msg), appName)
 	out, err := runAppleScript(script)

@@ -277,10 +277,7 @@ func onReady() {
 
 	mOpen := systray.AddMenuItem("打开 Web UI", "打开网页端界面")
 	systray.AddSeparator()
-	mAuto := systray.AddMenuItem("开机自启动", "登录系统时自动启动")
-	if isAutostartEnabled() {
-		mAuto.Check()
-	}
+	mSettings := systray.AddMenuItem("设置", "打开设置窗口")
 	systray.AddSeparator()
 	mQuit := systray.AddMenuItem("退出", "退出并关闭后台服务器")
 
@@ -289,8 +286,8 @@ func onReady() {
 			select {
 			case <-mOpen.ClickedCh:
 				openBrowser(webURL)
-			case <-mAuto.ClickedCh:
-				toggleAutostart(mAuto)
+			case <-mSettings.ClickedCh:
+				openSettingsWindow()
 			case <-mQuit.ClickedCh:
 				// 退出前询问是否停止后台 Web 服务：0=停止并退出 1=保留服务 -1=取消退出
 				choice := askStopServer()
@@ -315,15 +312,14 @@ func onExit() {
 	log.Printf("tray exiting")
 }
 
-func toggleAutostart(item *systray.MenuItem) {
-	if isAutostartEnabled() {
-		disableAutostart()
-		item.Uncheck()
-		log.Printf("autostart disabled")
-	} else {
+// setAutostartOn 统一开关开机自启动（供设置窗口调用）。
+func setAutostartOn(on bool) {
+	if on {
 		enableAutostart()
-		item.Check()
-		log.Printf("autostart enabled")
+		log.Printf("autostart enabled (settings)")
+	} else {
+		disableAutostart()
+		log.Printf("autostart disabled (settings)")
 	}
 }
 

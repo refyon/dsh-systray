@@ -571,7 +571,7 @@ func showReadyPrompt(url string) {
 
 // askUpdateDialog 提示用户发现新版本：true=立即更新。
 func askUpdateDialog(newVer string) bool {
-	msg := fmt.Sprintf("发现新版本 v%s（当前版本 v%s）。\n是否立即下载并更新？", newVer, appVersion)
+	msg := fmt.Sprintf("发现新版本 %s（当前版本 %s）。\n是否立即下载并更新？", newVer, appVersion)
 	return runModernDialog(appName, msg, []string{"立即更新", "稍后"}, 0) == 0
 }
 
