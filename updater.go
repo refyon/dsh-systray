@@ -214,7 +214,11 @@ func checkForUpdatesManual() {
 	}
 	// 4) dsh-systray 自身
 	if !isNewerVersion(rel.TagName, appVersion) {
-		showMessageBox(fmt.Sprintf("当前已是最新版本（%s）。", withV(appVersion)), appName)
+		hvText := withV(harnessCur)
+		if hvText == "" {
+			hvText = "未检测到"
+		}
+		showMessageBox(fmt.Sprintf("当前已是最新版本（%s）。\n\nDeepSeek Harness 版本：%s", withV(appVersion), hvText), appName)
 		return
 	}
 	if askUpdateDialog(strings.TrimPrefix(rel.TagName, "v")) {
