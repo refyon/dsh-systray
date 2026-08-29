@@ -177,33 +177,30 @@ function recolorPNG(png, topRGB, botRGB) {
 }
 
 // ---- 扁平蓝底白鲸鱼（与网站图标一致；浅/深色任务栏均可见，故 light/dark 相同） ----
-// 把纯鲸鱼剪影合成到「纯色圆角蓝底」上：扁平，无渐变/阴影/高光；鲸鱼缩放至 80% 居中留边。
-function flatCompose(whalePng) {
-  const whale = decodePNG(whalePng)
-  const W = whale.width, H = whale.height
-  // 鲸鱼轮廓 bbox
-  let xmin = W, ymin = H, xmax = -1, ymax = -1
-  for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) if (whale.data[(y * W + x) * 4 + 3] > 0) {
-    if (x < xmin) xmin = x; if (x > xmax) xmax = x; if (y < ymin) ymin = y; if (y > ymax) ymax = y
-  }
-  if (xmax < 0) { xmin = 0; ymin = 0; xmax = W - 1; ymax = H - 1 }
-  const whaleW = xmax - xmin + 1, whaleH = ymax - ymin + 1
-  const fit = 0.78
-  const s = Math.min((W * fit) / whaleW, (H * fit) / whaleH)
-  const nw = whaleW * s, nh = whaleH * s
-  const ox = (W - nw) / 2, oy = (H - nh) / 2
-
-  const out = Buffer.alloc(W * H * 4)
-  const R = Math.round(W * 0.21)
+// 用透明底鲸鱼轮廓（whale-src.png）合成到纯色圆角蓝底上；鲸鱼缩放至 80% 居中留边。
+const whaleSrc = decodePNG(readFileSync(join(root, 'whale-src.png')))
+const WSRC = whaleSrc.width, HSRC = whaleSrc.height
+let wxmin = WSRC, wymin = HSRC, wxmax = -1, wymax = -1
+for (let y = 0; y < HSRC; y++) for (let x = 0; x < WSRC; x++) if (whaleSrc.data[(y * WSRC + x) * 4 + 3] > 0) {
+  if (x < wxmin) wxmin = x; if (x > wxmax) wxmax = x; if (y < wymin) wymin = y; if (y > wymax) wymax = y
+}
+if (wxmax < 0) { wxmin = 0; wymin = 0; wxmax = WSRC - 1; wymax = HSRC - 1 }
+const ww = wxmax - wxmin + 1, wh = wymax - wymin + 1
+function renderTray(size) {
+  const W = size, H = size
+  const R = Math.round(size * 0.21)
   const blue = [77, 107, 254] // #4d6bfe
+  const fit = 0.80
+  const s = Math.min((W * fit) / ww, (H * fit) / wh)
+  const nw = ww * s, nh = wh * s
+  const ox = (W - nw) / 2, oy = (H - nh) / 2
+  const out = Buffer.alloc(W * H * 4)
   const inRound = (x, y) => {
-    if (x < 0 || x >= W || y < 0 || y >= H) return false
-    if (x >= R && x <= W - R) return true
-    if (y >= R && y <= H - R) return true
-    const cx = x < R ? R : W - R
-    const cy = y < R ? R : H - R
-    const dx = x - cx, dy = y - cy
-    return dx * dx + dy * dy <= R * R
+    if (x < R && y < R) return (x - R) * (x - R) + (y - R) * (y - R) <= R * R
+    if (x > W - R && y < R) return (x - (W - R)) * (x - (W - R)) + (y - R) * (y - R) <= R * R
+    if (x < R && y > H - R) return (x - R) * (x - R) + (y - (H - R)) * (y - (H - R)) <= R * R
+    if (x > W - R && y > H - R) return (x - (W - R)) * (x - (W - R)) + (y - (H - R)) * (y - (H - R)) <= R * R
+    return true
   }
   for (let y = 0; y < H; y++) {
     for (let x = 0; x < W; x++) {
@@ -211,9 +208,9 @@ function flatCompose(whalePng) {
       if (!inRound(x, y)) { out[i] = 0; out[i + 1] = 0; out[i + 2] = 0; out[i + 3] = 0; continue }
       let white = false
       if (x >= ox && x < ox + nw && y >= oy && y < oy + nh) {
-        const sx = Math.floor(xmin + (x - ox) / s)
-        const sy = Math.floor(ymin + (y - oy) / s)
-        if (sx >= 0 && sx < W && sy >= 0 && sy < H && whale.data[(sy * W + sx) * 4 + 3] > 0) white = true
+        const sx = Math.floor(wxmin + (x - ox) / s)
+        const sy = Math.floor(wymin + (y - oy) / s)
+        if (sx >= 0 && sx < WSRC && sy >= 0 && sy < HSRC && whaleSrc.data[(sy * WSRC + sx) * 4 + 3] > 0) white = true
       }
       if (white) { out[i] = 255; out[i + 1] = 255; out[i + 2] = 255; out[i + 3] = 255 }
       else { out[i] = blue[0]; out[i + 1] = blue[1]; out[i + 2] = blue[2]; out[i + 3] = 255 }
@@ -221,8 +218,8 @@ function flatCompose(whalePng) {
   }
   return encodePNG(W, H, out)
 }
-const icoLight = makeICO(parseICO(icoSrc).map(({ size, data }) => ({ size, data: flatCompose(data) })))
-const icoDark = makeICO(parseICO(icoSrc).map(({ size, data }) => ({ size, data: flatCompose(data) })))
+const icoLight = makeICO([16, 24, 32, 48, 64, 256].map((size) => ({ size, data: renderTray(size) })))
+const icoDark = makeICO([16, 24, 32, 48, 64, 256].map((size) => ({ size, data: renderTray(size) })))
 
 // ---- 写出 icon_gen.go（浅色 + 深色 + 模板） ----
 const b64 = (buf) => buf.toString('base64').match(/.{1,96}/g).join('\n')

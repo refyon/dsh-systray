@@ -8,13 +8,18 @@
 // Go 侧回调（settings_darwin.go //export）
 extern void dshSettingsGoAutostartToggled(int on);
 extern void dshSettingsGoCheckUpdate(void);
+// 返回 malloc 的日志文本 C 字符串（调用方 free）；which=0 app.log / 1 server.log
+char* dshSettingsGoLoadLog(int which);
 
 @interface DSHSetController : NSObject <NSTableViewDataSource, NSTableViewDelegate>
 @property (nonatomic, strong) NSWindow *window;
 @property (nonatomic, strong) NSTableView *catTable;
 @property (nonatomic, strong) NSView *generalPane;
 @property (nonatomic, strong) NSView *aboutPane;
+@property (nonatomic, strong) NSView *logPane;
 @property (nonatomic, strong) NSButton *autoSwitch;
+@property (nonatomic, strong) NSTextView *logTV;
+@property (nonatomic, strong) NSPopUpButton *logPopup;
 @end
 
 static DSHSetController *g_ctrl = nil;
@@ -32,12 +37,14 @@ static DSHSetController *g_ctrl = nil;
 - (void)selectPane:(NSInteger)idx {
     [self.generalPane removeFromSuperview];
     [self.aboutPane removeFromSuperview];
-    NSView *pane = (idx == 0) ? self.generalPane : self.aboutPane;
+    [self.logPane removeFromSuperview];
+    NSView *pane = (idx == 0) ? self.generalPane : (idx == 1 ? self.aboutPane : self.logPane);
     [self.window.contentView addSubview:pane];
+    if (idx == 2) [self refreshLog];
 }
 
 - (NSInteger)numberOfRowsInTableView:(NSTableView *)tv {
-    return 2;
+    return 3;
 }
 
 - (NSView *)tableView:(NSTableView *)tv viewForTableColumn:(NSTableColumn *)col row:(NSInteger)row {
@@ -52,7 +59,7 @@ static DSHSetController *g_ctrl = nil;
         cell.textField = tf;
         [cell addSubview:tf];
     }
-    cell.textField.stringValue = (row == 0) ? @"常规" : @"关于";
+    cell.textField.stringValue = (row == 0) ? @"常规" : (row == 1 ? @"关于" : @"日志");
     return cell;
 }
 
@@ -68,6 +75,20 @@ static DSHSetController *g_ctrl = nil;
 - (void)checkUpdateClicked:(id)sender {
     dshSettingsGoCheckUpdate();
 }
+
+- (void)refreshLog {
+    int which = (self.logPopup == nil) ? 0 : (int)self.logPopup.indexOfSelectedItem;
+    if (which < 0) which = 0;
+    char *s = dshSettingsGoLoadLog(which);
+    if (!s) return;
+    NSString *str = [NSString stringWithUTF8String:s];
+    free(s);
+    self.logTV.string = str;
+    [self.logTV scrollRangeToVisible:NSMakeRange(str.length, 0)]; // 自动滚动到底部
+}
+
+- (void)refreshLogClicked:(id)sender { [self refreshLog]; }
+- (void)logChanged:(id)sender { [self refreshLog]; }
 
 - (void)buildWindowWithVersion:(const char *)ver autostart:(int)autoOn {
     NSRect contentRect = NSMakeRect(0, 0, 560, 360);
@@ -130,6 +151,34 @@ static DSHSetController *g_ctrl = nil;
     checkBtn.target = self;
     checkBtn.action = @selector(checkUpdateClicked:);
     [self.aboutPane addSubview:checkBtn];
+
+    // 日志面板：只读、可复制、自动滚动
+    self.logPane = [[NSView alloc] initWithFrame:NSMakeRect(160, 0, 400, 360)];
+    [self addLabel:@"日志（只读，可复制）" font:[NSFont systemFontOfSize:13] color:[NSColor secondaryLabelColor] frame:NSMakeRect(0, 322, 320, 20) to:self.logPane];
+
+    self.logPopup = [[NSPopUpButton alloc] initWithFrame:NSMakeRect(0, 288, 130, 26)];
+    [self.logPopup addItemsWithTitles:@[@"app.log", @"server.log"]];
+    self.logPopup.target = self;
+    self.logPopup.action = @selector(logChanged:);
+    [self.logPane addSubview:self.logPopup];
+
+    NSButton *refresh = [[NSButton alloc] initWithFrame:NSMakeRect(140, 286, 90, 28)];
+    refresh.title = @"刷新";
+    refresh.bezelStyle = NSBezelStyleRounded;
+    refresh.target = self;
+    refresh.action = @selector(refreshLogClicked:);
+    [self.logPane addSubview:refresh];
+
+    NSScrollView *logSV = [[NSScrollView alloc] initWithFrame:NSMakeRect(0, 20, 392, 250)];
+    NSTextView *tv = [[NSTextView alloc] initWithFrame:NSMakeRect(0, 0, 392, 250)];
+    tv.editable = NO;
+    tv.selectable = YES;
+    tv.font = [NSFont monospacedSystemFontOfSize:11 weight:NSFontWeightRegular];
+    logSV.documentView = tv;
+    logSV.hasVerticalScroller = YES;
+    logSV.autohidesScrollers = YES;
+    [self.logPane addSubview:logSV];
+    self.logTV = tv;
 
     self.window.contentView = root;
     [self selectPane:0];

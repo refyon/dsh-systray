@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"sync/atomic"
 	"syscall"
 	"unsafe"
@@ -60,6 +61,10 @@ const (
 	cbAddString       = 0x0143
 	cbGetCurSel       = 0x0147
 	cbSetCurSel       = 0x014E
+	wmTimer           = 0x0113
+	emSetSel          = 0x00B1
+	emLineScroll      = 0x00B6
+	settingsLogTimer  = 1
 
 	// 颜色（COLORREF = 0xBBGGRR）
 	stColorSidebarBg = 0x00FAF8F7 // #F7F8FA 侧栏浅灰底
@@ -73,6 +78,8 @@ const (
 var (
 	pInvalidateRect      = modUser32.NewProc("InvalidateRect")
 	pSetForegroundWindow = modUser32.NewProc("SetForegroundWindow")
+	pSetTimer            = modUser32.NewProc("SetTimer")
+	pKillTimer           = modUser32.NewProc("KillTimer")
 
 	settingsOpenFlag  atomic.Bool
 	settingsHwnd      uintptr
@@ -156,6 +163,11 @@ func settingsWndProc(hwnd, uMsg, wParam, lParam uintptr) uintptr {
 			settingsLogReload()
 		}
 		return 0
+	case wmTimer:
+		if int(wParam) == settingsLogTimer && settingsCat == 2 {
+			settingsLogReload() // 日志页自动刷新（跟随最新日志）
+		}
+		return 0
 	case wmClose:
 		pDestroyWindow.Call(hwnd)
 		return 0
@@ -178,6 +190,7 @@ func settingsWndProc(hwnd, uMsg, wParam, lParam uintptr) uintptr {
 		if settingsSideBrush != 0 {
 			pDeleteObject.Call(settingsSideBrush)
 		}
+		pKillTimer.Call(hwnd, settingsLogTimer)
 		pPostQuitMessage.Call(0)
 		return 0
 	case wmCtlColorStatic:
@@ -309,7 +322,7 @@ func makeMonoFont(height int32) uintptr {
 	return h
 }
 
-// settingsLogReload 按当前选择重新加载日志到只读文本框。
+// settingsLogReload 按当前选择重新加载日志到只读文本框（CRLF 换行 + 自动滚到底部）。
 func settingsLogReload() {
 	name := "app.log"
 	combo := settingsWidgetKey(stIdLogCombo)
@@ -334,9 +347,15 @@ func settingsLogReload() {
 	} else {
 		text = "（暂无日志：" + p + "）"
 	}
-	if edit := settingsWidgetKey(stIdLogEdit); edit != 0 {
+	// Win32 多行 EDIT 需 \r\n 换行；Go 日志为 \n，这里统一转 CRLF，否则文字堆叠。
+	text = strings.ReplaceAll(strings.ReplaceAll(text, "\r\n", "\n"), "\n", "\r\n")
+	edit := settingsWidgetKey(stIdLogEdit)
+	if edit != 0 {
 		ep, _ := syscall.UTF16PtrFromString(text)
 		pSendMessageW.Call(edit, wmSetText, 0, uintptr(unsafe.Pointer(ep)))
+		// 自动滚动到底部（最新日志）
+		pSendMessageW.Call(edit, emSetSel, ^uintptr(0), ^uintptr(0))
+		pSendMessageW.Call(edit, emLineScroll, 0, 0)
 	}
 }
 
@@ -682,6 +701,8 @@ func createSettingsWindow() uintptr {
 	settingsCat = 0
 	settingsShowPane(hwnd)
 	settingsRedrawCats()
+	// 日志自动刷新/滚动定时器（仅在日志页生效）
+	pSetTimer.Call(hwnd, settingsLogTimer, 2000, 0)
 
 	pShowWindow.Call(hwnd, swShow)
 	pUpdateWindow.Call(hwnd)
