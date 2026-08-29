@@ -117,6 +117,11 @@ jobs:
     needs: build
     runs-on: ubuntu-latest
     steps:
+      - name: Checkout (main, for README size sync)
+        uses: actions/checkout@v4
+        with:
+          ref: main
+
       - name: Download artifacts
         uses: actions/download-artifact@v4
         with:
@@ -133,3 +138,40 @@ jobs:
         with:
           files: artifacts/*
           generate_release_notes: true
+
+      # 自动把 README 下载表的大小同步为本次 release 的真实产物大小
+      - name: Sync README download sizes
+        run: |
+          set -euo pipefail
+          TAG="${GITHUB_REF_NAME}"
+          python3 - "$TAG" <<'PY'
+          import sys, os, json, urllib.request, re
+          tag = sys.argv[1]
+          repo = os.environ["GITHUB_REPOSITORY"]
+          with urllib.request.urlopen(
+              "https://api.github.com/repos/%s/releases/tags/%s" % (repo, tag), timeout=20
+          ) as r:
+              data = json.load(r)
+          sizes = {a["name"]: a["size"] for a in data.get("assets", [])}
+          if "dsh-systray-windows-x64.zip" not in sizes or "dsh-systray-macos-universal.zip" not in sizes:
+              print("missing assets; skip")
+              sys.exit(0)
+          def human(b):
+              return "%.1f MB" % (b / (1024 * 1024))
+          win = human(sizes["dsh-systray-windows-x64.zip"])
+          mac = human(sizes["dsh-systray-macos-universal.zip"])
+          txt = open("README.md", encoding="utf-8").read()
+          n = re.sub(r"\| Windows \| x64 \| ZIP \| [0-9.]+ MB \|", "| Windows | x64 | ZIP | %s |" % win, txt)
+          n = re.sub(r"\| macOS \| Intel \+ Apple Silicon \| ZIP \(\.app\) \| [0-9.]+ MB \|",
+                     "| macOS | Intel + Apple Silicon | ZIP (.app) | %s |" % mac, n)
+          open("README.md", "w", encoding="utf-8").write(n)
+          print("windows=%s mac=%s" % (win, mac))
+          PY
+          git add README.md
+          if ! git diff --cached --quiet; then
+            git -c user.name="dsh-systray-bot" -c user.email="41898282+github-actions[bot]@users.noreply.github.com" \
+              commit -m "docs: sync README download sizes to ${TAG}"
+            git push origin HEAD:main
+          else
+            echo "README sizes already up to date"
+          fi
