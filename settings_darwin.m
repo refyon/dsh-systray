@@ -1,4 +1,4 @@
-﻿// 设置窗口原生实现（macOS Cocoa）：左侧分类列表（常规 / 关于）+ 右侧内容面板。
+// 设置窗口原生实现（macOS Cocoa）：左侧分类列表（常规 / 关于）+ 右侧内容面板。
 // 由 cgo 编译（settings_darwin.go 中 #cgo darwin CFLAGS: -x objective-c -fobjc-arc）。
 #import <Cocoa/Cocoa.h>
 #import <dispatch/dispatch.h>
@@ -264,7 +264,7 @@ static DSHSetController *g_ctrl = nil;
     NSTextView *tv = [[NSTextView alloc] initWithFrame:NSMakeRect(0, 0, 392, 250)];
     tv.editable = NO;
     tv.selectable = YES;
-    tv.font = [NSFont monospacedSystemFontOfSize:13 weight:NSFontWeightRegular];
+    tv.font = [NSFont monospacedSystemFontOfSize:15 weight:NSFontWeightRegular];
     logSV.documentView = tv;
     logSV.hasVerticalScroller = YES;
     logSV.autohidesScrollers = YES;
