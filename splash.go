@@ -7,6 +7,7 @@ import (
 	"os"
 	"runtime"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"syscall"
 	"unsafe"
@@ -103,6 +104,11 @@ var (
 	pMoveWindow            = modUser32.NewProc("MoveWindow")
 	pCreateSolidBrush      = modGdi32.NewProc("CreateSolidBrush")
 	pDeleteObject          = modGdi32.NewProc("DeleteObject")
+	pGetClientRect         = modUser32.NewProc("GetClientRect")
+	pCreateCompatibleDC    = modGdi32.NewProc("CreateCompatibleDC")
+	pCreateCompatibleBmp   = modGdi32.NewProc("CreateCompatibleBitmap")
+	pDeleteDC              = modGdi32.NewProc("DeleteDC")
+	pBitBlt                = modGdi32.NewProc("BitBlt")
 	pDwmSetWindowAttribute = modDwmapi.NewProc("DwmSetWindowAttribute")
 	// GDI+（抗锯齿绘图）
 	modGdiplus    = syscall.NewLazyDLL("gdiplus.dll")
@@ -129,15 +135,25 @@ var (
 	pRoundRect    = modGdi32.NewProc("RoundRect")
 )
 
-// 当前进度窗口的控件句柄与画刷（同一时间只有一个 splash）
+// 当前进度窗口状态（同一时间只有一个 splash）。窗口整体自绘 + 双缓冲，避免高频刷新闪烁。
 var (
 	splashHwnd       uintptr
-	splashTitleHwnd  uintptr
-	splashStatusHwnd uintptr
 	splashStatusH    int32
 	splashBarY       int32
+	splashBarW       int32
 	// splashProgressBits 当前进度（float64 位模式，原子读写；由 Update 写入、WM_PAINT 读取）。
 	splashProgressBits atomic.Uint64
+	// 自绘文本状态
+	splashTitle     string
+	splashStatus    string
+	splashTextMu    sync.Mutex
+	splashTitleFont uintptr
+	splashStatusFont uintptr
+	// 双缓冲后缓冲（WM_PAINT 画到内存 DC，再整块 BitBlt 到窗口，彻底消除闪烁）
+	splashBackDC  uintptr
+	splashBackBmp uintptr
+	splashBackW   int32
+	splashBackH   int32
 	// splashOnClose：用户点窗口关闭按钮时的回调，返回 true 允许关闭并中止，false 保持窗口。
 	splashOnClose     func() bool
 	splashCloseSilent atomic.Bool // 程序化 Close() 时为 true，跳过 OnClose 确认
@@ -203,38 +219,72 @@ func splashWndProc(hwnd, uMsg, wParam, lParam uintptr) uintptr {
 		return 0
 	case wmDestroy:
 		splashHwnd = 0
+		if splashBackDC != 0 {
+			if wb, _, _ := pGetStockObject.Call(whiteBrush); wb != 0 {
+				pSelectObject.Call(splashBackDC, wb)
+			}
+			if splashBackBmp != 0 {
+				pDeleteObject.Call(splashBackBmp)
+			}
+			pDeleteDC.Call(splashBackDC)
+			splashBackDC = 0
+			splashBackBmp = 0
+		}
+		if splashTitleFont != 0 {
+			pDeleteObject.Call(splashTitleFont)
+			splashTitleFont = 0
+		}
+		if splashStatusFont != 0 {
+			pDeleteObject.Call(splashStatusFont)
+			splashStatusFont = 0
+		}
 		pPostQuitMessage.Call(0)
 		return 0
 	case wmPaint:
-		// 进度条：浅灰轨道 + 品牌蓝填充，两端圆角胶囊（与弹窗按钮同风格）
 		var ps paintStruct
 		hdc, _, _ := pBeginPaint.Call(hwnd, uintptr(unsafe.Pointer(&ps)))
-		if hdc != 0 {
-			if wb, _, _ := pGetStockObject.Call(whiteBrush); wb != 0 {
-				pFillRect.Call(hdc, uintptr(unsafe.Pointer(&ps.rcPaint)), wb)
-			}
-			drawProgressBar(hdc, math.Float64frombits(splashProgressBits.Load()))
-			pEndPaint.Call(hwnd, uintptr(unsafe.Pointer(&ps)))
+		if hdc != 0 && splashBackDC != 0 {
+			splashRender(splashBackDC)
+			// 整块拷贝到窗口，窗口不直接绘制 → 无闪烁
+			pBitBlt.Call(hdc, 0, 0, uintptr(splashBackW), uintptr(splashBackH), splashBackDC, 0, 0, srccopy)
 		}
+		pEndPaint.Call(hwnd, uintptr(unsafe.Pointer(&ps)))
 		return 0
-	case wmCtlColorStatic:
-		switch lParam {
-		case splashTitleHwnd:
-			pSetTextColor.Call(wParam, colorTitle)
-			pSetBkColor.Call(wParam, colorWhite)
-			pSetBkMode.Call(wParam, bkOpaque)
-			h, _, _ := pGetStockObject.Call(whiteBrush)
-			return h
-		case splashStatusHwnd:
-			pSetTextColor.Call(wParam, colorStatus)
-			pSetBkColor.Call(wParam, colorWhite)
-			pSetBkMode.Call(wParam, bkOpaque)
-			h, _, _ := pGetStockObject.Call(whiteBrush)
-			return h
-		}
 	}
 	ret, _, _ := pDefWindowProcW.Call(hwnd, uMsg, wParam, lParam)
 	return ret
+}
+
+// splashRender 把整个客户区绘制到指定 DC（内存缓冲），供 WM_PAINT 整块 BitBlt。
+func splashRender(hdc uintptr) {
+	if wb, _, _ := pGetStockObject.Call(whiteBrush); wb != 0 {
+		rc := rect{0, 0, splashBackW, splashBackH}
+		pFillRect.Call(hdc, uintptr(unsafe.Pointer(&rc)), wb)
+	}
+	// 标题（居中）
+	if splashTitleFont != 0 {
+		pSelectObject.Call(hdc, splashTitleFont)
+	}
+	pSetTextColor.Call(hdc, colorTitle)
+	pSetBkMode.Call(hdc, bkTransparent)
+	titlePtr, _ := syscall.UTF16PtrFromString(splashTitle)
+	tr := rect{int32(pad), titleY, int32(pad + contentW), titleY + titleH}
+	pDrawTextW.Call(hdc, uintptr(unsafe.Pointer(titlePtr)), ^uintptr(0), uintptr(unsafe.Pointer(&tr)), dtCenter|dtVCenter|dtSingleLine)
+	// 状态文本（居中，随阶段变化）
+	if splashStatusFont != 0 {
+		pSelectObject.Call(hdc, splashStatusFont)
+	}
+	splashTextMu.Lock()
+	status := splashStatus
+	splashTextMu.Unlock()
+	pSetTextColor.Call(hdc, colorStatus)
+	pSetBkMode.Call(hdc, bkOpaque)
+	pSetBkColor.Call(hdc, colorWhite)
+	statusPtr, _ := syscall.UTF16PtrFromString(status)
+	sr := rect{int32(pad), statusY, int32(pad+contentW), statusY + splashStatusH}
+	pDrawTextW.Call(hdc, uintptr(unsafe.Pointer(statusPtr)), ^uintptr(0), uintptr(unsafe.Pointer(&sr)), dtCenter|dtVCenter|dtSingleLine|dtEndEllipsis)
+	// 进度条（两端圆角胶囊）
+	drawProgressBar(hdc, math.Float64frombits(splashProgressBits.Load()))
 }
 
 // drawProgressBar 绘制圆角胶囊进度条（轨道 + 按 frac 0~1 的填充），
@@ -333,11 +383,15 @@ func createSplashWindow(statusText string) uintptr {
 	pRegisterClassExW.Call(uintptr(unsafe.Pointer(&wc)))
 
 	titleText, _ := syscall.UTF16PtrFromString("DeepSeek Harness")
-	titleFont := makeFont(18, 600)
-	statusFont := makeFont(14, 400)
+	splashTitleFont = makeFont(18, 600)
+	splashStatusFont = makeFont(14, 400)
+	splashTitle = "DeepSeek Harness"
+	splashTextMu.Lock()
+	splashStatus = statusText
+	splashTextMu.Unlock()
 
 	// 状态文本换行高度自适应，进度条随之下移
-	msgH := measureMultilineHeight(statusText, contentW, statusFont)
+	msgH := measureMultilineHeight(statusText, contentW, splashStatusFont)
 	if msgH < 22 {
 		msgH = 22
 	}
@@ -378,33 +432,18 @@ func createSplashWindow(statusText string) uintptr {
 	corner := uintptr(dwmcRound)
 	pDwmSetWindowAttribute.Call(hwnd, dwmcWindowCornerPreference, uintptr(unsafe.Pointer(&corner)), unsafe.Sizeof(corner))
 
-	// 标题（固定）
-	staticCls, _ := syscall.UTF16PtrFromString("STATIC")
-	splashTitleHwnd, _, _ = pCreateWindowExW.Call(
-		0,
-		uintptr(unsafe.Pointer(staticCls)),
-		uintptr(unsafe.Pointer(titleText)),
-		wsChild|wsVisible|ssCenter,
-		uintptr(pad), uintptr(titleY), uintptr(contentW), uintptr(titleH),
-		hwnd, idTitle, moduleHandle(), 0,
-	)
-	if splashTitleHwnd != 0 {
-		pSendMessageW.Call(splashTitleHwnd, wmSetFont, titleFont, 1)
+	// 双缓冲后缓冲：WM_PAINT 整体画到内存 DC 再 BitBlt，彻底消除高频刷新闪烁
+	var cr rect
+	pGetClientRect.Call(hwnd, uintptr(unsafe.Pointer(&cr)))
+	splashBackW = cr.right
+	splashBackH = cr.bottom
+	screenDC, _, _ := pGetDC.Call(0)
+	splashBackDC, _, _ = pCreateCompatibleDC.Call(screenDC)
+	splashBackBmp, _, _ = pCreateCompatibleBmp.Call(screenDC, uintptr(splashBackW), uintptr(splashBackH))
+	if splashBackBmp != 0 {
+		pSelectObject.Call(splashBackDC, splashBackBmp)
 	}
-
-	// 状态文本（随阶段更新）
-	t, _ := syscall.UTF16PtrFromString(statusText)
-	splashStatusHwnd, _, _ = pCreateWindowExW.Call(
-		0,
-		uintptr(unsafe.Pointer(staticCls)),
-		uintptr(unsafe.Pointer(t)),
-		wsChild|wsVisible|ssCenter,
-		uintptr(pad), uintptr(statusY), uintptr(contentW), uintptr(splashStatusH),
-		hwnd, idStatus, moduleHandle(), 0,
-	)
-	if splashStatusHwnd != 0 {
-		pSendMessageW.Call(splashStatusHwnd, wmSetFont, statusFont, 1)
-	}
+	pReleaseDC.Call(0, screenDC)
 
 	pShowWindow.Call(hwnd, swShow)
 	pUpdateWindow.Call(hwnd)
@@ -441,9 +480,10 @@ func startSplash(text string) *SplashState {
 
 	st := &SplashState{}
 	st.Update = func(t string, f float64) {
-		if splashStatusHwnd != 0 && t != "" {
-			tp, _ := syscall.UTF16PtrFromString(t)
-			pSendMessageW.Call(splashStatusHwnd, wmSetText, 0, uintptr(unsafe.Pointer(tp)))
+		if t != "" {
+			splashTextMu.Lock()
+			splashStatus = t
+			splashTextMu.Unlock()
 		}
 		if splashHwnd != 0 {
 			if f < 0 {
@@ -453,9 +493,8 @@ func startSplash(text string) *SplashState {
 				f = 1
 			}
 			splashProgressBits.Store(math.Float64bits(f))
-			// 仅失效进度条区域且不擦除背景：高频更新（下载进度）不做整窗重绘，避免闪烁。
-			bar := rect{int32(pad), splashBarY, int32(pad+contentW), splashBarY + int32(barH)}
-			pInvalidateRect.Call(splashHwnd, uintptr(unsafe.Pointer(&bar)), 0)
+			// 双缓冲整窗重绘：高频更新（下载进度）由 WM_PAINT 画到后缓冲再整块拷贝，无闪烁。
+			pInvalidateRect.Call(splashHwnd, 0, 0)
 		}
 	}
 	st.Close = func() {
@@ -477,8 +516,12 @@ const (
 	dtCenter    = 0x0001
 	dtVCenter   = 0x0004
 	dtSingle    = 0x0020
+	dtSingleLine = 0x0020
+	dtEndEllipsis = 0x8000
 	dtWordBreak = 0x0010
 	dtCalcRect  = 0x0400
+
+	srccopy = 0x00CC0020
 
 	dlgPad    = 20
 	dlgW      = 380
