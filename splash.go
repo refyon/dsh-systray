@@ -43,6 +43,7 @@ const (
 
 	defaultCharset = 1
 	cleartypeQual  = 5
+	antialiasQual  = 4 // 灰度抗锯齿（彩色底上避免 ClearType 彩边，按钮文字用它更清晰）
 
 	bkTransparent = 1
 	bkOpaque      = 0
@@ -362,8 +363,14 @@ func selectedFace() string {
 
 // makeFont 创建与网站同源的字体（height 像素、weight 400/600）。
 func makeFont(height, weight int32) uintptr {
+	return makeFontQuality(height, weight, cleartypeQual)
+}
+
+// makeFontQuality 带指定抗锯齿质量的字体（quality：cleartypeQual 亚像素 / antialiasQual 灰度）。
+// 按钮文字建议用灰度抗锯齿，避免在品牌蓝底上出现 ClearType 彩色边缘。
+func makeFontQuality(height, weight int32, quality uintptr) uintptr {
 	face, _ := syscall.UTF16PtrFromString(selectedFace())
-	h, _, _ := pCreateFontW.Call(uintptr(height), 0, 0, 0, uintptr(weight), 0, 0, 0, defaultCharset, 0, 0, cleartypeQual, 0, uintptr(unsafe.Pointer(face)))
+	h, _, _ := pCreateFontW.Call(uintptr(height), 0, 0, 0, uintptr(weight), 0, 0, 0, defaultCharset, 0, 0, quality, 0, uintptr(unsafe.Pointer(face)))
 	return h
 }
 
@@ -756,7 +763,7 @@ func runModernDialog(caption, message string, buttons []string, primary int) int
 	dialogButtons = nil
 	dialogResult = -1
 	dialogMsgFont = makeFont(16, 400)
-	dialogBtnFont = makeFont(16, 600)
+	dialogBtnFont = makeFontQuality(16, 600, antialiasQual)
 
 	resultCh := make(chan int, 1)
 	go func() {
