@@ -76,7 +76,7 @@ static DSHSetController *g_ctrl = nil;
         cell.identifier = cid;
         NSTextField *tf = [NSTextField labelWithString:@""];
         tf.frame = NSMakeRect(10, 3, 130, 20);
-        tf.font = [NSFont systemFontOfSize:13];
+        tf.font = [NSFont systemFontOfSize:14];
         cell.textField = tf;
         [cell addSubview:tf];
     }
@@ -183,9 +183,9 @@ static DSHSetController *g_ctrl = nil;
 
     // 常规面板：开机自启动开关
     self.generalPane = [[NSView alloc] initWithFrame:NSMakeRect(160, 0, 400, 360)];
-    [self addLabel:@"常规" font:[NSFont systemFontOfSize:16 weight:NSFontWeightSemibold] color:nil frame:NSMakeRect(0, 316, 300, 24) to:self.generalPane];
-    [self addLabel:@"开机自启动" font:[NSFont systemFontOfSize:14] color:nil frame:NSMakeRect(0, 270, 200, 22) to:self.generalPane];
-    [self addLabel:@"登录系统时自动启动托盘程序" font:[NSFont systemFontOfSize:12] color:[NSColor secondaryLabelColor] frame:NSMakeRect(0, 248, 320, 18) to:self.generalPane];
+    [self addLabel:@"常规" font:[NSFont systemFontOfSize:18 weight:NSFontWeightSemibold] color:nil frame:NSMakeRect(0, 316, 300, 24) to:self.generalPane];
+    [self addLabel:@"开机自启动" font:[NSFont systemFontOfSize:15] color:nil frame:NSMakeRect(0, 270, 220, 24) to:self.generalPane];
+    [self addLabel:@"登录系统时自动启动托盘程序" font:[NSFont systemFontOfSize:13] color:[NSColor secondaryLabelColor] frame:NSMakeRect(0, 248, 320, 18) to:self.generalPane];
 
     self.autoSwitch = [[NSButton alloc] initWithFrame:NSMakeRect(310, 268, 60, 24)];
     [self.autoSwitch setButtonType:NSButtonTypeSwitch];
@@ -205,7 +205,7 @@ static DSHSetController *g_ctrl = nil;
     [svcAttr addAttribute:NSForegroundColorAttributeName value:svcDot range:NSMakeRange(0, 1)];
     [svcAttr addAttribute:NSForegroundColorAttributeName value:[NSColor secondaryLabelColor] range:NSMakeRange(2, svcAttr.length - 2)];
     NSTextField *svcLabel = [NSTextField labelWithAttributedString:svcAttr];
-    svcLabel.font = [NSFont systemFontOfSize:12];
+    svcLabel.font = [NSFont systemFontOfSize:13];
     svcLabel.frame = NSMakeRect(0, 210, 320, 18);
     [self.generalPane addSubview:svcLabel];
 
@@ -218,18 +218,18 @@ static DSHSetController *g_ctrl = nil;
 
     // 关于面板：dsh-systray 版本号 + DeepSeek Harness 版本号 + 检查更新
     self.aboutPane = [[NSView alloc] initWithFrame:NSMakeRect(160, 0, 400, 360)];
-    [self addLabel:@"关于" font:[NSFont systemFontOfSize:16 weight:NSFontWeightSemibold] color:nil frame:NSMakeRect(0, 316, 300, 24) to:self.aboutPane];
-    [self addLabel:@"dsh-systray 版本号" font:[NSFont systemFontOfSize:14] color:nil frame:NSMakeRect(0, 270, 220, 22) to:self.aboutPane];
+    [self addLabel:@"关于" font:[NSFont systemFontOfSize:18 weight:NSFontWeightSemibold] color:nil frame:NSMakeRect(0, 316, 300, 24) to:self.aboutPane];
+    [self addLabel:@"dsh-systray 版本号" font:[NSFont systemFontOfSize:15] color:nil frame:NSMakeRect(0, 270, 220, 24) to:self.aboutPane];
     [self addLabel:[NSString stringWithFormat:@"%s", ver]
-               font:[NSFont systemFontOfSize:16 weight:NSFontWeightSemibold]
+               font:[NSFont systemFontOfSize:18 weight:NSFontWeightSemibold]
               color:[NSColor colorWithCalibratedRed:0.114 green:0.306 blue:0.847 alpha:1.0]
-              frame:NSMakeRect(0, 244, 220, 24)
+              frame:NSMakeRect(0, 244, 220, 26)
                   to:self.aboutPane];
-    [self addLabel:@"DeepSeek Harness 版本号" font:[NSFont systemFontOfSize:14] color:nil frame:NSMakeRect(0, 214, 240, 20) to:self.aboutPane];
+    [self addLabel:@"DeepSeek Harness 版本号" font:[NSFont systemFontOfSize:15] color:nil frame:NSMakeRect(0, 214, 240, 22) to:self.aboutPane];
     [self addLabel:[NSString stringWithFormat:@"%s", hver]
-               font:[NSFont systemFontOfSize:16 weight:NSFontWeightSemibold]
+               font:[NSFont systemFontOfSize:18 weight:NSFontWeightSemibold]
               color:[NSColor colorWithCalibratedRed:0.114 green:0.306 blue:0.847 alpha:1.0]
-              frame:NSMakeRect(0, 190, 220, 24)
+              frame:NSMakeRect(0, 190, 220, 26)
                   to:self.aboutPane];
 
     NSButton *checkBtn = [[NSButton alloc] initWithFrame:NSMakeRect(0, 146, 120, 32)];
@@ -241,7 +241,7 @@ static DSHSetController *g_ctrl = nil;
 
     // 日志面板：只读、可复制、自动滚动
     self.logPane = [[NSView alloc] initWithFrame:NSMakeRect(160, 0, 400, 360)];
-    [self addLabel:@"日志（只读，可复制）" font:[NSFont systemFontOfSize:13] color:[NSColor secondaryLabelColor] frame:NSMakeRect(0, 322, 320, 20) to:self.logPane];
+    [self addLabel:@"日志（只读，可复制）" font:[NSFont systemFontOfSize:14] color:[NSColor secondaryLabelColor] frame:NSMakeRect(0, 322, 320, 20) to:self.logPane];
 
     self.logPopup = [[NSPopUpButton alloc] initWithFrame:NSMakeRect(0, 288, 130, 26)];
     [self.logPopup addItemsWithTitles:@[@"app.log", @"server.log"]];
@@ -260,7 +260,7 @@ static DSHSetController *g_ctrl = nil;
     NSTextView *tv = [[NSTextView alloc] initWithFrame:NSMakeRect(0, 0, 392, 250)];
     tv.editable = NO;
     tv.selectable = YES;
-    tv.font = [NSFont monospacedSystemFontOfSize:11 weight:NSFontWeightRegular];
+    tv.font = [NSFont monospacedSystemFontOfSize:12 weight:NSFontWeightRegular];
     logSV.documentView = tv;
     logSV.hasVerticalScroller = YES;
     logSV.autohidesScrollers = YES;
