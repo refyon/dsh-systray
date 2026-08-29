@@ -102,19 +102,21 @@ function makeICO(pngs) {
 
 function restyle(src) {
   const whale = decodePNG(src)
-  const W = whale.width, H = whale.height
+  const srcW = whale.width, srcH = whale.height
+  const SS = 4 // 超采样倍数：先渲染 4 倍，再盒式下采样回源分辨率，抗锯齿平滑边缘
+  const W = srcW * SS, H = srcH * SS
   const R = Math.round(W * 0.21) // 圆角（macOS app icon 风格）
   // 鲸鱼轮廓 bbox（原图为透明底灰鲸鱼剪影）
-  let xmin = W, ymin = H, xmax = -1, ymax = -1
-  for (let y = 0; y < H; y++) {
-    for (let x = 0; x < W; x++) {
-      if (whale.data[(y * W + x) * 4 + 3] > 0) {
+  let xmin = srcW, ymin = srcH, xmax = -1, ymax = -1
+  for (let y = 0; y < srcH; y++) {
+    for (let x = 0; x < srcW; x++) {
+      if (whale.data[(y * srcW + x) * 4 + 3] > 0) {
         if (x < xmin) xmin = x; if (x > xmax) xmax = x
         if (y < ymin) ymin = y; if (y > ymax) ymax = y
       }
     }
   }
-  if (xmax < 0) { xmin = 0; ymin = 0; xmax = W - 1; ymax = H - 1 }
+  if (xmax < 0) { xmin = 0; ymin = 0; xmax = srcW - 1; ymax = srcH - 1 }
   const whaleW = xmax - xmin + 1, whaleH = ymax - ymin + 1
   const fit = 0.80 // 鲸鱼占图标宽/高 80%，四周留均匀边距，避免拥挤
   const s = Math.min((W * fit) / whaleW, (H * fit) / whaleH)
@@ -140,13 +142,15 @@ function restyle(src) {
       if (x >= ox && x < ox + nw && y >= oy && y < oy + nh) {
         const sx = Math.floor(xmin + (x - ox) / s)
         const sy = Math.floor(ymin + (y - oy) / s)
-        if (sx >= 0 && sx < W && sy >= 0 && sy < H && whale.data[(sy * W + sx) * 4 + 3] > 0) white = true
+        if (sx >= 0 && sx < srcW && sy >= 0 && sy < srcH && whale.data[(sy * srcW + sx) * 4 + 3] > 0) white = true
       }
       if (white) { out[i] = 255; out[i + 1] = 255; out[i + 2] = 255; out[i + 3] = 255 }
       else { out[i] = blue[0]; out[i + 1] = blue[1]; out[i + 2] = blue[2]; out[i + 3] = 255 }
     }
   }
-  return encodePNG(W, H, out)
+  // 盒式下采样回源分辨率，边缘平滑抗锯齿
+  const small = downsample({ width: W, height: H, data: out }, SS)
+  return encodePNG(small.width, small.height, small.data)
 }
 function downsample(img, factor) {
   const w = Math.floor(img.width / factor), h = Math.floor(img.height / factor)

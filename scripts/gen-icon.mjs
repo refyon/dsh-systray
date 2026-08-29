@@ -186,7 +186,7 @@ for (let y = 0; y < HSRC; y++) for (let x = 0; x < WSRC; x++) if (whaleSrc.data[
 }
 if (wxmax < 0) { wxmin = 0; wymin = 0; wxmax = WSRC - 1; wymax = HSRC - 1 }
 const ww = wxmax - wxmin + 1, wh = wymax - wymin + 1
-function renderTray(size) {
+function renderTrayRaw(size) {
   const W = size, H = size
   const R = Math.round(size * 0.21)
   const blue = [29, 78, 216] // #1d4ed8 品牌蓝（云隙蓝主题）
@@ -216,7 +216,33 @@ function renderTray(size) {
       else { out[i] = blue[0]; out[i + 1] = blue[1]; out[i + 2] = blue[2]; out[i + 3] = 255 }
     }
   }
-  return encodePNG(W, H, out)
+  return { width: W, height: H, data: out }
+}
+
+// 盒式下采样：把 raw（更高分辨率）按 factor 平均到目标分辨率，实现抗锯齿（平滑边缘）。
+function downsample(img, factor) {
+  const w = Math.floor(img.width / factor), h = Math.floor(img.height / factor)
+  const out = Buffer.alloc(w * h * 4)
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      let r = 0, g = 0, b = 0, a = 0
+      for (let dy = 0; dy < factor; dy++) for (let dx = 0; dx < factor; dx++) {
+        const i = ((y * factor + dy) * img.width + (x * factor + dx)) * 4
+        r += img.data[i]; g += img.data[i + 1]; b += img.data[i + 2]; a += img.data[i + 3]
+      }
+      const n = factor * factor; const o = (y * w + x) * 4
+      out[o] = Math.round(r / n); out[o + 1] = Math.round(g / n); out[o + 2] = Math.round(b / n); out[o + 3] = Math.round(a / n)
+    }
+  }
+  return { width: w, height: h, data: out }
+}
+
+// renderTray：先按 4x 超采样渲染，再盒式下采样，输出平滑抗锯齿的图标。
+function renderTray(size) {
+  const SS = 4
+  const raw = renderTrayRaw(size * SS)
+  const d = downsample(raw, SS)
+  return encodePNG(d.width, d.height, d.data)
 }
 const icoLight = makeICO([16, 24, 32, 48, 64, 256].map((size) => ({ size, data: renderTray(size) })))
 const icoDark = makeICO([16, 24, 32, 48, 64, 256].map((size) => ({ size, data: renderTray(size) })))
