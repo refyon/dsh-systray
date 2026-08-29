@@ -52,7 +52,7 @@ static DSHSetController *g_ctrl = nil;
         if (!self.logTimer) {
             self.logTimer = [NSTimer scheduledTimerWithTimeInterval:2.0 target:self selector:@selector(refreshLogTick:) userInfo:nil repeats:YES];
         }
-        [self refreshLog];
+        [self refreshLog:YES]; // 打开日志页：滚动到底部一次
     } else {
         [self.logTimer invalidate];
         self.logTimer = nil;
@@ -61,7 +61,7 @@ static DSHSetController *g_ctrl = nil;
 
 - (void)refreshLogTick:(NSTimer *)t {
     if (self.window == nil || !self.window.isVisible) { [self.logTimer invalidate]; self.logTimer = nil; return; }
-    [self refreshLog];
+    [self refreshLog:NO]; // 定时跟随：仅新写入且贴底时滚动
 }
 
 - (NSInteger)numberOfRowsInTableView:(NSTableView *)tv {
@@ -101,14 +101,23 @@ static DSHSetController *g_ctrl = nil;
     dshSettingsGoRestartService();
 }
 
-- (void)refreshLog {
+- (void)refreshLog:(BOOL)forceBottom {
     int which = (self.logPopup == nil) ? 0 : (int)self.logPopup.indexOfSelectedItem;
     if (which < 0) which = 0;
     char *s = dshSettingsGoLoadLog(which);
     if (!s) return;
     NSString *str = [NSString stringWithUTF8String:s];
     free(s);
-    // 无新写入则不重置，避免把用户手动上翻的位置拉回顶部
+    // 打开/切换到日志页（或切换文件/清空）：无论内容是否变化都滚动到底部一次
+    if (forceBottom) {
+        if (![str isEqualToString:self.lastLogContent]) {
+            self.logTV.string = str;
+            self.lastLogContent = str;
+        }
+        [self.logTV scrollRangeToVisible:NSMakeRange(str.length, 0)];
+        return;
+    }
+    // 定时跟随：无新写入则不重置，避免把用户手动上翻的位置拉回顶部
     if ([str isEqualToString:self.lastLogContent]) return;
     self.lastLogContent = str;
 
@@ -132,13 +141,13 @@ static DSHSetController *g_ctrl = nil;
     }
 }
 
-- (void)refreshLogClicked:(id)sender { [self refreshLog]; }
-- (void)logChanged:(id)sender { [self refreshLog]; }
+- (void)refreshLogClicked:(id)sender { [self refreshLog:YES]; }
+- (void)logChanged:(id)sender { [self refreshLog:YES]; }
 - (void)clearLogClicked:(id)sender {
     int which = (self.logPopup == nil) ? 0 : (int)self.logPopup.indexOfSelectedItem;
     if (which < 0) which = 0;
     dshSettingsGoClearLog(which);
-    [self refreshLog];
+    [self refreshLog:YES];
 }
 
 - (void)buildWindowWithVersion:(const char *)ver harness:(const char *)hver autostart:(int)autoOn {

@@ -160,7 +160,7 @@ func settingsWndProc(hwnd, uMsg, wParam, lParam uintptr) uintptr {
 			settingsShowPane(hwnd)
 			settingsRedrawCats()
 			if settingsCat == 2 {
-				settingsLogReload()
+				settingsLogReload(true) // 打开/切换到日志页：滚动到底部一次
 			}
 		case id == stIdAutoToggle:
 			settingsAutoOn = !settingsAutoOn
@@ -187,14 +187,14 @@ func settingsWndProc(hwnd, uMsg, wParam, lParam uintptr) uintptr {
 				settingsSetServiceStatus(serverResponding(webURL))
 			}()
 		case id == stIdLogCombo && notif == cbnSelChange:
-			settingsLogReload()
+			settingsLogReload(true) // 切换日志文件：滚动到底部一次
 		case id == stIdLogRefresh:
 			settingsLogClear()
 		}
 		return 0
 	case wmTimer:
 		if int(wParam) == settingsLogTimer && settingsCat == 2 {
-			settingsLogReload() // 日志页自动刷新（跟随最新日志）
+			settingsLogReload(false) // 定时跟随：仅新写入且贴底时滚动
 		}
 		return 0
 	case wmClose:
@@ -374,7 +374,7 @@ func settingsLogClear() {
 	if err := os.WriteFile(p, nil, 0o644); err != nil {
 		log.Printf("clear log failed: %v", err)
 	}
-	settingsLogReload()
+	settingsLogReload(true) // 清空后刷新：滚动到底部
 }
 
 // textmetric 与 gdi32 TEXTMETRIC 对应，用于计算日志行高。
@@ -443,8 +443,9 @@ func settingsLogAtBottom(edit uintptr) bool {
 }
 
 // settingsLogReload 按当前选择重新加载日志到只读文本框（CRLF 换行）。
-// 仅当有新写入时才自动滚到底部；若用户手动上翻，则保持当前滚动位置不被拉回。
-func settingsLogReload() {
+// forceScroll：打开/切换日志页时传 true，无论内容是否变化都滚动到底部一次；
+// 定时跟随传 false——仅当有新写入且用户贴底时才自动滚到底，用户手动上翻则不打断。
+func settingsLogReload(forceScroll bool) {
 	name := settingsCurrentLogName()
 	if info := settingsWidgetKey(stIdLogInfo); info != 0 {
 		ip, _ := syscall.UTF16PtrFromString("日志：" + name + "　（只读，可复制）")
@@ -469,7 +470,20 @@ func settingsLogReload() {
 	if edit == 0 {
 		return
 	}
-	// 无新写入：不重设文本（避免把用户手动上翻的位置拉回顶部）
+
+	// 打开/切换到日志页（或清空/切换日志文件）：无论内容是否变化都滚到底部一次
+	if forceScroll {
+		if text != settingsLogLastContent {
+			ep, _ := syscall.UTF16PtrFromString(text)
+			pSendMessageW.Call(edit, wmSetText, 0, uintptr(unsafe.Pointer(ep)))
+			settingsLogLastContent = text
+		}
+		pSendMessageW.Call(edit, emSetSel, ^uintptr(0), ^uintptr(0))
+		pSendMessageW.Call(edit, emScrollCaret, 0, 0)
+		return
+	}
+
+	// 定时刷新（跟随最新日志）：无新写入则不重设文本（避免把用户手动上翻的位置拉回顶部）
 	if text == settingsLogLastContent {
 		return
 	}
