@@ -24,7 +24,7 @@
 
 <img src="docs/screenshot.png" alt="dsh-systray 设置窗口与下载进度" />
 
-dsh-systray 是一个 Windows / macOS 系统托盘应用：双击即可后台拉起 DeepSeek Harness Web 本地服务，托盘一望即知，无需记忆端口。设置窗口统一管理开机自启、版本号与检查更新，托盘图标随系统深浅色自适应，内置自动更新（启动 30 秒后静默检查新版本）。
+dsh-systray 是一个 Windows / macOS 系统托盘应用：双击即可后台拉起 DeepSeek Harness Web 本地服务，托盘一望即知，无需记忆端口。设置窗口统一管理开机自启、dsh-systray 与 DeepSeek Harness 版本号、检查更新，托盘图标随系统深浅色自适应，内置自动更新（启动 30 秒后静默检查新版本）。
 
 > [!IMPORTANT]
 > 这是一个社区维护的非官方工具，依赖快速演进的 `@deepseek-ai/dsh`。macOS 构建未经 Apple 公证，Windows 构建未做商业代码签名，首次运行可能需手动放行（Windows SmartScreen「仍要运行」/ macOS「右键 → 打开」）。首次启动约需 2–5 分钟自动部署环境。
@@ -33,8 +33,8 @@ dsh-systray 是一个 Windows / macOS 系统托盘应用：双击即可后台拉
 
 | 平台 | 架构 | 包 | 大小 | 下载 |
 | --- | --- | --- | --- | --- |
-| Windows | x64 | ZIP | 3.1 MB | [下载 Windows 版](https://github.com/refyon/dsh-systray/releases/latest/download/dsh-systray-windows-x64.zip) |
-| macOS | Intel + Apple Silicon | ZIP (.app) | 5.7 MB | [下载 macOS 版](https://github.com/refyon/dsh-systray/releases/latest/download/dsh-systray-macos-universal.zip) |
+| Windows | x64 | ZIP | 3.2 MB | [下载 Windows 版](https://github.com/refyon/dsh-systray/releases/latest/download/dsh-systray-windows-x64.zip) |
+| macOS | Intel + Apple Silicon | ZIP (.app) | 6.1 MB | [下载 macOS 版](https://github.com/refyon/dsh-systray/releases/latest/download/dsh-systray-macos-universal.zip) |
 
 ## 功能
 
@@ -42,7 +42,7 @@ dsh-systray 是一个 Windows / macOS 系统托盘应用：双击即可后台拉
 - **启动 loading**：服务启动期间显示加载窗口，就绪后弹窗提示（可一键打开 Web UI）
 - **托盘右键菜单**：
   - **打开 Web UI**：用默认浏览器打开 `http://127.0.0.1:<port>/`
-  - **设置**：打开设置窗口（左侧分类栏：常规-开机自启动 / 关于-版本号与检查更新 / 日志-只读可复制、可清空）
+  - **设置**：打开设置窗口（左侧分类栏：常规-开机自启动 / 关于-版本号（dsh-systray 与 DeepSeek Harness）与检查更新 / 日志-只读可复制、可清空）
   - **退出**：关闭后台服务器进程树（含外部启动的 dsh web 服务）并退出托盘
 - **单实例**：已在运行时再次双击会弹窗提示「已在运行中」，不产生第二个托盘图标
 - **依赖自检**：启动时检查 node / pnpm / harness 源码，缺失时运行内置安装脚本（含 `git clone` 拉取 harness 源码）
