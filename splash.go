@@ -384,8 +384,8 @@ func createSplashWindow(statusText string) uintptr {
 	pRegisterClassExW.Call(uintptr(unsafe.Pointer(&wc)))
 
 	titleText, _ := syscall.UTF16PtrFromString("DeepSeek Harness")
-	splashTitleFont = makeFont(20, 600)
-	splashStatusFont = makeFont(15, 400)
+	splashTitleFont = makeFont(22, 600)
+	splashStatusFont = makeFont(16, 400)
 	splashTitle = "DeepSeek Harness"
 	splashTextMu.Lock()
 	splashStatus = statusText
@@ -526,8 +526,8 @@ const (
 
 	dlgPad    = 20
 	dlgW      = 380
-	dlgBtnH   = 34
-	dlgBtnW   = 92
+	dlgBtnH   = 36
+	dlgBtnW   = 96
 	dlgBtnGap = 16
 
 	dialogColorMsg   = 0x00857066 // #667085
@@ -755,8 +755,8 @@ func runModernDialog(caption, message string, buttons []string, primary int) int
 	dialogPrimary = primary
 	dialogButtons = nil
 	dialogResult = -1
-	dialogMsgFont = makeFont(15, 400)
-	dialogBtnFont = makeFont(15, 600)
+	dialogMsgFont = makeFont(16, 400)
+	dialogBtnFont = makeFont(16, 600)
 
 	resultCh := make(chan int, 1)
 	go func() {
