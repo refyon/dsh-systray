@@ -167,7 +167,7 @@ func main() {
 	}
 	defer release()
 
-	// 清理上次更新遗留的旧程序文件；启动 30 秒后静默检查新版本并提示更新
+	// 清理上次更新遗留的旧程序文件；后台自动检查新版本并提示更新
 	cleanupStaleUpdateFiles()
 	startAutoUpdateCheck()
 

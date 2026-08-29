@@ -41,8 +41,8 @@ func withV(ver string) string {
 const (
 	updateRepoOwner      = "refyon"
 	updateRepoName       = "dsh-systray"
-	updateCheckDelay     = 30 * time.Second // 启动后 30 秒静默检查新版本
-	updateCheckInterval  = 24 * time.Hour   // 之后每 24 小时静默检查一次
+	updateCheckDelay     = 30 * time.Second // 启动后 30 秒检查新版本
+	updateCheckInterval  = 24 * time.Hour   // 之后每 24 小时检查一次
 	updateAPITimeout     = 8 * time.Second  // 版本接口单候选超时（直连失败回退镜像）
 	updateDLTimeout      = 5 * time.Minute  // 单镜像单次下载上限
 	updateMaxBodySize    = 4 << 20          // 版本接口响应上限 4MB
@@ -148,16 +148,16 @@ type latestRelease struct {
 }
 
 // startAutoUpdateCheck 启动后台定时检查：
-//  1. 启动后 30 秒静默检查一次新版本；
-//  2. 从启动时间起每 24 小时再静默检查一次。
+//  1. 启动后 30 秒检查一次新版本；
+//  2. 从启动时间起每 24 小时再检查一次。
 // 每次检查若有新版本且当前没有正在使用的检查/更新窗口（updateFlowBusy），才提示用户。
 func startAutoUpdateCheck() {
-	// 规则1：启动后 30 秒静默检查一次
+	// 规则1：启动后 30 秒检查一次
 	go func() {
 		time.Sleep(updateCheckDelay)
 		autoCheckUpdate()
 	}()
-	// 规则2：从启动时间起每 24 小时静默检查一次
+	// 规则2：从启动时间起每 24 小时检查一次
 	go func() {
 		ticker := time.NewTicker(updateCheckInterval)
 		defer ticker.Stop()

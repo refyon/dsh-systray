@@ -24,7 +24,7 @@
 
 <img src="docs/screenshot.png" alt="dsh-systray 设置窗口（常规 / 关于）" />
 
-dsh-systray 是一个 Windows / macOS 系统托盘应用：双击即可后台拉起 DeepSeek Harness Web 本地服务，托盘一望即知，无需记忆端口。设置窗口统一管理开机自启、dsh-systray 与 DeepSeek Harness 版本号、检查更新，托盘图标随系统深浅色自适应，内置自动更新（启动 30 秒后静默检查新版本）。
+dsh-systray 是一个 Windows / macOS 系统托盘应用：双击即可后台拉起 DeepSeek Harness Web 本地服务，托盘一望即知，无需记忆端口。设置窗口统一管理开机自启、dsh-systray 与 DeepSeek Harness 版本号、检查更新，托盘图标随系统深浅色自适应，内置自动更新。
 
 > [!IMPORTANT]
 > 这是一个社区维护的非官方工具，依赖快速演进的 `@deepseek-ai/dsh`。macOS 构建未经 Apple 公证，Windows 构建未做商业代码签名，首次运行可能需手动放行（Windows SmartScreen「仍要运行」/ macOS「右键 → 打开」）。首次启动约需 2–5 分钟自动部署环境。
@@ -46,7 +46,7 @@ dsh-systray 是一个 Windows / macOS 系统托盘应用：双击即可后台拉
   - **退出**：关闭后台服务器进程树（含外部启动的 dsh web 服务）并退出托盘
 - **单实例**：已在运行时再次双击会弹窗提示「已在运行中」，不产生第二个托盘图标
 - **依赖自检**：启动时检查 node / pnpm / harness 源码，缺失时运行内置安装脚本（含 `git clone` 拉取 harness 源码）
-- **自动更新**：启动 30 秒后静默检查 GitHub Releases 新版本，发现新版本时进度窗口下载并提示「立即更新 / 稍后」，安装完成自动重启（Windows / macOS 一致）
+- **自动更新**：后台自动检查 GitHub Releases 新版本，发现新版本时进度窗口下载并提示「立即更新 / 稍后」，安装完成自动重启（Windows / macOS 一致）
 
 ## 配置
 
