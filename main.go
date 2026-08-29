@@ -392,8 +392,9 @@ func onReady() {
 	systray.SetTitle(appName)
 	systray.SetTooltip(appName)
 
-	// 状态说明行（启动中 / 运行中 / 启动失败）+ 「打开 Web UI」——未就绪时隐藏“打开 Web UI”、显示状态行
+	// 状态说明行：禁用样式（置灰、不可点击），仅作状态提示；「打开 Web UI」未就绪时隐藏、就绪时显示可点
 	menuStatus = systray.AddMenuItem("服务启动中…", "后台服务状态")
+	menuStatus.Disable() // 置灰不可点：点击不触发任何动作
 	menuOpen = systray.AddMenuItem("打开 Web UI", "打开网页端界面")
 	refreshServiceMenu()
 	// 周期刷新，保证每次打开托盘菜单都反映服务实时状态
