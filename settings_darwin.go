@@ -54,6 +54,15 @@ func dshSettingsGoLoadLog(which C.int) *C.char {
 	return C.CString(text)
 }
 
+//export dshSettingsGoClearLog
+func dshSettingsGoClearLog(which C.int) {
+	name := "app.log"
+	if which == 1 {
+		name = "server.log"
+	}
+	_ = os.WriteFile(filepath.Join(logDir, name), nil, 0o644)
+}
+
 // openSettingsWindow 打开原生 Cocoa 设置窗口（左侧分类栏 + 右侧内容面板）。
 func openSettingsWindow() {
 	cs := C.CString(withV(appVersion))

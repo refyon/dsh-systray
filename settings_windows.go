@@ -3,6 +3,7 @@
 package main
 
 import (
+	"log"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -163,7 +164,7 @@ func settingsWndProc(hwnd, uMsg, wParam, lParam uintptr) uintptr {
 		case id == stIdLogCombo && notif == cbnSelChange:
 			settingsLogReload()
 		case id == stIdLogRefresh:
-			settingsLogReload()
+			settingsLogClear()
 		}
 		return 0
 	case wmTimer:
@@ -325,16 +326,31 @@ func makeMonoFont(height int32) uintptr {
 	return h
 }
 
-// settingsLogReload 按当前选择重新加载日志到只读文本框（CRLF 换行 + 自动滚到底部）。
-func settingsLogReload() {
+// settingsCurrentLogName 返回当前下拉选中的日志文件名。
+func settingsCurrentLogName() string {
 	name := "app.log"
-	combo := settingsWidgetKey(stIdLogCombo)
-	if combo != 0 {
+	if combo := settingsWidgetKey(stIdLogCombo); combo != 0 {
 		sel, _, _ := pSendMessageW.Call(combo, cbGetCurSel, 0, 0)
 		if sel == 1 {
 			name = "server.log"
 		}
 	}
+	return name
+}
+
+// settingsLogClear 清空所选日志文件（截断为 0 字节），并刷新显示。
+func settingsLogClear() {
+	name := settingsCurrentLogName()
+	p := filepath.Join(logDir, name)
+	if err := os.WriteFile(p, nil, 0o644); err != nil {
+		log.Printf("clear log failed: %v", err)
+	}
+	settingsLogReload()
+}
+
+// settingsLogReload 按当前选择重新加载日志到只读文本框（CRLF 换行 + 自动滚到底部）。
+func settingsLogReload() {
+	name := settingsCurrentLogName()
 	if info := settingsWidgetKey(stIdLogInfo); info != 0 {
 		ip, _ := syscall.UTF16PtrFromString("日志：" + name + "　（只读，可复制）")
 		pSendMessageW.Call(info, wmSetText, 0, uintptr(unsafe.Pointer(ip)))
@@ -678,7 +694,7 @@ func createSettingsWindow() uintptr {
 		settingsPaneLog = append(settingsPaneLog, stIdLogCombo)
 	}
 
-	lr, _ := syscall.UTF16PtrFromString("刷新")
+	lr, _ := syscall.UTF16PtrFromString("清空")
 	logRefresh, _, _ := pCreateWindowExW.Call(
 		0, uintptr(unsafe.Pointer(btnCls)), uintptr(unsafe.Pointer(lr)),
 		wsChild|wsVisible|wsTabStop|bsOwnDraw,

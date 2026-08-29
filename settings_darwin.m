@@ -10,6 +10,8 @@ extern void dshSettingsGoAutostartToggled(int on);
 extern void dshSettingsGoCheckUpdate(void);
 // 返回 malloc 的日志文本 C 字符串（调用方 free）；which=0 app.log / 1 server.log
 char* dshSettingsGoLoadLog(int which);
+// 清空日志文件（which=0 app.log / 1 server.log）
+void dshSettingsGoClearLog(int which);
 
 @interface DSHSetController : NSObject <NSTableViewDataSource, NSTableViewDelegate>
 @property (nonatomic, strong) NSWindow *window;
@@ -103,6 +105,12 @@ static DSHSetController *g_ctrl = nil;
 
 - (void)refreshLogClicked:(id)sender { [self refreshLog]; }
 - (void)logChanged:(id)sender { [self refreshLog]; }
+- (void)clearLogClicked:(id)sender {
+    int which = (self.logPopup == nil) ? 0 : (int)self.logPopup.indexOfSelectedItem;
+    if (which < 0) which = 0;
+    dshSettingsGoClearLog(which);
+    [self refreshLog];
+}
 
 - (void)buildWindowWithVersion:(const char *)ver autostart:(int)autoOn {
     NSRect contentRect = NSMakeRect(0, 0, 560, 360);
@@ -177,10 +185,10 @@ static DSHSetController *g_ctrl = nil;
     [self.logPane addSubview:self.logPopup];
 
     NSButton *refresh = [[NSButton alloc] initWithFrame:NSMakeRect(140, 286, 90, 28)];
-    refresh.title = @"刷新";
+    refresh.title = @"清空";
     refresh.bezelStyle = NSBezelStyleRounded;
     refresh.target = self;
-    refresh.action = @selector(refreshLogClicked:);
+    refresh.action = @selector(clearLogClicked:);
     [self.logPane addSubview:refresh];
 
     NSScrollView *logSV = [[NSScrollView alloc] initWithFrame:NSMakeRect(0, 20, 392, 250)];
