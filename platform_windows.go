@@ -697,9 +697,9 @@ func startUpdateApply(rel *latestRelease) {
 	defer os.RemoveAll(dir)
 
 	zipPath := filepath.Join(dir, assetName)
-	splash.Update("正在下载新版本…", 0.08)
+	splash.Update("正在下载 "+assetName+"…", 0.08)
 	if err := downloadFileWithProgress(ctx, zipURL, zipPath, func(pct float64) {
-		splash.Update(fmt.Sprintf("正在下载新版本（%.0f%%）…", pct*100), 0.08+0.52*pct)
+		splash.Update(fmt.Sprintf("正在下载 %s（%.0f%%）…", assetName, pct*100), 0.08+0.52*pct)
 	}); err != nil {
 		splash.Close()
 		if ctx.Err() != nil {

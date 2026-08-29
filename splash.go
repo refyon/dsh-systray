@@ -453,7 +453,9 @@ func startSplash(text string) *SplashState {
 				f = 1
 			}
 			splashProgressBits.Store(math.Float64bits(f))
-			pInvalidateRect.Call(splashHwnd, 0, 1)
+			// 仅失效进度条区域且不擦除背景：高频更新（下载进度）不做整窗重绘，避免闪烁。
+			bar := rect{int32(pad), splashBarY, int32(pad+contentW), splashBarY + int32(barH)}
+			pInvalidateRect.Call(splashHwnd, uintptr(unsafe.Pointer(&bar)), 0)
 		}
 	}
 	st.Close = func() {
