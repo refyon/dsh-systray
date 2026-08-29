@@ -331,9 +331,9 @@ func setWindowIcon(hwnd uintptr) {
 	}
 }
 
-// makeFont 创建 Segoe UI 字体（height 像素、weight 400/600）。
-// fontCandidates 与网站 CSS 字体栈一致：Google Sans → Product Sans → Roboto → Segoe UI
-var fontCandidates = []string{"Google Sans", "Product Sans", "Roboto", "Segoe UI"}
+// makeFont 创建字体（height 像素、weight 400/600）。
+// Windows 优先用原生「微软雅黑 UI」——中英文统一、系统原生渲染最清晰（避免拉丁/中文两种字体混排）。
+var fontCandidates = []string{"Microsoft YaHei UI", "Segoe UI"}
 
 func selectedFace() string {
 	for _, name := range fontCandidates {
