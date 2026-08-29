@@ -32,12 +32,15 @@ var (
 	quitting           atomic.Bool
 	keepServerRunning  atomic.Bool
 	harnessDirExplicit bool
+	// singleInstanceRelease 单实例互斥体释放函数（更新重启前调用，避免新进程被误判重复运行）
+	singleInstanceRelease func()
 )
 
 type appConfig struct {
 	Port              int    `json:"port"`
 	HarnessDir        string `json:"harnessDir"`
 	StartupTimeoutSec int    `json:"startupTimeoutSec"`
+	UpdateMirror      string `json:"updateMirror"`
 }
 
 // configFilePath 用户配置目录下的 config.json（Windows: %APPDATA%\dsh-systray；macOS: ~/Library/Application Support/dsh-systray）。
@@ -77,6 +80,9 @@ func applyConfigFile(cfg *appConfig, path string) {
 	}
 	if f.StartupTimeoutSec != 0 {
 		cfg.StartupTimeoutSec = f.StartupTimeoutSec
+	}
+	if f.UpdateMirror != "" {
+		cfg.UpdateMirror = f.UpdateMirror
 	}
 }
 
@@ -133,6 +139,7 @@ func saveConfig(cfg appConfig) {
 
 func main() {
 	cfg := loadConfig()
+	updateMirrorOverride = cfg.UpdateMirror
 	port = cfg.Port
 	webURL = fmt.Sprintf("http://127.0.0.1:%d/", port)
 	harnessDir = cfg.HarnessDir
@@ -152,6 +159,7 @@ func main() {
 	log.SetFlags(log.LstdFlags)
 
 	release, acquired := acquireSingleInstance()
+	singleInstanceRelease = release
 	if !acquired {
 		// 已在运行：弹窗提示后退出，不产生第二个托盘图标。
 		showMessageBox("DeepSeek Harness 已在运行中，请使用系统托盘图标操作。", appName)
@@ -304,6 +312,7 @@ func onReady() {
 
 func onExit() {
 	quitting.Store(true)
+	cancelActiveUpdate() // 终止进行中的更新下载/安装
 	if !keepServerRunning.Load() {
 		killServer()
 	} else {

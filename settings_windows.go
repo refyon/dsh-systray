@@ -486,7 +486,7 @@ func createSettingsWindow() uintptr {
 		pSendMessageW.Call(verTitle, wmSetFont, settingsFontBody, 1)
 		settingsPaneAbout = append(settingsPaneAbout, stIdVerTitle)
 	}
-	verText := appVersion
+	verText := withV(appVersion)
 	vv, _ := syscall.UTF16PtrFromString(verText)
 	verValue, _, _ := pCreateWindowExW.Call(
 		0,

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -14,6 +15,7 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -22,21 +24,70 @@ import (
 var appVersion = "dev"
 
 func init() {
-	// 归一化版本号：无论构建注入的是 v0.3.1 还是 0.3.1，所有展示/比较均不带前导 v。
+	// 归一化版本号：无论构建注入的是 v0.3.1 还是 0.3.1，内部统一不带前导 v（展示时由 withV 补 v）。
 	appVersion = strings.TrimPrefix(appVersion, "v")
+}
+
+// withV 版本号统一带一个前导 v 用于展示；已带 v 或为 dev/空则不再加，避免出现 vv0.3.1。
+func withV(ver string) string {
+	ver = strings.TrimPrefix(ver, "v")
+	if ver == "" || ver == "dev" {
+		return ver
+	}
+	return "v" + ver
 }
 
 const (
 	updateRepoOwner   = "refyon"
 	updateRepoName    = "dsh-systray"
 	updateCheckDelay  = 30 * time.Second // 启动后 30 秒静默检查新版本
-	updateAPITimeout  = 20 * time.Second
-	updateDLTimeout   = 10 * time.Minute
-	updateMaxBodySize = 4 << 20 // 版本接口响应上限 4MB
+	updateAPITimeout  = 10 * time.Second // 版本接口单候选超时（直连失败回退镜像）
+	updateDLTimeout   = 5 * time.Minute  // 单镜像单次下载上限
+	updateMaxBodySize = 4 << 20          // 版本接口响应上限 4MB
 )
 
 // updateMirrors 下载地址前缀：先直连 GitHub，失败再依次回退镜像（国内网络友好）。
-var updateMirrors = []string{"", "https://mirror.ghproxy.com/"}
+// 可在 config.json 的 updateMirror 指定一个可用镜像，会插到最前优先尝试。
+var updateMirrors = []string{
+	"",
+	"https://ghfast.top/",
+	"https://ghproxy.net/",
+	"https://gh-proxy.com/",
+	"https://gh.llkk.cc/",
+	"https://github.moeyy.xyz/",
+	"https://mirror.ghproxy.com/",
+}
+
+// updateMirrorOverride 用户在 config.json 配置的 updateMirror（可空）。
+var updateMirrorOverride string
+
+// 进行中更新的取消控制（托盘退出时调用 cancelActiveUpdate 终止下载/安装）。
+var (
+	updateMu     sync.Mutex
+	activeCancel context.CancelFunc
+)
+
+// cancelActiveUpdate 取消正在进行的更新（下载/安装）；无进行中更新则忽略。
+func cancelActiveUpdate() {
+	updateMu.Lock()
+	if activeCancel != nil {
+		activeCancel()
+	}
+	updateMu.Unlock()
+}
+
+// registerActiveUpdate 登记/取消登记当前更新取消句柄。
+func registerActiveUpdate(cancel context.CancelFunc) {
+	updateMu.Lock()
+	activeCancel = cancel
+	updateMu.Unlock()
+}
+
+func clearActiveUpdate() {
+	updateMu.Lock()
+	activeCancel = nil
+	updateMu.Unlock()
+}
 
 type releaseAsset struct {
 	Name               string `json:"name"`
@@ -74,11 +125,11 @@ func autoCheckUpdate() {
 		log.Printf("user declined update %s", rel.TagName)
 		return
 	}
-	if err := downloadAndApplyUpdate(rel); err != nil {
-		log.Printf("update failed: %v", err)
-		showMessageBox("更新失败：\n"+err.Error()+"\n\n请稍后重试，或前往 GitHub Releases 手动下载。", appName)
-	}
+	startUpdateApply(rel)
 }
+
+// startUpdateApply 应用更新：各平台实现。Windows 派生独立更新进程（退出主程序→进度窗口下载/安装→自动重启）；
+// macOS 进程内下载并用辅助脚本替换 .app 后重启。声明于此，由 platform_*.go 实现。
 
 // checkForUpdatesManual 手动检查更新（设置页触发）：有新版弹确认并更新，无新版提示已是最新。
 func checkForUpdatesManual() {
@@ -92,39 +143,56 @@ func checkForUpdatesManual() {
 		return
 	}
 	if !isNewerVersion(rel.TagName, appVersion) {
-		showMessageBox(fmt.Sprintf("当前已是最新版本（%s）。", appVersion), appName)
+		showMessageBox(fmt.Sprintf("当前已是最新版本（%s）。", withV(appVersion)), appName)
 		return
 	}
 	if askUpdateDialog(strings.TrimPrefix(rel.TagName, "v")) {
-		if err := downloadAndApplyUpdate(rel); err != nil {
-			showMessageBox("更新失败：\n"+err.Error()+"\n\n请稍后重试，或前往 GitHub Releases 手动下载。", appName)
-		}
+		// 异步执行，避免阻塞设置页 UI 线程（设置窗口在下载期间保持可响应/可关闭）。
+		go startUpdateApply(rel)
 	}
 }
 
-// fetchLatestRelease 查询 GitHub Releases 最新版本。
+// fetchLatestRelease 查询 GitHub Releases 最新版本；直连失败时依次回退镜像前缀（国内 DNS/网络不稳时更可靠）。
 func fetchLatestRelease() (*latestRelease, error) {
-	url := fmt.Sprintf("https://api.github.com/repos/%s/%s/releases/latest", updateRepoOwner, updateRepoName)
+	direct := fmt.Sprintf("https://api.github.com/repos/%s/%s/releases/latest", updateRepoOwner, updateRepoName)
+	var candidates []string
+	candidates = append(candidates, direct)
+	for _, m := range buildMirrors() {
+		if m != "" {
+			candidates = append(candidates, m+direct)
+		}
+	}
+
 	client := &http.Client{Timeout: updateAPITimeout}
-	req, err := http.NewRequest("GET", url, nil)
-	if err != nil {
-		return nil, err
+	var lastErr error
+	for _, u := range candidates {
+		req, err := http.NewRequest("GET", u, nil)
+		if err != nil {
+			lastErr = err
+			continue
+		}
+		req.Header.Set("User-Agent", "dsh-systray/"+appVersion)
+		req.Header.Set("Accept", "application/vnd.github+json")
+		resp, err := client.Do(req)
+		if err != nil {
+			lastErr = err
+			continue
+		}
+		if resp.StatusCode != http.StatusOK {
+			resp.Body.Close()
+			lastErr = fmt.Errorf("HTTP %d", resp.StatusCode)
+			continue
+		}
+		var rel latestRelease
+		if err := json.NewDecoder(io.LimitReader(resp.Body, updateMaxBodySize)).Decode(&rel); err != nil {
+			resp.Body.Close()
+			lastErr = err
+			continue
+		}
+		resp.Body.Close()
+		return &rel, nil
 	}
-	req.Header.Set("User-Agent", "dsh-systray/"+appVersion)
-	req.Header.Set("Accept", "application/vnd.github+json")
-	resp, err := client.Do(req)
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("版本接口返回 HTTP %d", resp.StatusCode)
-	}
-	var rel latestRelease
-	if err := json.NewDecoder(io.LimitReader(resp.Body, updateMaxBodySize)).Decode(&rel); err != nil {
-		return nil, err
-	}
-	return &rel, nil
+	return nil, lastErr
 }
 
 // isNewerVersion 判断最新标签是否比当前版本新（忽略标签前导 v）。
@@ -184,12 +252,12 @@ func downloadAndApplyUpdate(rel *latestRelease) error {
 	defer os.RemoveAll(tmp)
 
 	zipPath := filepath.Join(tmp, assetName)
-	if err := downloadFileTo(zipURL, zipPath); err != nil {
+	if err := downloadFileTo(context.Background(), zipURL, zipPath); err != nil {
 		return fmt.Errorf("下载更新包失败：%w", err)
 	}
 	if sumURL != "" {
 		sumPath := filepath.Join(tmp, "SHA256SUMS.txt")
-		if err := downloadFileTo(sumURL, sumPath); err != nil {
+		if err := downloadFileTo(context.Background(), sumURL, sumPath); err != nil {
 			log.Printf("checksum file unavailable: %v", err)
 		} else if err := verifyChecksum(zipPath, assetName, sumPath); err != nil {
 			return err
@@ -210,12 +278,20 @@ func downloadAndApplyUpdate(rel *latestRelease) error {
 	return replaceAndRelaunch(payload)
 }
 
-// downloadFileTo 下载到本地文件；直连失败时依次回退镜像前缀。
-func downloadFileTo(url, dest string) error {
+// downloadFileTo 下载到本地文件；直连失败时依次回退镜像前缀（无进度回调）。
+func downloadFileTo(ctx context.Context, url, dest string) error {
+	return downloadFileWithProgress(ctx, url, dest, nil)
+}
+
+// downloadFileWithProgress 下载到本地文件；直连 GitHub 失败时依次回退镜像前缀，
+// 支持进度回调（pct 0~1，nil 表示不回调）与取消（ctx 取消即中断）。config.json 的 updateMirror 插到最前优先尝试。
+func downloadFileWithProgress(ctx context.Context, url, dest string, onProgress func(pct float64)) error {
 	var lastErr error
-	for _, prefix := range updateMirrors {
-		if err := downloadOnce(prefix+url, dest); err == nil {
+	for _, prefix := range buildMirrors() {
+		if err := downloadOnce(ctx, prefix+url, dest, onProgress); err == nil {
 			return nil
+		} else if ctx.Err() != nil {
+			return ctx.Err() // 已取消，直接返回
 		} else {
 			lastErr = err
 		}
@@ -223,9 +299,23 @@ func downloadFileTo(url, dest string) error {
 	return lastErr
 }
 
-func downloadOnce(url, dest string) error {
+// buildMirrors 返回镜像优先顺序：用户配置镜像 → 默认列表。
+func buildMirrors() []string {
+	if updateMirrorOverride == "" {
+		return updateMirrors
+	}
+	out := []string{updateMirrorOverride}
+	for _, m := range updateMirrors {
+		if m != updateMirrorOverride {
+			out = append(out, m)
+		}
+	}
+	return out
+}
+
+func downloadOnce(ctx context.Context, url, dest string, onProgress func(pct float64)) error {
 	client := &http.Client{Timeout: updateDLTimeout}
-	req, err := http.NewRequest("GET", url, nil)
+	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
 	if err != nil {
 		return err
 	}
@@ -243,8 +333,28 @@ func downloadOnce(url, dest string) error {
 		return err
 	}
 	defer out.Close()
-	_, err = io.Copy(out, resp.Body)
-	return err
+	buf := make([]byte, 256*1024)
+	var done int64
+	total := resp.ContentLength
+	for {
+		n, rerr := resp.Body.Read(buf)
+		if n > 0 {
+			if _, werr := out.Write(buf[:n]); werr != nil {
+				return werr
+			}
+			done += int64(n)
+			if onProgress != nil && total > 0 {
+				onProgress(float64(done) / float64(total))
+			}
+		}
+		if rerr == io.EOF {
+			break
+		}
+		if rerr != nil {
+			return rerr
+		}
+	}
+	return nil
 }
 
 // verifyChecksum 用 Release 附带的 SHA256SUMS.txt 校验更新包。
@@ -321,10 +431,15 @@ func updatePayloadPath(extractDir string) (string, error) {
 
 // cleanupStaleUpdateFiles 清理上次更新遗留的旧程序文件（Windows：exe.old）。
 func cleanupStaleUpdateFiles() {
-	if runtime.GOOS != "windows" {
-		return
+	if runtime.GOOS == "windows" {
+		if exe, err := os.Executable(); err == nil {
+			_ = os.Remove(exe + ".old")
+		}
 	}
-	if exe, err := os.Executable(); err == nil {
-		_ = os.Remove(exe + ".old")
+	// 清理更新中断（如退出托盘/强制结束）遗留的临时更新目录
+	if dirs, err := filepath.Glob(filepath.Join(os.TempDir(), "dsh-systray-update-*")); err == nil {
+		for _, d := range dirs {
+			_ = os.RemoveAll(d)
+		}
 	}
 }

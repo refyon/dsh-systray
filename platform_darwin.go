@@ -293,7 +293,7 @@ func showReadyPrompt(url string) {
 
 // askUpdateDialog 提示用户发现新版本：true=立即更新。
 func askUpdateDialog(newVer string) bool {
-	msg := fmt.Sprintf("发现新版本 %s（当前版本 %s）。\n是否立即下载并更新？", newVer, appVersion)
+	msg := fmt.Sprintf("发现新版本 %s（当前版本 %s）。\n是否立即下载并更新？", withV(newVer), withV(appVersion))
 	script := fmt.Sprintf(`display dialog "%s" with title "%s" buttons {"稍后", "立即更新"} default button "立即更新"`,
 		escapeAppleScript(msg), appName)
 	out, err := runAppleScript(script)
@@ -326,6 +326,10 @@ func replaceAndRelaunch(newApp string) error {
 	if err := cmd.Start(); err != nil {
 		return fmt.Errorf("启动更新脚本失败：%w", err)
 	}
+	// 与 Windows 对称：重启前主动释放单实例锁，避免新实例被误判重复运行。
+	if singleInstanceRelease != nil {
+		singleInstanceRelease()
+	}
 	log.Printf("update applied via helper, relaunching %s", bundle)
 	os.Exit(0)
 	return nil
@@ -355,4 +359,12 @@ func checkWritable(dir string) error {
 	name := f.Name()
 	f.Close()
 	return os.Remove(name)
+}
+
+// startUpdateApply macOS 保持进程内更新：下载 → 辅助脚本替换 .app → 自动重启。
+func startUpdateApply(rel *latestRelease) {
+	if err := downloadAndApplyUpdate(rel); err != nil {
+		log.Printf("update failed: %v", err)
+		showMessageBox("更新失败：\n"+err.Error()+"\n\n请稍后重试，或前往 GitHub Releases 手动下载。", appName)
+	}
 }

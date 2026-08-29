@@ -28,6 +28,8 @@ const (
 	registryPath = `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`
 	registryName = `DeepSeekHarness`
 	mutexName    = `Local\dsh-systray-single-instance`
+	// postUpdateEnv 更新后重启的新进程环境变量标记：允许其接管（旧实例正退出）。
+	postUpdateEnv = `DSH_SYSTRAY_POST_UPDATE`
 	// registryPersonalizeKey 系统主题个性化键：SystemUsesLightTheme=1 浅色任务栏，0 深色任务栏。
 	registryPersonalizeKey = `Software\Microsoft\Windows\CurrentVersion\Themes\Personalize`
 )
@@ -538,6 +540,10 @@ func acquireSingleInstance() (func(), bool) {
 	// 用 Call 返回的 err（GetLastError 的即时值）判断互斥体是否已存在。
 	// 不要单独再调 GetLastError：期间运行时可能重置 last-error，导致误判。
 	if callErr == syscall.ERROR_ALREADY_EXISTS {
+		// 更新后重启：旧实例正在退出，允许新实例接管（否则会被误判为重复运行而退场）。
+		if os.Getenv(postUpdateEnv) == "1" {
+			return func() { closeHandle.Call(h) }, true
+		}
 		closeHandle.Call(h)
 		return func() {}, false
 	}
@@ -571,32 +577,181 @@ func showReadyPrompt(url string) {
 
 // askUpdateDialog 提示用户发现新版本：true=立即更新。
 func askUpdateDialog(newVer string) bool {
-	msg := fmt.Sprintf("发现新版本 %s（当前版本 %s）。\n是否立即下载并更新？", newVer, appVersion)
+	msg := fmt.Sprintf("发现新版本 %s（当前版本 %s）。\n是否立即下载并更新？", withV(newVer), withV(appVersion))
 	return runModernDialog(appName, msg, []string{"立即更新", "稍后"}, 0) == 0
 }
 
 // replaceAndRelaunch 替换当前 exe 并重启。Windows 不允许覆盖正在运行的 exe，
 // 采用「改名旧程序 → 换入新程序 → 重启」方案（minio/selfupdate 同款思路）。
+// 新 exe 可能位于其他盘符（临时目录在 C:、程序在 D:），os.Rename 无法跨盘移动，
+// 因此先把新 exe 复制到自身目录的同盘临时文件（.new），再做同盘改名换入。
 func replaceAndRelaunch(newExe string) error {
 	exe, err := os.Executable()
 	if err != nil {
 		return fmt.Errorf("无法定位当前程序路径：%w", err)
 	}
+
+	// 复制到自身目录（与 exe 同盘）的临时文件，规避跨盘 rename 失败
+	tmpTarget := exe + ".new"
+	if err := copyFile(newExe, tmpTarget); err != nil {
+		return fmt.Errorf("无法写入新程序：%w", err)
+	}
+	defer os.Remove(tmpTarget)
+
 	oldPath := exe + ".old"
 	_ = os.Remove(oldPath)
 	if err := os.Rename(exe, oldPath); err != nil {
+		_ = os.Remove(tmpTarget)
 		return fmt.Errorf("无法重命名当前程序（所在目录可能无写权限）：%w", err)
 	}
-	if err := os.Rename(newExe, exe); err != nil {
+	if err := os.Rename(tmpTarget, exe); err != nil {
 		_ = os.Rename(oldPath, exe) // 回滚，恢复旧程序
 		return fmt.Errorf("无法写入新程序：%w", err)
 	}
+	if singleInstanceRelease != nil {
+		singleInstanceRelease() // 释放单实例互斥体，便于新进程立即接管
+	}
 	cmd := exec.Command(exe)
 	cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
+	cmd.Env = append(os.Environ(), postUpdateEnv+"=1") // 标记为更新后重启，允许接管单实例
 	if err := cmd.Start(); err != nil {
 		return fmt.Errorf("更新完成但重启失败：%w", err)
 	}
 	log.Printf("update applied, relaunching %s", exe)
 	os.Exit(0)
 	return nil
+}
+
+// copyFile 复制源文件到目标；目标先写临时再改名（避免复制中途损坏）。
+func copyFile(src, dst string) error {
+	in, err := os.Open(src)
+	if err != nil {
+		return err
+	}
+	defer in.Close()
+	tmp := dst + ".tmp"
+	out, err := os.Create(tmp)
+	if err != nil {
+		return err
+	}
+	if _, err := io.Copy(out, in); err != nil {
+		out.Close()
+		os.Remove(tmp)
+		return err
+	}
+	if err := out.Close(); err != nil {
+		os.Remove(tmp)
+		return err
+	}
+	return os.Rename(tmp, dst)
+}
+
+// startUpdateApply Windows：进程内执行更新——进度窗口下载 → 校验 → 解压 → 替换 → 自动重启。
+// 进度窗口关闭时提示是否取消；确认取消则终止下载/更新（可取消 context）。
+func startUpdateApply(rel *latestRelease) {
+	assetName := updateAssetName()
+	var zipURL, sumURL string
+	for _, a := range rel.Assets {
+		switch a.Name {
+		case assetName:
+			zipURL = a.BrowserDownloadURL
+		case "SHA256SUMS.txt":
+			sumURL = a.BrowserDownloadURL
+		}
+	}
+	if zipURL == "" {
+		showMessageBox("未找到适用于当前系统的更新包。", appName)
+		return
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	registerActiveUpdate(cancel)
+	defer clearActiveUpdate()
+
+	splash := startSplash("正在准备更新…")
+	splash.SetOnClose(func() bool {
+		if askCancelUpdate() {
+			log.Printf("update cancelled by user")
+			cancel()
+			return true // 关闭进度窗口并中止
+		}
+		return false // 继续更新，不关闭窗口
+	})
+
+	dir, err := os.MkdirTemp("", "dsh-systray-update-*")
+	if err != nil {
+		splash.Close()
+		showMessageBox("创建临时目录失败：\n"+err.Error(), appName)
+		return
+	}
+	defer os.RemoveAll(dir)
+
+	zipPath := filepath.Join(dir, assetName)
+	splash.Update("正在下载新版本…", 0.08)
+	if err := downloadFileWithProgress(ctx, zipURL, zipPath, func(pct float64) {
+		splash.Update(fmt.Sprintf("正在下载新版本（%.0f%%）…", pct*100), 0.08+0.52*pct)
+	}); err != nil {
+		splash.Close()
+		if ctx.Err() != nil {
+			return // 用户取消，不做错误提示
+		}
+		showMessageBox("下载更新包失败：\n"+err.Error()+"\n\n请检查网络，或稍后重试。", appName)
+		return
+	}
+
+	if sumURL != "" {
+		sumPath := filepath.Join(dir, "SHA256SUMS.txt")
+		if err := downloadFileTo(ctx, sumURL, sumPath); err != nil && ctx.Err() != nil {
+			splash.Close()
+			return // 用户取消
+		} else if err == nil {
+			if err := verifyChecksum(zipPath, assetName, sumPath); err != nil {
+				splash.Close()
+				showMessageBox("更新包校验失败：\n"+err.Error(), appName)
+				return
+			}
+		} else {
+			log.Printf("checksum file unavailable: %v", err)
+		}
+	}
+
+	if ctx.Err() != nil {
+		splash.Close()
+		return
+	}
+	splash.Update("正在解压安装…", 0.65)
+	extractDir := filepath.Join(dir, "extract")
+	if err := os.MkdirAll(extractDir, 0o755); err != nil {
+		splash.Close()
+		showMessageBox("解压失败：\n"+err.Error(), appName)
+		return
+	}
+	if err := extractUpdateZip(zipPath, extractDir); err != nil {
+		splash.Close()
+		showMessageBox("解压更新包失败：\n"+err.Error(), appName)
+		return
+	}
+	payload, err := updatePayloadPath(extractDir)
+	if err != nil {
+		splash.Close()
+		showMessageBox("更新包内容异常：\n"+err.Error(), appName)
+		return
+	}
+	if ctx.Err() != nil {
+		splash.Close()
+		return
+	}
+	splash.Update("正在更新程序…", 0.9)
+	if err := replaceAndRelaunch(payload); err != nil {
+		splash.Close()
+		showMessageBox("重启失败：\n"+err.Error()+"\n\n程序已替换，请手动重启。", appName)
+		return
+	}
+	// replaceAndRelaunch 成功后内部 os.Exit，不会走到这里
+}
+
+// askCancelUpdate 关闭下载进度窗口时询问是否取消更新：true=确认取消。
+func askCancelUpdate() bool {
+	return runModernDialog(appName, "是否取消更新？", []string{"取消更新", "继续更新"}, 0) == 0
 }

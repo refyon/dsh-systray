@@ -32,7 +32,7 @@ func dshSettingsGoCheckUpdate() {
 
 // openSettingsWindow 打开原生 Cocoa 设置窗口（左侧分类栏 + 右侧内容面板）。
 func openSettingsWindow() {
-	cs := C.CString(appVersion)
+	cs := C.CString(withV(appVersion))
 	defer C.free(unsafe.Pointer(cs))
 	auto := 0
 	if isAutostartEnabled() {

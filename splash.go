@@ -6,6 +6,7 @@ import (
 	"math"
 	"runtime"
 	"strings"
+	"sync/atomic"
 	"syscall"
 	"unsafe"
 )
@@ -129,6 +130,9 @@ var (
 	splashFillBrush  uintptr
 	splashStatusH    int32
 	splashBarY       int32
+	// splashOnClose：用户点窗口关闭按钮时的回调，返回 true 允许关闭并中止，false 保持窗口。
+	splashOnClose     func() bool
+	splashCloseSilent atomic.Bool // 程序化 Close() 时为 true，跳过 OnClose 确认
 )
 
 // SplashState 进度窗口控制器。
@@ -136,6 +140,9 @@ type SplashState struct {
 	Update func(text string, fraction float64)
 	Close  func()
 }
+
+// SetOnClose 设置用户关闭窗口时的回调（true=允许关闭并中止流程；false=取消关闭继续运行）。
+func (s *SplashState) SetOnClose(fn func() bool) { splashOnClose = fn }
 
 type wndClassExW struct {
 	cbSize        uint32
@@ -170,6 +177,11 @@ type msg struct {
 func splashWndProc(hwnd, uMsg, wParam, lParam uintptr) uintptr {
 	switch uMsg {
 	case wmClose:
+		if !splashCloseSilent.Load() && splashOnClose != nil {
+			if !splashOnClose() {
+				return 0 // 用户选择继续，不关闭窗口
+			}
+		}
 		pDestroyWindow.Call(hwnd)
 		return 0
 	case wmDestroy:
@@ -384,6 +396,8 @@ func startSplash(text string) *SplashState {
 		}
 	}()
 	hwnd := <-done
+	splashCloseSilent.Store(false)
+	splashOnClose = nil
 
 	st := &SplashState{}
 	st.Update = func(t string, f float64) {
@@ -403,6 +417,7 @@ func startSplash(text string) *SplashState {
 		}
 	}
 	st.Close = func() {
+		splashCloseSilent.Store(true)
 		if hwnd != 0 {
 			pPostMessageW.Call(hwnd, wmClose, 0, 0)
 		}
