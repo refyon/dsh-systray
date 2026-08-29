@@ -12,6 +12,10 @@ extern void dshSettingsGoCheckUpdate(void);
 char* dshSettingsGoLoadLog(int which);
 // 清空日志文件（which=0 app.log / 1 server.log）
 void dshSettingsGoClearLog(int which);
+// 重启后台服务（异步执行）
+void dshSettingsGoRestartService(void);
+// 返回后台服务状态 C 字符串（"运行中"/"未运行"，调用方 free）
+char* dshSettingsGoServiceState(void);
 
 @interface DSHSetController : NSObject <NSTableViewDataSource, NSTableViewDelegate>
 @property (nonatomic, strong) NSWindow *window;
@@ -92,6 +96,10 @@ static DSHSetController *g_ctrl = nil;
     dshSettingsGoCheckUpdate();
 }
 
+- (void)restartServiceClicked:(id)sender {
+    dshSettingsGoRestartService();
+}
+
 - (void)refreshLog {
     int which = (self.logPopup == nil) ? 0 : (int)self.logPopup.indexOfSelectedItem;
     if (which < 0) which = 0;
@@ -156,6 +164,19 @@ static DSHSetController *g_ctrl = nil;
     self.autoSwitch.target = self;
     self.autoSwitch.action = @selector(autostartChanged:);
     [self.generalPane addSubview:self.autoSwitch];
+
+    // 常规面板：后台服务状态 + 重启按钮
+    char *svcState = dshSettingsGoServiceState();
+    NSString *svcText = [NSString stringWithFormat:@"后台服务：%s", svcState];
+    free(svcState);
+    [self addLabel:svcText font:[NSFont systemFontOfSize:12] color:[NSColor secondaryLabelColor] frame:NSMakeRect(0, 210, 320, 18) to:self.generalPane];
+
+    NSButton *restartBtn = [[NSButton alloc] initWithFrame:NSMakeRect(0, 172, 120, 32)];
+    restartBtn.title = @"重启后台服务";
+    restartBtn.bezelStyle = NSBezelStyleRounded;
+    restartBtn.target = self;
+    restartBtn.action = @selector(restartServiceClicked:);
+    [self.generalPane addSubview:restartBtn];
 
     // 关于面板：dsh-systray 版本号 + DeepSeek Harness 版本号 + 检查更新
     self.aboutPane = [[NSView alloc] initWithFrame:NSMakeRect(160, 0, 400, 360)];

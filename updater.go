@@ -227,6 +227,27 @@ func checkForUpdatesManual() {
 	}
 }
 
+// restartBackgroundService 重启后台 Web 服务：停止 → 拉起 → 等待就绪（带进度窗口）。
+// Windows/macOS 共用；startServer/killServer 由各平台实现，其余为主程序通用逻辑。
+func restartBackgroundService() {
+	splash := startSplash("正在重启后台服务…")
+	defer splash.Close()
+	splash.Update("正在停止后台服务…", 0.2)
+	killServer()
+	time.Sleep(1 * time.Second)
+	splash.Update("正在启动后台服务…", 0.55)
+	started, exitCh := startServer()
+	if !started {
+		showMessageBox("重启失败：无法启动后台服务。", appName)
+		return
+	}
+	splash.Update("正在等待服务就绪…", 0.85)
+	if ok, msg := waitForServerReady(webURL, exitCh, startupTimeout); !ok {
+		showMessageBox("重启失败：\n"+msg, appName)
+		return
+	}
+}
+
 // queryHarnessUpdate 查询 harness 是否有新版本：返回最新版、当前版、是否为新版。
 func queryHarnessUpdate() (latest, cur string, newer bool) {
 	latest, err := fetchLatestHarnessVersion()

@@ -63,6 +63,19 @@ func dshSettingsGoClearLog(which C.int) {
 	_ = os.WriteFile(filepath.Join(logDir, name), nil, 0o644)
 }
 
+//export dshSettingsGoRestartService
+func dshSettingsGoRestartService() {
+	go restartBackgroundService()
+}
+
+//export dshSettingsGoServiceState
+func dshSettingsGoServiceState() *C.char {
+	if serverResponding(webURL) {
+		return C.CString("运行中")
+	}
+	return C.CString("未运行")
+}
+
 // openSettingsWindow 打开原生 Cocoa 设置窗口（左侧分类栏 + 右侧内容面板）。
 func openSettingsWindow() {
 	cs := C.CString(withV(appVersion))

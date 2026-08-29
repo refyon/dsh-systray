@@ -40,6 +40,8 @@ const (
 	stIdAutoTitle  = 3101
 	stIdAutoSub    = 3102
 	stIdAutoToggle = 3103
+	stIdRestartInfo = 3104
+	stIdRestartBtn  = 3105
 	stIdVerTitle   = 3201
 	stIdVerValue   = 3202
 	stIdCheckBtn   = 3203
@@ -105,6 +107,7 @@ var (
 	settingsFontMono  uintptr // 日志等宽字体 Consolas
 	settingsSideBrush uintptr
 	settingsTitleHwnd uintptr
+	settingsRestartInfoHwnd uintptr
 )
 
 // openSettingsWindow 打开设置窗口（已在打开时前置显示）。
@@ -163,6 +166,12 @@ func settingsWndProc(hwnd, uMsg, wParam, lParam uintptr) uintptr {
 		case id == stIdCheckBtn:
 			// 异步检查，避免 GitHub 超时阻塞设置窗口 UI 线程（结果弹窗独立线程显示）
 			go checkForUpdatesManual()
+		case id == stIdRestartBtn:
+			// 异步重启后台服务；结束后刷新服务状态文本
+			go func() {
+				restartBackgroundService()
+				settingsSetServiceStatus()
+			}()
 		case id == stIdLogCombo && notif == cbnSelChange:
 			settingsLogReload()
 		case id == stIdLogRefresh:
@@ -206,7 +215,7 @@ func settingsWndProc(hwnd, uMsg, wParam, lParam uintptr) uintptr {
 			pSetTextColor.Call(wParam, stColorText)
 		case stIdVerValue, stIdHarValue:
 			pSetTextColor.Call(wParam, stColorBlue)
-		case stIdAutoSub, stIdLogInfo:
+		case stIdAutoSub, stIdLogInfo, stIdRestartInfo:
 			pSetTextColor.Call(wParam, stColorSub)
 		case stIdSidebarBg:
 			if settingsSideBrush != 0 {
@@ -244,6 +253,8 @@ func settingsWndProc(hwnd, uMsg, wParam, lParam uintptr) uintptr {
 			settingsDrawToggle(dis)
 		case stIdCheckBtn:
 			settingsDrawCapsule(dis, "检查更新")
+		case stIdRestartBtn:
+			settingsDrawCapsule(dis, "重启后台服务")
 		case stIdLogRefresh:
 			settingsDrawCapsule(dis, "清空")
 		}
@@ -445,6 +456,19 @@ func settingsDrawToggle(dis drawItemStruct) {
 	fillRoundedRectAA(hdc, knob, knobD/2, 0xFFFFFFFF)
 }
 
+// settingsSetServiceStatus 刷新“后台服务”状态文本（运行中/未运行）。可跨线程调用。
+func settingsSetServiceStatus() {
+	if settingsRestartInfoHwnd == 0 {
+		return
+	}
+	s := "后台服务：未运行"
+	if serverResponding(webURL) {
+		s = "后台服务：运行中"
+	}
+	tp, _ := syscall.UTF16PtrFromString(s)
+	pSendMessageW.Call(settingsRestartInfoHwnd, wmSetText, 0, uintptr(unsafe.Pointer(tp)))
+}
+
 // settingsDrawCapsule 绘制品牌蓝胶囊按钮（同弹窗主按钮风格）。
 func settingsDrawCapsule(dis drawItemStruct, label string) {
 	hdc := dis.hDC
@@ -618,6 +642,37 @@ func createSettingsWindow() uintptr {
 	if autoToggle != 0 {
 		settingsWidgets[autoToggle] = stIdAutoToggle
 		settingsPaneGen = append(settingsPaneGen, stIdAutoToggle)
+	}
+
+	// ---- 常规面板：后台服务（状态 + 重启按钮） ----
+	rst, _ := syscall.UTF16PtrFromString("")
+	restInfo, _, _ := pCreateWindowExW.Call(
+		0,
+		uintptr(unsafe.Pointer(staticCls)),
+		uintptr(unsafe.Pointer(rst)),
+		wsChild|wsVisible,
+		uintptr(stContentX), 178, 260, 20,
+		hwnd, stIdRestartInfo, moduleHandle(), 0,
+	)
+	if restInfo != 0 {
+		settingsWidgets[restInfo] = stIdRestartInfo
+		settingsRestartInfoHwnd = restInfo
+		pSendMessageW.Call(restInfo, wmSetFont, settingsFontSmall, 1)
+		settingsPaneGen = append(settingsPaneGen, stIdRestartInfo)
+	}
+	settingsSetServiceStatus()
+	rb, _ := syscall.UTF16PtrFromString("重启后台服务")
+	restBtn, _, _ := pCreateWindowExW.Call(
+		0,
+		uintptr(unsafe.Pointer(btnCls)),
+		uintptr(unsafe.Pointer(rb)),
+		wsChild|wsVisible|wsTabStop|bsOwnDraw,
+		uintptr(stContentX), 204, 150, 34,
+		hwnd, stIdRestartBtn, moduleHandle(), 0,
+	)
+	if restBtn != 0 {
+		settingsWidgets[restBtn] = stIdRestartBtn
+		settingsPaneGen = append(settingsPaneGen, stIdRestartBtn)
 	}
 
 	// ---- 关于面板 ----
