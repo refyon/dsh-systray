@@ -1,4 +1,4 @@
-﻿// 设置窗口原生实现（macOS Cocoa）：左侧分类列表（常规 / 关于）+ 右侧内容面板。
+// 设置窗口原生实现（macOS Cocoa）：左侧分类列表（常规 / 关于）+ 右侧内容面板。
 // 由 cgo 编译（settings_darwin.go 中 #cgo darwin CFLAGS: -x objective-c -fobjc-arc）。
 #import <Cocoa/Cocoa.h>
 #import <dispatch/dispatch.h>
@@ -209,9 +209,10 @@ static DSHSetController *g_ctrl = nil;
     svcLabel.frame = NSMakeRect(0, 210, 320, 18);
     [self.generalPane addSubview:svcLabel];
 
-    NSButton *restartBtn = [[NSButton alloc] initWithFrame:NSMakeRect(0, 172, 120, 32)];
+    NSButton *restartBtn = [[NSButton alloc] initWithFrame:NSMakeRect(0, 172, 130, 34)];
     restartBtn.title = @"重启后台服务";
     restartBtn.bezelStyle = NSBezelStyleRounded;
+    restartBtn.font = [NSFont systemFontOfSize:15];
     restartBtn.target = self;
     restartBtn.action = @selector(restartServiceClicked:);
     [self.generalPane addSubview:restartBtn];
@@ -232,9 +233,10 @@ static DSHSetController *g_ctrl = nil;
               frame:NSMakeRect(0, 190, 220, 26)
                   to:self.aboutPane];
 
-    NSButton *checkBtn = [[NSButton alloc] initWithFrame:NSMakeRect(0, 146, 120, 32)];
+    NSButton *checkBtn = [[NSButton alloc] initWithFrame:NSMakeRect(0, 146, 130, 34)];
     checkBtn.title = @"检查更新";
     checkBtn.bezelStyle = NSBezelStyleRounded;
+    checkBtn.font = [NSFont systemFontOfSize:15];
     checkBtn.target = self;
     checkBtn.action = @selector(checkUpdateClicked:);
     [self.aboutPane addSubview:checkBtn];
@@ -243,15 +245,17 @@ static DSHSetController *g_ctrl = nil;
     self.logPane = [[NSView alloc] initWithFrame:NSMakeRect(160, 0, 400, 360)];
     [self addLabel:@"日志（只读，可复制）" font:[NSFont systemFontOfSize:14] color:[NSColor secondaryLabelColor] frame:NSMakeRect(0, 322, 320, 20) to:self.logPane];
 
-    self.logPopup = [[NSPopUpButton alloc] initWithFrame:NSMakeRect(0, 288, 130, 26)];
+    self.logPopup = [[NSPopUpButton alloc] initWithFrame:NSMakeRect(0, 288, 130, 28)];
+    self.logPopup.font = [NSFont systemFontOfSize:14];
     [self.logPopup addItemsWithTitles:@[@"app.log", @"server.log"]];
     self.logPopup.target = self;
     self.logPopup.action = @selector(logChanged:);
     [self.logPane addSubview:self.logPopup];
 
-    NSButton *refresh = [[NSButton alloc] initWithFrame:NSMakeRect(140, 286, 90, 28)];
+    NSButton *refresh = [[NSButton alloc] initWithFrame:NSMakeRect(140, 284, 90, 30)];
     refresh.title = @"清空";
     refresh.bezelStyle = NSBezelStyleRounded;
+    refresh.font = [NSFont systemFontOfSize:14];
     refresh.target = self;
     refresh.action = @selector(clearLogClicked:);
     [self.logPane addSubview:refresh];

@@ -111,6 +111,7 @@ var (
 	settingsFontBold  uintptr
 	settingsFontSmall uintptr
 	settingsFontMono  uintptr // 日志等宽字体 Consolas
+	settingsFontBtn   uintptr // 胶囊按钮字体（略大于正文）
 	settingsSideBrush uintptr
 	settingsTitleHwnd uintptr
 	settingsRestartInfoHwnd uintptr
@@ -219,6 +220,9 @@ func settingsWndProc(hwnd, uMsg, wParam, lParam uintptr) uintptr {
 		}
 		if settingsFontMono != 0 {
 			pDeleteObject.Call(settingsFontMono)
+		}
+		if settingsFontBtn != 0 {
+			pDeleteObject.Call(settingsFontBtn)
 		}
 		if settingsSideBrush != 0 {
 			pDeleteObject.Call(settingsSideBrush)
@@ -631,8 +635,8 @@ func settingsDrawCapsule(dis drawItemStruct, label string) {
 	fillRoundedRectAA(hdc, dis.rcItem, 16, colorRefToARGB(fill))
 	pSetTextColor.Call(hdc, dialogColorWhite)
 	pSetBkMode.Call(hdc, bkTransparent)
-	if settingsFontBold != 0 {
-		pSelectObject.Call(hdc, settingsFontBold)
+	if settingsFontBtn != 0 {
+		pSelectObject.Call(hdc, settingsFontBtn)
 	}
 	t, _ := syscall.UTF16PtrFromString(label)
 	pDrawTextW.Call(hdc, uintptr(unsafe.Pointer(t)), ^uintptr(0), uintptr(unsafe.Pointer(&dis.rcItem)), dtCenter|dtVCenter|dtSingle)
@@ -671,6 +675,7 @@ func createSettingsWindow() uintptr {
 	settingsFontBold = makeFont(16, 600)
 	settingsFontSmall = makeFont(14, 400)
 	settingsFontMono = makeMonoFont(15)
+	settingsFontBtn = makeFont(18, 600)
 	settingsSideBrush, _, _ = pCreateSolidBrush.Call(stColorSidebarBg)
 
 	titleText, _ := syscall.UTF16PtrFromString("设置")
