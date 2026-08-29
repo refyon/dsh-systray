@@ -160,13 +160,16 @@ func autoCheckUpdate() {
 // startUpdateApply 应用更新：各平台实现。Windows 派生独立更新进程（退出主程序→进度窗口下载/安装→自动重启）；
 // macOS 进程内下载并用辅助脚本替换 .app 后重启。声明于此，由 platform_*.go 实现。
 
-// checkForUpdatesManual 手动检查更新（设置页触发）：查询期间显示进度反馈，有新版弹确认并更新，无新版提示已是最新。
+// checkForUpdatesManual 手动检查更新（设置页触发）：先检查 DeepSeek Harness 是否有新版本（有则先更新 harness），
+// 再检查 dsh-systray 自身更新，无新版提示已是最新。
 func checkForUpdatesManual() {
 	if appVersion == "" || appVersion == "dev" {
 		showMessageBox("当前为开发版本（dev），未启用自动更新。", appName)
 		return
 	}
-	// 版本查询期间弹出进度窗口显示「正在查询最新版本」（Windows 进度窗口 / macOS 系统通知）
+	// 1) 先检查 DeepSeek Harness 是否有新版本；有则提示先更新 harness
+	checkHarnessUpdate()
+	// 2) 版本查询期间弹出进度窗口显示「正在查询最新版本」（Windows 进度窗口 / macOS 系统通知）
 	splash := startSplash("正在查询最新版本…")
 	splash.Update("正在查询最新版本…", 0.3)
 	rel, err := fetchLatestRelease()
@@ -184,6 +187,127 @@ func checkForUpdatesManual() {
 		// 异步执行，避免阻塞设置页 UI 线程（设置窗口在下载期间保持可响应/可关闭）。
 		go startUpdateApply(rel)
 	}
+}
+
+// fetchLatestHarnessVersion 查询 npm 上 @deepseek-ai/dsh 的最新版本号（harness 本体）。
+func fetchLatestHarnessVersion() (string, error) {
+	client := &http.Client{Timeout: updateAPITimeout}
+	req, err := http.NewRequest("GET", "https://registry.npmjs.org/@deepseek-ai/dsh/latest", nil)
+	if err != nil {
+		return "", err
+	}
+	req.Header.Set("User-Agent", "dsh-systray/"+appVersion)
+	resp, err := client.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("npm 接口返回 HTTP %d", resp.StatusCode)
+	}
+	var v struct {
+		Version string `json:"version"`
+	}
+	if err := json.NewDecoder(io.LimitReader(resp.Body, updateMaxBodySize)).Decode(&v); err != nil {
+		return "", err
+	}
+	return strings.TrimPrefix(v.Version, "v"), nil
+}
+
+// installedHarnessVersion 读取已安装 harness（@deepseek-ai/dsh 或源码 package.json）的版本号。
+func installedHarnessVersion() string {
+	paths := []string{
+		filepath.Join(harnessDir, "node_modules", "@deepseek-ai", "dsh", "package.json"),
+		filepath.Join(harnessDir, "package.json"),
+	}
+	for _, p := range paths {
+		if data, err := os.ReadFile(p); err == nil {
+			var j struct {
+				Version string `json:"version"`
+			}
+			if json.Unmarshal(data, &j) == nil && j.Version != "" {
+				return strings.TrimPrefix(j.Version, "v")
+			}
+		}
+	}
+	return ""
+}
+
+// checkHarnessUpdate 查询 harness 是否有新版本；有则提示先更新 harness（异步执行）。
+func checkHarnessUpdate() {
+	latest, err := fetchLatestHarnessVersion()
+	if err != nil {
+		log.Printf("harness update check failed: %v", err)
+		return
+	}
+	cur := installedHarnessVersion()
+	if cur == "" {
+		return // 无法确定已装 harness 版本
+	}
+	if !isNewerVersion("v"+latest, "v"+cur) {
+		return // harness 已是最新
+	}
+	if askUpdateHarness(latest, cur) {
+		go runHarnessUpdate(latest)
+	}
+}
+
+// runHarnessCmd 在 harness 目录执行命令，输出写到日志文件。
+func runHarnessCmd(name string, args ...string) error {
+	logPath := filepath.Join(logDir, "harness-update.log")
+	f, _ := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+	if f != nil {
+		defer f.Close()
+	}
+	cmd := exec.Command(name, args...)
+	cmd.Dir = harnessDir
+	hideCmdWindow(cmd)
+	if f != nil {
+		cmd.Stdout = f
+		cmd.Stderr = f
+	}
+	return cmd.Run()
+}
+
+// runHarnessUpdate 更新 DeepSeek Harness（npm 模式更新 @deepseek-ai/dsh；源码模式 git pull+install+build），
+// 完成后重启服务。异步执行，带进度窗口。
+func runHarnessUpdate(latest string) {
+	splash := startSplash("正在更新 DeepSeek Harness…")
+	restart := func() {
+		killServer()
+		time.Sleep(2 * time.Second)
+		if !serverResponding(webURL) {
+			if started, exitCh := startServer(); started {
+				waitForServerReady(webURL, exitCh, startupTimeout)
+			}
+		}
+	}
+
+	var err error
+	if isNpmHarnessReady() {
+		splash.Update("正在更新 DeepSeek Harness 依赖…", 0.3)
+		err = runHarnessCmd(pnpmCmd(), "add", "@deepseek-ai/dsh@latest", "--save-exact")
+	} else {
+		splash.Update("正在拉取 DeepSeek Harness 最新代码…", 0.2)
+		err = runHarnessCmd("git", "pull")
+		if err == nil {
+			splash.Update("正在安装 harness 依赖…", 0.45)
+			err = runHarnessCmd(pnpmCmd(), "install")
+		}
+		if err == nil {
+			splash.Update("正在构建 harness 前端…", 0.7)
+			err = runHarnessCmd(pnpmCmd(), "run", "build")
+		}
+	}
+	if err != nil {
+		splash.Close()
+		showMessageBox("DeepSeek Harness 更新失败：\n"+err.Error()+"\n\n日志："+filepath.Join(logDir, "harness-update.log"), appName)
+		return
+	}
+	splash.Update("正在重启服务…", 0.9)
+	restart()
+	splash.Close()
+	showMessageBox(fmt.Sprintf("DeepSeek Harness 已更新到 v%s，服务已重启。", withV(latest)), appName)
 }
 
 // fetchLatestRelease 查询 GitHub Releases 最新版本；直连失败时依次回退镜像前缀（国内 DNS/网络不稳时更可靠）。

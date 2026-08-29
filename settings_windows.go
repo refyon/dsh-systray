@@ -65,6 +65,7 @@ const (
 	emSetSel          = 0x00B1
 	emLineScroll      = 0x00B6
 	emScrollCaret     = 0x00B7
+	emExLimitText     = 0x0435
 	settingsLogTimer  = 1
 
 	// 颜色（COLORREF = 0xBBGGRR）
@@ -81,6 +82,7 @@ var (
 	pSetForegroundWindow = modUser32.NewProc("SetForegroundWindow")
 	pSetTimer            = modUser32.NewProc("SetTimer")
 	pKillTimer           = modUser32.NewProc("KillTimer")
+	pLoadLibraryW        = modKernel32.NewProc("LoadLibraryW")
 
 	settingsOpenFlag  atomic.Bool
 	settingsHwnd      uintptr
@@ -647,7 +649,6 @@ func createSettingsWindow() uintptr {
 
 	// ---- 日志面板（只读、可复制、可刷新） ----
 	comboCls, _ := syscall.UTF16PtrFromString("COMBOBOX")
-	editCls, _ := syscall.UTF16PtrFromString("EDIT")
 
 	li, _ := syscall.UTF16PtrFromString("日志：app.log　（只读，可复制）")
 	logInfo, _, _ := pCreateWindowExW.Call(
@@ -688,6 +689,10 @@ func createSettingsWindow() uintptr {
 		settingsPaneLog = append(settingsPaneLog, stIdLogRefresh)
 	}
 
+	// 用 RICHEDIT50W（可靠的多行富文本：正确处理换行/大文本/滚动/复制）
+	mdll, _ := syscall.UTF16PtrFromString("Msftedit.dll")
+	pLoadLibraryW.Call(uintptr(unsafe.Pointer(mdll)))
+	editCls, _ := syscall.UTF16PtrFromString("RICHEDIT50W")
 	logEdit, _, _ := pCreateWindowExW.Call(
 		0, uintptr(unsafe.Pointer(editCls)), 0,
 		wsChild|wsVisible|wsTabStop|esMultiline|esAutoVScroll|esReadOnly|wsVScroll|wsBorder,
@@ -695,6 +700,7 @@ func createSettingsWindow() uintptr {
 	)
 	if logEdit != 0 {
 		settingsWidgets[logEdit] = stIdLogEdit
+		pSendMessageW.Call(logEdit, emExLimitText, 1, 0x7FFFFFF) // 放开文本上限
 		pSendMessageW.Call(logEdit, wmSetFont, settingsFontSmall, 1)
 		settingsPaneLog = append(settingsPaneLog, stIdLogEdit)
 	}
@@ -708,5 +714,8 @@ func createSettingsWindow() uintptr {
 
 	pShowWindow.Call(hwnd, swShow)
 	pUpdateWindow.Call(hwnd)
+	// 标题栏图标 + 确保设置窗口自动到前台
+	setWindowIcon(hwnd)
+	pSetForegroundWindow.Call(hwnd)
 	return hwnd
 }

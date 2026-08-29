@@ -4,6 +4,7 @@ package main
 
 import (
 	"math"
+	"os"
 	"runtime"
 	"strings"
 	"sync/atomic"
@@ -16,8 +17,12 @@ const (
 	wmDestroy        = 0x0002
 	wmCommand        = 0x0111
 	wmSetFont        = 0x0030
+	wmSetIcon        = 0x0080
 	wmCtlColorStatic = 0x0138
 	wmSetText        = 0x000C
+
+	iconBig   = 1
+	iconSmall = 0
 
 	swShow    = 5
 	wsCaption = 0x00C00000
@@ -71,6 +76,7 @@ var (
 	modKernel32            = syscall.NewLazyDLL("kernel32.dll")
 	modGdi32               = syscall.NewLazyDLL("gdi32.dll")
 	modDwmapi              = syscall.NewLazyDLL("dwmapi.dll")
+	modShell32             = syscall.NewLazyDLL("shell32.dll")
 	pRegisterClassExW      = modUser32.NewProc("RegisterClassExW")
 	pCreateWindowExW       = modUser32.NewProc("CreateWindowExW")
 	pDefWindowProcW        = modUser32.NewProc("DefWindowProcW")
@@ -112,6 +118,7 @@ var (
 	gpFillPath    = modGdiplus.NewProc("GdipFillPath")
 	pGetDC        = modUser32.NewProc("GetDC")
 	pReleaseDC    = modUser32.NewProc("ReleaseDC")
+	pExtractIconW = modShell32.NewProc("ExtractIconW")
 	pDrawTextW    = modUser32.NewProc("DrawTextW")
 	pGetTextFaceW = modGdi32.NewProc("GetTextFaceW")
 	pFillRect     = modUser32.NewProc("FillRect")
@@ -220,6 +227,20 @@ func splashWndProc(hwnd, uMsg, wParam, lParam uintptr) uintptr {
 func moduleHandle() uintptr {
 	h, _, _ := pGetModuleHandleW.Call(0)
 	return h
+}
+
+// setWindowIcon 给窗口标题栏设置应用图标（提取自身 exe 的图标），Windows 支持。
+func setWindowIcon(hwnd uintptr) {
+	exe, err := os.Executable()
+	if err != nil {
+		return
+	}
+	exePtr, _ := syscall.UTF16PtrFromString(exe)
+	hicon, _, _ := pExtractIconW.Call(0, uintptr(unsafe.Pointer(exePtr)), 0) // nIconIndex=0
+	if hicon != 0 {
+		pSendMessageW.Call(hwnd, wmSetIcon, iconBig, hicon)
+		pSendMessageW.Call(hwnd, wmSetIcon, iconSmall, hicon)
+	}
 }
 
 // makeFont 创建 Segoe UI 字体（height 像素、weight 400/600）。
@@ -371,7 +392,8 @@ func createSplashWindow(statusText string) uintptr {
 
 	pShowWindow.Call(hwnd, swShow)
 	pUpdateWindow.Call(hwnd)
-	// 确保下载/载入进度窗口自动提到前台
+	// 标题栏显示应用图标；确保窗口自动提到前台
+	setWindowIcon(hwnd)
 	pSetForegroundWindow.Call(hwnd)
 	return hwnd
 }
@@ -820,6 +842,9 @@ func createDialogWindow(caption, message string) uintptr {
 
 	pShowWindow.Call(hwnd, swShow)
 	pUpdateWindow.Call(hwnd)
+	// 标题栏图标 + 确保弹窗自动到前台
+	setWindowIcon(hwnd)
+	pSetForegroundWindow.Call(hwnd)
 	return hwnd
 }
 

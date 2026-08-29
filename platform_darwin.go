@@ -307,6 +307,18 @@ func askUpdateDialog(newVer string) bool {
 	return strings.Contains(out, "立即更新")
 }
 
+// askUpdateHarness 提示用户 DeepSeek Harness 有新版本：true=先更新 Harness。
+func askUpdateHarness(newVer, curVer string) bool {
+	msg := fmt.Sprintf("DeepSeek Harness 有新版本 %s（当前 %s）。\n是否先更新 Harness？", withV(newVer), withV(curVer))
+	script := fmt.Sprintf(`display dialog "%s" with title "%s" buttons {"稍后", "更新 Harness"} default button "更新 Harness"`,
+		escapeAppleScript(msg), appName)
+	out, err := runAppleScript(script)
+	if err != nil {
+		return false
+	}
+	return strings.Contains(out, "更新 Harness")
+}
+
 // replaceAndRelaunch 替换当前 .app 并重启（自定义更新方案的辅助工具思路）：
 // 写入一个等待 2 秒的 shell 脚本，由它在本进程退出后 rm 旧 .app、mv 新 .app、open 重新打开。
 func replaceAndRelaunch(newApp string) error {

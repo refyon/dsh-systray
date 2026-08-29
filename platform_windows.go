@@ -584,6 +584,12 @@ func askUpdateDialog(newVer string) bool {
 	return runModernDialog(appName, msg, []string{"立即更新", "稍后"}, 0) == 0
 }
 
+// askUpdateHarness 提示用户 DeepSeek Harness 有新版本：true=先更新 Harness。
+func askUpdateHarness(newVer, curVer string) bool {
+	msg := fmt.Sprintf("DeepSeek Harness 有新版本 %s（当前 %s）。\n是否先更新 Harness？", withV(newVer), withV(curVer))
+	return runModernDialog(appName, msg, []string{"更新 Harness", "稍后"}, 0) == 0
+}
+
 // replaceAndRelaunch 替换当前 exe 并重启。Windows 不允许覆盖正在运行的 exe，
 // 采用「改名旧程序 → 换入新程序 → 重启」方案（minio/selfupdate 同款思路）。
 // 新 exe 可能位于其他盘符（临时目录在 C:、程序在 D:），os.Rename 无法跨盘移动，
