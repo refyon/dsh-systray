@@ -242,22 +242,42 @@ func checkForUpdatesManual() {
 
 // restartBackgroundService 重启后台 Web 服务：停止 → 拉起 → 等待就绪（带进度窗口）。
 // Windows/macOS 共用；startServer/killServer 由各平台实现，其余为主程序通用逻辑。
-func restartBackgroundService() {
+// onState 可选：进程各阶段回调（"stopping" / "stopped" / "starting" / "running" / "error"），
+// 供设置页实时刷新服务状态（如停止后标红“已停止”）。
+func restartBackgroundService(onState func(stage string)) {
 	splash := startSplash("正在重启后台服务…")
 	defer splash.Close()
 	splash.Update("正在停止后台服务…", 0.2)
+	if onState != nil {
+		onState("stopping")
+	}
 	killServer()
+	if onState != nil {
+		onState("stopped")
+	}
 	time.Sleep(1 * time.Second)
 	splash.Update("正在启动后台服务…", 0.55)
+	if onState != nil {
+		onState("starting")
+	}
 	started, exitCh := startServer()
 	if !started {
+		if onState != nil {
+			onState("error")
+		}
 		showMessageBox("重启失败：无法启动后台服务。", appName)
 		return
 	}
 	splash.Update("正在等待服务就绪…", 0.85)
 	if ok, msg := waitForServerReady(webURL, exitCh, startupTimeout); !ok {
+		if onState != nil {
+			onState("error")
+		}
 		showMessageBox("重启失败：\n"+msg, appName)
 		return
+	}
+	if onState != nil {
+		onState("running")
 	}
 }
 

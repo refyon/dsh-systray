@@ -319,6 +319,17 @@ func askUpdateHarness(newVer, curVer string) bool {
 	return strings.Contains(out, "更新 Harness")
 }
 
+// askRestartServiceMac 重启后台服务前确认（macOS）：true=确认重新启动。
+func askRestartServiceMac() bool {
+	msg := escapeAppleScript("是否重启后台 Web 服务？\n重启期间 Web UI 会短暂不可用。")
+	script := fmt.Sprintf(`display dialog "%s" with title "%s" buttons {"取消", "重新启动"} default button "重新启动"`, msg, appName)
+	out, err := runAppleScript(script)
+	if err != nil {
+		return false
+	}
+	return strings.Contains(out, "重新启动")
+}
+
 // replaceAndRelaunch 替换当前 .app 并重启（自定义更新方案的辅助工具思路）：
 // 写入一个等待 2 秒的 shell 脚本，由它在本进程退出后 rm 旧 .app、mv 新 .app、open 重新打开。
 func replaceAndRelaunch(newApp string) error {

@@ -108,6 +108,7 @@ var (
 	settingsSideBrush uintptr
 	settingsTitleHwnd uintptr
 	settingsRestartInfoHwnd uintptr
+	settingsSvcUp     atomic.Bool // 后台服务是否运行（绿色点=运行中，红色点=已停止）
 )
 
 // openSettingsWindow 打开设置窗口（已在打开时前置显示）。
@@ -167,10 +168,21 @@ func settingsWndProc(hwnd, uMsg, wParam, lParam uintptr) uintptr {
 			// 异步检查，避免 GitHub 超时阻塞设置窗口 UI 线程（结果弹窗独立线程显示）
 			go checkForUpdatesManual()
 		case id == stIdRestartBtn:
-			// 异步重启后台服务；结束后刷新服务状态文本
+			// 先确认再重启；过程中实时刷新服务状态（停止后标红“已停止”，就绪后标绿“运行中”）
+			if !askRestartService() {
+				break
+			}
 			go func() {
-				restartBackgroundService()
-				settingsSetServiceStatus()
+				restartBackgroundService(func(stage string) {
+					switch stage {
+					case "stopping", "stopped", "error":
+						settingsSetServiceStatus(false)
+					case "running":
+						settingsSetServiceStatus(true)
+					}
+				})
+				// 结束（含失败）以实际探测为准
+				settingsSetServiceStatus(serverResponding(webURL))
 			}()
 		case id == stIdLogCombo && notif == cbnSelChange:
 			settingsLogReload()
@@ -255,6 +267,8 @@ func settingsWndProc(hwnd, uMsg, wParam, lParam uintptr) uintptr {
 			settingsDrawCapsule(dis, "检查更新")
 		case stIdRestartBtn:
 			settingsDrawCapsule(dis, "重启后台服务")
+		case stIdRestartInfo:
+			settingsDrawServiceStatus(dis)
 		case stIdLogRefresh:
 			settingsDrawCapsule(dis, "清空")
 		}
@@ -456,17 +470,49 @@ func settingsDrawToggle(dis drawItemStruct) {
 	fillRoundedRectAA(hdc, knob, knobD/2, 0xFFFFFFFF)
 }
 
-// settingsSetServiceStatus 刷新“后台服务”状态文本（运行中/未运行）。可跨线程调用。
-func settingsSetServiceStatus() {
-	if settingsRestartInfoHwnd == 0 {
-		return
+// settingsSetServiceStatus 记录后台服务状态并触发状态控件重绘（可跨线程调用）。
+func settingsSetServiceStatus(up bool) {
+	settingsSvcUp.Store(up)
+	if settingsRestartInfoHwnd != 0 {
+		pInvalidateRect.Call(settingsRestartInfoHwnd, 0, 1)
 	}
-	s := "后台服务：未运行"
-	if serverResponding(webURL) {
-		s = "后台服务：运行中"
+}
+
+// settingsDrawServiceStatus 自绘“后台服务”状态：绿点=运行中，红点=已停止。
+func settingsDrawServiceStatus(dis drawItemStruct) {
+	hdc := dis.hDC
+	if wb, _, _ := pGetStockObject.Call(whiteBrush); wb != 0 {
+		pFillRect.Call(hdc, uintptr(unsafe.Pointer(&dis.rcItem)), wb)
 	}
-	tp, _ := syscall.UTF16PtrFromString(s)
-	pSendMessageW.Call(settingsRestartInfoHwnd, wmSetText, 0, uintptr(unsafe.Pointer(tp)))
+	up := settingsSvcUp.Load()
+	// 圆点（8px，垂直居中）
+	dotColorBound := uint32(0xFF2626DC) // #DC2626 红
+	if up {
+		dotColorBound = 0xFF4AA316 // #16A34A 绿
+	}
+	dotD := int32(8)
+	dy := dis.rcItem.top + (dis.rcItem.bottom-dis.rcItem.top-dotD)/2
+	dot := rect{dis.rcItem.left + 2, dy, dis.rcItem.left + 2 + dotD, dy + dotD}
+	fillRoundedRectAA(hdc, dot, dotD/2, dotColorBound)
+	// 文本
+	label := "后台服务：已停止"
+	if up {
+		label = "后台服务：运行中"
+	}
+	pSetTextColor.Call(hdc, stColorSub)
+	pSetBkColor.Call(hdc, colorWhite)
+	pSetBkMode.Call(hdc, bkOpaque)
+	if settingsFontSmall != 0 {
+		pSelectObject.Call(hdc, settingsFontSmall)
+	}
+	lp, _ := syscall.UTF16PtrFromString(label)
+	tr := rect{dis.rcItem.left + 16, dis.rcItem.top, dis.rcItem.right, dis.rcItem.bottom}
+	pDrawTextW.Call(hdc, uintptr(unsafe.Pointer(lp)), ^uintptr(0), uintptr(unsafe.Pointer(&tr)), dtLeft|dtVCenter|dtSingle)
+}
+
+// askRestartService 重启前确认：true=确认重新启动。
+func askRestartService() bool {
+	return runModernDialog(appName, "是否重启后台 Web 服务？\n重启期间 Web UI 会短暂不可用。", []string{"重新启动", "取消"}, 0) == 0
 }
 
 // settingsDrawCapsule 绘制品牌蓝胶囊按钮（同弹窗主按钮风格）。
@@ -645,22 +691,22 @@ func createSettingsWindow() uintptr {
 	}
 
 	// ---- 常规面板：后台服务（状态 + 重启按钮） ----
+	// 状态用自绘 BUTTON（无 wsTabStop，纯展示）：绿/红圆点 + “后台服务：运行中/已停止”
 	rst, _ := syscall.UTF16PtrFromString("")
 	restInfo, _, _ := pCreateWindowExW.Call(
 		0,
-		uintptr(unsafe.Pointer(staticCls)),
+		uintptr(unsafe.Pointer(btnCls)),
 		uintptr(unsafe.Pointer(rst)),
-		wsChild|wsVisible,
-		uintptr(stContentX), 178, 260, 20,
+		wsChild|wsVisible|bsOwnDraw,
+		uintptr(stContentX), 178, 240, 26,
 		hwnd, stIdRestartInfo, moduleHandle(), 0,
 	)
 	if restInfo != 0 {
 		settingsWidgets[restInfo] = stIdRestartInfo
 		settingsRestartInfoHwnd = restInfo
-		pSendMessageW.Call(restInfo, wmSetFont, settingsFontSmall, 1)
 		settingsPaneGen = append(settingsPaneGen, stIdRestartInfo)
 	}
-	settingsSetServiceStatus()
+	settingsSetServiceStatus(serverResponding(webURL))
 	rb, _ := syscall.UTF16PtrFromString("重启后台服务")
 	restBtn, _, _ := pCreateWindowExW.Call(
 		0,

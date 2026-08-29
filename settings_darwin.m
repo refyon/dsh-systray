@@ -165,11 +165,19 @@ static DSHSetController *g_ctrl = nil;
     self.autoSwitch.action = @selector(autostartChanged:);
     [self.generalPane addSubview:self.autoSwitch];
 
-    // 常规面板：后台服务状态 + 重启按钮
+    // 常规面板：后台服务状态（绿/红圆点）+ 重启按钮
     char *svcState = dshSettingsGoServiceState();
-    NSString *svcText = [NSString stringWithFormat:@"后台服务：%s", svcState];
+    BOOL svcRunning = (strcmp(svcState, "运行中") == 0);
     free(svcState);
-    [self addLabel:svcText font:[NSFont systemFontOfSize:12] color:[NSColor secondaryLabelColor] frame:NSMakeRect(0, 210, 320, 18) to:self.generalPane];
+    NSString *svcText = [NSString stringWithFormat:@"后台服务：%@", svcRunning ? @"运行中" : @"已停止"];
+    NSMutableAttributedString *svcAttr = [[NSMutableAttributedString alloc] initWithString:[NSString stringWithFormat:@"● %@", svcText]];
+    NSColor *svcDot = svcRunning ? [NSColor systemGreenColor] : [NSColor systemRedColor];
+    [svcAttr addAttribute:NSForegroundColorAttributeName value:svcDot range:NSMakeRange(0, 1)];
+    [svcAttr addAttribute:NSForegroundColorAttributeName value:[NSColor secondaryLabelColor] range:NSMakeRange(2, svcAttr.length - 2)];
+    NSTextField *svcLabel = [NSTextField labelWithAttributedString:svcAttr];
+    svcLabel.font = [NSFont systemFontOfSize:12];
+    svcLabel.frame = NSMakeRect(0, 210, 320, 18);
+    [self.generalPane addSubview:svcLabel];
 
     NSButton *restartBtn = [[NSButton alloc] initWithFrame:NSMakeRect(0, 172, 120, 32)];
     restartBtn.title = @"重启后台服务";

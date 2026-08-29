@@ -65,7 +65,12 @@ func dshSettingsGoClearLog(which C.int) {
 
 //export dshSettingsGoRestartService
 func dshSettingsGoRestartService() {
-	go restartBackgroundService()
+	go func() {
+		if !askRestartServiceMac() {
+			return
+		}
+		restartBackgroundService(nil)
+	}()
 }
 
 //export dshSettingsGoServiceState
