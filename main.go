@@ -157,31 +157,60 @@ func maybeStartSplash(text string) *SplashState {
 	return startSplash(text)
 }
 
-// 后台服务状态（托盘菜单展示）：serverReady=运行中，serviceFailed=启动失败（默认“启动中”）。
+// 后台服务状态（托盘菜单）：四态实时反映——运行中/已停止/启动失败/启动中。
+// serverReady=曾运行，serviceFailed=启动失败，serviceFailReason=失败原因。
+// 服务就绪 → 只显示「打开 Web UI」；未就绪 → 隐藏「打开 Web UI」，显示状态说明行。
 var (
-	serverReady   atomic.Bool
-	serviceFailed atomic.Bool
-	menuOpen      *systray.MenuItem // “打开 Web UI”
-	menuStatus    *systray.MenuItem // 状态说明行（启动中/运行中/启动失败）
+	serverReady        atomic.Bool
+	serviceFailed      atomic.Bool
+	serviceFailReason  atomic.Value // string
+	menuOpen           *systray.MenuItem // “打开 Web UI”
+	menuStatus         *systray.MenuItem // 状态说明行
 )
 
 func serviceStatusText() string {
 	if serviceFailed.Load() {
+		if s, _ := serviceFailReason.Load().(string); s != "" {
+			return s
+		}
 		return "服务启动失败"
+	}
+	if serverReady.Load() {
+		return "服务已停止"
 	}
 	return "服务启动中…"
 }
 
-// refreshServiceMenu 把托盘菜单的服务项同步到当前状态（可跨线程调用）。
+// refreshServiceMenu 按服务实际运行状态刷新托盘菜单（可跨线程、可周期调用）。
 func refreshServiceMenu() {
 	if menuOpen == nil || menuStatus == nil {
 		return
 	}
-	menuStatus.SetTitle(serviceStatusText())
-	if serverReady.Load() {
+	if serverResponding(webURL) {
+		// 就绪：隐藏状态行，显示并启用「打开 Web UI」
+		menuStatus.Hide()
+		menuOpen.Show()
 		menuOpen.Enable()
-	} else {
-		menuOpen.Disable()
+		return
+	}
+	// 未就绪：隐藏「打开 Web UI」，显示状态原因行
+	menuOpen.Hide()
+	menuStatus.Show()
+	menuStatus.SetTitle(serviceStatusText())
+}
+
+// pollServiceMenu 周期性探测服务状态并刷新菜单，保证每次打开托盘菜单都反映实时状态。
+func pollServiceMenu() {
+	ticker := time.NewTicker(2 * time.Second)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ticker.C:
+			if quitting.Load() {
+				return
+			}
+			refreshServiceMenu()
+		}
 	}
 }
 
@@ -317,6 +346,7 @@ func main() {
 		}
 		if why == "exited" {
 			serviceFailed.Store(true)
+			serviceFailReason.Store("服务启动失败（进程已退出）")
 			refreshServiceMenu()
 			if !autostartLaunch {
 				showMessageBox("DeepSeek Harness 服务启动失败（进程已退出），请查看日志：\n"+filepath.Join(logDir, "server.log"), appName)
@@ -339,6 +369,7 @@ func main() {
 			notifyReady()
 		} else if !quitting.Load() {
 			serviceFailed.Store(true)
+			serviceFailReason.Store("服务启动失败（超时）")
 			refreshServiceMenu()
 			showMessageBox("DeepSeek Harness 服务最终未能就绪，请查看日志：\n"+filepath.Join(logDir, "server.log"), appName)
 		}
@@ -354,12 +385,12 @@ func onReady() {
 	systray.SetTitle(appName)
 	systray.SetTooltip(appName)
 
-	// 状态说明行（启动中 / 运行中 / 启动失败）+ 「打开 Web UI」——服务未就绪时禁用打开项
+	// 状态说明行（启动中 / 运行中 / 启动失败）+ 「打开 Web UI」——未就绪时隐藏“打开 Web UI”、显示状态行
 	menuStatus = systray.AddMenuItem("服务启动中…", "后台服务状态")
-	menuStatus.Disable()
 	menuOpen = systray.AddMenuItem("打开 Web UI", "打开网页端界面")
-	menuOpen.Disable()
 	refreshServiceMenu()
+	// 周期刷新，保证每次打开托盘菜单都反映服务实时状态
+	go pollServiceMenu()
 	systray.AddSeparator()
 	mSettings := systray.AddMenuItem("设置", "打开设置窗口")
 	systray.AddSeparator()
