@@ -73,6 +73,10 @@ const (
 	emGetLineCount       = 0x00BA
 	emGetFirstVisibleLine = 0x00CE
 	emExLimitText        = 0x0435
+	wmVScroll            = 0x0115
+	sbTop                = 6
+	sbBottom             = 7
+	sbThumbPos           = 3
 	settingsLogTimer     = 1
 
 	// 颜色（COLORREF = 0xBBGGRR）
@@ -478,8 +482,8 @@ func settingsLogReload(forceScroll bool) {
 			pSendMessageW.Call(edit, wmSetText, 0, uintptr(unsafe.Pointer(ep)))
 			settingsLogLastContent = text
 		}
-		pSendMessageW.Call(edit, emSetSel, ^uintptr(0), ^uintptr(0))
-		pSendMessageW.Call(edit, emScrollCaret, 0, 0)
+		// WM_VSCROLL SB_BOTTOM：可靠滚动到底（不依赖焦点，EM_SCROLLCARET/EM_LINESCROLL 在富编辑上不可靠）
+		pSendMessageW.Call(edit, wmVScroll, sbBottom, 0)
 		return
 	}
 
@@ -497,11 +501,10 @@ func settingsLogReload(forceScroll bool) {
 	pSendMessageW.Call(edit, wmSetText, 0, uintptr(unsafe.Pointer(ep)))
 	if atBottom {
 		// 贴底：跟随追加内容，自动滚到最后（tail -f 式）
-		pSendMessageW.Call(edit, emSetSel, ^uintptr(0), ^uintptr(0))
-		pSendMessageW.Call(edit, emScrollCaret, 0, 0)
+		pSendMessageW.Call(edit, wmVScroll, sbBottom, 0)
 	} else {
 		// 用户手动上翻：重置文本后回滚到原位置，不打断阅读
-		pSendMessageW.Call(edit, emLineScroll, firstVisible, 0)
+		pSendMessageW.Call(edit, wmVScroll, sbThumbPos, firstVisible)
 	}
 }
 
@@ -643,6 +646,7 @@ func createSettingsWindow() uintptr {
 	settingsPaneAbout = nil
 	settingsPaneLog = nil
 	settingsTitleHwnd = 0
+	settingsLogLastContent = "" // 重置上次内容，避免重开窗口后因内容未变而跳过刷新导致日志框空白
 
 	cls, _ := syscall.UTF16PtrFromString(settingsCls)
 	cb := syscall.NewCallback(settingsWndProc)
