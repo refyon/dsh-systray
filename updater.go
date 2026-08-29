@@ -160,25 +160,34 @@ func autoCheckUpdate() {
 // startUpdateApply 应用更新：各平台实现。Windows 派生独立更新进程（退出主程序→进度窗口下载/安装→自动重启）；
 // macOS 进程内下载并用辅助脚本替换 .app 后重启。声明于此，由 platform_*.go 实现。
 
-// checkForUpdatesManual 手动检查更新（设置页触发）：先检查 DeepSeek Harness 是否有新版本（有则先更新 harness），
-// 再检查 dsh-systray 自身更新，无新版提示已是最新。
+// checkForUpdatesManual 手动检查更新（设置页触发）：点击后立即弹出进度窗口，
+// 在窗口下完成 harness + dsh-systray 版本查询；harness 有新版则优先提示先更新 harness。
 func checkForUpdatesManual() {
 	if appVersion == "" || appVersion == "dev" {
 		showMessageBox("当前为开发版本（dev），未启用自动更新。", appName)
 		return
 	}
-	// 1) 先检查 DeepSeek Harness 是否有新版本；有则提示先更新 harness
-	checkHarnessUpdate()
-	// 2) 版本查询期间弹出进度窗口显示「正在查询最新版本」（Windows 进度窗口 / macOS 系统通知）
+	// 立即弹出进度窗口（不等待查询结果）
 	splash := startSplash("正在查询最新版本…")
-	splash.Update("正在查询最新版本…", 0.3)
+	splash.Update("正在查询最新版本…", 0.15)
+
+	// 1) 查询 DeepSeek Harness 是否有新版本
+	harnessLatest, harnessCur, harnessNewer := queryHarnessUpdate()
+	// 2) 查询 dsh-systray 自身最新版本
 	rel, err := fetchLatestRelease()
+	splash.Close()
 	if err != nil {
-		splash.Close()
 		showMessageBox("检查更新失败：\n"+err.Error()+"\n\n请检查网络后重试。", appName)
 		return
 	}
-	splash.Close()
+	// 3) harness 有新版本 → 优先提示先更新 harness
+	if harnessNewer {
+		if askUpdateHarness(harnessLatest, harnessCur) {
+			go runHarnessUpdate(harnessLatest)
+		}
+		return
+	}
+	// 4) dsh-systray 自身
 	if !isNewerVersion(rel.TagName, appVersion) {
 		showMessageBox(fmt.Sprintf("当前已是最新版本（%s）。", withV(appVersion)), appName)
 		return
@@ -187,6 +196,20 @@ func checkForUpdatesManual() {
 		// 异步执行，避免阻塞设置页 UI 线程（设置窗口在下载期间保持可响应/可关闭）。
 		go startUpdateApply(rel)
 	}
+}
+
+// queryHarnessUpdate 查询 harness 是否有新版本：返回最新版、当前版、是否为新版。
+func queryHarnessUpdate() (latest, cur string, newer bool) {
+	latest, err := fetchLatestHarnessVersion()
+	if err != nil {
+		log.Printf("harness update check failed: %v", err)
+		return "", "", false
+	}
+	cur = installedHarnessVersion()
+	if cur == "" {
+		return "", "", false // 无法确定已装 harness 版本
+	}
+	return latest, cur, isNewerVersion("v"+latest, "v"+cur)
 }
 
 // fetchLatestHarnessVersion 查询 npm 上 @deepseek-ai/dsh 的最新版本号（harness 本体）。
@@ -231,25 +254,6 @@ func installedHarnessVersion() string {
 		}
 	}
 	return ""
-}
-
-// checkHarnessUpdate 查询 harness 是否有新版本；有则提示先更新 harness（异步执行）。
-func checkHarnessUpdate() {
-	latest, err := fetchLatestHarnessVersion()
-	if err != nil {
-		log.Printf("harness update check failed: %v", err)
-		return
-	}
-	cur := installedHarnessVersion()
-	if cur == "" {
-		return // 无法确定已装 harness 版本
-	}
-	if !isNewerVersion("v"+latest, "v"+cur) {
-		return // harness 已是最新
-	}
-	if askUpdateHarness(latest, cur) {
-		go runHarnessUpdate(latest)
-	}
 }
 
 // runHarnessCmd 在 harness 目录执行命令，输出写到日志文件。

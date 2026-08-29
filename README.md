@@ -16,9 +16,9 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/refyon/dsh-systray/releases/latest"><img alt="Latest release" src="https://img.shields.io/github/v/release/refyon/dsh-systray?style=flat-square&color=4d6bfe" /></a>
-  <img alt="Windows x64" src="https://img.shields.io/badge/Windows-x64-4d6bfe.svg?style=flat-square" />
-  <img alt="macOS" src="https://img.shields.io/badge/macOS-Universal-4d6bfe.svg?style=flat-square" />
+  <a href="https://github.com/refyon/dsh-systray/releases/latest"><img alt="Latest release" src="https://img.shields.io/github/v/release/refyon/dsh-systray?style=flat-square&color=1d4ed8" /></a>
+  <img alt="Windows x64" src="https://img.shields.io/badge/Windows-x64-1d4ed8.svg?style=flat-square" />
+  <img alt="macOS" src="https://img.shields.io/badge/macOS-Universal-1d4ed8.svg?style=flat-square" />
   <a href="https://github.com/refyon/dsh-systray/actions/workflows/release.yml"><img alt="Release build" src="https://github.com/refyon/dsh-systray/actions/workflows/release.yml/badge.svg" /></a>
 </p>
 
@@ -31,11 +31,12 @@ dsh-systray 是一个 Windows / macOS 系统托盘应用：双击即可后台拉
 
 ## 下载
 
-| 平台 | 架构 | 包 | 下载 |
-| --- | --- | --- | --- |
-| Windows | x64 | ZIP | [下载 Windows 版](https://github.com/refyon/dsh-systray/releases/latest/download/dsh-systray-windows-x64.zip) |
-| macOS | Intel + Apple Silicon | ZIP (.app) | [下载 macOS 版](https://github.com/refyon/dsh-systray/releases/latest/download/dsh-systray-macos-universal.zip) |
-| 校验 | — | SHA256 | [SHA256SUMS.txt](https://github.com/refyon/dsh-systray/releases/latest/download/SHA256SUMS.txt) |
+| 平台 | 架构 | 包 | 大小 | 下载 |
+| --- | --- | --- | --- | --- |
+| Windows | x64 | ZIP | 3.1 MB | [下载 Windows 版](https://github.com/refyon/dsh-systray/releases/latest/download/dsh-systray-windows-x64.zip) |
+| macOS | Intel + Apple Silicon | ZIP (.app) | 5.7 MB | [下载 macOS 版](https://github.com/refyon/dsh-systray/releases/latest/download/dsh-systray-macos-universal.zip) |
+
+> 以上大小为最新 Release（v0.3.9）产物大小，随版本更新会变化。
 
 ## 功能
 

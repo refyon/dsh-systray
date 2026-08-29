@@ -189,7 +189,7 @@ const ww = wxmax - wxmin + 1, wh = wymax - wymin + 1
 function renderTray(size) {
   const W = size, H = size
   const R = Math.round(size * 0.21)
-  const blue = [77, 107, 254] // #4d6bfe
+  const blue = [29, 78, 216] // #1d4ed8 品牌蓝（云隙蓝主题）
   const fit = 0.80
   const s = Math.min((W * fit) / ww, (H * fit) / wh)
   const nw = ww * s, nh = wh * s

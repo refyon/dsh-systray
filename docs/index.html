@@ -7,9 +7,9 @@
 <meta name="description" content="dsh-systray — Windows / macOS 系统托盘应用：双击后台启动 DeepSeek Harness Web 本地服务，托盘常驻、开机自启、设置窗口、自动更新、主题自适应托盘图标。">
 <style>
 :root{
-  --bg:#f7f8fa; --surface:#ffffff; --text:#111827; --muted:#6b7280;
-  --border:#e5e7eb; --primary:#4d6bfe; --primary-deep:#3a4fe0; --soft:#eef1ff;
-  --rad:16px; --shadow:0 8px 24px rgba(17,24,39,.06); --font:-apple-system,'Google Sans','Product Sans','Roboto','Segoe UI',sans-serif;
+  --bg:#f5f7fa; --surface:#ffffff; --text:#101828; --muted:#667085;
+  --border:#e4e7ec; --primary:#1d4ed8; --primary-deep:#1e40af; --soft:#e0eaff;
+  --rad:16px; --shadow:0 8px 24px rgba(16,24,40,.06); --font:-apple-system,'Google Sans','Product Sans','Roboto','Segoe UI',sans-serif;
 }
 *{box-sizing:border-box}
 html{scroll-behavior:smooth}
@@ -20,14 +20,14 @@ a{color:inherit;text-decoration:none}
 
 /* hero */
 .hero{padding:80px 0 40px;text-align:center}
-.hero .logo{width:132px;height:132px;margin:0 auto 18px;display:block;filter:drop-shadow(0 14px 26px rgba(77,107,254,.28))}
+.hero .logo{width:132px;height:132px;margin:0 auto 18px;display:block;filter:drop-shadow(0 14px 26px rgba(29,78,216,.28))}
 .hero h1{font-size:clamp(2.4rem,6vw,3.6rem);font-weight:700;line-height:1.05;letter-spacing:-.03em;margin:0 0 14px}
 .hero h1 .tint{color:var(--primary)}
 .hero .sub{max-width:560px;margin:0 auto;color:var(--muted);font-size:1.12rem;line-height:1.6}
 .actions{display:flex;gap:14px;justify-content:center;margin-top:30px;flex-wrap:wrap}
 .btn{border:0;border-radius:999px;padding:13px 26px;font-weight:600;font-size:15px;cursor:pointer;display:inline-flex;align-items:center;gap:8px}
 .btn .ico{width:18px;height:18px}
-.btn.primary{background:var(--primary);color:#fff;box-shadow:0 6px 18px rgba(77,107,254,.28)}
+.btn.primary{background:var(--primary);color:#fff;box-shadow:0 6px 18px rgba(29,78,216,.28)}
 .btn.primary:hover{background:var(--primary-deep)}
 .btn.ghost{background:var(--surface);color:var(--text);border:1px solid var(--border)}
 .btn.ghost:hover{border-color:#cfd4dd}
@@ -58,7 +58,7 @@ a{color:inherit;text-decoration:none}
 .features .head p{color:var(--muted);margin:0}
 .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:22px}
 .feature{background:var(--surface);border:1px solid var(--border);border-radius:var(--rad);padding:26px;box-shadow:var(--shadow);transition:transform .18s,box-shadow .18s}
-.feature:hover{transform:translateY(-3px);box-shadow:0 14px 34px rgba(17,24,39,.1)}
+.feature:hover{transform:translateY(-3px);box-shadow:0 14px 34px rgba(16,24,40,.1)}
 .feature .dot{width:40px;height:40px;border-radius:11px;background:var(--soft);color:var(--primary);display:grid;place-items:center;font-weight:700;margin-bottom:14px}
 .feature .dot svg{width:20px;height:20px;fill:var(--primary)}
 .feature h4{margin:0 0 8px;font-size:17px}

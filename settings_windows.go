@@ -70,12 +70,12 @@ const (
 	settingsLogTimer  = 1
 
 	// 颜色（COLORREF = 0xBBGGRR）
-	stColorSidebarBg = 0x00FAF8F7 // #F7F8FA 侧栏浅灰底
-	stColorItemSel   = 0x00F0EDEC // #ECEDF0 选中项浅灰
-	stColorBlue      = 0x00FE6B4D // #4D6BFE 品牌蓝
-	stColorGray      = 0x00EDEAE8 // #E8EAED 开关轨道灰
-	stColorText      = 0x00242120 // #202124
-	stColorSub       = 0x0068635F // #5F6368
+	stColorSidebarBg = 0x00FAF7F5 // #F5F7FA 侧栏浅灰底
+	stColorItemSel   = 0x00F3EEEB // #EBEEF3 选中项浅灰
+	stColorBlue      = 0x00D84E1D // #1D4ED8 品牌蓝
+	stColorGray      = 0x00ECE7E4 // #E4E7EC 开关轨道灰
+	stColorText      = 0x00281810 // #101828
+	stColorSub       = 0x00857066 // #667085
 )
 
 var (

@@ -1,4 +1,5 @@
-// scripts/restyle-appicon.mjs — APP 图标重制为「品牌蓝渐变圆角底 + 白色鲸鱼」
+// scripts/restyle-appicon.mjs — APP 图标重制为「品牌蓝圆角底 + 白色鲸鱼」
+// 输入：whale-src.png（透明底灰色鲸鱼剪影）；输出：app-icon.png、icon.ico、preview-new.png
 import { readFileSync, writeFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
@@ -121,7 +122,7 @@ function restyle(src) {
   const ox = (W - nw) / 2, oy = (H - nh) / 2
 
   const out = Buffer.alloc(W * H * 4)
-  const blue = [77, 107, 254] // #4d6bfe 扁平品牌蓝
+  const blue = [29, 78, 216] // #1d4ed8 品牌蓝（云隙蓝主题）
   const inRound = (x, y) => {
     if (x < 0 || x >= W || y < 0 || y >= H) return false
     if (x >= R && x <= W - R) return true
@@ -164,7 +165,7 @@ function downsample(img, factor) {
   return { width: w, height: h, data: out }
 }
 
-const app = readFileSync(join(root, 'app-icon.png'))
+const app = readFileSync(join(root, 'whale-src.png'))
 const styled = restyle(app)
 writeFileSync(join(root, 'app-icon.png'), styled)
 

@@ -133,7 +133,7 @@ static DSHSetController *g_ctrl = nil;
     self.catTable.dataSource = self;
     self.catTable.delegate = self;
     self.catTable.selectionHighlightStyle = NSTableViewSelectionHighlightStyleSourceList;
-    self.catTable.backgroundColor = [NSColor colorWithCalibratedWhite:0.97 alpha:1.0];
+    self.catTable.backgroundColor = [NSColor colorWithCalibratedRed:0.961 green:0.969 blue:0.980 alpha:1.0];
     [self.catTable reloadData];
 
     NSScrollView *sv = [[NSScrollView alloc] initWithFrame:NSMakeRect(0, 0, 150, 360)];
@@ -163,7 +163,7 @@ static DSHSetController *g_ctrl = nil;
     [self addLabel:@"当前版本号" font:[NSFont systemFontOfSize:14] color:nil frame:NSMakeRect(0, 270, 200, 22) to:self.aboutPane];
     [self addLabel:[NSString stringWithFormat:@"%s", ver]
                font:[NSFont systemFontOfSize:16 weight:NSFontWeightSemibold]
-              color:[NSColor colorWithCalibratedRed:0.30 green:0.42 blue:1.0 alpha:1.0]
+              color:[NSColor colorWithCalibratedRed:0.114 green:0.306 blue:0.847 alpha:1.0]
               frame:NSMakeRect(0, 244, 220, 24)
                   to:self.aboutPane];
 

@@ -15,6 +15,7 @@ import (
 const (
 	wmClose          = 0x0010
 	wmDestroy        = 0x0002
+	wmPaint          = 0x000F
 	wmCommand        = 0x0111
 	wmSetFont        = 0x0030
 	wmSetIcon        = 0x0080
@@ -24,11 +25,12 @@ const (
 	iconBig   = 1
 	iconSmall = 0
 
-	swShow    = 5
-	wsCaption = 0x00C00000
-	wsSysMenu = 0x00080000
-	wsChild   = 0x40000000
-	wsVisible = 0x10000000
+	swShow          = 5
+	wsCaption       = 0x00C00000
+	wsSysMenu       = 0x00080000
+	wsClipChildren  = 0x02000000
+	wsChild         = 0x40000000
+	wsVisible       = 0x10000000
 	wsTabStop = 0x00010000
 	ssCenter  = 0x00000001
 	csHRedraw = 0x0002
@@ -52,15 +54,13 @@ const (
 	// 控件 ID
 	idTitle  = 10
 	idStatus = 11
-	idTrack  = 12
-	idFill   = 13
 
 	// 单色冷灰令牌（COLORREF = 0xBBGGRR，与图标配色一致）
-	colorTitle  = 0x00242120 // #202124 标题近黑
+	colorTitle  = 0x00281810 // #101828 标题近黑
 	colorWhite  = 0x00FFFFFF
-	colorStatus = 0x0068635F // #5F6368 次要灰
-	colorTrack  = 0x00EDEAE8 // #E8EAED 轨道浅灰
-	colorFill   = 0x00FE6B4D // #4D6BFE 进度填充品牌蓝
+	colorStatus = 0x00857066 // #667085 次要灰
+	colorTrack  = 0x00ECE7E4 // #E4E7EC 轨道浅灰
+	colorFill   = 0x00D84E1D // #1D4ED8 进度填充品牌蓝
 
 	// 布局（客户区坐标）
 	pad      = 20
@@ -68,7 +68,7 @@ const (
 	titleY   = 18
 	titleH   = 30
 	statusY  = 56
-	barH     = 6
+	barH     = 10 // 进度条高度（两端圆角胶囊）
 )
 
 var (
@@ -86,6 +86,8 @@ var (
 	pPostQuitMessage       = modUser32.NewProc("PostQuitMessage")
 	pShowWindow            = modUser32.NewProc("ShowWindow")
 	pUpdateWindow          = modUser32.NewProc("UpdateWindow")
+	pBeginPaint            = modUser32.NewProc("BeginPaint")
+	pEndPaint              = modUser32.NewProc("EndPaint")
 	pDestroyWindow         = modUser32.NewProc("DestroyWindow")
 	pGetSystemMetrics      = modUser32.NewProc("GetSystemMetrics")
 	pLoadCursorW           = modUser32.NewProc("LoadCursorW")
@@ -129,14 +131,13 @@ var (
 
 // 当前进度窗口的控件句柄与画刷（同一时间只有一个 splash）
 var (
+	splashHwnd       uintptr
 	splashTitleHwnd  uintptr
 	splashStatusHwnd uintptr
-	splashTrackHwnd  uintptr
-	splashFillHwnd   uintptr
-	splashTrackBrush uintptr
-	splashFillBrush  uintptr
 	splashStatusH    int32
 	splashBarY       int32
+	// splashProgressBits 当前进度（float64 位模式，原子读写；由 Update 写入、WM_PAINT 读取）。
+	splashProgressBits atomic.Uint64
 	// splashOnClose：用户点窗口关闭按钮时的回调，返回 true 允许关闭并中止，false 保持窗口。
 	splashOnClose     func() bool
 	splashCloseSilent atomic.Bool // 程序化 Close() 时为 true，跳过 OnClose 确认
@@ -172,6 +173,15 @@ type rect struct {
 	left, top, right, bottom int32
 }
 
+type paintStruct struct {
+	hdc         uintptr
+	fErase      int32
+	rcPaint     rect
+	fRestore    int32
+	fIncUpdate  int32
+	rgbReserved [32]byte
+}
+
 type msg struct {
 	hwnd    uintptr
 	message uint32
@@ -192,20 +202,23 @@ func splashWndProc(hwnd, uMsg, wParam, lParam uintptr) uintptr {
 		pDestroyWindow.Call(hwnd)
 		return 0
 	case wmDestroy:
-		if splashTrackBrush != 0 {
-			pDeleteObject.Call(splashTrackBrush)
-		}
-		if splashFillBrush != 0 {
-			pDeleteObject.Call(splashFillBrush)
-		}
+		splashHwnd = 0
 		pPostQuitMessage.Call(0)
+		return 0
+	case wmPaint:
+		// 进度条：浅灰轨道 + 品牌蓝填充，两端圆角胶囊（与弹窗按钮同风格）
+		var ps paintStruct
+		hdc, _, _ := pBeginPaint.Call(hwnd, uintptr(unsafe.Pointer(&ps)))
+		if hdc != 0 {
+			if wb, _, _ := pGetStockObject.Call(whiteBrush); wb != 0 {
+				pFillRect.Call(hdc, uintptr(unsafe.Pointer(&ps.rcPaint)), wb)
+			}
+			drawProgressBar(hdc, math.Float64frombits(splashProgressBits.Load()))
+			pEndPaint.Call(hwnd, uintptr(unsafe.Pointer(&ps)))
+		}
 		return 0
 	case wmCtlColorStatic:
 		switch lParam {
-		case splashTrackHwnd:
-			return splashTrackBrush
-		case splashFillHwnd:
-			return splashFillBrush
 		case splashTitleHwnd:
 			pSetTextColor.Call(wParam, colorTitle)
 			pSetBkColor.Call(wParam, colorWhite)
@@ -222,6 +235,30 @@ func splashWndProc(hwnd, uMsg, wParam, lParam uintptr) uintptr {
 	}
 	ret, _, _ := pDefWindowProcW.Call(hwnd, uMsg, wParam, lParam)
 	return ret
+}
+
+// drawProgressBar 绘制圆角胶囊进度条（轨道 + 按 frac 0~1 的填充），
+// 所有进度窗口共用，保证样式一致。
+func drawProgressBar(hdc uintptr, frac float64) {
+	if frac < 0 {
+		frac = 0
+	}
+	if frac > 1 {
+		frac = 1
+	}
+	radius := int32(barH / 2) // 两端半圆
+	// 轨道
+	rc := rect{int32(pad), splashBarY, int32(pad + contentW), splashBarY + int32(barH)}
+	fillRoundedRectAA(hdc, rc, radius, colorRefToARGB(colorTrack))
+	// 填充（最窄保持一个圆点宽度，左端圆角完整）
+	if frac > 0 {
+		fw := int32(float64(contentW) * frac)
+		if fw < int32(barH) {
+			fw = int32(barH)
+		}
+		rc = rect{int32(pad), splashBarY, int32(pad) + fw, splashBarY + int32(barH)}
+		fillRoundedRectAA(hdc, rc, radius, colorRefToARGB(colorFill))
+	}
 }
 
 func moduleHandle() uintptr {
@@ -310,6 +347,7 @@ func createSplashWindow(statusText string) uintptr {
 	msgH += 2
 	splashStatusH = int32(msgH)
 	splashBarY = int32(statusY) + splashStatusH + 10
+	splashProgressBits.Store(0)
 
 	clientW := int32(contentW + pad*2)
 	clientH := splashBarY + int32(barH) + 16
@@ -327,13 +365,14 @@ func createSplashWindow(statusText string) uintptr {
 		0,
 		uintptr(unsafe.Pointer(cls)),
 		uintptr(unsafe.Pointer(titleText)),
-		wsCaption|wsSysMenu,
+		wsCaption|wsSysMenu|wsClipChildren,
 		uintptr(x), uintptr(y), uintptr(winW), uintptr(winH),
 		0, 0, moduleHandle(), 0,
 	)
 	if hwnd == 0 {
 		return 0
 	}
+	splashHwnd = hwnd
 
 	// Windows 11 圆角窗口（旧系统忽略失败）
 	corner := uintptr(dwmcRound)
@@ -366,29 +405,6 @@ func createSplashWindow(statusText string) uintptr {
 	if splashStatusHwnd != 0 {
 		pSendMessageW.Call(splashStatusHwnd, wmSetFont, statusFont, 1)
 	}
-
-	// 进度条轨道（浅灰细条）
-	splashTrackHwnd, _, _ = pCreateWindowExW.Call(
-		0,
-		uintptr(unsafe.Pointer(staticCls)),
-		0,
-		wsChild|wsVisible,
-		uintptr(pad), uintptr(splashBarY), uintptr(contentW), uintptr(barH),
-		hwnd, idTrack, moduleHandle(), 0,
-	)
-
-	// 进度条填充（品牌蓝，初始宽度 0）
-	splashFillHwnd, _, _ = pCreateWindowExW.Call(
-		0,
-		uintptr(unsafe.Pointer(staticCls)),
-		0,
-		wsChild|wsVisible,
-		uintptr(pad), uintptr(splashBarY), 0, uintptr(barH),
-		hwnd, idFill, moduleHandle(), 0,
-	)
-
-	splashTrackBrush, _, _ = pCreateSolidBrush.Call(colorTrack)
-	splashFillBrush, _, _ = pCreateSolidBrush.Call(colorFill)
 
 	pShowWindow.Call(hwnd, swShow)
 	pUpdateWindow.Call(hwnd)
@@ -429,15 +445,15 @@ func startSplash(text string) *SplashState {
 			tp, _ := syscall.UTF16PtrFromString(t)
 			pSendMessageW.Call(splashStatusHwnd, wmSetText, 0, uintptr(unsafe.Pointer(tp)))
 		}
-		if splashFillHwnd != 0 {
+		if splashHwnd != 0 {
 			if f < 0 {
 				f = 0
 			}
 			if f > 1 {
 				f = 1
 			}
-			w := uintptr(float64(contentW) * f)
-			pMoveWindow.Call(splashFillHwnd, uintptr(pad), uintptr(splashBarY), w, uintptr(barH), 1)
+			splashProgressBits.Store(math.Float64bits(f))
+			pInvalidateRect.Call(splashHwnd, 0, 1)
 		}
 	}
 	st.Close = func() {
@@ -468,15 +484,15 @@ const (
 	dlgBtnW   = 84
 	dlgBtnGap = 16
 
-	dialogColorMsg   = 0x0068635F // #5F6368
-	dialogColorTxt   = 0x00242120 // #202124
+	dialogColorMsg   = 0x00857066 // #667085
+	dialogColorTxt   = 0x00281810 // #101828
 	dialogColorWhite = 0x00FFFFFF
 	// 主/次按钮填充（COLORREF=0xBBGGRR）
-	dialogColorPrim    = 0x00FE6B4D // #4D6BFE 主按钮品牌蓝
-	dialogColorPrimSel = 0x00E04F3A // #3A4FE0 按压加深
-	dialogColorGray    = 0x00F6F4F3 // #F3F4F6
-	dialogColorGraySel = 0x00EBE7E5 // #E5E7EB
-	dialogColorBorder  = 0x00D5D1DB // #D1D5DB
+	dialogColorPrim    = 0x00D84E1D // #1D4ED8 主按钮品牌蓝
+	dialogColorPrimSel = 0x00AF401E // #1E40AF 按压加深
+	dialogColorGray    = 0x00F7F3F1 // #F1F3F7
+	dialogColorGraySel = 0x00ECE6E2 // #E2E6EC
+	dialogColorBorder  = 0x00E8E0DC // #DCE0E8
 )
 
 type drawItemStruct struct {
