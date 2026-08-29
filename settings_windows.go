@@ -119,7 +119,8 @@ func settingsWndProc(hwnd, uMsg, wParam, lParam uintptr) uintptr {
 			setAutostartOn(settingsAutoOn)
 			settingsRedrawWidget(stIdAutoToggle)
 		case id == stIdCheckBtn:
-			checkForUpdatesManual()
+			// 异步检查，避免 GitHub 超时阻塞设置窗口 UI 线程（结果弹窗独立线程显示）
+			go checkForUpdatesManual()
 		}
 		return 0
 	case wmClose:
@@ -327,6 +328,13 @@ func settingsDrawCapsule(dis drawItemStruct, label string) {
 }
 
 func createSettingsWindow() uintptr {
+	// 重置上次打开遗留的状态（窗口关闭后再次打开时控件句柄/集合需清空，否则面板错乱）
+	settingsWidgets = map[uintptr]uintptr{}
+	settingsCatBtns = [2]uintptr{}
+	settingsPaneGen = nil
+	settingsPaneAbout = nil
+	settingsTitleHwnd = 0
+
 	cls, _ := syscall.UTF16PtrFromString(settingsCls)
 	cb := syscall.NewCallback(settingsWndProc)
 	cur, _, _ := pLoadCursorW.Call(0, idcArrow)

@@ -313,10 +313,17 @@ func onReady() {
 func onExit() {
 	quitting.Store(true)
 	cancelActiveUpdate() // 终止进行中的更新下载/安装
-	if !keepServerRunning.Load() {
-		killServer()
-	} else {
+	if keepServerRunning.Load() {
+		// 保留后台服务：只保留该服务器进程，终止其余派生子进程
+		keepPID := 0
+		if serverCmd != nil && serverCmd.Process != nil {
+			keepPID = serverCmd.Process.Pid
+		}
+		killChildProcesses(keepPID)
 		log.Printf("quit with backend server kept running")
+	} else {
+		killServer()
+		killChildProcesses(0)
 	}
 	log.Printf("tray exiting")
 }

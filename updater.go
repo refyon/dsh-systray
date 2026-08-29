@@ -41,7 +41,7 @@ const (
 	updateRepoOwner   = "refyon"
 	updateRepoName    = "dsh-systray"
 	updateCheckDelay  = 30 * time.Second // 启动后 30 秒静默检查新版本
-	updateAPITimeout  = 10 * time.Second // 版本接口单候选超时（直连失败回退镜像）
+	updateAPITimeout  = 8 * time.Second  // 版本接口单候选超时（直连失败回退镜像）
 	updateDLTimeout   = 5 * time.Minute  // 单镜像单次下载上限
 	updateMaxBodySize = 4 << 20          // 版本接口响应上限 4MB
 )
@@ -66,6 +66,35 @@ var (
 	updateMu     sync.Mutex
 	activeCancel context.CancelFunc
 )
+
+// 派生子进程登记表：托盘退出时除保留的后台服务外一并终止，避免孤儿进程。
+var (
+	childProcsMu sync.Mutex
+	childProcs   = map[int]*os.Process{}
+)
+
+// trackChildProcess 登记一个派生的子进程（退出时统一 Kill）。
+func trackChildProcess(p *os.Process) {
+	if p == nil {
+		return
+	}
+	childProcsMu.Lock()
+	childProcs[p.Pid] = p
+	childProcsMu.Unlock()
+}
+
+// killChildProcesses 终止所有登记的派生子进程；skipPID 为要保留的进程（如保留的后台服务）。
+func killChildProcesses(skipPID int) {
+	childProcsMu.Lock()
+	defer childProcsMu.Unlock()
+	for pid, p := range childProcs {
+		if pid == skipPID {
+			continue
+		}
+		_ = p.Kill()
+		delete(childProcs, pid)
+	}
+}
 
 // cancelActiveUpdate 取消正在进行的更新（下载/安装）；无进行中更新则忽略。
 func cancelActiveUpdate() {
@@ -131,17 +160,22 @@ func autoCheckUpdate() {
 // startUpdateApply 应用更新：各平台实现。Windows 派生独立更新进程（退出主程序→进度窗口下载/安装→自动重启）；
 // macOS 进程内下载并用辅助脚本替换 .app 后重启。声明于此，由 platform_*.go 实现。
 
-// checkForUpdatesManual 手动检查更新（设置页触发）：有新版弹确认并更新，无新版提示已是最新。
+// checkForUpdatesManual 手动检查更新（设置页触发）：查询期间显示进度反馈，有新版弹确认并更新，无新版提示已是最新。
 func checkForUpdatesManual() {
 	if appVersion == "" || appVersion == "dev" {
 		showMessageBox("当前为开发版本（dev），未启用自动更新。", appName)
 		return
 	}
+	// 版本查询期间弹出进度窗口显示「正在查询最新版本」（Windows 进度窗口 / macOS 系统通知）
+	splash := startSplash("正在查询最新版本…")
+	splash.Update("正在查询最新版本…", 0.3)
 	rel, err := fetchLatestRelease()
 	if err != nil {
+		splash.Close()
 		showMessageBox("检查更新失败：\n"+err.Error()+"\n\n请检查网络后重试。", appName)
 		return
 	}
+	splash.Close()
 	if !isNewerVersion(rel.TagName, appVersion) {
 		showMessageBox(fmt.Sprintf("当前已是最新版本（%s）。", withV(appVersion)), appName)
 		return

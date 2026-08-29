@@ -418,6 +418,7 @@ func startServer() (bool, <-chan error) {
 		return false, nil
 	}
 	serverCmd = cmd
+	trackChildProcess(cmd.Process)
 	exitCh := make(chan error, 1)
 	go func() { exitCh <- cmd.Wait() }()
 	log.Printf("server started, pid=%d", cmd.Process.Pid)
@@ -465,7 +466,9 @@ func openBrowser(url string) {
 	cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
 	if err := cmd.Start(); err != nil {
 		log.Printf("open browser failed: %v", err)
+		return
 	}
+	trackChildProcess(cmd.Process)
 }
 
 func isAutostartEnabled() bool {

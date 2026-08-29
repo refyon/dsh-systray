@@ -24,7 +24,7 @@ function extractConst(name) {
   if (end < 0) throw new Error(name + ' unterminated in icon_gen.go')
   return genSrc.slice(b64Start, end)
 }
-const icoLight = Buffer.from(extractConst('iconDataB64'), 'base64')
+const icoSrc = Buffer.from(extractConst('iconDataB64'), 'base64')
 const template = Buffer.from(extractConst('iconTemplateB64'), 'base64')
 
 // ---- 纯 Node PNG 编解码（zlib deflate/inflate，无 sharp 依赖） ----
@@ -176,10 +176,16 @@ function recolorPNG(png, topRGB, botRGB) {
   return encodePNG(width, height, out)
 }
 
-// ---- 深色鲸鱼 ICO：浅色任务栏使用（同款深灰渐变 #4A4A4A → #2B2B2B） ----
-const icoDark = makeICO(parseICO(icoLight).map(({ size, data }) => ({
+// ---- 品牌蓝重着色 ----
+// 亮色鲸鱼（深色任务栏使用）：浅蓝渐变 #9BA7FF → #7C8BFF
+const icoLight = makeICO(parseICO(icoSrc).map(({ size, data }) => ({
   size,
-  data: recolorPNG(data, [0x4A, 0x4A, 0x4A], [0x2B, 0x2B, 0x2B]),
+  data: recolorPNG(data, [0x9B, 0xA7, 0xFF], [0x7C, 0x8B, 0xFF]),
+})))
+// 暗色鲸鱼（浅色任务栏使用）：品牌蓝渐变 #4D6BFE → #2F43D6
+const icoDark = makeICO(parseICO(icoSrc).map(({ size, data }) => ({
+  size,
+  data: recolorPNG(data, [0x4D, 0x6B, 0xFE], [0x2F, 0x43, 0xD6]),
 })))
 
 // ---- 写出 icon_gen.go（浅色 + 深色 + 模板） ----
@@ -216,8 +222,7 @@ const go =
 const out = process.argv[2] ? resolve(process.argv[2]) : genPath
 writeFileSync(out, go)
 
-// 可执行文件图标资源与预览图（浅色主图标保持不变；深色预览便于肉眼检查）
-writeFileSync(join(root, 'icon.ico'), icoLight)
+// 可执行图标/预览由 restyle-appicon.mjs 负责（app-icon.png / icon.ico）；此处仅写深色预览供肉眼检查
 const darkBest = parseICO(icoDark).sort((a, b) => b.size - a.size)[0]
 writeFileSync(join(root, 'preview-dark.png'), darkBest.data)
 

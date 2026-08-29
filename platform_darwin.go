@@ -126,6 +126,7 @@ func startServer() (bool, <-chan error) {
 		return false, nil
 	}
 	serverCmd = cmd
+	trackChildProcess(cmd.Process)
 	exitCh := make(chan error, 1)
 	go func() { exitCh <- cmd.Wait() }()
 	log.Printf("server started, pid=%d", cmd.Process.Pid)
@@ -162,9 +163,12 @@ func findListenerPID(port int) (int, error) {
 }
 
 func openBrowser(url string) {
-	if err := exec.Command("open", url).Start(); err != nil {
+	cmd := exec.Command("open", url)
+	if err := cmd.Start(); err != nil {
 		log.Printf("open browser failed: %v", err)
+		return
 	}
+	trackChildProcess(cmd.Process)
 }
 
 func launchAgentPlistPath() string {

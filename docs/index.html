@@ -2,246 +2,144 @@
 <html lang="zh-CN">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>dsh-systray · DeepSeek Harness 桌面托盘</title>
-<link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg%20xmlns%3D'http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg'%20viewBox%3D'0%200%2050%2050'%3E%3Cdefs%3E%3ClinearGradient%20id%3D'g'%20x1%3D'0'%20y1%3D'0'%20x2%3D'0'%20y2%3D'50'%3E%3Cstop%20offset%3D'0'%20stop-color%3D'%25235A5A5A'%2F%3E%3Cstop%20offset%3D'1'%20stop-color%3D'%25233E3E3E'%2F%3E%3C%2FlinearGradient%3E%3ClinearGradient%20id%3D's'%20x1%3D'0'%20y1%3D'0'%20x2%3D'0'%20y2%3D'50'%3E%3Cstop%20offset%3D'0'%20stop-color%3D'%2523FFFFFF'%20stop-opacity%3D'0.08'%2F%3E%3Cstop%20offset%3D'0.35'%20stop-color%3D'%2523FFFFFF'%20stop-opacity%3D'0'%2F%3E%3C%2FlinearGradient%3E%3ClinearGradient%20id%3D'w'%20x1%3D'0'%20y1%3D'0'%20x2%3D'0'%20y2%3D'50'%3E%3Cstop%20offset%3D'0'%20stop-color%3D'%2523E9E9E9'%2F%3E%3Cstop%20offset%3D'1'%20stop-color%3D'%2523C3C3C3'%2F%3E%3C%2FlinearGradient%3E%3Cfilter%20id%3D'sf'%3E%3CfeGaussianBlur%20stdDeviation%3D'1.8'%2F%3E%3C%2Ffilter%3E%3C%2Fdefs%3E%3Crect%20x%3D'5'%20y%3D'6.5'%20width%3D'40'%20height%3D'40'%20rx%3D'11.5'%20fill%3D'%2523000'%20opacity%3D'0.22'%20filter%3D'url(%2523sf)'%2F%3E%3Crect%20x%3D'4.5'%20y%3D'4.5'%20width%3D'41'%20height%3D'41'%20rx%3D'11.5'%20fill%3D'url(%2523g)'%2F%3E%3Crect%20x%3D'4.9'%20y%3D'4.9'%20width%3D'40.2'%20height%3D'40.2'%20rx%3D'11.2'%20fill%3D'none'%20stroke%3D'%2523FFFFFF'%20stroke-opacity%3D'0.08'%2F%3E%3Crect%20x%3D'4.5'%20y%3D'4.5'%20width%3D'41'%20height%3D'41'%20rx%3D'11.5'%20fill%3D'url(%2523s)'%2F%3E%3Cg%20transform%3D'translate(11.25%2011.25)%20scale(0.55)'%3E%3Cpath%20fill%3D'url(%2523w)'%20d%3D'M48.8354%2010.0479C48.3232%209.79199%2048.1025%2010.2798%2047.8032%2010.5278C47.7007%2010.6079%2047.6143%2010.7119%2047.5273%2010.8076C46.7793%2011.624%2045.9048%2012.1597%2044.7622%2012.0957C43.0923%2012%2041.666%2012.5356%2040.4058%2013.8398C40.1377%2012.2319%2039.2476%2011.272%2037.8926%2010.6558C37.1836%2010.3359%2036.4668%2010.0156%2035.9702%209.31982C35.6235%208.82373%2035.5293%208.27197%2035.356%207.72754C35.2456%207.3999%2035.1353%207.06396%2034.7651%207.00781C34.3633%206.94385%2034.2056%207.2876%2034.0479%207.57568C33.418%208.75195%2033.1733%2010.0479%2033.1973%2011.3599C33.2524%2014.312%2034.4736%2016.6641%2036.8999%2018.3359C37.1758%2018.5278%2037.2466%2018.7197%2037.1597%2019C36.9946%2019.5757%2036.7974%2020.1357%2036.624%2020.7119C36.5137%2021.0801%2036.3486%2021.1597%2035.9624%2021C34.6309%2020.4321%2033.481%2019.5918%2032.4644%2018.5757C30.7393%2016.8721%2029.1792%2014.9917%2027.2334%2013.52C26.7764%2013.1758%2026.3193%2012.856%2025.8467%2012.5518C23.8618%2010.584%2026.1069%208.96777%2026.627%208.77588C27.1704%208.57568%2026.8159%207.8877%2025.0591%207.896C23.3022%207.90381%2021.6953%208.50391%2019.647%209.30371C19.3477%209.42383%2019.0322%209.51172%2018.7095%209.58398C16.8501%209.22363%2014.9199%209.14355%2012.9033%209.37598C9.10596%209.80762%206.07275%2011.6396%203.84326%2014.7681C1.16455%2018.5278%200.53418%2022.7998%201.30664%2027.2559C2.11768%2031.9521%204.46582%2035.8398%208.07373%2038.8799C11.8159%2042.0322%2016.1255%2043.5762%2021.041%2043.2803C24.0269%2043.104%2027.3516%2042.6963%2031.1016%2039.4561C32.0469%2039.936%2033.0396%2040.1279%2034.686%2040.272C35.9546%2040.3921%2037.1758%2040.208%2038.1211%2040.0078C39.6021%2039.688%2039.4995%2038.2881%2038.9639%2038.0322C34.623%2035.9678%2035.5762%2036.8081%2034.71%2036.1279C36.9155%2033.4639%2040.2402%2030.6958%2041.54%2021.728C41.6426%2021.0161%2041.5557%2020.5679%2041.54%2019.9917C41.5322%2019.6396%2041.6108%2019.5039%2042.0049%2019.4639C43.0923%2019.3359%2044.1479%2019.0317%2045.1167%2018.4878C47.9292%2016.9199%2049.064%2014.3438%2049.3315%2011.2559C49.3711%2010.7837%2049.3237%2010.2959%2048.8354%2010.0479ZM24.3262%2037.8398C20.1196%2034.4639%2018.0791%2033.3521%2017.2358%2033.3999C16.4482%2033.4482%2016.5898%2034.3682%2016.7632%2034.9678C16.9443%2035.5601%2017.1812%2035.9683%2017.5117%2036.4878C17.7402%2036.832%2017.8979%2037.3442%2017.2832%2037.728C15.9282%2038.584%2013.5728%2037.4399%2013.4624%2037.3838C10.7207%2035.7358%208.42822%2033.5601%206.81348%2030.584C5.25342%2027.7197%204.34766%2024.6479%204.19775%2021.3677C4.1582%2020.5757%204.38672%2020.2959%205.15869%2020.1519C6.17529%2019.96%207.22314%2019.9199%208.23926%2020.0718C12.5327%2020.7119%2016.1885%2022.6719%2019.2529%2025.7759C21.002%2027.5439%2022.3252%2029.6558%2023.6885%2031.7202C25.1377%2033.9121%2026.6978%2036%2028.6831%2037.7119C29.3843%2038.312%2029.9434%2038.7681%2030.479%2039.104C28.8643%2039.2881%2026.1699%2039.3281%2024.3262%2037.8398ZM26.3433%2024.6001C26.3433%2024.248%2026.6191%2023.9678%2026.9658%2023.9678C27.0444%2023.9678%2027.1152%2023.9839%2027.1782%2024.0078C27.2651%2024.04%2027.3438%2024.0879%2027.4067%2024.1602C27.5171%2024.272%2027.5801%2024.4321%2027.5801%2024.6001C27.5801%2024.9521%2027.3042%2025.2319%2026.9575%2025.2319C26.6108%2025.2319%2026.3433%2024.9521%2026.3433%2024.6001ZM32.6064%2027.8799C32.2046%2028.0479%2031.8027%2028.1919%2031.4165%2028.208C30.8179%2028.2397%2030.1641%2027.9922%2029.8096%2027.688C29.2583%2027.2158%2028.8643%2026.9521%2028.6987%2026.1279C28.6279%2025.7759%2028.6675%2025.2319%2028.7305%2024.9199C28.8721%2024.248%2028.7144%2023.8159%2028.2495%2023.4238C27.8716%2023.104%2027.3911%2023.0161%2026.8633%2023.0161C26.666%2023.0161%2026.4849%2022.9277%2026.3511%2022.856C26.1304%2022.7441%2025.9492%2022.4639%2026.1226%2022.1201C26.1777%2022.0078%2026.4458%2021.7358%2026.5088%2021.688C27.2256%2021.272%2028.0527%2021.4077%2028.8169%2021.7197C29.5259%2022.0161%2030.0615%2022.5601%2030.834%2023.3281C31.6216%2024.2559%2031.7632%2024.5117%2032.2124%2025.208C32.5669%2025.752%2032.8901%2026.312%2033.1104%2026.9521C33.2446%2027.3521%2033.0713%2027.6802%2032.6064%2027.8799Z'%2F%3E%3C%2Fg%3E%3C%2Fsvg%3E">
-<meta name="description" content="dsh-systray — Windows / macOS 系统托盘应用：双击后台启动 DeepSeek Harness Web 本地服务，托盘常驻、开机自启、一键打开 Web UI。">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>dsh-systray · 你需要的只是一个启动器</title>
+<meta name="description" content="dsh-systray — Windows / macOS 系统托盘应用：双击后台启动 DeepSeek Harness Web 本地服务，托盘常驻、开机自启、设置窗口、自动更新、主题自适应托盘图标。">
 <style>
 :root{
-  --bg:#ffffff;
-  --text:#202124;
-  --text2:#5f6368;
-  --green:#4d6bfe;
-  --green-dark:#3a4fe0;
-  --green-tint:#eef1ff;
-  --border:#e8eaed;
-  --blue:#4285f4;
-  --red:#ea4334;
-  --yellow:#fbbc04;
-  --green2:#34a853;
-  --radius:20px;
-  --shadow:0 1px 3px rgba(60,64,67,.15),0 4px 16px rgba(60,64,67,.07);
+  --bg:#f7f8fa; --surface:#ffffff; --text:#111827; --muted:#6b7280;
+  --border:#e5e7eb; --primary:#4d6bfe; --primary-deep:#3a4fe0; --soft:#eef1ff;
+  --rad:16px; --shadow:0 8px 24px rgba(17,24,39,.06); --font:-apple-system,'Google Sans','Product Sans','Roboto','Segoe UI',sans-serif;
 }
-*{margin:0;padding:0;box-sizing:border-box}
+*{box-sizing:border-box}
 html{scroll-behavior:smooth}
-body{
-  font-family:"Google Sans","Product Sans",Roboto,"Segoe UI",-apple-system,BlinkMacSystemFont,sans-serif;
-  background:var(--bg);color:var(--text);line-height:1.6;
-  -webkit-font-smoothing:antialiased;
-}
-a{color:var(--green);text-decoration:none}
-a:hover{text-decoration:underline}
+body{margin:0;background:var(--bg);color:var(--text);font-family:var(--font);-webkit-font-smoothing:antialiased}
+a{color:inherit;text-decoration:none}
+.wrap{width:min(1120px,calc(100% - 48px));margin:0 auto}
+.eyebrow{color:var(--primary);font-weight:600;letter-spacing:.14em;text-transform:uppercase;font-size:.78rem}
 
-/* Header */
-header{
-  position:sticky;top:0;z-index:10;background:rgba(255,255,255,.92);
-  backdrop-filter:blur(12px);border-bottom:1px solid var(--border);
-}
-.header-inner{
-  max-width:1080px;margin:0 auto;padding:14px 24px;
-  display:flex;align-items:center;gap:12px;
-}
-.logo{width:34px;height:34px;border-radius:8px;flex-shrink:0}
-.site-name{font-size:18px;font-weight:600;letter-spacing:-.01em}
-.version-badge{
-  margin-left:auto;font-size:12.5px;font-weight:500;color:var(--green);
-  background:var(--green-tint);padding:4px 12px;border-radius:999px;
-}
-.gh-link{font-size:13px;color:var(--text2);text-decoration:none}
-.gh-link:hover{color:var(--text);text-decoration:none}
+/* hero */
+.hero{padding:80px 0 40px;text-align:center}
+.hero .logo{width:132px;height:132px;margin:0 auto 18px;display:block;filter:drop-shadow(0 14px 26px rgba(77,107,254,.28))}
+.hero h1{font-size:clamp(2.4rem,6vw,3.6rem);font-weight:700;line-height:1.05;letter-spacing:-.03em;margin:0 0 14px}
+.hero h1 .tint{color:var(--primary)}
+.hero .sub{max-width:560px;margin:0 auto;color:var(--muted);font-size:1.12rem;line-height:1.6}
+.actions{display:flex;gap:14px;justify-content:center;margin-top:30px;flex-wrap:wrap}
+.btn{border:0;border-radius:999px;padding:13px 26px;font-weight:600;font-size:15px;cursor:pointer;display:inline-flex;align-items:center;gap:8px}
+.btn .ico{width:18px;height:18px}
+.btn.primary{background:var(--primary);color:#fff;box-shadow:0 6px 18px rgba(77,107,254,.28)}
+.btn.primary:hover{background:var(--primary-deep)}
+.btn.ghost{background:var(--surface);color:var(--text);border:1px solid var(--border)}
+.btn.ghost:hover{border-color:#cfd4dd}
+.ver-chip{margin-top:20px;font-size:13px;color:var(--muted)}
+.ver-chip b{color:var(--primary)}
 
-/* Hero */
-main{max-width:1080px;margin:0 auto;padding:0 24px}
-.hero{
-  display:flex;flex-direction:column;align-items:center;text-align:center;
-  padding:72px 0 40px;
-}
-.hero-logo{width:112px;height:112px;border-radius:26px;box-shadow:0 12px 32px rgba(32,33,36,.22)}
-.hero h1{font-size:44px;font-weight:700;letter-spacing:-.02em;margin:28px 0 12px}
-.hero .sub{font-size:17px;color:var(--text2);max-width:560px}
-.hero-actions{display:flex;flex-wrap:wrap;gap:14px;justify-content:center;margin-top:32px}
-.hero-actions .btn{min-width:218px;justify-content:center}
-.btn{
-  display:inline-flex;align-items:center;gap:10px;font-size:15.5px;font-weight:600;
-  padding:13px 26px;border-radius:999px;text-decoration:none;transition:.18s ease;
-  border:1px solid transparent;cursor:pointer;
-}
-.btn:hover{text-decoration:none;transform:translateY(-1px)}
-.btn-primary{background:var(--green);color:#fff;box-shadow:0 4px 14px rgba(77,107,254,.32)}
-.btn-primary:hover{background:var(--green-dark)}
-.btn-outline{border-color:var(--green);color:var(--green);background:#fff}
-.btn-outline:hover{background:var(--green-tint)}
-.btn .ico{width:18px;height:18px;flex-shrink:0}
-.hero-meta{display:flex;gap:18px;margin-top:22px;font-size:13.5px;color:var(--text2);flex-wrap:wrap;justify-content:center}
+/* hub: mockup + copy */
+.hub{display:grid;grid-template-columns:1.05fr .95fr;gap:48px;align-items:center;padding:52px 0 12px}
+@media(max-width:820px){.hub{grid-template-columns:1fr}}
+.mock{background:var(--surface);border:1px solid var(--border);border-radius:var(--rad);box-shadow:var(--shadow);padding:24px;display:flex;gap:16px}
+.mock .side{width:104px;flex:none;background:var(--bg);border-radius:12px;padding:12px 8px;font-size:13px}
+.mock .side div{padding:8px 10px;border-radius:8px;margin-bottom:6px;color:var(--muted)}
+.mock .side div.on{background:var(--soft);color:var(--primary);font-weight:600}
+.mock .body{flex:1;font-size:14px}
+.mock .row{display:flex;justify-content:space-between;align-items:center;padding:13px 0;border-bottom:1px solid var(--border)}
+.mock .row:last-child{border-bottom:0}
+.mock .row b{font-weight:600}
+.mock .row .muted{color:var(--muted)}
+.sw{width:44px;height:25px;border-radius:999px;background:var(--primary);position:relative;flex:none}
+.sw:after{content:"";position:absolute;top:3.5px;right:3.5px;width:18px;height:18px;border-radius:50%;background:#fff}
+.hub-copy h2{font-size:27px;margin:0 0 12px;letter-spacing:-.02em}
+.hub-copy p{color:var(--muted);line-height:1.65;max-width:44ch}
 
-/* Features */
-.features-head{text-align:center;margin:64px 0 28px}
-.eyebrow{
-  display:inline-block;font-size:11.5px;font-weight:600;letter-spacing:.1em;text-transform:uppercase;
-  color:var(--green);background:var(--green-tint);padding:4px 13px;border-radius:999px;margin-bottom:14px;
-}
-.section-title{font-size:28px;font-weight:700;letter-spacing:-.01em;line-height:1.25}
-.section-sub{font-size:15px;color:var(--text2);margin-top:10px}
-.features{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:20px;padding-bottom:24px}
-@media (max-width:760px){.features{grid-template-columns:1fr}}
-.feature{
-  position:relative;overflow:hidden;border:1px solid var(--border);border-radius:22px;
-  padding:28px 26px;background:linear-gradient(180deg,#ffffff 0%,#fcfdff 100%);
-  box-shadow:0 1px 2px rgba(60,64,67,.05);
-  transition:transform .22s ease,box-shadow .22s ease,border-color .22s ease;
-}
-.feature::before{
-  content:"";position:absolute;top:0;left:0;right:0;height:3px;border-radius:0 0 3px 3px;
-  background:linear-gradient(90deg,var(--green),#8fb0ff);opacity:0;transition:opacity .25s ease;
-}
-.feature:hover{transform:translateY(-3px);box-shadow:0 12px 30px rgba(77,107,254,.12);border-color:#ccd8ff}
-.feature:hover::before{opacity:1}
-.feature .num{
-  position:absolute;top:22px;right:26px;font-size:13px;font-weight:700;letter-spacing:.14em;
-  color:#e2e5ea;user-select:none;
-}
-.feature .dot{
-  width:46px;height:46px;border-radius:14px;display:flex;align-items:center;justify-content:center;
-  margin-bottom:16px;background:linear-gradient(135deg,#eef1ff,#dfe7ff);
-  box-shadow:inset 0 0 0 1px rgba(77,107,254,.10);
-}
-.feature h4{font-size:16.5px;font-weight:600;letter-spacing:-.01em}
-.feature p{font-size:14px;color:var(--text2);line-height:1.66;margin-top:6px}
-.reveal{opacity:0}
-.reveal.in{animation:rise .55s cubic-bezier(.2,.7,.3,1) both}
-@keyframes rise{from{opacity:0;transform:translateY(16px)}to{opacity:1;transform:none}}
-@media (prefers-reduced-motion:reduce){
-  .reveal{opacity:1;animation:none}
-  .feature:hover{transform:none}
-}
+/* features */
+.features{padding:74px 0 8px}
+.features .head{text-align:center;margin-bottom:36px}
+.features .head h2{font-size:31px;margin:12px 0 8px;letter-spacing:-.02em}
+.features .head p{color:var(--muted);margin:0}
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:22px}
+.feature{background:var(--surface);border:1px solid var(--border);border-radius:var(--rad);padding:26px;box-shadow:var(--shadow);transition:transform .18s,box-shadow .18s}
+.feature:hover{transform:translateY(-3px);box-shadow:0 14px 34px rgba(17,24,39,.1)}
+.feature .dot{width:40px;height:40px;border-radius:11px;background:var(--soft);color:var(--primary);display:grid;place-items:center;font-weight:700;margin-bottom:14px}
+.feature .dot svg{width:20px;height:20px;fill:var(--primary)}
+.feature h4{margin:0 0 8px;font-size:17px}
+.feature p{font-size:14px;color:var(--muted);line-height:1.55;margin:0}
+.feature a{color:var(--primary)}
 
-/* Install notes */
-.notes{
-  background:#f8f9fa;border:1px solid var(--border);border-radius:var(--radius);
-  padding:28px 30px;margin:48px 0 24px;
-}
-.notes h2{font-size:19px;font-weight:600;margin-bottom:14px}
-.notes ol{margin-left:20px;display:flex;flex-direction:column;gap:8px;font-size:14.5px;color:var(--text2)}
-.notes code{background:#eef0f2;border-radius:6px;padding:1px 7px;font-size:13px;color:#b31412}
+/* notes */
+.notes{margin-top:66px;background:var(--surface);border:1px solid var(--border);border-radius:var(--rad);box-shadow:var(--shadow);padding:34px 38px}
+.notes h2{margin:0 0 18px;font-size:22px}
+.notes ol{margin:0;padding-left:20px;line-height:1.7;color:var(--muted)}
+.notes li{margin-bottom:4px}
+.notes code{background:var(--bg);border:1px solid var(--border);border-radius:6px;padding:2px 7px;font-size:13px;color:var(--primary)}
 
-footer{
-  border-top:1px solid var(--border);padding:26px 24px 40px;text-align:center;
-  font-size:13px;color:var(--text2);
-}
-footer a{color:var(--green)}
-@media (max-width:640px){
-  .hero h1{font-size:32px}
-  .hero{padding-top:48px}
-}
+/* footer */
+footer{padding:56px 0 72px;text-align:center;color:var(--muted);font-size:14px}
+footer a{color:var(--primary)}
+footer .sep{margin:0 8px;color:var(--border)}
+
+/* reveal */
+[data-reveal]{opacity:0;transform:translateY(18px);transition:opacity .5s,transform .5s}
+[data-reveal].in{opacity:1;transform:none}
+@media(max-width:600px){.hero{padding-top:64px}.features .head h2{font-size:26px}}
 </style>
 </head>
 <body>
-
-<header>
-  <div class="header-inner">
-    <svg class="logo" viewBox="0 0 50 50" aria-hidden="true">
-      <defs>
-        <linearGradient id="g_1" x1="0" y1="0" x2="0" y2="50" gradientUnits="userSpaceOnUse">
-          <stop offset="0" stop-color="#5A5A5A"/><stop offset="1" stop-color="#3E3E3E"/>
-        </linearGradient>
-        <linearGradient id="s_1" x1="0" y1="0" x2="0" y2="50" gradientUnits="userSpaceOnUse">
-          <stop offset="0" stop-color="#FFFFFF" stop-opacity="0.08"/><stop offset="0.35" stop-color="#FFFFFF" stop-opacity="0"/>
-        </linearGradient>
-        <linearGradient id="w_1" x1="0" y1="0" x2="0" y2="50" gradientUnits="userSpaceOnUse">
-          <stop offset="0" stop-color="#E9E9E9"/><stop offset="1" stop-color="#C3C3C3"/>
-        </linearGradient>
-        <filter id="sf_1" x="-25%" y="-25%" width="150%" height="150%">
-          <feGaussianBlur stdDeviation="1.8"/>
-        </filter>
-      </defs>
-      <rect x="5" y="6.5" width="40" height="40" rx="11.5" fill="#000000" opacity="0.22" filter="url(#sf_1)"/>
-      <rect x="4.5" y="4.5" width="41" height="41" rx="11.5" fill="url(#g_1)"/>
-      <rect x="4.9" y="4.9" width="40.2" height="40.2" rx="11.2" fill="none" stroke="#FFFFFF" stroke-opacity="0.08" stroke-width="1"/>
-      <rect x="4.5" y="4.5" width="41" height="41" rx="11.5" fill="url(#s_1)"/>
-      <g transform="translate(11.25 11.25) scale(0.55)"><path fill="url(#w_1)" d="M48.8354 10.0479C48.3232 9.79199 48.1025 10.2798 47.8032 10.5278C47.7007 10.6079 47.6143 10.7119 47.5273 10.8076C46.7793 11.624 45.9048 12.1597 44.7622 12.0957C43.0923 12 41.666 12.5356 40.4058 13.8398C40.1377 12.2319 39.2476 11.272 37.8926 10.6558C37.1836 10.3359 36.4668 10.0156 35.9702 9.31982C35.6235 8.82373 35.5293 8.27197 35.356 7.72754C35.2456 7.3999 35.1353 7.06396 34.7651 7.00781C34.3633 6.94385 34.2056 7.2876 34.0479 7.57568C33.418 8.75195 33.1733 10.0479 33.1973 11.3599C33.2524 14.312 34.4736 16.6641 36.8999 18.3359C37.1758 18.5278 37.2466 18.7197 37.1597 19C36.9946 19.5757 36.7974 20.1357 36.624 20.7119C36.5137 21.0801 36.3486 21.1597 35.9624 21C34.6309 20.4321 33.481 19.5918 32.4644 18.5757C30.7393 16.8721 29.1792 14.9917 27.2334 13.52C26.7764 13.1758 26.3193 12.856 25.8467 12.5518C23.8618 10.584 26.1069 8.96777 26.627 8.77588C27.1704 8.57568 26.8159 7.8877 25.0591 7.896C23.3022 7.90381 21.6953 8.50391 19.647 9.30371C19.3477 9.42383 19.0322 9.51172 18.7095 9.58398C16.8501 9.22363 14.9199 9.14355 12.9033 9.37598C9.10596 9.80762 6.07275 11.6396 3.84326 14.7681C1.16455 18.5278 0.53418 22.7998 1.30664 27.2559C2.11768 31.9521 4.46582 35.8398 8.07373 38.8799C11.8159 42.0322 16.1255 43.5762 21.041 43.2803C24.0269 43.104 27.3516 42.6963 31.1016 39.4561C32.0469 39.936 33.0396 40.1279 34.686 40.272C35.9546 40.3921 37.1758 40.208 38.1211 40.0078C39.6021 39.688 39.4995 38.2881 38.9639 38.0322C34.623 35.9678 35.5762 36.8081 34.71 36.1279C36.9155 33.4639 40.2402 30.6958 41.54 21.728C41.6426 21.0161 41.5557 20.5679 41.54 19.9917C41.5322 19.6396 41.6108 19.5039 42.0049 19.4639C43.0923 19.3359 44.1479 19.0317 45.1167 18.4878C47.9292 16.9199 49.064 14.3438 49.3315 11.2559C49.3711 10.7837 49.3237 10.2959 48.8354 10.0479ZM24.3262 37.8398C20.1196 34.4639 18.0791 33.3521 17.2358 33.3999C16.4482 33.4482 16.5898 34.3682 16.7632 34.9678C16.9443 35.5601 17.1812 35.9683 17.5117 36.4878C17.7402 36.832 17.8979 37.3442 17.2832 37.728C15.9282 38.584 13.5728 37.4399 13.4624 37.3838C10.7207 35.7358 8.42822 33.5601 6.81348 30.584C5.25342 27.7197 4.34766 24.6479 4.19775 21.3677C4.1582 20.5757 4.38672 20.2959 5.15869 20.1519C6.17529 19.96 7.22314 19.9199 8.23926 20.0718C12.5327 20.7119 16.1885 22.6719 19.2529 25.7759C21.002 27.5439 22.3252 29.6558 23.6885 31.7202C25.1377 33.9121 26.6978 36 28.6831 37.7119C29.3843 38.312 29.9434 38.7681 30.479 39.104C28.8643 39.2881 26.1699 39.3281 24.3262 37.8398ZM26.3433 24.6001C26.3433 24.248 26.6191 23.9678 26.9658 23.9678C27.0444 23.9678 27.1152 23.9839 27.1782 24.0078C27.2651 24.04 27.3438 24.0879 27.4067 24.1602C27.5171 24.272 27.5801 24.4321 27.5801 24.6001C27.5801 24.9521 27.3042 25.2319 26.9575 25.2319C26.6108 25.2319 26.3433 24.9521 26.3433 24.6001ZM32.6064 27.8799C32.2046 28.0479 31.8027 28.1919 31.4165 28.208C30.8179 28.2397 30.1641 27.9922 29.8096 27.688C29.2583 27.2158 28.8643 26.9521 28.6987 26.1279C28.6279 25.7759 28.6675 25.2319 28.7305 24.9199C28.8721 24.248 28.7144 23.8159 28.2495 23.4238C27.8716 23.104 27.3911 23.0161 26.8633 23.0161C26.666 23.0161 26.4849 22.9277 26.3511 22.856C26.1304 22.7441 25.9492 22.4639 26.1226 22.1201C26.1777 22.0078 26.4458 21.7358 26.5088 21.688C27.2256 21.272 28.0527 21.4077 28.8169 21.7197C29.5259 22.0161 30.0615 22.5601 30.834 23.3281C31.6216 24.2559 31.7632 24.5117 32.2124 25.208C32.5669 25.752 32.8901 26.312 33.1104 26.9521C33.2446 27.3521 33.0713 27.6802 32.6064 27.8799Z"/></g>
-    </svg>
-    <span class="site-name">dsh-systray</span>
-    <span class="version-badge" id="version">latest</span>
-    <a class="gh-link" href="https://github.com/refyon/dsh-systray" target="_blank" rel="noopener">GitHub ↗</a>
-  </div>
-</header>
-
-<main>
+<main class="wrap">
   <section class="hero">
-    <svg class="hero-logo" viewBox="0 0 50 50" aria-hidden="true">
-      <defs>
-        <linearGradient id="g_2" x1="0" y1="0" x2="0" y2="50" gradientUnits="userSpaceOnUse">
-          <stop offset="0" stop-color="#5A5A5A"/><stop offset="1" stop-color="#3E3E3E"/>
-        </linearGradient>
-        <linearGradient id="s_2" x1="0" y1="0" x2="0" y2="50" gradientUnits="userSpaceOnUse">
-          <stop offset="0" stop-color="#FFFFFF" stop-opacity="0.08"/><stop offset="0.35" stop-color="#FFFFFF" stop-opacity="0"/>
-        </linearGradient>
-        <linearGradient id="w_2" x1="0" y1="0" x2="0" y2="50" gradientUnits="userSpaceOnUse">
-          <stop offset="0" stop-color="#E9E9E9"/><stop offset="1" stop-color="#C3C3C3"/>
-        </linearGradient>
-        <filter id="sf_2" x="-25%" y="-25%" width="150%" height="150%">
-          <feGaussianBlur stdDeviation="1.8"/>
-        </filter>
-      </defs>
-      <rect x="5" y="6.5" width="40" height="40" rx="11.5" fill="#000000" opacity="0.22" filter="url(#sf_2)"/>
-      <rect x="4.5" y="4.5" width="41" height="41" rx="11.5" fill="url(#g_2)"/>
-      <rect x="4.9" y="4.9" width="40.2" height="40.2" rx="11.2" fill="none" stroke="#FFFFFF" stroke-opacity="0.08" stroke-width="1"/>
-      <rect x="4.5" y="4.5" width="41" height="41" rx="11.5" fill="url(#s_2)"/>
-      <g transform="translate(11.25 11.25) scale(0.55)"><path fill="url(#w_2)" d="M48.8354 10.0479C48.3232 9.79199 48.1025 10.2798 47.8032 10.5278C47.7007 10.6079 47.6143 10.7119 47.5273 10.8076C46.7793 11.624 45.9048 12.1597 44.7622 12.0957C43.0923 12 41.666 12.5356 40.4058 13.8398C40.1377 12.2319 39.2476 11.272 37.8926 10.6558C37.1836 10.3359 36.4668 10.0156 35.9702 9.31982C35.6235 8.82373 35.5293 8.27197 35.356 7.72754C35.2456 7.3999 35.1353 7.06396 34.7651 7.00781C34.3633 6.94385 34.2056 7.2876 34.0479 7.57568C33.418 8.75195 33.1733 10.0479 33.1973 11.3599C33.2524 14.312 34.4736 16.6641 36.8999 18.3359C37.1758 18.5278 37.2466 18.7197 37.1597 19C36.9946 19.5757 36.7974 20.1357 36.624 20.7119C36.5137 21.0801 36.3486 21.1597 35.9624 21C34.6309 20.4321 33.481 19.5918 32.4644 18.5757C30.7393 16.8721 29.1792 14.9917 27.2334 13.52C26.7764 13.1758 26.3193 12.856 25.8467 12.5518C23.8618 10.584 26.1069 8.96777 26.627 8.77588C27.1704 8.57568 26.8159 7.8877 25.0591 7.896C23.3022 7.90381 21.6953 8.50391 19.647 9.30371C19.3477 9.42383 19.0322 9.51172 18.7095 9.58398C16.8501 9.22363 14.9199 9.14355 12.9033 9.37598C9.10596 9.80762 6.07275 11.6396 3.84326 14.7681C1.16455 18.5278 0.53418 22.7998 1.30664 27.2559C2.11768 31.9521 4.46582 35.8398 8.07373 38.8799C11.8159 42.0322 16.1255 43.5762 21.041 43.2803C24.0269 43.104 27.3516 42.6963 31.1016 39.4561C32.0469 39.936 33.0396 40.1279 34.686 40.272C35.9546 40.3921 37.1758 40.208 38.1211 40.0078C39.6021 39.688 39.4995 38.2881 38.9639 38.0322C34.623 35.9678 35.5762 36.8081 34.71 36.1279C36.9155 33.4639 40.2402 30.6958 41.54 21.728C41.6426 21.0161 41.5557 20.5679 41.54 19.9917C41.5322 19.6396 41.6108 19.5039 42.0049 19.4639C43.0923 19.3359 44.1479 19.0317 45.1167 18.4878C47.9292 16.9199 49.064 14.3438 49.3315 11.2559C49.3711 10.7837 49.3237 10.2959 48.8354 10.0479ZM24.3262 37.8398C20.1196 34.4639 18.0791 33.3521 17.2358 33.3999C16.4482 33.4482 16.5898 34.3682 16.7632 34.9678C16.9443 35.5601 17.1812 35.9683 17.5117 36.4878C17.7402 36.832 17.8979 37.3442 17.2832 37.728C15.9282 38.584 13.5728 37.4399 13.4624 37.3838C10.7207 35.7358 8.42822 33.5601 6.81348 30.584C5.25342 27.7197 4.34766 24.6479 4.19775 21.3677C4.1582 20.5757 4.38672 20.2959 5.15869 20.1519C6.17529 19.96 7.22314 19.9199 8.23926 20.0718C12.5327 20.7119 16.1885 22.6719 19.2529 25.7759C21.002 27.5439 22.3252 29.6558 23.6885 31.7202C25.1377 33.9121 26.6978 36 28.6831 37.7119C29.3843 38.312 29.9434 38.7681 30.479 39.104C28.8643 39.2881 26.1699 39.3281 24.3262 37.8398ZM26.3433 24.6001C26.3433 24.248 26.6191 23.9678 26.9658 23.9678C27.0444 23.9678 27.1152 23.9839 27.1782 24.0078C27.2651 24.04 27.3438 24.0879 27.4067 24.1602C27.5171 24.272 27.5801 24.4321 27.5801 24.6001C27.5801 24.9521 27.3042 25.2319 26.9575 25.2319C26.6108 25.2319 26.3433 24.9521 26.3433 24.6001ZM32.6064 27.8799C32.2046 28.0479 31.8027 28.1919 31.4165 28.208C30.8179 28.2397 30.1641 27.9922 29.8096 27.688C29.2583 27.2158 28.8643 26.9521 28.6987 26.1279C28.6279 25.7759 28.6675 25.2319 28.7305 24.9199C28.8721 24.248 28.7144 23.8159 28.2495 23.4238C27.8716 23.104 27.3911 23.0161 26.8633 23.0161C26.666 23.0161 26.4849 22.9277 26.3511 22.856C26.1304 22.7441 25.9492 22.4639 26.1226 22.1201C26.1777 22.0078 26.4458 21.7358 26.5088 21.688C27.2256 21.272 28.0527 21.4077 28.8169 21.7197C29.5259 22.0161 30.0615 22.5601 30.834 23.3281C31.6216 24.2559 31.7632 24.5117 32.2124 25.208C32.5669 25.752 32.8901 26.312 33.1104 26.9521C33.2446 27.3521 33.0713 27.6802 32.6064 27.8799Z"/></g>
-    </svg>
-    <h1>DeepSeek Harness 桌面托盘</h1>
-    <p class="sub">你需要的只是一个启动器</p>
-    <div class="hero-actions">
-      <a class="btn btn-primary" href="https://github.com/refyon/dsh-systray/releases/latest/download/dsh-systray-windows-x64.zip">
-        <svg class="ico" viewBox="0 0 24 24" fill="currentColor"><path d="M3 5.5l8.5-1.2v8.4H3V5.5zm9.5-1.3L21 3v9.7h-8.5V4.2zM3 13.7h8.5v8.4L3 20.9v-7.2zm9.5.8H21v6.9l-8.5 1.3v-8.2z"/></svg>
-        下载 Windows 版
-      </a>
-      <a class="btn btn-outline" href="https://github.com/refyon/dsh-systray/releases/latest/download/dsh-systray-macos-universal.zip">
-        <svg class="ico" viewBox="0 0 24 24" fill="currentColor"><path d="M16.9 12.9c0-2.1 1.7-3.1 1.8-3.2-1-1.4-2.5-1.6-3-1.7-1.3-.1-2.5.8-3.2.8-.6 0-1.6-.8-2.7-.7-1.4 0-2.7.8-3.4 2-1.4 2.5-.4 6.2 1 8.2.7 1 1.5 2.1 2.6 2 .9 0 1.3-.6 2.5-.6s1.5.6 2.5.6c1 0 1.7-1 2.4-2 .7-1.1 1-2.1 1-2.2 0 0-2-1-2-3.2zM15 6.3c.6-.7 1-1.7.9-2.7-.8 0-1.9.6-2.5 1.3-.5.6-1 1.6-.9 2.6.9.1 1.9-.5 2.5-1.2z"/></svg>
-        下载 macOS 版
-      </a>
+    <img class="logo" src="icon.svg" alt="dsh-systray 图标" width="132" height="132">
+    <div class="eyebrow">Windows · macOS 桌面托盘</div>
+    <h1>dsh-systray</h1>
+    <p class="sub">极简启动器</p>
+    <div class="actions">
+      <a class="btn primary" href="https://github.com/refyon/dsh-systray/releases/latest/download/dsh-systray-windows-x64.zip"><svg class="ico" viewBox="0 0 24 24" fill="currentColor"><path d="M3 5.5l8.5-1.2v8.4H3V5.5zm9.5-1.3L21 3v9.7h-8.5V4.2zM3 13.7h8.5v8.4L3 20.9v-7.2zm9.5.8H21v6.9l-8.5 1.3v-8.2z"/></svg>下载 Windows 版</a>
+      <a class="btn ghost" href="https://github.com/refyon/dsh-systray/releases/latest/download/dsh-systray-macos-universal.zip"><svg class="ico" viewBox="0 0 24 24" fill="currentColor"><path d="M16.9 12.9c0-2.1 1.7-3.1 1.8-3.2-1-1.4-2.5-1.6-3-1.7-1.3-.1-2.5.8-3.2.8-.6 0-1.6-.8-2.7-.7-1.4 0-2.7.8-3.4 2-1.4 2.5-.4 6.2 1 8.2.7 1 1.5 2.1 2.6 2 .9 0 1.3-.6 2.5-.6s1.5.6 2.5.6c1 0 1.7-1 2.4-2 .7-1.1 1-2.1 1-2.2 0 0-2-1-2-3.2zM15 6.3c.6-.7 1-1.7.9-2.7-.8 0-1.9.6-2.5 1.3-.5.6-1 1.6-.9 2.6.9.1 1.9-.5 2.5-1.2z"/></svg>下载 macOS 版</a>
     </div>
-    <div class="hero-meta">
-      <a href="https://github.com/refyon/dsh-systray/releases/latest/download/SHA256SUMS.txt">SHA256 校验和</a>
-      <a href="https://github.com/refyon/dsh-systray/releases/latest">全部版本与更新日志</a>
+    <div class="ver-chip">当前版本 <b id="version">v0.3.4</b> · 由 CI 自动构建发布</div>
+  </section>
+
+  <section class="hub">
+    <div class="mock" data-reveal>
+      <div class="side"><div class="on">常规</div><div>关于</div></div>
+      <div class="body">
+        <div class="row"><span>开机自启动</span><span class="sw"></span></div>
+        <div class="row"><span>当前版本号</span><b>v0.3.4</b></div>
+        <div class="row"><span>检查更新</span><b class="muted">启动后 30s 静默</b></div>
+        <div class="row"><span>一键打开 Web UI</span><b style="color:var(--primary)">127.0.0.1:3080</b></div>
+      </div>
+    </div>
+    <div class="hub-copy" data-reveal>
+      <h2>安静，但全能</h2>
+      <p>系统托盘里的 DeepSeek Harness —— 无窗口拉起本地服务、进度可视化，设置窗口统一管理开机自启、版本号与检查更新，托盘图标随系统深浅色自动适配。</p>
     </div>
   </section>
 
-  <section id="features">
-    <div class="features-head">
+  <section class="features" id="features">
+    <div class="head">
       <span class="eyebrow">WHY DSH-SYSTRAY</span>
-      <h2 class="section-title">为桌面而生，安静地工作</h2>
-      <p class="section-sub">不弹窗、不占标签页，像系统原生的一部分。</p>
+      <h2>为桌面而生，安静地工作</h2>
+      <p>不弹窗、不占标签页，像系统原生的一部分。</p>
     </div>
-    <div class="features">
+    <div class="grid">
       <div class="feature" data-reveal>
-        <span class="num">01</span>
-        <div class="dot"><svg width="22" height="22" viewBox="0 0 24 24" fill="#4d6bfe"><path d="M12 2a10 10 0 1 0 0 20 10 10 0 0 0 0-20zm0 18a8 8 0 1 1 0-16 8 8 0 0 1 0 16zm4-8a4 4 0 1 1-8 0 4 4 0 0 1 8 0z"/></svg></div>
-        <h4>托盘常驻</h4>
-        <p>无窗口后台拉起本地 Web 服务，图标一望即知，不占任务栏。</p>
+        <div class="dot"><svg viewBox="0 0 24 24"><path d="M12 2a10 10 0 1 0 0 20 10 10 0 0 0 0-20zm0 18a8 8 0 1 1 0-16 8 8 0 0 1 0 16zm4-8a4 4 0 1 1-8 0 4 4 0 0 1 8 0z"/></svg></div>
+        <h4>托盘常驻</h4><p>无窗口后台拉起本地 Web 服务，图标一望即知，不占任务栏。</p>
       </div>
       <div class="feature" data-reveal>
-        <span class="num">02</span>
-        <div class="dot"><svg width="22" height="22" viewBox="0 0 24 24" fill="#4d6bfe"><path d="M9.6 15.6 5.4 11.4 4 12.8l5.6 5.6L20 8l-1.4-1.4z"/></svg></div>
-        <h4>一键打开 Web UI</h4>
-        <p>右键托盘即可直达 <a href="http://127.0.0.1:3080" target="_blank" rel="noopener">127.0.0.1:3080</a>，无需记忆地址。</p>
+        <div class="dot"><svg viewBox="0 0 24 24"><path d="M4 3h16a1 1 0 0 1 1 1v12a1 1 0 0 1-1 1H9l-4 4V4a1 1 0 0 1 1-1z"/></svg></div>
+        <h4>设置窗口</h4><p>左侧分类栏：开关开机自启、查看版本号、一键检查更新。</p>
       </div>
       <div class="feature" data-reveal>
-        <span class="num">03</span>
-        <div class="dot"><svg width="22" height="22" viewBox="0 0 24 24" fill="#4d6bfe"><path d="M12 2a1 1 0 0 1 1 1v3a1 1 0 1 1-2 0V3a1 1 0 0 1 1-1zm7 5a1 1 0 0 1 0 2h-3a1 1 0 1 1 0-2h3zM5 7a1 1 0 0 1 0 2H2a1 1 0 1 1 0-2h3zm7 4a3 3 0 1 1 0 6 3 3 0 0 1 0-6z"/></svg></div>
-        <h4>开机自启动</h4>
-        <p>托盘菜单一键开关，登录系统即自动拉起服务。</p>
+        <div class="dot"><svg viewBox="0 0 24 24"><path d="M12 20a8 8 0 1 1 8-8 6 6 0 0 1-8 8zm-2-3h4v2h-4z"/></svg></div>
+        <h4>自动更新</h4><p>启动 30 秒静默检查新版本，进度窗口下载，完成后自动重启。</p>
       </div>
       <div class="feature" data-reveal>
-        <span class="num">04</span>
-        <div class="dot"><svg width="22" height="22" viewBox="0 0 24 24" fill="#4d6bfe"><path d="M13 2 3 14h7l-1 8 10-12h-7l1-8z"/></svg></div>
-        <h4>自动环境部署</h4>
-        <p>首次启动自动准备 Node / pnpm 与 harness 产物，进度可视化、全程静默。</p>
+        <div class="dot"><svg viewBox="0 0 24 24"><path d="M12 3a9 9 0 1 0 9 9h-9V3z"/></svg></div>
+        <h4>主题自适应图标</h4><p>托盘图标随系统深浅色自动切换，任何主题下都清晰可见。</p>
       </div>
     </div>
   </section>
 
-  <section class="notes">
+  <section class="notes" data-reveal>
     <h2>安装说明</h2>
     <ol>
       <li>下载对应平台 zip 并解压到任意目录</li>
@@ -253,8 +151,12 @@ footer a{color:var(--green)}
 </main>
 
 <footer>
-  <p>dsh-systray · DeepSeek Harness 桌面托盘 · 由 CI 自动构建发布</p>
-  <p style="margin-top:6px"><a href="https://github.com/refyon/dsh-systray" target="_blank" rel="noopener">查看源码与更新日志 ↗</a></p>
+  <p>dsh-systray · DeepSeek Harness 桌面托盘</p>
+  <p style="margin-top:8px">
+    <a href="https://github.com/refyon/dsh-systray/releases/latest" target="_blank" rel="noopener">更新日志</a><span class="sep">·</span>
+    <a href="https://github.com/refyon/dsh-systray/releases/latest/download/SHA256SUMS.txt" target="_blank" rel="noopener">SHA256 校验和</a><span class="sep">·</span>
+    <a href="https://github.com/refyon/dsh-systray" target="_blank" rel="noopener">源码 ↗</a>
+  </p>
 </footer>
 
 <script>
@@ -262,25 +164,18 @@ footer a{color:var(--green)}
   var v = document.getElementById('version');
   fetch('https://api.github.com/repos/refyon/dsh-systray/releases/latest')
     .then(function(r){ return r.json(); })
-    .then(function(d){
-      if(!d || !d.tag_name) return;
-      v.textContent = d.tag_name;
-    })
-    .catch(function(){ /* 网络失败时保持默认文案 */ });
+    .then(function(d){ if(d && d.tag_name){ v.textContent = d.tag_name; } })
+    .catch(function(){ /* 网络失败保持默认文案 */ });
 
-  /* 特性卡片滚动浮现 */
-  var cards = document.querySelectorAll('.feature[data-reveal]');
-  if('IntersectionObserver' in window && cards.length){
-    cards.forEach(function(el,i){
-      el.classList.add('reveal');
-      el.style.animationDelay = (i % 4) * 80 + 'ms';
-    });
+  var els = document.querySelectorAll('[data-reveal]');
+  if('IntersectionObserver' in window && els.length){
+    els.forEach(function(el,i){ el.style.transitionDelay = (i % 4) * 70 + 'ms'; });
     var io = new IntersectionObserver(function(entries){
-      entries.forEach(function(en){
-        if(en.isIntersecting){ en.target.classList.add('in'); io.unobserve(en.target); }
-      });
+      entries.forEach(function(en){ if(en.isIntersecting){ en.target.classList.add('in'); io.unobserve(en.target); } });
     },{threshold:.15,rootMargin:'0px 0px -40px 0px'});
-    cards.forEach(function(el){ io.observe(el); });
+    els.forEach(function(el){ io.observe(el); });
+  } else {
+    els.forEach(function(el){ el.classList.add('in'); });
   }
 })();
 </script>
