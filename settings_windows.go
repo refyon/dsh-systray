@@ -243,7 +243,7 @@ func settingsWndProc(hwnd, uMsg, wParam, lParam uintptr) uintptr {
 		case stIdCheckBtn:
 			settingsDrawCapsule(dis, "检查更新")
 		case stIdLogRefresh:
-			settingsDrawCapsule(dis, "刷新")
+			settingsDrawCapsule(dis, "清空")
 		}
 		return 1
 	}
