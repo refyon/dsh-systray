@@ -1,6 +1,6 @@
 # dsh-systray
 
-Windows / macOS 托盘应用：双击后后台启动 DeepSeek Harness Web 本地服务器，并在系统托盘显示白底黑鲸鱼图标。
+Windows / macOS 托盘应用：双击后后台启动 DeepSeek Harness Web 本地服务器，并常驻系统托盘。
 
 ## 功能
 
