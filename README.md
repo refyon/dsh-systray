@@ -36,8 +36,6 @@ dsh-systray 是一个 Windows / macOS 系统托盘应用：双击即可后台拉
 | Windows | x64 | ZIP | 3.1 MB | [下载 Windows 版](https://github.com/refyon/dsh-systray/releases/latest/download/dsh-systray-windows-x64.zip) |
 | macOS | Intel + Apple Silicon | ZIP (.app) | 5.7 MB | [下载 macOS 版](https://github.com/refyon/dsh-systray/releases/latest/download/dsh-systray-macos-universal.zip) |
 
-> 以上大小为最新 Release（v0.3.9）产物大小，随版本更新会变化。
-
 ## 功能
 
 - **双击启动**：无窗口、后台拉起 harness 的 `pnpm dsh web --port <port> --no-open`
