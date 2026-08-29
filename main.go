@@ -157,6 +157,34 @@ func maybeStartSplash(text string) *SplashState {
 	return startSplash(text)
 }
 
+// 后台服务状态（托盘菜单展示）：serverReady=运行中，serviceFailed=启动失败（默认“启动中”）。
+var (
+	serverReady   atomic.Bool
+	serviceFailed atomic.Bool
+	menuOpen      *systray.MenuItem // “打开 Web UI”
+	menuStatus    *systray.MenuItem // 状态说明行（启动中/运行中/启动失败）
+)
+
+func serviceStatusText() string {
+	if serviceFailed.Load() {
+		return "服务启动失败"
+	}
+	return "服务启动中…"
+}
+
+// refreshServiceMenu 把托盘菜单的服务项同步到当前状态（可跨线程调用）。
+func refreshServiceMenu() {
+	if menuOpen == nil || menuStatus == nil {
+		return
+	}
+	menuStatus.SetTitle(serviceStatusText())
+	if serverReady.Load() {
+		menuOpen.Enable()
+	} else {
+		menuOpen.Disable()
+	}
+}
+
 func main() {
 	cfg := loadConfig()
 	updateMirrorOverride = cfg.UpdateMirror
@@ -277,10 +305,23 @@ func main() {
 			return
 		}
 		if ready {
+			serverReady.Store(true)
+			serviceFailed.Store(false)
+			refreshServiceMenu()
 			if !autostartLaunch {
 				notifyReady()
 			} else {
 				log.Printf("autostart: service ready, staying silent")
+			}
+			return
+		}
+		if why == "exited" {
+			serviceFailed.Store(true)
+			refreshServiceMenu()
+			if !autostartLaunch {
+				showMessageBox("DeepSeek Harness 服务启动失败（进程已退出），请查看日志：\n"+filepath.Join(logDir, "server.log"), appName)
+			} else {
+				log.Printf("autostart: service failed to start (%s), staying silent", why)
 			}
 			return
 		}
@@ -289,15 +330,16 @@ func main() {
 			log.Printf("autostart: service not ready yet (%s), continuing silently in background", why)
 			return
 		}
-		if why == "exited" {
-			showMessageBox("DeepSeek Harness 服务启动失败（进程已退出），请查看日志：\n"+filepath.Join(logDir, "server.log"), appName)
-			return
-		}
 		// 超时但服务进程仍在运行：慢机器/首次启动常见，继续后台等待，就绪后再次提示
 		showMessageBox("DeepSeek Harness 服务启动较慢（首次启动或机器性能较低时属正常现象），已继续在后台启动，就绪后会再次提示。\n日志："+filepath.Join(logDir, "server.log"), appName)
 		if ready2, _ := waitForServerReady(webURL, serverExitCh, 15*time.Minute); ready2 && !quitting.Load() {
+			serverReady.Store(true)
+			serviceFailed.Store(false)
+			refreshServiceMenu()
 			notifyReady()
 		} else if !quitting.Load() {
+			serviceFailed.Store(true)
+			refreshServiceMenu()
 			showMessageBox("DeepSeek Harness 服务最终未能就绪，请查看日志：\n"+filepath.Join(logDir, "server.log"), appName)
 		}
 	}()
@@ -312,7 +354,12 @@ func onReady() {
 	systray.SetTitle(appName)
 	systray.SetTooltip(appName)
 
-	mOpen := systray.AddMenuItem("打开 Web UI", "打开网页端界面")
+	// 状态说明行（启动中 / 运行中 / 启动失败）+ 「打开 Web UI」——服务未就绪时禁用打开项
+	menuStatus = systray.AddMenuItem("服务启动中…", "后台服务状态")
+	menuStatus.Disable()
+	menuOpen = systray.AddMenuItem("打开 Web UI", "打开网页端界面")
+	menuOpen.Disable()
+	refreshServiceMenu()
 	systray.AddSeparator()
 	mSettings := systray.AddMenuItem("设置", "打开设置窗口")
 	systray.AddSeparator()
@@ -321,8 +368,10 @@ func onReady() {
 	go func() {
 		for {
 			select {
-			case <-mOpen.ClickedCh:
-				openBrowser(webURL)
+			case <-menuOpen.ClickedCh:
+				if serverReady.Load() {
+					openBrowser(webURL)
+				}
 			case <-mSettings.ClickedCh:
 				openSettingsWindow()
 			case <-mQuit.ClickedCh:
