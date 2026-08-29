@@ -137,6 +137,26 @@ func saveConfig(cfg appConfig) {
 	}
 }
 
+// autostartLaunch 是否为开机自启动（登录时）启动。此时完全静默：不显示启动进度窗口，也不弹任何
+// 提示/询问（打开 Web UI、启动较慢、失败等）。通过自动启动项注入的 --autostart 参数识别；
+// 手动双击或更新后自启动均不带该参数（后者应正常显示提示）。
+var autostartLaunch = func() bool {
+	for _, a := range os.Args {
+		if a == "--autostart" {
+			return true
+		}
+	}
+	return false
+}()
+
+// maybeStartSplash 启动阶段显示进度窗口；开机自启动场景下返回空实现（不开窗、完全静默）。
+func maybeStartSplash(text string) *SplashState {
+	if autostartLaunch {
+		return &SplashState{Update: func(string, float64) {}, Close: func() {}}
+	}
+	return startSplash(text)
+}
+
 func main() {
 	cfg := loadConfig()
 	updateMirrorOverride = cfg.UpdateMirror
@@ -192,7 +212,7 @@ func main() {
 		}
 	}
 
-	splash := startSplash("正在准备运行环境…")
+	splash := maybeStartSplash("正在准备运行环境…")
 
 	// 1) 运行环境：优先便携 Node.js / pnpm（无管理员权限、无窗口、后台静默）
 	if !runtimeOK() {
@@ -257,7 +277,16 @@ func main() {
 			return
 		}
 		if ready {
-			notifyReady()
+			if !autostartLaunch {
+				notifyReady()
+			} else {
+				log.Printf("autostart: service ready, staying silent")
+			}
+			return
+		}
+		if autostartLaunch {
+			// 开机自启动：完全静默，只在日志记录，不弹任何提示
+			log.Printf("autostart: service not ready yet (%s), continuing silently in background", why)
 			return
 		}
 		if why == "exited" {

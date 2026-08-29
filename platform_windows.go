@@ -483,7 +483,7 @@ func enableAutostart() {
 		log.Printf("cannot resolve exe path: %v", err)
 		return
 	}
-	val := `"` + exe + `"`
+	val := `"` + exe + `" --autostart`
 	runHidden("reg", "add", registryPath, "/v", registryName, "/t", "REG_SZ", "/d", val, "/f")
 }
 

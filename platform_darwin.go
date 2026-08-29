@@ -193,7 +193,7 @@ func enableAutostart() {
 <dict>
 	<key>Label</key><string>%s</string>
 	<key>ProgramArguments</key>
-	<array><string>%s</string></array>
+	<array><string>%s</string><string>--autostart</string></array>
 	<key>RunAtLoad</key><true/>
 </dict>
 </plist>
