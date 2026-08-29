@@ -7,7 +7,7 @@ package main
 #cgo darwin LDFLAGS: -framework Cocoa
 #include <stdlib.h>
 // 原生设置窗口入口（settings_darwin.m 实现，窗口创建于主线程）
-void dsh_settings_open(const char* version, int autostartOn);
+void dsh_settings_open(const char* version, const char* harnessVersion, int autostartOn);
 // 读取日志文本（which=0 app.log / 1 server.log），返回 malloc 的 C 字符串（调用方 free）
 char* dshSettingsGoLoadLog(int which);
 */
@@ -67,9 +67,15 @@ func dshSettingsGoClearLog(which C.int) {
 func openSettingsWindow() {
 	cs := C.CString(withV(appVersion))
 	defer C.free(unsafe.Pointer(cs))
+	hv := withV(installedHarnessVersion())
+	if hv == "" {
+		hv = "未检测到"
+	}
+	hcs := C.CString(hv)
+	defer C.free(unsafe.Pointer(hcs))
 	auto := 0
 	if isAutostartEnabled() {
 		auto = 1
 	}
-	C.dsh_settings_open(cs, C.int(auto))
+	C.dsh_settings_open(cs, hcs, C.int(auto))
 }

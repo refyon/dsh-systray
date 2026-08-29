@@ -43,6 +43,8 @@ const (
 	stIdVerTitle   = 3201
 	stIdVerValue   = 3202
 	stIdCheckBtn   = 3203
+	stIdHarTitle   = 3204
+	stIdHarValue   = 3205
 	stIdLogInfo    = 3300
 	stIdLogCombo   = 3301
 	stIdLogRefresh = 3302
@@ -200,9 +202,9 @@ func settingsWndProc(hwnd, uMsg, wParam, lParam uintptr) uintptr {
 	case wmCtlColorStatic:
 		h := settingsWidgets[lParam]
 		switch h {
-		case stIdPaneTitle, stIdAutoTitle, stIdVerTitle:
+		case stIdPaneTitle, stIdAutoTitle, stIdVerTitle, stIdHarTitle:
 			pSetTextColor.Call(wParam, stColorText)
-		case stIdVerValue:
+		case stIdVerValue, stIdHarValue:
 			pSetTextColor.Call(wParam, stColorBlue)
 		case stIdAutoSub, stIdLogInfo:
 			pSetTextColor.Call(wParam, stColorSub)
@@ -619,13 +621,13 @@ func createSettingsWindow() uintptr {
 	}
 
 	// ---- 关于面板 ----
-	vt, _ := syscall.UTF16PtrFromString("当前版本号")
+	vt, _ := syscall.UTF16PtrFromString("dsh-systray 版本号")
 	verTitle, _, _ := pCreateWindowExW.Call(
 		0,
 		uintptr(unsafe.Pointer(staticCls)),
 		uintptr(unsafe.Pointer(vt)),
 		wsChild|wsVisible,
-		uintptr(stContentX), 78, 180, 24,
+		uintptr(stContentX), 78, 220, 24,
 		hwnd, stIdVerTitle, moduleHandle(), 0,
 	)
 	if verTitle != 0 {
@@ -648,6 +650,39 @@ func createSettingsWindow() uintptr {
 		pSendMessageW.Call(verValue, wmSetFont, settingsFontTitle, 1)
 		settingsPaneAbout = append(settingsPaneAbout, stIdVerValue)
 	}
+	// DeepSeek Harness 版本号
+	hvText := withV(installedHarnessVersion())
+	if hvText == "" {
+		hvText = "未检测到"
+	}
+	ht, _ := syscall.UTF16PtrFromString("DeepSeek Harness 版本号")
+	harTitle, _, _ := pCreateWindowExW.Call(
+		0,
+		uintptr(unsafe.Pointer(staticCls)),
+		uintptr(unsafe.Pointer(ht)),
+		wsChild|wsVisible,
+		uintptr(stContentX), 140, 240, 22,
+		hwnd, stIdHarTitle, moduleHandle(), 0,
+	)
+	if harTitle != 0 {
+		settingsWidgets[harTitle] = stIdHarTitle
+		pSendMessageW.Call(harTitle, wmSetFont, settingsFontBody, 1)
+		settingsPaneAbout = append(settingsPaneAbout, stIdHarTitle)
+	}
+	fv, _ := syscall.UTF16PtrFromString(hvText)
+	harValue, _, _ := pCreateWindowExW.Call(
+		0,
+		uintptr(unsafe.Pointer(staticCls)),
+		uintptr(unsafe.Pointer(fv)),
+		wsChild|wsVisible,
+		uintptr(stContentX), 162, 220, 26,
+		hwnd, stIdHarValue, moduleHandle(), 0,
+	)
+	if harValue != 0 {
+		settingsWidgets[harValue] = stIdHarValue
+		pSendMessageW.Call(harValue, wmSetFont, settingsFontTitle, 1)
+		settingsPaneAbout = append(settingsPaneAbout, stIdHarValue)
+	}
 	// 检查更新（自绘胶囊）
 	cb2, _ := syscall.UTF16PtrFromString("检查更新")
 	checkBtn, _, _ := pCreateWindowExW.Call(
@@ -655,7 +690,7 @@ func createSettingsWindow() uintptr {
 		uintptr(unsafe.Pointer(btnCls)),
 		uintptr(unsafe.Pointer(cb2)),
 		wsChild|wsVisible|wsTabStop|bsOwnDraw,
-		uintptr(stContentX), 148, 130, 34,
+		uintptr(stContentX), 200, 130, 34,
 		hwnd, stIdCheckBtn, moduleHandle(), 0,
 	)
 	if checkBtn != 0 {

@@ -112,7 +112,7 @@ static DSHSetController *g_ctrl = nil;
     [self refreshLog];
 }
 
-- (void)buildWindowWithVersion:(const char *)ver autostart:(int)autoOn {
+- (void)buildWindowWithVersion:(const char *)ver harness:(const char *)hver autostart:(int)autoOn {
     NSRect contentRect = NSMakeRect(0, 0, 560, 360);
     self.window = [[NSWindow alloc] initWithContentRect:contentRect
                                               styleMask:(NSWindowStyleMaskTitled | NSWindowStyleMaskClosable)
@@ -157,17 +157,23 @@ static DSHSetController *g_ctrl = nil;
     self.autoSwitch.action = @selector(autostartChanged:);
     [self.generalPane addSubview:self.autoSwitch];
 
-    // 关于面板：版本号 + 检查更新
+    // 关于面板：dsh-systray 版本号 + DeepSeek Harness 版本号 + 检查更新
     self.aboutPane = [[NSView alloc] initWithFrame:NSMakeRect(160, 0, 400, 360)];
     [self addLabel:@"关于" font:[NSFont systemFontOfSize:16 weight:NSFontWeightSemibold] color:nil frame:NSMakeRect(0, 316, 300, 24) to:self.aboutPane];
-    [self addLabel:@"当前版本号" font:[NSFont systemFontOfSize:14] color:nil frame:NSMakeRect(0, 270, 200, 22) to:self.aboutPane];
+    [self addLabel:@"dsh-systray 版本号" font:[NSFont systemFontOfSize:14] color:nil frame:NSMakeRect(0, 270, 220, 22) to:self.aboutPane];
     [self addLabel:[NSString stringWithFormat:@"%s", ver]
                font:[NSFont systemFontOfSize:16 weight:NSFontWeightSemibold]
               color:[NSColor colorWithCalibratedRed:0.114 green:0.306 blue:0.847 alpha:1.0]
               frame:NSMakeRect(0, 244, 220, 24)
                   to:self.aboutPane];
+    [self addLabel:@"DeepSeek Harness 版本号" font:[NSFont systemFontOfSize:14] color:nil frame:NSMakeRect(0, 214, 240, 20) to:self.aboutPane];
+    [self addLabel:[NSString stringWithFormat:@"%s", hver]
+               font:[NSFont systemFontOfSize:16 weight:NSFontWeightSemibold]
+              color:[NSColor colorWithCalibratedRed:0.114 green:0.306 blue:0.847 alpha:1.0]
+              frame:NSMakeRect(0, 190, 220, 24)
+                  to:self.aboutPane];
 
-    NSButton *checkBtn = [[NSButton alloc] initWithFrame:NSMakeRect(0, 196, 120, 32)];
+    NSButton *checkBtn = [[NSButton alloc] initWithFrame:NSMakeRect(0, 146, 120, 32)];
     checkBtn.title = @"检查更新";
     checkBtn.bezelStyle = NSBezelStyleRounded;
     checkBtn.target = self;
@@ -207,9 +213,9 @@ static DSHSetController *g_ctrl = nil;
     [self.catTable selectRowIndexes:[NSIndexSet indexSetWithIndex:0] byExtendingSelection:NO];
 }
 
-- (void)showWithVersion:(const char *)ver autostart:(int)autoOn {
+- (void)showWithVersion:(const char *)ver harness:(const char *)hver autostart:(int)autoOn {
     if (self.window == nil) {
-        [self buildWindowWithVersion:ver autostart:autoOn];
+        [self buildWindowWithVersion:ver harness:hver autostart:autoOn];
     }
     self.autoSwitch.state = (autoOn ? NSControlStateValueOn : NSControlStateValueOff);
     [self.window makeKeyAndOrderFront:nil];
@@ -219,14 +225,16 @@ static DSHSetController *g_ctrl = nil;
 @end
 
 // dsh_settings_open 在 AppKit 主线程创建/前置设置窗口（Go 侧调用，可来自任意 goroutine）。
-// version 为 Go 侧 C 字符串，调用返回后即被释放，因此此处同步 strdup 拷贝一份供异步块使用。
-void dsh_settings_open(const char *version, int autostartOn) {
+// version/harnessVersion 为 Go 侧 C 字符串，调用返回后即被释放，因此此处同步 strdup 拷贝一份供异步块使用。
+void dsh_settings_open(const char *version, const char *harnessVersion, int autostartOn) {
     char *verCopy = strdup(version);
+    char *hverCopy = strdup(harnessVersion);
     dispatch_async(dispatch_get_main_queue(), ^{
         if (g_ctrl == nil) {
             g_ctrl = [[DSHSetController alloc] init];
         }
-        [g_ctrl showWithVersion:verCopy autostart:autostartOn];
+        [g_ctrl showWithVersion:verCopy harness:hverCopy autostart:autostartOn];
         free(verCopy);
+        free(hverCopy);
     });
 }
