@@ -67,11 +67,13 @@ const (
 	cbGetCurSel       = 0x0147
 	cbSetCurSel       = 0x014E
 	wmTimer           = 0x0113
-	emSetSel          = 0x00B1
-	emLineScroll      = 0x00B6
-	emScrollCaret     = 0x00B7
-	emExLimitText     = 0x0435
-	settingsLogTimer  = 1
+	emSetSel             = 0x00B1
+	emLineScroll         = 0x00B6
+	emScrollCaret        = 0x00B7
+	emGetLineCount       = 0x00BA
+	emGetFirstVisibleLine = 0x00CE
+	emExLimitText        = 0x0435
+	settingsLogTimer     = 1
 
 	// 颜色（COLORREF = 0xBBGGRR）
 	stColorSidebarBg = 0x00FAF7F5 // #F5F7FA 侧栏浅灰底
@@ -375,7 +377,73 @@ func settingsLogClear() {
 	settingsLogReload()
 }
 
-// settingsLogReload 按当前选择重新加载日志到只读文本框（CRLF 换行 + 自动滚到底部）。
+// textmetric 与 gdi32 TEXTMETRIC 对应，用于计算日志行高。
+type textmetric struct {
+	tmHeight         int32
+	tmAscent         int32
+	tmDescent        int32
+	tmInternalLead   int32
+	tmExternalLead   int32
+	tmAveCharWidth   int32
+	tmMaxCharWidth   int32
+	tmWeight         int32
+	tmOverhang       int32
+	tmDigitizedX     int32
+	tmDigitizedY     int32
+	tmFirstChar      byte
+	tmLastChar       byte
+	tmDefaultChar    byte
+	tmBreakChar      byte
+	tmItalic         byte
+	tmUnderlined     byte
+	tmStruckOut      byte
+	tmPitchFamily    byte
+	tmCharSet        byte
+}
+
+// settingsLogLastContent 上次加载的日志文本（用于判断是否有新写入，避免无变化时重置滚动）。
+var settingsLogLastContent string
+
+// settingsLogVisibleLines 估算日志控件可视行数（按实际行高与客户区高度）。
+func settingsLogVisibleLines(edit uintptr) int32 {
+	if edit == 0 {
+		return 14
+	}
+	var rc rect
+	pGetClientRect.Call(edit, uintptr(unsafe.Pointer(&rc)))
+	H := int32(rc.bottom - rc.top)
+	if H <= 0 {
+		return 14
+	}
+	dc, _, _ := pGetDC.Call(0)
+	if dc == 0 {
+		return 14
+	}
+	defer pReleaseDC.Call(0, dc)
+	old, _, _ := pSelectObject.Call(dc, settingsFontMono)
+	var tm textmetric
+	pGetTextMetrics.Call(dc, uintptr(unsafe.Pointer(&tm)))
+	pSelectObject.Call(dc, old)
+	lh := tm.tmHeight + tm.tmExternalLead
+	if lh <= 0 {
+		lh = 18
+	}
+	return H / lh
+}
+
+// settingsLogAtBottom 判断当前日志是否已滚动到底部（用于决定是否跟随新增内容自动滚到底）。
+func settingsLogAtBottom(edit uintptr) bool {
+	lc, _, _ := pSendMessageW.Call(edit, emGetLineCount, 0, 0)
+	fv, _, _ := pSendMessageW.Call(edit, emGetFirstVisibleLine, 0, 0)
+	vl := settingsLogVisibleLines(edit)
+	if vl < 1 {
+		vl = 1
+	}
+	return int64(fv)+int64(vl) >= int64(lc)-1
+}
+
+// settingsLogReload 按当前选择重新加载日志到只读文本框（CRLF 换行）。
+// 仅当有新写入时才自动滚到底部；若用户手动上翻，则保持当前滚动位置不被拉回。
 func settingsLogReload() {
 	name := settingsCurrentLogName()
 	if info := settingsWidgetKey(stIdLogInfo); info != 0 {
@@ -396,13 +464,30 @@ func settingsLogReload() {
 	}
 	// Win32 多行 EDIT 需 \r\n 换行；Go 日志为 \n，这里统一转 CRLF，否则文字堆叠。
 	text = strings.ReplaceAll(strings.ReplaceAll(text, "\r\n", "\n"), "\n", "\r\n")
+
 	edit := settingsWidgetKey(stIdLogEdit)
-	if edit != 0 {
-		ep, _ := syscall.UTF16PtrFromString(text)
-		pSendMessageW.Call(edit, wmSetText, 0, uintptr(unsafe.Pointer(ep)))
-		// 始终自动滚动到最后追加的内容（tail -f 式）
+	if edit == 0 {
+		return
+	}
+	// 无新写入：不重设文本（避免把用户手动上翻的位置拉回顶部）
+	if text == settingsLogLastContent {
+		return
+	}
+	settingsLogLastContent = text
+
+	// 记录当前滚动位置与是否贴底，用于文本重置后决定是否跟随
+	atBottom := settingsLogAtBottom(edit)
+	firstVisible, _, _ := pSendMessageW.Call(edit, emGetFirstVisibleLine, 0, 0)
+
+	ep, _ := syscall.UTF16PtrFromString(text)
+	pSendMessageW.Call(edit, wmSetText, 0, uintptr(unsafe.Pointer(ep)))
+	if atBottom {
+		// 贴底：跟随追加内容，自动滚到最后（tail -f 式）
 		pSendMessageW.Call(edit, emSetSel, ^uintptr(0), ^uintptr(0))
 		pSendMessageW.Call(edit, emScrollCaret, 0, 0)
+	} else {
+		// 用户手动上翻：重置文本后回滚到原位置，不打断阅读
+		pSendMessageW.Call(edit, emLineScroll, firstVisible, 0)
 	}
 }
 

@@ -27,6 +27,7 @@ char* dshSettingsGoServiceState(void);
 @property (nonatomic, strong) NSTextView *logTV;
 @property (nonatomic, strong) NSPopUpButton *logPopup;
 @property (nonatomic, strong) NSTimer *logTimer;
+@property (nonatomic, copy) NSString *lastLogContent;
 @end
 
 static DSHSetController *g_ctrl = nil;
@@ -107,8 +108,28 @@ static DSHSetController *g_ctrl = nil;
     if (!s) return;
     NSString *str = [NSString stringWithUTF8String:s];
     free(s);
+    // 无新写入则不重置，避免把用户手动上翻的位置拉回顶部
+    if ([str isEqualToString:self.lastLogContent]) return;
+    self.lastLogContent = str;
+
+    NSScrollView *sv = (NSScrollView *)self.logTV.enclosingScrollView;
+    BOOL atBottom = YES;
+    CGFloat prevY = 0;
+    if (sv) {
+        CGFloat docH = sv.documentView.frame.size.height;
+        CGFloat visH = sv.contentView.bounds.size.height;
+        atBottom = (sv.contentView.bounds.origin.y + visH) >= (docH - 2);
+        prevY = sv.contentView.bounds.origin.y;
+    }
     self.logTV.string = str;
-    [self.logTV scrollRangeToVisible:NSMakeRange(str.length, 0)]; // 自动滚动到底部
+    if (atBottom) {
+        // 贴底：跟随追加内容自动滚动到底部
+        [self.logTV scrollRangeToVisible:NSMakeRange(str.length, 0)];
+    } else if (sv) {
+        // 手动上翻：恢复原滚动位置，不打断阅读
+        [sv.contentView scrollToPoint:NSMakePoint(0, prevY)];
+        [sv reflectScrolledClipView:sv.contentView];
+    }
 }
 
 - (void)refreshLogClicked:(id)sender { [self refreshLog]; }

@@ -109,6 +109,7 @@ var (
 	pCreateCompatibleBmp   = modGdi32.NewProc("CreateCompatibleBitmap")
 	pDeleteDC              = modGdi32.NewProc("DeleteDC")
 	pBitBlt                = modGdi32.NewProc("BitBlt")
+	pGetTextMetrics        = modGdi32.NewProc("GetTextMetrics")
 	pDwmSetWindowAttribute = modDwmapi.NewProc("DwmSetWindowAttribute")
 	// GDI+（抗锯齿绘图）
 	modGdiplus    = syscall.NewLazyDLL("gdiplus.dll")
