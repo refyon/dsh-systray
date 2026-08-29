@@ -64,6 +64,7 @@ const (
 	wmTimer           = 0x0113
 	emSetSel          = 0x00B1
 	emLineScroll      = 0x00B6
+	emScrollCaret     = 0x00B7
 	settingsLogTimer  = 1
 
 	// 颜色（COLORREF = 0xBBGGRR）
@@ -339,7 +340,8 @@ func settingsLogReload() {
 	text := ""
 	p := filepath.Join(logDir, name)
 	if data, err := os.ReadFile(p); err == nil && len(data) > 0 {
-		const max = 200 * 1024
+		// 只展示尾部（最新）100KB，且截到完整行，避免翻页/换行问题
+		const max = 100 * 1024
 		if len(data) > max {
 			data = data[len(data)-max:]
 		}
@@ -353,9 +355,9 @@ func settingsLogReload() {
 	if edit != 0 {
 		ep, _ := syscall.UTF16PtrFromString(text)
 		pSendMessageW.Call(edit, wmSetText, 0, uintptr(unsafe.Pointer(ep)))
-		// 自动滚动到底部（最新日志）
+		// 始终自动滚动到最后追加的内容（tail -f 式）
 		pSendMessageW.Call(edit, emSetSel, ^uintptr(0), ^uintptr(0))
-		pSendMessageW.Call(edit, emLineScroll, 0, 0)
+		pSendMessageW.Call(edit, emScrollCaret, 0, 0)
 	}
 }
 
@@ -693,7 +695,7 @@ func createSettingsWindow() uintptr {
 	)
 	if logEdit != 0 {
 		settingsWidgets[logEdit] = stIdLogEdit
-		pSendMessageW.Call(logEdit, wmSetFont, settingsFontMono, 1)
+		pSendMessageW.Call(logEdit, wmSetFont, settingsFontSmall, 1)
 		settingsPaneLog = append(settingsPaneLog, stIdLogEdit)
 	}
 

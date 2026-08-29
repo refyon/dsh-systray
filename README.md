@@ -1,37 +1,71 @@
-# dsh-systray
+<h1 align="center">
+  <img src="docs/icon.svg" width="72" alt="dsh-systray logo" />
+  <br />
+  dsh-systray
+</h1>
 
-Windows / macOS 托盘应用：双击后后台启动 DeepSeek Harness Web 本地服务器，并常驻系统托盘。
+<p align="center">
+  后台启动
+  <a href="https://github.com/deepseek-ai/deepseek-harness">DeepSeek Harness</a>
+  Web 本地服务器，并常驻系统托盘。
+</p>
+
+<p align="center">
+  <a href="https://refyon.github.io/dsh-systray/"><strong>网站</strong></a> ·
+  <a href="https://github.com/refyon/dsh-systray/releases/latest">更新日志</a>
+</p>
+
+<p align="center">
+  <a href="https://github.com/refyon/dsh-systray/releases/latest"><img alt="Latest release" src="https://img.shields.io/github/v/release/refyon/dsh-systray?style=flat-square&color=4d6bfe" /></a>
+  <img alt="Windows x64" src="https://img.shields.io/badge/Windows-x64-4d6bfe.svg?style=flat-square" />
+  <img alt="macOS" src="https://img.shields.io/badge/macOS-Universal-4d6bfe.svg?style=flat-square" />
+  <a href="https://github.com/refyon/dsh-systray/actions/workflows/release.yml"><img alt="Release build" src="https://github.com/refyon/dsh-systray/actions/workflows/release.yml/badge.svg" /></a>
+</p>
+
+<img src="docs/screenshot.png" alt="dsh-systray 设置窗口与下载进度" />
+
+dsh-systray 是一个 Windows / macOS 系统托盘应用：双击即可后台拉起 DeepSeek Harness Web 本地服务，托盘一望即知，无需记忆端口。设置窗口统一管理开机自启、版本号与检查更新，托盘图标随系统深浅色自适应，内置自动更新（启动 30 秒后静默检查新版本）。
+
+> [!IMPORTANT]
+> 这是一个社区维护的非官方工具，依赖快速演进的 `@deepseek-ai/dsh`。macOS 构建未经 Apple 公证，Windows 构建未做商业代码签名，首次运行可能需手动放行（Windows SmartScreen「仍要运行」/ macOS「右键 → 打开」）。首次启动约需 2–5 分钟自动部署环境。
+
+## 下载
+
+| 平台 | 架构 | 包 | 下载 |
+| --- | --- | --- | --- |
+| Windows | x64 | ZIP | [下载 Windows 版](https://github.com/refyon/dsh-systray/releases/latest/download/dsh-systray-windows-x64.zip) |
+| macOS | Intel + Apple Silicon | ZIP (.app) | [下载 macOS 版](https://github.com/refyon/dsh-systray/releases/latest/download/dsh-systray-macos-universal.zip) |
+| 校验 | — | SHA256 | [SHA256SUMS.txt](https://github.com/refyon/dsh-systray/releases/latest/download/SHA256SUMS.txt) |
 
 ## 功能
 
-- 双击启动：无窗口、后台拉起 harness 的 `pnpm dsh web --port <port> --no-open`
-- 启动 loading：服务启动期间显示加载窗口，就绪后弹窗提示（可一键打开 Web UI）
-- 托盘右键菜单：
+- **双击启动**：无窗口、后台拉起 harness 的 `pnpm dsh web --port <port> --no-open`
+- **启动 loading**：服务启动期间显示加载窗口，就绪后弹窗提示（可一键打开 Web UI）
+- **托盘右键菜单**：
   - **打开 Web UI**：用默认浏览器打开 `http://127.0.0.1:<port>/`
-  - **设置**：打开设置窗口（左侧分类栏：常规-开机自启动开关 / 关于-版本号与检查更新）
+  - **设置**：打开设置窗口（左侧分类栏：常规-开机自启动 / 关于-版本号与检查更新 / 日志-只读可复制、可刷新）
   - **退出**：关闭后台服务器进程树（含外部启动的 dsh web 服务）并退出托盘
-- 单实例：已在运行时再次双击会弹窗提示「已在运行中」，不产生第二个托盘图标
-- 依赖自检：启动时检查 node / pnpm / harness 源码，缺失时运行内置安装脚本（含 `git clone` 拉取 harness 源码）
-- 自动更新：启动 30 秒后静默检查 GitHub Releases 新版本，发现新版本时提示「立即更新 / 稍后」（Windows / macOS 一致）
+- **单实例**：已在运行时再次双击会弹窗提示「已在运行中」，不产生第二个托盘图标
+- **依赖自检**：启动时检查 node / pnpm / harness 源码，缺失时运行内置安装脚本（含 `git clone` 拉取 harness 源码）
+- **自动更新**：启动 30 秒后静默检查 GitHub Releases 新版本，发现新版本时进度窗口下载并提示「立即更新 / 稍后」，安装完成自动重启（Windows / macOS 一致）
 
 ## 配置
 
 `config.json` 位于用户配置目录（可选，缺失时用默认值）：
-- Windows：`%APPDATA%\dsh-systray\config.json`
-- macOS：`~/Library/Application Support/dsh-systray/config.json`
-（旧版本 exe 同目录的 config.json 仍可被兼容读取）
 
 ```json
 {
   "port": 3080,
   "harnessDir": "/path/to/deepseek-harness",
-  "startupTimeoutSec": 300
+  "startupTimeoutSec": 300,
+  "updateMirror": ""
 }
 ```
 
-- `port`：服务器端口，默认 3080（可用环境变量 `DSH_SYSTRAY_PORT` 覆盖）
+- `port`：服务器端口，默认 3080（可被环境变量 `DSH_SYSTRAY_PORT` 覆盖）
 - `harnessDir`：harness 源码目录，建议显式配置为实际路径（未配置时按平台取默认值）
-- `startupTimeoutSec`：服务启动等待超时（秒），默认 300（可用环境变量 `DSH_SYSTRAY_STARTUP_TIMEOUT` 覆盖）；超时后若服务进程仍在运行会继续后台等待并二次提示
+- `startupTimeoutSec`：服务启动等待超时（秒），默认 300（可被 `DSH_SYSTRAY_STARTUP_TIMEOUT` 覆盖）
+- `updateMirror`：可选，GitHub 更新下载镜像前缀（国内网络友好，如 `https://ghproxy.net/`）
 
 ## 构建
 
@@ -54,18 +88,3 @@ Windows / macOS 托盘应用：双击后后台启动 DeepSeek Harness Web 本地
 | 退出杀外部服务 | `netstat` + `taskkill` | `lsof` + `SIGTERM` |
 | 提示方式 | MessageBox | `osascript` 通知/弹窗 |
 | loading 界面 | 原生 Win32 窗口 | 系统通知 |
-
-## 运行与日志
-
-- Windows 产物 `dist\dsh-systray.exe` 双击即用；macOS 产物 `dist/dsh-systray` 需先 `chmod +x`
-- 日志位于「用户配置目录」下的 `dsh-systray/logs/`（`app.log` 托盘日志、`server.log` 服务器输出）：
-  - Windows：`%APPDATA%\dsh-systray\logs\`
-  - macOS：`~/Library/Application Support/dsh-systray/logs/`
-
-## 说明与限制
-
-- 服务器启动依赖 **Node.js + pnpm + harness 源码**。缺 node/pnpm 时会尝试自动安装（需授权）；缺 harness 源码时会自动 `git clone https://github.com/deepseek-ai/deepseek-harness.git`（分支 master）到默认目录并执行 `pnpm install`。
-- `dsh web` 需要已构建的前端产物；若首次启动报错，先在 harness 目录执行一次 `pnpm install` 和 `pnpm run build`。
-- 图标：App 图标为**品牌蓝圆角底 + 白色鲸鱼**（`app-icon.png` / `icon.ico`，用于 exe / macOS .app）；托盘图标为**单色鲸鱼**（深色任务栏用白色、浅色任务栏用近黑，随系统主题自适应），任何主题下都清晰可见。均已内嵌在 `icon_gen.go`（由 `scripts\gen-icon.mjs` 生成，App 图标由 `scripts\restyle-appicon.mjs` 生成），无需每次构建重新生成。
-- 下载站：GitHub Pages 落地页 `docs/index.html`（现代开发工具风），突出 `dsh-systray` 名称与鲸鱼图标，提供 Windows / macOS 下载、实时版本号、SHA256 校验与安装说明。
-- 自动更新：从 GitHub Releases（`refyon/dsh-systray`）查询最新版本并下载对应平台的 zip（Windows 替换 `dsh-systray.exe`，macOS 通过辅助脚本替换 `.app` 后重新打开）；更新包经 `SHA256SUMS.txt` 校验。更新重启不会关闭后台 Web 服务，新实例会自动复用。macOS 需程序所在目录有写权限（如 `/Applications` 下更新失败时，请手动下载替换）。

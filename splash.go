@@ -371,6 +371,8 @@ func createSplashWindow(statusText string) uintptr {
 
 	pShowWindow.Call(hwnd, swShow)
 	pUpdateWindow.Call(hwnd)
+	// 确保下载/载入进度窗口自动提到前台
+	pSetForegroundWindow.Call(hwnd)
 	return hwnd
 }
 

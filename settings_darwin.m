@@ -20,6 +20,7 @@ char* dshSettingsGoLoadLog(int which);
 @property (nonatomic, strong) NSButton *autoSwitch;
 @property (nonatomic, strong) NSTextView *logTV;
 @property (nonatomic, strong) NSPopUpButton *logPopup;
+@property (nonatomic, strong) NSTimer *logTimer;
 @end
 
 static DSHSetController *g_ctrl = nil;
@@ -40,7 +41,20 @@ static DSHSetController *g_ctrl = nil;
     [self.logPane removeFromSuperview];
     NSView *pane = (idx == 0) ? self.generalPane : (idx == 1 ? self.aboutPane : self.logPane);
     [self.window.contentView addSubview:pane];
-    if (idx == 2) [self refreshLog];
+    if (idx == 2) {
+        if (!self.logTimer) {
+            self.logTimer = [NSTimer scheduledTimerWithTimeInterval:2.0 target:self selector:@selector(refreshLogTick:) userInfo:nil repeats:YES];
+        }
+        [self refreshLog];
+    } else {
+        [self.logTimer invalidate];
+        self.logTimer = nil;
+    }
+}
+
+- (void)refreshLogTick:(NSTimer *)t {
+    if (self.window == nil || !self.window.isVisible) { [self.logTimer invalidate]; self.logTimer = nil; return; }
+    [self refreshLog];
 }
 
 - (NSInteger)numberOfRowsInTableView:(NSTableView *)tv {

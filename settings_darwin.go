@@ -43,7 +43,7 @@ func dshSettingsGoLoadLog(which C.int) *C.char {
 	p := filepath.Join(logDir, name)
 	text := ""
 	if data, err := os.ReadFile(p); err == nil && len(data) > 0 {
-		const max = 200 * 1024
+		const max = 100 * 1024
 		if len(data) > max {
 			data = data[len(data)-max:]
 		}
