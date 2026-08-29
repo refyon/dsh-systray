@@ -16,6 +16,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -66,6 +67,23 @@ var (
 	updateMu     sync.Mutex
 	activeCancel context.CancelFunc
 )
+
+// updateCheckWindows 进行中的“检查更新”流程数（手动检查的进度窗口/提示期间计数）。
+// 启动 30 秒的自动检查发现新版本时，若已存在检查/更新窗口则不再重复弹窗。
+var updateCheckWindows atomic.Int32
+
+func openUpdateCheckFlow()  { updateCheckWindows.Add(1) }
+func closeUpdateCheckFlow() { updateCheckWindows.Add(-1) }
+
+// updateFlowBusy 是否有检查/更新窗口正在使用：手动检查流程中，或更新应用进行中（activeCancel 已登记）。
+func updateFlowBusy() bool {
+	if updateCheckWindows.Load() > 0 {
+		return true
+	}
+	updateMu.Lock()
+	defer updateMu.Unlock()
+	return activeCancel != nil
+}
 
 // 派生子进程登记表：托盘退出时除保留的后台服务外一并终止，避免孤儿进程。
 var (
@@ -150,6 +168,10 @@ func autoCheckUpdate() {
 		return
 	}
 	log.Printf("update available: %s (current %s)", rel.TagName, appVersion)
+	if updateFlowBusy() {
+		log.Printf("update check: 已存在检查/更新窗口，跳过自动更新提示")
+		return
+	}
 	if !askUpdateDialog(strings.TrimPrefix(rel.TagName, "v")) {
 		log.Printf("user declined update %s", rel.TagName)
 		return
@@ -167,6 +189,9 @@ func checkForUpdatesManual() {
 		showMessageBox("当前为开发版本（dev），未启用自动更新。", appName)
 		return
 	}
+	// 全程计数：进度窗口 + 结果提示期间都视为“检查更新窗口在开”，自动检查不再重复弹窗。
+	openUpdateCheckFlow()
+	defer closeUpdateCheckFlow()
 	// 立即弹出进度窗口（不等待查询结果）
 	splash := startSplash("正在查询最新版本…")
 	splash.Update("正在查询最新版本…", 0.15)
