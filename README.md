@@ -22,7 +22,7 @@
   <a href="https://github.com/refyon/dsh-systray/actions/workflows/release.yml"><img alt="Release build" src="https://github.com/refyon/dsh-systray/actions/workflows/release.yml/badge.svg" /></a>
 </p>
 
-<img src="docs/screenshot.png" alt="dsh-systray 设置窗口与下载进度" />
+<img src="docs/screenshot.png" alt="dsh-systray 设置窗口（常规 / 关于）" />
 
 dsh-systray 是一个 Windows / macOS 系统托盘应用：双击即可后台拉起 DeepSeek Harness Web 本地服务，托盘一望即知，无需记忆端口。设置窗口统一管理开机自启、dsh-systray 与 DeepSeek Harness 版本号、检查更新，托盘图标随系统深浅色自适应，内置自动更新（启动 30 秒后静默检查新版本）。
 
