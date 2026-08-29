@@ -222,6 +222,13 @@ func main() {
 	harnessDir = cfg.HarnessDir
 	startupTimeout = time.Duration(cfg.StartupTimeoutSec) * time.Second
 
+	// 自愈历史自启动项：旧版本注册的自启动条目未带 --autostart 参数，导致登录时被当作“手动双击”而弹提示。
+	// 若检测到已开启自启，则重写注册表/launchd 条目使其带上该参数，下次登录即识别为自启动、完全静默。
+	if isAutostartEnabled() {
+		enableAutostart() // 幂等：确保条目含 --autostart
+		log.Printf("autostart entry refreshed with --autostart flag")
+	}
+
 	cfgDir, err := os.UserConfigDir()
 	if err != nil {
 		cfgDir = os.TempDir()
