@@ -66,5 +66,6 @@ Windows / macOS 托盘应用：双击后后台启动 DeepSeek Harness Web 本地
 
 - 服务器启动依赖 **Node.js + pnpm + harness 源码**。缺 node/pnpm 时会尝试自动安装（需授权）；缺 harness 源码时会自动 `git clone https://github.com/deepseek-ai/deepseek-harness.git`（分支 master）到默认目录并执行 `pnpm install`。
 - `dsh web` 需要已构建的前端产物；若首次启动报错，先在 harness 目录执行一次 `pnpm install` 和 `pnpm run build`。
-- 托盘图标为白底黑鲸鱼，任何主题下都清晰可见；已内嵌在 `icon_gen.go`（由 `scripts\gen-icon.mjs` 生成），无需每次构建重新生成。
+- 图标：App 图标为**品牌蓝圆角底 + 白色鲸鱼**（`app-icon.png` / `icon.ico`，用于 exe / macOS .app）；托盘图标为**单色鲸鱼**（深色任务栏用白色、浅色任务栏用近黑，随系统主题自适应），任何主题下都清晰可见。均已内嵌在 `icon_gen.go`（由 `scripts\gen-icon.mjs` 生成，App 图标由 `scripts\restyle-appicon.mjs` 生成），无需每次构建重新生成。
+- 下载站：GitHub Pages 落地页 `docs/index.html`（现代开发工具风），突出 `dsh-systray` 名称与鲸鱼图标，提供 Windows / macOS 下载、实时版本号、SHA256 校验与安装说明。
 - 自动更新：从 GitHub Releases（`refyon/dsh-systray`）查询最新版本并下载对应平台的 zip（Windows 替换 `dsh-systray.exe`，macOS 通过辅助脚本替换 `.app` 后重新打开）；更新包经 `SHA256SUMS.txt` 校验。更新重启不会关闭后台 Web 服务，新实例会自动复用。macOS 需程序所在目录有写权限（如 `/Applications` 下更新失败时，请手动下载替换）。

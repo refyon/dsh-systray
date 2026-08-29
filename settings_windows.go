@@ -3,6 +3,8 @@
 package main
 
 import (
+	"os"
+	"path/filepath"
 	"runtime"
 	"sync/atomic"
 	"syscall"
@@ -31,6 +33,7 @@ const (
 	stIdSidebarBg  = 2900
 	stIdCatGeneral = 3000
 	stIdCatAbout   = 3001
+	stIdCatLog     = 3002
 	stIdPaneTitle  = 3005
 	stIdAutoTitle  = 3101
 	stIdAutoSub    = 3102
@@ -38,6 +41,25 @@ const (
 	stIdVerTitle   = 3201
 	stIdVerValue   = 3202
 	stIdCheckBtn   = 3203
+	stIdLogInfo    = 3300
+	stIdLogCombo   = 3301
+	stIdLogRefresh = 3302
+	stIdLogEdit    = 3303
+
+	// EDIT / COMBOBOX 样式
+	esMultiline       = 0x0004
+	esAutoVScroll     = 0x0040
+	esReadOnly        = 0x0800
+	wsVScroll         = 0x00200000
+	wsBorder          = 0x00800000
+	cbsDropList       = 0x0003
+	cbsHasStrings     = 0x0200
+	cbnSelChange      = 1
+	wmCtlColorEdit    = 0x0134
+	wmCtlColorListBox = 0x0137
+	cbAddString       = 0x0143
+	cbGetCurSel       = 0x0147
+	cbSetCurSel       = 0x014E
 
 	// 颜色（COLORREF = 0xBBGGRR）
 	stColorSidebarBg = 0x00FAF8F7 // #F7F8FA 侧栏浅灰底
@@ -58,13 +80,16 @@ var (
 	settingsAutoOn    bool
 	settingsClassReg  bool
 	settingsWidgets   = map[uintptr]uintptr{} // hwnd → ctlID
-	settingsCatBtns   [2]uintptr              // 3000/3001 的分类按钮句柄
+	settingsCatBtns   [3]uintptr              // 3000/3001/3002 的分类按钮句柄
 	settingsPaneGen   []uintptr               // 常规面板控件
 	settingsPaneAbout []uintptr               // 关于面板控件
+	settingsPaneLog   []uintptr               // 日志面板控件
+	settingsLogEdit   uintptr                 // 日志 readonly EDIT
 	settingsFontTitle uintptr
 	settingsFontBody  uintptr
 	settingsFontBold  uintptr
 	settingsFontSmall uintptr
+	settingsFontMono  uintptr // 日志等宽字体 Consolas
 	settingsSideBrush uintptr
 	settingsTitleHwnd uintptr
 )
@@ -109,11 +134,15 @@ func settingsWndProc(hwnd, uMsg, wParam, lParam uintptr) uintptr {
 	switch uMsg {
 	case wmCommand:
 		id := int(wParam & 0xFFFF)
+		notif := int((wParam >> 16) & 0xFFFF)
 		switch {
-		case id == stIdCatGeneral || id == stIdCatAbout:
+		case id == stIdCatGeneral || id == stIdCatAbout || id == stIdCatLog:
 			settingsCat = id - stIdCatGeneral
 			settingsShowPane(hwnd)
 			settingsRedrawCats()
+			if settingsCat == 2 {
+				settingsLogReload()
+			}
 		case id == stIdAutoToggle:
 			settingsAutoOn = !settingsAutoOn
 			setAutostartOn(settingsAutoOn)
@@ -121,6 +150,10 @@ func settingsWndProc(hwnd, uMsg, wParam, lParam uintptr) uintptr {
 		case id == stIdCheckBtn:
 			// 异步检查，避免 GitHub 超时阻塞设置窗口 UI 线程（结果弹窗独立线程显示）
 			go checkForUpdatesManual()
+		case id == stIdLogCombo && notif == cbnSelChange:
+			settingsLogReload()
+		case id == stIdLogRefresh:
+			settingsLogReload()
 		}
 		return 0
 	case wmClose:
@@ -139,6 +172,9 @@ func settingsWndProc(hwnd, uMsg, wParam, lParam uintptr) uintptr {
 		if settingsFontSmall != 0 {
 			pDeleteObject.Call(settingsFontSmall)
 		}
+		if settingsFontMono != 0 {
+			pDeleteObject.Call(settingsFontMono)
+		}
 		if settingsSideBrush != 0 {
 			pDeleteObject.Call(settingsSideBrush)
 		}
@@ -151,7 +187,7 @@ func settingsWndProc(hwnd, uMsg, wParam, lParam uintptr) uintptr {
 			pSetTextColor.Call(wParam, stColorText)
 		case stIdVerValue:
 			pSetTextColor.Call(wParam, stColorBlue)
-		case stIdAutoSub:
+		case stIdAutoSub, stIdLogInfo:
 			pSetTextColor.Call(wParam, stColorSub)
 		case stIdSidebarBg:
 			if settingsSideBrush != 0 {
@@ -167,18 +203,30 @@ func settingsWndProc(hwnd, uMsg, wParam, lParam uintptr) uintptr {
 		}
 		white, _, _ := pGetStockObject.Call(whiteBrush)
 		return white
+	case wmCtlColorEdit:
+		pSetTextColor.Call(wParam, stColorText)
+		pSetBkColor.Call(wParam, colorWhite)
+		white, _, _ := pGetStockObject.Call(whiteBrush)
+		return white
+	case wmCtlColorListBox:
+		pSetTextColor.Call(wParam, stColorText)
+		pSetBkColor.Call(wParam, colorWhite)
+		white, _, _ := pGetStockObject.Call(whiteBrush)
+		return white
 	case wmDrawItem:
 		if lParam == 0 {
 			break
 		}
 		dis := *(*drawItemStruct)(unsafe.Add(unsafe.Pointer(nil), lParam))
 		switch settingsWidgets[dis.hwndItem] {
-		case stIdCatGeneral, stIdCatAbout:
+		case stIdCatGeneral, stIdCatAbout, stIdCatLog:
 			settingsDrawCat(dis)
 		case stIdAutoToggle:
 			settingsDrawToggle(dis)
 		case stIdCheckBtn:
 			settingsDrawCapsule(dis, "检查更新")
+		case stIdLogRefresh:
+			settingsDrawCapsule(dis, "刷新")
 		}
 		return 1
 	}
@@ -198,11 +246,19 @@ func settingsShowPane(hwnd uintptr) {
 			pShowWindow.Call(w, swHide)
 		}
 	}
+	for _, id := range settingsPaneLog {
+		if w := settingsWidgetKey(id); w != 0 {
+			pShowWindow.Call(w, swHide)
+		}
+	}
 	var show []uintptr
-	if settingsCat == 0 {
+	switch settingsCat {
+	case 0:
 		show = settingsPaneGen
-	} else {
+	case 1:
 		show = settingsPaneAbout
+	default:
+		show = settingsPaneLog
 	}
 	for _, id := range show {
 		if w := settingsWidgetKey(id); w != 0 {
@@ -213,6 +269,8 @@ func settingsShowPane(hwnd uintptr) {
 		title := "常规"
 		if settingsCat == 1 {
 			title = "关于"
+		} else if settingsCat == 2 {
+			title = "日志"
 		}
 		t, _ := syscall.UTF16PtrFromString(title)
 		pSendMessageW.Call(settingsTitleHwnd, wmSetText, 0, uintptr(unsafe.Pointer(t)))
@@ -244,10 +302,48 @@ func settingsWidgetKey(id uintptr) uintptr {
 	return 0
 }
 
+// makeMonoFont 创建等宽字体（日志展示用 Consolas）。
+func makeMonoFont(height int32) uintptr {
+	face, _ := syscall.UTF16PtrFromString("Consolas")
+	h, _, _ := pCreateFontW.Call(uintptr(height), 0, 0, 0, 400, 0, 0, 0, defaultCharset, 0, 0, cleartypeQual, 0, uintptr(unsafe.Pointer(face)))
+	return h
+}
+
+// settingsLogReload 按当前选择重新加载日志到只读文本框。
+func settingsLogReload() {
+	name := "app.log"
+	combo := settingsWidgetKey(stIdLogCombo)
+	if combo != 0 {
+		sel, _, _ := pSendMessageW.Call(combo, cbGetCurSel, 0, 0)
+		if sel == 1 {
+			name = "server.log"
+		}
+	}
+	if info := settingsWidgetKey(stIdLogInfo); info != 0 {
+		ip, _ := syscall.UTF16PtrFromString("日志：" + name + "　（只读，可复制）")
+		pSendMessageW.Call(info, wmSetText, 0, uintptr(unsafe.Pointer(ip)))
+	}
+	text := ""
+	p := filepath.Join(logDir, name)
+	if data, err := os.ReadFile(p); err == nil && len(data) > 0 {
+		const max = 200 * 1024
+		if len(data) > max {
+			data = data[len(data)-max:]
+		}
+		text = string(data)
+	} else {
+		text = "（暂无日志：" + p + "）"
+	}
+	if edit := settingsWidgetKey(stIdLogEdit); edit != 0 {
+		ep, _ := syscall.UTF16PtrFromString(text)
+		pSendMessageW.Call(edit, wmSetText, 0, uintptr(unsafe.Pointer(ep)))
+	}
+}
+
 // settingsDrawCat 绘制侧栏分类按钮（选中项浅灰胶囊 + 蓝色文字）。
 func settingsDrawCat(dis drawItemStruct) {
 	id := int(settingsWidgets[dis.hwndItem])
-	selected := (id == stIdCatGeneral && settingsCat == 0) || (id == stIdCatAbout && settingsCat == 1)
+	selected := (id == stIdCatGeneral && settingsCat == 0) || (id == stIdCatAbout && settingsCat == 1) || (id == stIdCatLog && settingsCat == 2)
 	hdc := dis.hDC
 	// 先铺侧栏底色，避免圆角外出现白块
 	if settingsSideBrush != 0 {
@@ -265,6 +361,8 @@ func settingsDrawCat(dis drawItemStruct) {
 	label := "常规"
 	if id == stIdCatAbout {
 		label = "关于"
+	} else if id == stIdCatLog {
+		label = "日志"
 	}
 	font := settingsFontBody
 	if selected {
@@ -330,9 +428,10 @@ func settingsDrawCapsule(dis drawItemStruct, label string) {
 func createSettingsWindow() uintptr {
 	// 重置上次打开遗留的状态（窗口关闭后再次打开时控件句柄/集合需清空，否则面板错乱）
 	settingsWidgets = map[uintptr]uintptr{}
-	settingsCatBtns = [2]uintptr{}
+	settingsCatBtns = [3]uintptr{}
 	settingsPaneGen = nil
 	settingsPaneAbout = nil
+	settingsPaneLog = nil
 	settingsTitleHwnd = 0
 
 	cls, _ := syscall.UTF16PtrFromString(settingsCls)
@@ -357,6 +456,7 @@ func createSettingsWindow() uintptr {
 	settingsFontBody = makeFont(14, 400)
 	settingsFontBold = makeFont(14, 600)
 	settingsFontSmall = makeFont(12, 400)
+	settingsFontMono = makeMonoFont(13)
 	settingsSideBrush, _, _ = pCreateSolidBrush.Call(stColorSidebarBg)
 
 	titleText, _ := syscall.UTF16PtrFromString("设置")
@@ -401,7 +501,7 @@ func createSettingsWindow() uintptr {
 	}
 
 	// 分类按钮（自绘）
-	catLabels := []string{"常规", "关于"}
+	catLabels := []string{"常规", "关于", "日志"}
 	for i, label := range catLabels {
 		bt, _ := syscall.UTF16PtrFromString(label)
 		cy := int32(stCatY0 + i*(stCatH+stCatGap))
@@ -522,6 +622,60 @@ func createSettingsWindow() uintptr {
 	if checkBtn != 0 {
 		settingsWidgets[checkBtn] = stIdCheckBtn
 		settingsPaneAbout = append(settingsPaneAbout, stIdCheckBtn)
+	}
+
+	// ---- 日志面板（只读、可复制、可刷新） ----
+	comboCls, _ := syscall.UTF16PtrFromString("COMBOBOX")
+	editCls, _ := syscall.UTF16PtrFromString("EDIT")
+
+	li, _ := syscall.UTF16PtrFromString("日志：app.log　（只读，可复制）")
+	logInfo, _, _ := pCreateWindowExW.Call(
+		0, uintptr(unsafe.Pointer(staticCls)), uintptr(unsafe.Pointer(li)),
+		wsChild|wsVisible,
+		uintptr(stContentX), 74, 380, 20, hwnd, stIdLogInfo, moduleHandle(), 0,
+	)
+	if logInfo != 0 {
+		settingsWidgets[logInfo] = stIdLogInfo
+		pSendMessageW.Call(logInfo, wmSetFont, settingsFontSmall, 1)
+		settingsPaneLog = append(settingsPaneLog, stIdLogInfo)
+	}
+
+	logCombo, _, _ := pCreateWindowExW.Call(
+		0, uintptr(unsafe.Pointer(comboCls)), 0,
+		wsChild|wsVisible|wsTabStop|cbsDropList|cbsHasStrings|wsVScroll,
+		uintptr(stContentX), 100, 160, 200, hwnd, stIdLogCombo, moduleHandle(), 0,
+	)
+	if logCombo != 0 {
+		settingsWidgets[logCombo] = stIdLogCombo
+		pSendMessageW.Call(logCombo, wmSetFont, settingsFontBody, 1)
+		a, _ := syscall.UTF16PtrFromString("app.log")
+		b, _ := syscall.UTF16PtrFromString("server.log")
+		pSendMessageW.Call(logCombo, cbAddString, 0, uintptr(unsafe.Pointer(a)))
+		pSendMessageW.Call(logCombo, cbAddString, 0, uintptr(unsafe.Pointer(b)))
+		pSendMessageW.Call(logCombo, cbSetCurSel, 0, 0)
+		settingsPaneLog = append(settingsPaneLog, stIdLogCombo)
+	}
+
+	lr, _ := syscall.UTF16PtrFromString("刷新")
+	logRefresh, _, _ := pCreateWindowExW.Call(
+		0, uintptr(unsafe.Pointer(btnCls)), uintptr(unsafe.Pointer(lr)),
+		wsChild|wsVisible|wsTabStop|bsOwnDraw,
+		uintptr(stContentX+175), 96, 92, 32, hwnd, stIdLogRefresh, moduleHandle(), 0,
+	)
+	if logRefresh != 0 {
+		settingsWidgets[logRefresh] = stIdLogRefresh
+		settingsPaneLog = append(settingsPaneLog, stIdLogRefresh)
+	}
+
+	logEdit, _, _ := pCreateWindowExW.Call(
+		0, uintptr(unsafe.Pointer(editCls)), 0,
+		wsChild|wsVisible|wsTabStop|esMultiline|esAutoVScroll|esReadOnly|wsVScroll|wsBorder,
+		uintptr(stContentX), 140, 384, 262, hwnd, stIdLogEdit, moduleHandle(), 0,
+	)
+	if logEdit != 0 {
+		settingsWidgets[logEdit] = stIdLogEdit
+		pSendMessageW.Call(logEdit, wmSetFont, settingsFontMono, 1)
+		settingsPaneLog = append(settingsPaneLog, stIdLogEdit)
 	}
 
 	// 初始显示「常规」面板

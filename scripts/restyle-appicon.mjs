@@ -100,11 +100,28 @@ function makeICO(pngs) {
 }
 
 function restyle(src) {
-  const { width, height, data } = decodePNG(src)
-  const out = Buffer.alloc(width * height * 4)
-  const W = width, H = height
+  const whale = decodePNG(src)
+  const W = whale.width, H = whale.height
   const R = Math.round(W * 0.21) // 圆角（macOS app icon 风格）
-  const bgTop = [91, 107, 255], bgBot = [47, 67, 214] // #5b6bff -> #2f43d6
+  // 鲸鱼轮廓 bbox（原图为透明底灰鲸鱼剪影）
+  let xmin = W, ymin = H, xmax = -1, ymax = -1
+  for (let y = 0; y < H; y++) {
+    for (let x = 0; x < W; x++) {
+      if (whale.data[(y * W + x) * 4 + 3] > 0) {
+        if (x < xmin) xmin = x; if (x > xmax) xmax = x
+        if (y < ymin) ymin = y; if (y > ymax) ymax = y
+      }
+    }
+  }
+  if (xmax < 0) { xmin = 0; ymin = 0; xmax = W - 1; ymax = H - 1 }
+  const whaleW = xmax - xmin + 1, whaleH = ymax - ymin + 1
+  const fit = 0.80 // 鲸鱼占图标宽/高 80%，四周留均匀边距，避免拥挤
+  const s = Math.min((W * fit) / whaleW, (H * fit) / whaleH)
+  const nw = whaleW * s, nh = whaleH * s
+  const ox = (W - nw) / 2, oy = (H - nh) / 2
+
+  const out = Buffer.alloc(W * H * 4)
+  const blue = [77, 107, 254] // #4d6bfe 扁平品牌蓝
   const inRound = (x, y) => {
     if (x < 0 || x >= W || y < 0 || y >= H) return false
     if (x >= R && x <= W - R) return true
@@ -115,16 +132,17 @@ function restyle(src) {
     return dx * dx + dy * dy <= R * R
   }
   for (let y = 0; y < H; y++) {
-    const k = H > 1 ? y / (H - 1) : 0
-    const br = bgTop[0] + (bgBot[0] - bgTop[0]) * k
-    const bg = bgTop[1] + (bgBot[1] - bgTop[1]) * k
-    const bb = bgTop[2] + (bgBot[2] - bgTop[2]) * k
     for (let x = 0; x < W; x++) {
       const i = (y * W + x) * 4
       if (!inRound(x, y)) { out[i] = 0; out[i + 1] = 0; out[i + 2] = 0; out[i + 3] = 0; continue }
-      const whale = data[i + 3] > 0
-      if (whale) { out[i] = 255; out[i + 1] = 255; out[i + 2] = 255; out[i + 3] = 255 }
-      else { out[i] = Math.round(br); out[i + 1] = Math.round(bg); out[i + 2] = Math.round(bb); out[i + 3] = 255 }
+      let white = false
+      if (x >= ox && x < ox + nw && y >= oy && y < oy + nh) {
+        const sx = Math.floor(xmin + (x - ox) / s)
+        const sy = Math.floor(ymin + (y - oy) / s)
+        if (sx >= 0 && sx < W && sy >= 0 && sy < H && whale.data[(sy * W + sx) * 4 + 3] > 0) white = true
+      }
+      if (white) { out[i] = 255; out[i + 1] = 255; out[i + 2] = 255; out[i + 3] = 255 }
+      else { out[i] = blue[0]; out[i + 1] = blue[1]; out[i + 2] = blue[2]; out[i + 3] = 255 }
     }
   }
   return encodePNG(W, H, out)
