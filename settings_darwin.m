@@ -486,24 +486,18 @@ static DSHSetController *g_ctrl = nil;
     sv.autohidesScrollers = YES;
     [root addSubview:sv];
 
-    // 常规面板：开机自启动开关 + 后台服务（浅灰圆角卡片分组，替代分割线）
+    // 常规面板：开机自启动开关 + 后台服务
     self.generalPane = [[NSView alloc] initWithFrame:NSMakeRect(160, 0, 440, 420)];
     [self addLabel:@"常规" font:[self uiFontOfSize:19 weight:NSFontWeightSemibold] color:nil frame:NSMakeRect(0, 372, 300, 24) to:self.generalPane];
+    [self addLabel:@"开机自启动" font:[self uiFontOfSize:17 weight:NSFontWeightRegular] color:nil frame:NSMakeRect(0, 326, 220, 24) to:self.generalPane];
 
-    // 区块卡片 1：开机自启动（先添加以垫底）
-    [self.generalPane addSubview:[self makeCard:NSMakeRect(0, 296, 430, 74)]];
-    [self addLabel:@"开机自启动" font:[self uiFontOfSize:17 weight:NSFontWeightRegular] color:nil frame:NSMakeRect(14, 320, 220, 24) to:self.generalPane];
-
-    self.autoSwitch = [[NSButton alloc] initWithFrame:NSMakeRect(310, 318, 60, 24)];
+    self.autoSwitch = [[NSButton alloc] initWithFrame:NSMakeRect(310, 324, 60, 24)];
     [self.autoSwitch setButtonType:NSButtonTypeSwitch];
     self.autoSwitch.title = @"";
     self.autoSwitch.state = (autoOn ? NSControlStateValueOn : NSControlStateValueOff);
     self.autoSwitch.target = self;
     self.autoSwitch.action = @selector(autostartChanged:);
     [self.generalPane addSubview:self.autoSwitch];
-
-    // 区块卡片 2：后台服务（先添加以垫底）
-    [self.generalPane addSubview:[self makeCard:NSMakeRect(0, 194, 430, 86)]];
 
     // 常规面板：后台服务状态（绿/红圆点）+ 重启按钮
     char *svcState = dshSettingsGoServiceState();
@@ -516,10 +510,10 @@ static DSHSetController *g_ctrl = nil;
     [svcAttr addAttribute:NSForegroundColorAttributeName value:[NSColor secondaryLabelColor] range:NSMakeRange(2, svcAttr.length - 2)];
     NSTextField *svcLabel = [NSTextField labelWithAttributedString:svcAttr];
     svcLabel.font = [self uiFontOfSize:16 weight:NSFontWeightRegular];
-    svcLabel.frame = NSMakeRect(14, 240, 320, 18);
+    svcLabel.frame = NSMakeRect(0, 258, 320, 18);
     [self.generalPane addSubview:svcLabel];
 
-    NSButton *restartBtn = [[NSButton alloc] initWithFrame:NSMakeRect(14, 206, 108, 30)];
+    NSButton *restartBtn = [[NSButton alloc] initWithFrame:NSMakeRect(0, 220, 108, 30)];
     restartBtn.title = @"重启后台服务";
     restartBtn.bezelStyle = NSBezelStyleRounded;
     restartBtn.font = [self uiFontOfSize:13 weight:NSFontWeightSemibold];

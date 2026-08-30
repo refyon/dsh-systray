@@ -80,9 +80,7 @@ const (
 	stIdImpFilesRow = 3530
 	stIdImpFilesBtn = 3531
 	// 常规页区块卡片 + 日志页卡片
-	stIdCardGeneral1 = 3601
-	stIdCardGeneral2 = 3602
-	stIdLogCard      = 3304
+	stIdLogCard = 3304
 
 	// EDIT / COMBOBOX / STATIC 样式
 	esMultiline           = 0x0004
@@ -131,9 +129,6 @@ const (
 	vkDown       = 0x28
 	vkReturn     = 0x0D
 	vkEscape     = 0x1B
-	emSetMargins  = 0x00D3
-	ecLeftMargin  = 0x1
-	ecRightMargin = 0x2
 
 	// 颜色（COLORREF = 0xBBGGRR）
 	stColorSidebarBg = 0x00FAF7F5 // #F5F7FA 侧栏浅灰底
@@ -390,7 +385,7 @@ func settingsWndProc(hwnd, uMsg, wParam, lParam uintptr) uintptr {
 		switch settingsWidgets[dis.hwndItem] {
 		case stIdCatGeneral, stIdCatAbout, stIdCatLog, stIdCatExport, stIdCatImport:
 			settingsDrawCat(dis)
-		case stIdCardGeneral1, stIdCardGeneral2, stIdLogCard:
+		case stIdLogCard:
 			settingsDrawCard(dis)
 		case stIdLogCombo:
 			settingsDrawCombo(dis)
@@ -1470,19 +1465,6 @@ func createSettingsWindow() uintptr {
 	}
 
 	// ---- 常规面板 ----
-	// 区块卡片 1：开机自启动（浅灰圆角卡片，先创建以垫底）
-	card1, _, _ := pCreateWindowExW.Call(
-		0,
-		uintptr(unsafe.Pointer(staticCls)),
-		0,
-		wsChild|wsVisible|ssOwnerDraw,
-		uintptr(stContentX-12), 66, uintptr(stWinW-(stContentX-12)-16), 72,
-		hwnd, stIdCardGeneral1, moduleHandle(), 0,
-	)
-	if card1 != 0 {
-		settingsWidgets[card1] = stIdCardGeneral1
-		settingsPaneGen = append(settingsPaneGen, stIdCardGeneral1)
-	}
 	at, _ := syscall.UTF16PtrFromString("开机自启动")
 	autoTitle, _, _ := pCreateWindowExW.Call(
 		0,
@@ -1527,19 +1509,6 @@ func createSettingsWindow() uintptr {
 	}
 
 	// ---- 常规面板：后台服务（状态 + 重启按钮） ----
-	// 区块卡片 2：后台服务（先创建以垫底）
-	card2, _, _ := pCreateWindowExW.Call(
-		0,
-		uintptr(unsafe.Pointer(staticCls)),
-		0,
-		wsChild|wsVisible|ssOwnerDraw,
-		uintptr(stContentX-12), 150, uintptr(stWinW-(stContentX-12)-16), 88,
-		hwnd, stIdCardGeneral2, moduleHandle(), 0,
-	)
-	if card2 != 0 {
-		settingsWidgets[card2] = stIdCardGeneral2
-		settingsPaneGen = append(settingsPaneGen, stIdCardGeneral2)
-	}
 	// 状态用自绘 BUTTON（无 wsTabStop，纯展示）：绿/红圆点 + “后台服务：运行中/已停止”
 	rst, _ := syscall.UTF16PtrFromString("")
 	restInfo, _, _ := pCreateWindowExW.Call(
@@ -1709,7 +1678,6 @@ func createSettingsWindow() uintptr {
 	if logEdit != 0 {
 		settingsWidgets[logEdit] = stIdLogEdit
 		pSendMessageW.Call(logEdit, emExLimitText, 1, 0x7FFFFFF) // 放开文本上限
-		pSendMessageW.Call(logEdit, emSetMargins, ecLeftMargin|ecRightMargin, 180|(180<<16)) // 左右内边距 12px（twips）
 		pSendMessageW.Call(logEdit, wmSetFont, settingsFontMono, 1)
 		settingsPaneLog = append(settingsPaneLog, stIdLogEdit)
 	}

@@ -3,11 +3,12 @@
 package main
 
 // 设计感文档图生成器（非真机截图）：以网站同源设计语言（Noto Sans SC + 品牌蓝 #1D4ED8）
-// 绘制轮播页与 README 功能图。UI 调整后运行（需 -tags docsgen 避免 go test ./... 误跑）：
+// 绘制轮播页与 README 主图。所有内容按 2x 渲染（视网膜级），网页/README 缩小显示时文字清晰。
+// UI 调整后运行（需 -tags docsgen 避免 go test ./... 误跑）：
 //   go generate ./...   （等价于 go test -tags docsgen -run RegenerateDocsImages -v）
 // 输出：
 //   docs/shots/*.png      网站轮播页（启动进度 / 常规 / 关于 / 日志 / 导出 / 导入）
-//   docs/features/*.png   README 功能聚焦图（托盘 / loading / 菜单 / 设置 / 单实例 / 更新）
+//   docs/screenshot.png   README 主图（关于页 + 检查更新下载 DeepSeek Harness 新版本进度）
 
 //go:generate go test -tags docsgen -run RegenerateDocsImages -v
 
@@ -41,6 +42,9 @@ var (
 	cLine   = rgba{71, 84, 103, 255}   // 日志正文 #475467
 )
 
+// scale 全局 2x 渲染倍率：成图分辨率翻倍，浏览器/README 缩小显示时文字锐利。
+const scale = 2
+
 // ==================== 画布与矢量原语 ====================
 
 type canvas struct {
@@ -48,15 +52,20 @@ type canvas struct {
 }
 
 func newCanvas(w, h int) *canvas {
-	return &canvas{img: image.NewRGBA(image.Rect(0, 0, w, h))}
+	return &canvas{img: image.NewRGBA(image.Rect(0, 0, w*scale, h*scale))}
 }
 
 func (c *canvas) fillRect(x0, y0, x1, y1 int, col rgba) {
-	draw.Draw(c.img, image.Rect(x0, y0, x1, y1), &image.Uniform{col}, image.Point{}, draw.Src)
+	draw.Draw(c.img, image.Rect(x0*scale, y0*scale, x1*scale, y1*scale), &image.Uniform{col}, image.Point{}, draw.Src)
 }
 
 // roundRectA 圆角矩形（SDF 抗锯齿），am 为整体不透明度（0~1）。
 func (c *canvas) roundRectA(x0, y0, x1, y1, r int, col rgba, am float64) {
+	x0 *= scale
+	y0 *= scale
+	x1 *= scale
+	y1 *= scale
+	r *= scale
 	if x1 <= x0 || y1 <= y0 {
 		return
 	}
@@ -156,8 +165,8 @@ func docTextLayer(s string, font uintptr, maxW int) (*image.RGBA, int, int) {
 	if w <= 0 || h <= 0 {
 		return nil, 0, 0
 	}
-	w += 6 // 抗锯齿边缘余量
-	h += 4
+	w += 12 // 抗锯齿边缘余量
+	h += 8
 
 	mem, _, _ := pCreateCompatibleDC.Call(dc)
 	bmi := docBmpInfo{
@@ -205,15 +214,15 @@ func docTextLayer(s string, font uintptr, maxW int) (*image.RGBA, int, int) {
 
 // textIn 在给定盒内绘制文本（左对齐或水平居中，垂直居中）。
 func (c *canvas) textIn(s string, x0, y0, x1, y1 int, font uintptr, col rgba, align string) {
-	mask, w, h := docTextLayer(s, font, x1-x0)
+	mask, w, h := docTextLayer(s, font, (x1-x0)*scale)
 	if mask == nil {
 		return
 	}
-	x := x0
+	x := x0 * scale
 	if align == "center" {
-		x = x0 + (x1-x0-w)/2
+		x += ((x1 - x0) * scale - w) / 2
 	}
-	y := y0 + (y1-y0-h)/2
+	y := y0*scale + ((y1-y0)*scale-h)/2
 	colored := image.NewRGBA(mask.Bounds())
 	for yy := 0; yy < h; yy++ {
 		for xx := 0; xx < w; xx++ {
@@ -239,14 +248,14 @@ type fonts struct {
 
 func loadFonts() *fonts {
 	return &fonts{
-		head:  makeFontQuality(21, 400, antialiasQual),
-		title: makeFontQuality(19, 600, antialiasQual),
-		body:  makeFontQuality(17, 400, antialiasQual),
-		bodyB: makeFontQuality(17, 600, antialiasQual),
-		small: makeFontQuality(13, 400, antialiasQual),
-		btn:   makeFontQuality(16, 600, antialiasQual),
-		btnS:  makeFontQuality(14, 600, antialiasQual),
-		mono:  makeMonoFont(14),
+		head:  makeFontQuality(21*scale, 400, antialiasQual),
+		title: makeFontQuality(19*scale, 600, antialiasQual),
+		body:  makeFontQuality(17*scale, 400, antialiasQual),
+		bodyB: makeFontQuality(17*scale, 600, antialiasQual),
+		small: makeFontQuality(13*scale, 400, antialiasQual),
+		btn:   makeFontQuality(16*scale, 600, antialiasQual),
+		btnS:  makeFontQuality(14*scale, 600, antialiasQual),
+		mono:  makeMonoFont(14 * scale),
 	}
 }
 
@@ -305,20 +314,14 @@ func drawSlide(f *fonts, sel int, title string, content func(*canvas, *fonts, in
 }
 
 func drawGeneral(c *canvas, f *fonts, cx, wy int) {
-	// 卡片 1：开机自启动
-	c.roundRect(cx-14, wy+70, cx+646, wy+150, 12, cBorder)
-	c.roundRect(cx-13, wy+71, cx+645, wy+149, 11, cCardBg)
-	c.textIn("开机自启动", cx+14, wy+84, cx+200, wy+110, f.body, cInk, "left")
+	c.textIn("开机自启动", cx, wy+84, cx+200, wy+110, f.body, cInk, "left")
 	c.roundRect(cx+130, wy+91, cx+176, wy+117, 13, cBlue) // 开关轨道 ON
 	c.roundRect(cx+152, wy+95, cx+172, wy+115, 10, cWhite) // 圆钮
-	c.textIn("登录后自动启动后台服务并常驻托盘", cx+14, wy+116, cx+440, wy+140, f.small, cSub, "left")
-	// 卡片 2：后台服务
-	c.roundRect(cx-14, wy+170, cx+646, wy+268, 12, cBorder)
-	c.roundRect(cx-13, wy+171, cx+645, wy+267, 11, cCardBg)
-	c.roundRect(cx+2, wy+198, cx+10, wy+206, 4, cGreen)
-	c.textIn("后台服务：运行中", cx+18, wy+190, cx+280, wy+216, f.body, cSub, "left")
-	c.roundRect(cx, wy+216, cx+150, wy+256, 20, cBlue)
-	c.textIn("重启后台服务", cx, wy+216, cx+150, wy+256, f.btn, cWhite, "center")
+	c.textIn("登录后自动启动后台服务并常驻托盘", cx, wy+116, cx+440, wy+140, f.small, cSub, "left")
+	c.roundRect(cx+2, wy+176, cx+10, wy+184, 4, cGreen)
+	c.textIn("后台服务：运行中", cx+18, wy+168, cx+280, wy+194, f.body, cSub, "left")
+	c.roundRect(cx, wy+200, cx+150, wy+240, 20, cBlue)
+	c.textIn("重启后台服务", cx, wy+200, cx+150, wy+240, f.btn, cWhite, "center")
 }
 
 func drawAbout(c *canvas, f *fonts, cx, wy int) {
@@ -422,113 +425,20 @@ func drawSplash(c *canvas, f *fonts) {
 	c.roundRect(wx+50, wy+124, wx+50+int(float64(ww-100)*0.35), wy+134, 5, cBlue)
 }
 
-// ==================== README 功能图 ====================
+// ==================== README 主图：检查更新下载 DeepSeek Harness 新版本 ====================
 
-func featureCanvas() *canvas {
-	c := newCanvas(460, 260)
-	c.roundRect(0, 0, 460, 260, 12, cBorder)
-	c.roundRect(1, 1, 459, 259, 11, cCardBg)
-	return c
-}
-
-// boxScale 盒式降采样（图标缩放更平滑）。
-func boxScale(src image.Image, target int) *image.RGBA {
-	b := src.Bounds()
-	sw, sh := b.Dx(), b.Dy()
-	dst := image.NewRGBA(image.Rect(0, 0, target, target))
-	for y := 0; y < target; y++ {
-		for x := 0; x < target; x++ {
-			x0, x1 := x*sw/target, (x+1)*sw/target
-			y0, y1 := y*sh/target, (y+1)*sh/target
-			var r, g, bl, a, n int
-			for yy := y0; yy < y1; yy++ {
-				for xx := x0; xx < x1; xx++ {
-					pr, pg, pb, pa := src.At(xx+b.Min.X, yy+b.Min.Y).RGBA()
-					r += int(pr >> 8)
-					g += int(pg >> 8)
-					bl += int(pb >> 8)
-					a += int(pa >> 8)
-					n++
-				}
-			}
-			if n > 0 {
-				dst.SetRGBA(x, y, rgba{uint8(r / n), uint8(g / n), uint8(bl / n), uint8(a / n)})
-			}
-		}
-	}
-	return dst
-}
-
-func drawFeatTray(c *canvas, f *fonts) {
-	fh, err := os.Open("app-icon.png")
-	if err != nil {
-		return
-	}
-	defer fh.Close()
-	src, err := png.Decode(fh)
-	if err != nil {
-		return
-	}
-	icon := boxScale(src, 150)
-	draw.Draw(c.img, image.Rect(155, 55, 305, 205), icon, image.Point{}, draw.Over)
-}
-
-func drawFeatSplash(c *canvas, f *fonts) {
-	wx, wy, ww, wh := 60, 60, 340, 140
-	c.shadow(wx, wy, ww, wh, 14)
-	c.roundRect(wx, wy, wx+ww, wy+wh, 12, cWhite)
+func drawHero(c *canvas, f *fonts) {
+	// 底图：关于页（已含检查更新按钮）
+	base := drawSlide(f, 1, "关于", drawAbout)
+	draw.Draw(c.img, c.img.Bounds(), base.img, image.Point{}, draw.Src)
+	// 叠加：下载进度窗口
+	wx, wy, ww, wh := 420, 262, 560, 170
+	c.shadow(wx, wy, ww, wh, 18)
+	c.roundRect(wx, wy, wx+ww, wy+wh, 16, cWhite)
 	winBar(c, f, wx, wy, ww, "DeepSeek Harness")
-	c.textIn("正在启动后台服务…", wx+20, wy+66, wx+ww-20, wy+92, f.small, cSub, "center")
-	c.roundRect(wx+30, wy+108, wx+ww-30, wy+116, 4, cBorder)
-	c.roundRect(wx+30, wy+108, wx+30+int(float64(ww-60)*0.35), wy+116, 4, cBlue)
-}
-
-func drawFeatMenu(c *canvas, f *fonts) {
-	wx, wy, ww, wh := 90, 18, 280, 224
-	c.shadow(wx, wy, ww, wh, 14)
-	c.roundRect(wx, wy, wx+ww, wy+wh, 12, cWhite)
-	c.roundRect(wx+1, wy+1, wx+ww-1, wy+wh-1, 11, cWhite)
-	c.textIn("后台服务：运行中", wx+22, wy+10, wx+ww-22, wy+38, f.small, cSub, "left")
-	c.fillRect(wx+18, wy+46, wx+ww-18, wy+48, cBorder)
-	c.textIn("打开 Web UI", wx+22, wy+56, wx+ww-22, wy+84, f.body, cInk, "left")
-	c.textIn("设置", wx+22, wy+88, wx+ww-22, wy+116, f.body, cInk, "left")
-	c.fillRect(wx+18, wy+124, wx+ww-18, wy+126, cBorder)
-	c.textIn("退出", wx+22, wy+134, wx+ww-22, wy+162, f.body, cInk, "left")
-}
-
-func drawFeatSettings(c *canvas, f *fonts) {
-	c.roundRect(20, 36, 440, 98, 10, cBorder)
-	c.roundRect(21, 37, 439, 97, 9, cCardBg)
-	c.textIn("开机自启动", 34, 54, 200, 80, f.body, cInk, "left")
-	c.roundRect(160, 54, 206, 80, 13, cBlue)
-	c.roundRect(182, 58, 202, 78, 10, cWhite)
-	c.roundRect(20, 114, 440, 190, 10, cBorder)
-	c.roundRect(21, 115, 439, 189, 9, cCardBg)
-	c.roundRect(34, 146, 42, 154, 4, cGreen)
-	c.textIn("后台服务：运行中", 50, 138, 260, 164, f.small, cSub, "left")
-	c.roundRect(34, 164, 184, 204, 20, cBlue)
-	c.textIn("重启后台服务", 34, 164, 184, 204, f.btnS, cWhite, "center")
-}
-
-func drawFeatSingle(c *canvas, f *fonts) {
-	wx, wy, ww, wh := 70, 30, 320, 200
-	c.shadow(wx, wy, ww, wh, 14)
-	c.roundRect(wx, wy, wx+ww, wy+wh, 12, cWhite)
-	winBar(c, f, wx, wy, ww, "DeepSeek Harness")
-	c.textIn("DeepSeek Harness 已在运行中，", wx+20, wy+72, wx+ww-20, wy+100, f.body, cSub, "center")
-	c.textIn("请使用系统托盘图标操作。", wx+20, wy+102, wx+ww-20, wy+130, f.body, cSub, "center")
-	c.roundRect(wx+120, wy+150, wx+200, wy+182, 16, cBlue)
-	c.textIn("确定", wx+120, wy+150, wx+200, wy+182, f.btnS, cWhite, "center")
-}
-
-func drawFeatUpdate(c *canvas, f *fonts) {
-	wx, wy, ww, wh := 60, 60, 340, 140
-	c.shadow(wx, wy, ww, wh, 14)
-	c.roundRect(wx, wy, wx+ww, wy+wh, 12, cWhite)
-	winBar(c, f, wx, wy, ww, "DeepSeek Harness")
-	c.textIn("正在下载更新 v0.3.13…", wx+20, wy+66, wx+ww-20, wy+92, f.small, cSub, "center")
-	c.roundRect(wx+30, wy+108, wx+ww-30, wy+116, 4, cBorder)
-	c.roundRect(wx+30, wy+108, wx+30+int(float64(ww-60)*0.62), wy+116, 4, cBlue)
+	c.textIn("正在下载 DeepSeek Harness v0.1.1-rc.3…", wx+30, wy+70, wx+ww-30, wy+104, f.body, cSub, "center")
+	c.roundRect(wx+50, wy+124, wx+ww-50, wy+134, 5, cBorder)
+	c.roundRect(wx+50, wy+124, wx+50+int(float64(ww-100)*0.55), wy+134, 5, cBlue)
 }
 
 // ==================== 生成与自检 ====================
@@ -546,7 +456,7 @@ func (c *canvas) save(path string) error {
 }
 
 func expectColor(t *testing.T, img *image.RGBA, x, y int, want rgba, label string) {
-	got := img.RGBAAt(x, y)
+	got := img.RGBAAt(x*scale, y*scale)
 	if absDiff(got.R, want.R) > 8 || absDiff(got.G, want.G) > 8 || absDiff(got.B, want.B) > 8 {
 		t.Errorf("%s @(%d,%d): got %v, want %v", label, x, y, got, want)
 	}
@@ -577,9 +487,9 @@ func TestRegenerateDocsImages(t *testing.T) {
 		{"general", func() *canvas { return drawSlide(f, 0, "常规", drawGeneral) },
 			func(t *testing.T, img *image.RGBA) {
 				expectColor(t, img, 20, 20, cBG, "general bg")
-				expectColor(t, img, 950, 152, cCardBg, "general card1")
+				expectColor(t, img, 950, 152, cWhite, "general body")
 				expectColor(t, img, 522, 166, cBlue, "general toggle")
-				expectColor(t, img, 950, 262, cCardBg, "general card2")
+				expectColor(t, img, 600, 248, cWhite, "general restart row")
 			}},
 		{"about", func() *canvas { return drawSlide(f, 1, "关于", drawAbout) },
 			func(t *testing.T, img *image.RGBA) {
@@ -610,49 +520,17 @@ func TestRegenerateDocsImages(t *testing.T) {
 			t.Fatal(err)
 		}
 		s.chk(t, c.img)
-		t.Logf("generated %s", path)
+		t.Logf("generated %s (%dx%d)", path, c.img.Bounds().Dx(), c.img.Bounds().Dy())
 	}
 
-	features := []struct {
-		name string
-		draw func() *canvas
-		chk  func(*testing.T, *image.RGBA)
-	}{
-		{"tray", func() *canvas { c := featureCanvas(); drawFeatTray(c, f); return c },
-			func(t *testing.T, img *image.RGBA) {
-				expectColor(t, img, 30, 30, cCardBg, "tray bg")
-			}},
-		{"splash", func() *canvas { c := featureCanvas(); drawFeatSplash(c, f); return c },
-			func(t *testing.T, img *image.RGBA) {
-				expectColor(t, img, 230, 100, cWhite, "feat splash window")
-				expectColor(t, img, 110, 172, cBlue, "feat splash progress")
-			}},
-		{"menu", func() *canvas { c := featureCanvas(); drawFeatMenu(c, f); return c },
-			func(t *testing.T, img *image.RGBA) {
-				expectColor(t, img, 230, 130, cWhite, "menu card")
-			}},
-		{"settings", func() *canvas { c := featureCanvas(); drawFeatSettings(c, f); return c },
-			func(t *testing.T, img *image.RGBA) {
-				expectColor(t, img, 60, 60, cCardBg, "settings card1")
-				expectColor(t, img, 175, 67, cBlue, "settings toggle")
-			}},
-		{"single", func() *canvas { c := featureCanvas(); drawFeatSingle(c, f); return c },
-			func(t *testing.T, img *image.RGBA) {
-				expectColor(t, img, 230, 90, cWhite, "single dialog")
-			}},
-		{"update", func() *canvas { c := featureCanvas(); drawFeatUpdate(c, f); return c },
-			func(t *testing.T, img *image.RGBA) {
-				expectColor(t, img, 230, 100, cWhite, "update window")
-				expectColor(t, img, 130, 172, cBlue, "update progress")
-			}},
+	hero := newCanvas(slideW, slideH)
+	drawHero(hero, f)
+	heroPath := filepath.Join("docs", "screenshot.png")
+	if err := hero.save(heroPath); err != nil {
+		t.Fatal(err)
 	}
-	for _, s := range features {
-		c := s.draw()
-		path := filepath.Join("docs", "features", s.name+".png")
-		if err := c.save(path); err != nil {
-			t.Fatal(err)
-		}
-		s.chk(t, c.img)
-		t.Logf("generated %s", path)
-	}
+	expectColor(t, hero.img, 20, 20, cBG, "hero bg")
+	expectColor(t, hero.img, 700, 300, cWhite, "hero progress window")
+	expectColor(t, hero.img, 480, 391, cBlue, "hero progress fill")
+	t.Logf("generated %s (%dx%d)", heroPath, hero.img.Bounds().Dx(), hero.img.Bounds().Dy())
 }

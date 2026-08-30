@@ -22,16 +22,9 @@
   <a href="https://github.com/refyon/dsh-systray/actions/workflows/release.yml"><img alt="Release build" src="https://github.com/refyon/dsh-systray/actions/workflows/release.yml/badge.svg" /></a>
 </p>
 
-dsh-systray 是一个 Windows / macOS 系统托盘应用：双击即可后台拉起 DeepSeek Harness Web 本地服务，托盘一望即知，无需记忆端口。设置窗口五页分类管理开机自启与后台服务、版本与更新、实时日志，支持会话/插件/目录的一键导出与恢复；托盘图标随系统深浅色自适应，内置自动更新。
+<img src="docs/screenshot.png" alt="检查更新正在下载 DeepSeek Harness 新版本" />
 
-| 截图 | 一句话简介 |
-| --- | --- |
-| <img src="docs/features/tray.png" width="420" alt="托盘常驻"> | **双击启动** — 双击托盘图标，无窗口、后台拉起 harness 服务 |
-| <img src="docs/features/splash.png" width="420" alt="启动进度"> | **启动 loading** — 进度窗口可视化，就绪后弹窗提示 |
-| <img src="docs/features/menu.png" width="420" alt="托盘右键菜单"> | **托盘右键菜单** — 打开 Web UI / 设置 / 退出，一步直达 |
-| <img src="docs/features/settings.png" width="420" alt="设置窗口"> | **设置窗口** — 五页分类：开机自启、版本、实时日志与导入导出 |
-| <img src="docs/features/single.png" width="420" alt="单实例提示"> | **单实例** — 已在运行时再次双击会弹窗提示，不重复启动 |
-| <img src="docs/features/update.png" width="420" alt="自动更新"> | **自动更新** — 后台检查新版本，进度窗口下载，安装后自动重启 |
+dsh-systray 是一个 Windows / macOS 系统托盘应用：双击即可后台拉起 DeepSeek Harness Web 本地服务，托盘一望即知，无需记忆端口。设置窗口五页分类管理开机自启与后台服务、版本与更新、实时日志，支持会话/插件/目录的一键导出与恢复；托盘图标随系统深浅色自适应，内置自动更新。
 
 > [!IMPORTANT]
 > 这是一个社区维护的非官方工具，依赖快速演进的 `@deepseek-ai/dsh`。macOS 构建未经 Apple 公证，Windows 构建未做商业代码签名，首次运行可能需手动放行（Windows SmartScreen「仍要运行」/ macOS「右键 → 打开」）。首次启动约需 2–5 分钟自动部署环境。

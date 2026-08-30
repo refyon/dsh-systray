@@ -61,17 +61,19 @@ a{color:inherit;text-decoration:none}
 
 /* features */
 .features{padding:74px 0 8px}
-.features .head{text-align:center;margin-bottom:36px}
+.features .head{text-align:center;margin-bottom:40px}
 .features .head h2{font-size:31px;margin:12px 0 8px;letter-spacing:-.02em}
 .features .head p{color:var(--muted);margin:0}
-.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:22px}
-.feature{background:var(--surface);border:1px solid var(--border);border-radius:var(--rad);padding:26px;box-shadow:var(--shadow);transition:transform .18s,box-shadow .18s}
-.feature:hover{transform:translateY(-3px);box-shadow:0 14px 34px rgba(16,24,40,.1)}
-.feature .dot{width:40px;height:40px;border-radius:11px;background:var(--soft);color:var(--primary);display:grid;place-items:center;font-weight:700;margin-bottom:14px}
-.feature .dot svg{width:20px;height:20px;fill:var(--primary)}
-.feature h4{margin:0 0 8px;font-size:17px}
-.feature p{font-size:14px;color:var(--muted);line-height:1.55;margin:0}
-.feature a{color:var(--primary)}
+.feat-groups{display:grid;grid-template-columns:1fr 1fr;gap:22px}
+@media(max-width:760px){.feat-groups{grid-template-columns:1fr}}
+.fgroup{background:var(--surface);border:1px solid var(--border);border-radius:var(--rad);box-shadow:var(--shadow);padding:28px 30px}
+.fgroup h3{margin:0 0 18px;font-size:18px;letter-spacing:-.01em}
+.fgroup ul{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:16px}
+.fgroup li{display:flex;gap:12px;align-items:flex-start}
+.fgroup .ico{flex:0 0 34px;width:34px;height:34px;border-radius:9px;background:var(--soft);display:grid;place-items:center}
+.fgroup .ico svg{width:17px;height:17px;fill:var(--primary)}
+.fgroup b{display:block;font-size:15px;margin-bottom:2px}
+.fgroup span{display:block;font-size:13.5px;color:var(--muted);line-height:1.5}
 
 /* notes */
 .notes{margin-top:66px;background:var(--surface);border:1px solid var(--border);border-radius:var(--rad);box-shadow:var(--shadow);padding:34px 38px}
@@ -127,30 +129,48 @@ footer .sep{margin:0 8px;color:var(--border)}
       <h2>为桌面而生，安静地工作</h2>
       <p>不弹窗、不占标签页，像系统原生的一部分。</p>
     </div>
-    <div class="grid">
-      <div class="feature" data-reveal>
-        <div class="dot"><svg viewBox="0 0 24 24"><path d="M12 2a10 10 0 1 0 0 20 10 10 0 0 0 0-20zm0 18a8 8 0 1 1 0-16 8 8 0 0 1 0 16zm4-8a4 4 0 1 1-8 0 4 4 0 0 1 8 0z"/></svg></div>
-        <h4>托盘常驻</h4><p>无窗口后台拉起本地 Web 服务，图标一望即知，不占任务栏。</p>
+    <div class="feat-groups">
+      <div class="fgroup" data-reveal>
+        <h3>启动与托盘</h3>
+        <ul>
+          <li>
+            <div class="ico"><svg viewBox="0 0 24 24"><path d="M6 3l14 9-14 9V3z"/></svg></div>
+            <div><b>双击启动</b><span>无窗口、后台拉起本地 Web 服务，无需记忆端口。</span></div>
+          </li>
+          <li>
+            <div class="ico"><svg viewBox="0 0 24 24"><path d="M12 2a10 10 0 1 0 0 20 10 10 0 0 0 0-20zm0 18a8 8 0 1 1 0-16 8 8 0 0 1 0 16zm4-8a4 4 0 1 1-8 0 4 4 0 0 1 8 0z"/></svg></div>
+            <div><b>托盘常驻</b><span>图标一望即知，深浅色自动适配，不占任务栏。</span></div>
+          </li>
+          <li>
+            <div class="ico"><svg viewBox="0 0 24 24"><path d="M12 22a10 10 0 0 1-10-10A10 10 0 0 1 12 2a10 10 0 0 1 8.4 4.6L17 10h5V5l-1.8 1.8A8 8 0 1 0 20 12h-2a6 6 0 1 1-8.2-5.8L11.4 5A8 8 0 0 0 4 12a8 8 0 0 0 8 8v2z"/></svg></div>
+            <div><b>启动 loading</b><span>服务启动期间进度可视化，就绪后弹窗提示。</span></div>
+          </li>
+          <li>
+            <div class="ico"><svg viewBox="0 0 24 24"><path d="M12 2l9 5v5c0 5.5-3.8 9.4-9 10-5.2-.6-9-4.5-9-10V7l9-5zm0 2.2L5 8.6v3.5c0 4.3 2.9 7.5 7 8 4.1-.5 7-3.7 7-8V8.6l-7-4.4zM8.6 12.4l2.1 2.1 4.7-4.7 1.4 1.4-6.1 6.1-3.5-3.5 1.4-1.4z"/></svg></div>
+            <div><b>单实例</b><span>已在运行时再次双击会弹窗提示，不重复启动。</span></div>
+          </li>
+        </ul>
       </div>
-      <div class="feature" data-reveal>
-        <div class="dot"><svg viewBox="0 0 24 24"><path d="M4 3h16a1 1 0 0 1 1 1v12a1 1 0 0 1-1 1H9l-4 4V4a1 1 0 0 1 1-1z"/></svg></div>
-        <h4>设置窗口</h4><p>五页分类：开机自启、版本更新、实时日志、导入导出。</p>
-      </div>
-      <div class="feature" data-reveal>
-        <div class="dot"><svg viewBox="0 0 24 24"><path d="M4 4h16a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2zm4 6l3 3-3 3m5 0h4"/></svg></div>
-        <h4>实时日志</h4><p>app.log / server.log 自动跟随最新写入，支持复制与一键清空。</p>
-      </div>
-      <div class="feature" data-reveal>
-        <div class="dot"><svg viewBox="0 0 24 24"><path d="M7 7h10M13 3l4 4-4 4M17 17H7m-4 4l4-4-4-4"/></svg></div>
-        <h4>数据导入导出</h4><p>会话、插件、目录打包 zip 备份，导入冲突询问、自动恢复。</p>
-      </div>
-      <div class="feature" data-reveal>
-        <div class="dot"><svg viewBox="0 0 24 24"><path d="M12 20a8 8 0 1 1 8-8 6 6 0 0 1-8 8zm-2-3h4v2h-4z"/></svg></div>
-        <h4>自动更新</h4><p>后台自动检查新版本，进度窗口下载，完成后自动重启。</p>
-      </div>
-      <div class="feature" data-reveal>
-        <div class="dot"><svg viewBox="0 0 24 24"><path d="M12 3a9 9 0 1 0 9 9h-9V3z"/></svg></div>
-        <h4>主题自适应图标</h4><p>托盘图标随系统深浅色自动切换，任何主题下都清晰可见。</p>
+      <div class="fgroup" data-reveal>
+        <h3>设置与管理</h3>
+        <ul>
+          <li>
+            <div class="ico"><svg viewBox="0 0 24 24"><path d="M4 3h16a1 1 0 0 1 1 1v12a1 1 0 0 1-1 1H9l-4 4V4a1 1 0 0 1 1-1z"/></svg></div>
+            <div><b>设置窗口</b><span>五页分类：常规、关于、日志、导出、导入。</span></div>
+          </li>
+          <li>
+            <div class="ico"><svg viewBox="0 0 24 24"><path d="M4 4h16a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2zm4 6l3 3-3 3m5 0h4"/></svg></div>
+            <div><b>实时日志</b><span>app.log / server.log 跟随最新写入，可复制、一键清空。</span></div>
+          </li>
+          <li>
+            <div class="ico"><svg viewBox="0 0 24 24"><path d="M7 7h10M13 3l4 4-4 4M17 17H7m-4 4l4-4-4-4"/></svg></div>
+            <div><b>数据导入导出</b><span>会话、插件、目录打包 zip，导入冲突询问、自动恢复。</span></div>
+          </li>
+          <li>
+            <div class="ico"><svg viewBox="0 0 24 24"><path d="M12 20a8 8 0 1 1 8-8 6 6 0 0 1-8 8zm-2-3h4v2h-4z"/></svg></div>
+            <div><b>自动更新</b><span>后台检查新版本，进度窗口下载，完成自动重启。</span></div>
+          </li>
+        </ul>
       </div>
     </div>
   </section>
