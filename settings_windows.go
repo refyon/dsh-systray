@@ -11,6 +11,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"syscall"
+	"time"
 	"unsafe"
 )
 
@@ -78,9 +79,10 @@ const (
 	stIdImpPlugBtn  = 3521
 	stIdImpFilesRow = 3530
 	stIdImpFilesBtn = 3531
-	// 常规页区块分割线
-	stIdDivGeneral1 = 3601
-	stIdDivGeneral2 = 3602
+	// 常规页区块卡片 + 日志页卡片
+	stIdCardGeneral1 = 3601
+	stIdCardGeneral2 = 3602
+	stIdLogCard      = 3304
 
 	// EDIT / COMBOBOX / STATIC 样式
 	esMultiline           = 0x0004
@@ -110,6 +112,28 @@ const (
 	sbBottom              = 7
 	sbThumbPos            = 3
 	settingsLogTimer      = 1
+	ssOwnerDraw           = 0x000D
+	// 现代下拉列表（日志文件选择弹层）
+	dropCls      = "DSH_Systray_LogDropdown"
+	dropPadX     = 8
+	dropPadY     = 6
+	dropItemH    = 32
+	wsPopup      = 0x80000000
+	wmActivate   = 0x0006
+	waInactive   = 0
+	wmMouseMove  = 0x0200
+	wmMouseLeave = 0x02A3
+	wmLButtonUp  = 0x0202
+	wmKeyDown    = 0x0100
+	wmKillFocus  = 0x0008
+	tmeLeave     = 0x2
+	vkUp         = 0x26
+	vkDown       = 0x28
+	vkReturn     = 0x0D
+	vkEscape     = 0x1B
+	emSetMargins  = 0x00D3
+	ecLeftMargin  = 0x1
+	ecRightMargin = 0x2
 
 	// 颜色（COLORREF = 0xBBGGRR）
 	stColorSidebarBg = 0x00FAF7F5 // #F5F7FA 侧栏浅灰底
@@ -126,6 +150,10 @@ var (
 	pSetTimer            = modUser32.NewProc("SetTimer")
 	pKillTimer           = modUser32.NewProc("KillTimer")
 	pLoadLibraryW        = modKernel32.NewProc("LoadLibraryW")
+	pGetWindowRect       = modUser32.NewProc("GetWindowRect")
+	pSetFocus            = modUser32.NewProc("SetFocus")
+	pGetParent           = modUser32.NewProc("GetParent")
+	pTrackMouseEvent     = modUser32.NewProc("TrackMouseEvent")
 
 	settingsOpenFlag        atomic.Bool
 	settingsHwnd            uintptr
@@ -140,6 +168,13 @@ var (
 	settingsPaneExp         []uintptr               // 导出面板控件
 	settingsPaneImp         []uintptr               // 导入面板控件
 	settingsLogEdit         uintptr                 // 日志 readonly EDIT
+	settingsLogComboSel     int                     // 日志文件选择 0=app.log / 1=server.log
+	settingsComboOpen       bool                    // 日志下拉列表是否展开
+	settingsDropHwnd        uintptr                 // 日志下拉列表窗口
+	settingsDropHover       int                     // 下拉列表悬停项
+	settingsDropClsReg      bool                    // 下拉列表窗口类是否已注册
+	settingsDropClosedAt    time.Time               // 最近一次因失活自动收起的时间（防抖）
+	settingsLogBrush        uintptr                 // 日志卡片浅灰底画刷（wmCtlColorEdit）
 	settingsFontTitle       uintptr
 	settingsFontBody        uintptr
 	settingsFontBold        uintptr
@@ -202,7 +237,6 @@ func settingsWndProc(hwnd, uMsg, wParam, lParam uintptr) uintptr {
 	switch uMsg {
 	case wmCommand:
 		id := int(wParam & 0xFFFF)
-		notif := int((wParam >> 16) & 0xFFFF)
 		switch {
 		case id >= stIdCatGeneral && id <= stIdCatImport:
 			settingsCat = id - stIdCatGeneral
@@ -263,8 +297,8 @@ func settingsWndProc(hwnd, uMsg, wParam, lParam uintptr) uintptr {
 				// 结束（含失败）以实际探测为准
 				settingsSetServiceStatus(serverResponding(webURL))
 			}()
-		case id == stIdLogCombo && notif == cbnSelChange:
-			settingsLogReload(true) // 切换日志文件：滚动到底部一次
+		case id == stIdLogCombo:
+			settingsToggleDrop() // 展开/收起日志文件下拉列表
 		case id == stIdLogRefresh:
 			settingsLogClear()
 		}
@@ -299,6 +333,10 @@ func settingsWndProc(hwnd, uMsg, wParam, lParam uintptr) uintptr {
 		if settingsSideBrush != 0 {
 			pDeleteObject.Call(settingsSideBrush)
 		}
+		if settingsLogBrush != 0 {
+			pDeleteObject.Call(settingsLogBrush)
+		}
+		settingsCloseDrop(false)
 		pKillTimer.Call(hwnd, settingsLogTimer)
 		pPostQuitMessage.Call(0)
 		return 0
@@ -328,6 +366,13 @@ func settingsWndProc(hwnd, uMsg, wParam, lParam uintptr) uintptr {
 		white, _, _ := pGetStockObject.Call(whiteBrush)
 		return white
 	case wmCtlColorEdit:
+		if settingsWidgets[lParam] == stIdLogEdit {
+			pSetTextColor.Call(wParam, stColorText)
+			pSetBkColor.Call(wParam, stColorSidebarBg)
+			if settingsLogBrush != 0 {
+				return settingsLogBrush
+			}
+		}
 		pSetTextColor.Call(wParam, stColorText)
 		pSetBkColor.Call(wParam, colorWhite)
 		white, _, _ := pGetStockObject.Call(whiteBrush)
@@ -345,6 +390,10 @@ func settingsWndProc(hwnd, uMsg, wParam, lParam uintptr) uintptr {
 		switch settingsWidgets[dis.hwndItem] {
 		case stIdCatGeneral, stIdCatAbout, stIdCatLog, stIdCatExport, stIdCatImport:
 			settingsDrawCat(dis)
+		case stIdCardGeneral1, stIdCardGeneral2, stIdLogCard:
+			settingsDrawCard(dis)
+		case stIdLogCombo:
+			settingsDrawCombo(dis)
 		case stIdAutoToggle:
 			settingsDrawToggle(dis)
 		case stIdCheckBtn:
@@ -378,6 +427,7 @@ func settingsWndProc(hwnd, uMsg, wParam, lParam uintptr) uintptr {
 
 // settingsShowPane 切换右侧内容面板（按当前分类显示/隐藏控件）。
 func settingsShowPane(hwnd uintptr) {
+	settingsCloseDrop(false) // 切换面板时收起日志下拉列表
 	for _, id := range settingsPaneGen {
 		if w := settingsWidgetKey(id); w != 0 {
 			pShowWindow.Call(w, swHide)
@@ -474,14 +524,10 @@ func makeMonoFont(height int32) uintptr {
 
 // settingsCurrentLogName 返回当前下拉选中的日志文件名。
 func settingsCurrentLogName() string {
-	name := "app.log"
-	if combo := settingsWidgetKey(stIdLogCombo); combo != 0 {
-		sel, _, _ := pSendMessageW.Call(combo, cbGetCurSel, 0, 0)
-		if sel == 1 {
-			name = "server.log"
-		}
+	if settingsLogComboSel == 1 {
+		return "server.log"
 	}
-	return name
+	return "app.log"
 }
 
 // settingsLogClear 清空所选日志文件（截断为 0 字节），并刷新显示。
@@ -801,6 +847,266 @@ func settingsDrawCheck(dis drawItemStruct, checked bool) {
 	}
 }
 
+// settingsDrawCard 绘制浅灰圆角卡片（1px 边框 + 浅灰底），用于常规页分组与日志页容器。
+func settingsDrawCard(dis drawItemStruct) {
+	hdc := dis.hDC
+	fillRoundedRectAA(hdc, dis.rcItem, 10, colorRefToARGB(stColorGray))
+	inner := rect{dis.rcItem.left + 1, dis.rcItem.top + 1, dis.rcItem.right - 1, dis.rcItem.bottom - 1}
+	fillRoundedRectAA(hdc, inner, 9, colorRefToARGB(stColorSidebarBg))
+}
+
+// settingsDrawCombo 绘制现代下拉选择器（圆角白底 + 边框 + 当前项文案 + 箭头）。
+func settingsDrawCombo(dis drawItemStruct) {
+	hdc := dis.hDC
+	if wb, _, _ := pGetStockObject.Call(whiteBrush); wb != 0 {
+		pFillRect.Call(hdc, uintptr(unsafe.Pointer(&dis.rcItem)), wb)
+	}
+	border := uintptr(stColorGray)
+	if settingsComboOpen {
+		border = stColorBlue
+	}
+	fillRoundedRectAA(hdc, dis.rcItem, 8, colorRefToARGB(border))
+	inner := rect{dis.rcItem.left + 1, dis.rcItem.top + 1, dis.rcItem.right - 1, dis.rcItem.bottom - 1}
+	innerFill := uint32(0xFFFFFFFF)
+	if dis.itemState&odsSelected != 0 {
+		innerFill = colorRefToARGB(stColorSidebarBg)
+	}
+	fillRoundedRectAA(hdc, inner, 7, innerFill)
+	name := settingsCurrentLogName()
+	pSetTextColor.Call(hdc, stColorText)
+	pSetBkMode.Call(hdc, bkTransparent)
+	if settingsFontBody != 0 {
+		pSelectObject.Call(hdc, settingsFontBody)
+	}
+	t, _ := syscall.UTF16PtrFromString(name)
+	rc := rect{dis.rcItem.left + 12, dis.rcItem.top, dis.rcItem.right - 34, dis.rcItem.bottom}
+	pDrawTextW.Call(hdc, uintptr(unsafe.Pointer(t)), ^uintptr(0), uintptr(unsafe.Pointer(&rc)), dtLeft|dtVCenter|dtSingle)
+	pSetTextColor.Call(hdc, stColorSub)
+	ch, _ := syscall.UTF16PtrFromString("▾")
+	rc2 := rect{dis.rcItem.right - 26, dis.rcItem.top, dis.rcItem.right - 8, dis.rcItem.bottom}
+	pDrawTextW.Call(hdc, uintptr(unsafe.Pointer(ch)), ^uintptr(0), uintptr(unsafe.Pointer(&rc2)), dtCenter|dtVCenter|dtSingle)
+}
+
+// ==================== 日志下拉列表（现代选择器弹层） ====================
+
+type trackMouseEvent struct {
+	cbSize      uint32
+	dwFlags     uint32
+	hwndTrack   uintptr
+	dwHoverTime uint32
+}
+
+// settingsDropWndProc 下拉列表窗口：悬停高亮、点击/回车选择、Esc 关闭、失活收起。
+func settingsDropWndProc(hwnd, uMsg, wParam, lParam uintptr) uintptr {
+	switch uMsg {
+	case wmMouseMove:
+		if idx := settingsDropItemAt(lParam); idx != settingsDropHover {
+			settingsDropHover = idx
+			pInvalidateRect.Call(hwnd, 0, 0)
+		}
+		var tme trackMouseEvent
+		tme.cbSize = uint32(unsafe.Sizeof(tme))
+		tme.dwFlags = tmeLeave
+		tme.hwndTrack = hwnd
+		pTrackMouseEvent.Call(uintptr(unsafe.Pointer(&tme)))
+		return 0
+	case wmMouseLeave:
+		settingsDropHover = -1
+		pInvalidateRect.Call(hwnd, 0, 0)
+		return 0
+	case wmLButtonUp:
+		if idx := settingsDropItemAt(lParam); idx >= 0 {
+			settingsDropPick(idx)
+		}
+		return 0
+	case wmKeyDown:
+		switch wParam {
+		case vkEscape:
+			settingsCloseDrop(false)
+		case vkUp, vkDown:
+			next := settingsDropHover
+			if next < 0 {
+				next = settingsLogComboSel
+			}
+			if wParam == vkUp {
+				next--
+			} else {
+				next++
+			}
+			if next < 0 {
+				next = 0
+			}
+			if next > 1 {
+				next = 1
+			}
+			settingsDropHover = next
+			pInvalidateRect.Call(hwnd, 0, 0)
+		case vkReturn:
+			if settingsDropHover >= 0 {
+				settingsDropPick(settingsDropHover)
+			}
+		}
+		return 0
+	case wmKillFocus:
+		settingsCloseDrop(true)
+		return 0
+	case wmActivate:
+		if int(wParam) == waInactive {
+			settingsCloseDrop(true)
+		}
+		return 0
+	case wmPaint:
+		settingsDropPaint(hwnd)
+		return 0
+	}
+	ret, _, _ := pDefWindowProcW.Call(hwnd, uMsg, wParam, lParam)
+	return ret
+}
+
+// settingsDropItemAt 把鼠标客户区坐标换算为下拉项索引（无效返回 -1）。
+func settingsDropItemAt(lParam uintptr) int {
+	y := int32((lParam >> 16) & 0xFFFF)
+	if y < dropPadY {
+		return -1
+	}
+	i := int((y - dropPadY) / dropItemH)
+	if i > 1 {
+		i = 1
+	}
+	return i
+}
+
+// settingsDropPaint 绘制下拉列表：圆角白底 + 边框 + 悬停高亮 + 当前项蓝字带对勾。
+func settingsDropPaint(hwnd uintptr) {
+	var ps paintStruct
+	hdc, _, _ := pBeginPaint.Call(hwnd, uintptr(unsafe.Pointer(&ps)))
+	if hdc == 0 {
+		return
+	}
+	defer pEndPaint.Call(hwnd, uintptr(unsafe.Pointer(&ps)))
+	var cr rect
+	pGetClientRect.Call(hwnd, uintptr(unsafe.Pointer(&cr)))
+	fillRoundedRectAA(hdc, cr, 10, colorRefToARGB(stColorGray))
+	inner := rect{cr.left + 1, cr.top + 1, cr.right - 1, cr.bottom - 1}
+	fillRoundedRectAA(hdc, inner, 9, 0xFFFFFFFF)
+	names := []string{"app.log", "server.log"}
+	for i, name := range names {
+		rc := rect{int32(dropPadX), int32(dropPadY + i*dropItemH), cr.right - int32(dropPadX), int32(dropPadY + (i+1)*dropItemH)}
+		if i == settingsDropHover {
+			hover := rect{rc.left + 4, rc.top + 2, rc.right - 4, rc.bottom - 2}
+			fillRoundedRectAA(hdc, hover, 6, colorRefToARGB(stColorSidebarBg))
+		}
+		if i == settingsLogComboSel {
+			pSetTextColor.Call(hdc, stColorBlue)
+		} else {
+			pSetTextColor.Call(hdc, stColorText)
+		}
+		pSetBkMode.Call(hdc, bkTransparent)
+		if settingsFontBody != 0 {
+			pSelectObject.Call(hdc, settingsFontBody)
+		}
+		t, _ := syscall.UTF16PtrFromString(name)
+		tr := rect{rc.left + 12, rc.top, rc.right - 40, rc.bottom}
+		pDrawTextW.Call(hdc, uintptr(unsafe.Pointer(t)), ^uintptr(0), uintptr(unsafe.Pointer(&tr)), dtLeft|dtVCenter|dtSingle)
+		if i == settingsLogComboSel {
+			pSetTextColor.Call(hdc, stColorBlue)
+			ck, _ := syscall.UTF16PtrFromString("✓")
+			cr2 := rect{rc.right - 34, rc.top, rc.right - 8, rc.bottom}
+			pDrawTextW.Call(hdc, uintptr(unsafe.Pointer(ck)), ^uintptr(0), uintptr(unsafe.Pointer(&cr2)), dtCenter|dtVCenter|dtSingle)
+		}
+	}
+}
+
+// settingsToggleDrop 展开/收起日志文件下拉列表。
+// 刚因点击别处自动收起时，同一击的 BN_CLICKED 不再立即重开（防抖）。
+func settingsToggleDrop() {
+	if settingsDropHwnd != 0 {
+		settingsCloseDrop(false)
+		return
+	}
+	if time.Since(settingsDropClosedAt) < 250*time.Millisecond {
+		return
+	}
+	settingsOpenDrop()
+}
+
+// settingsOpenDrop 在选择器按钮下方弹出圆角下拉列表。
+func settingsOpenDrop() {
+	if settingsDropHwnd != 0 {
+		return
+	}
+	btn := settingsWidgetKey(stIdLogCombo)
+	if btn == 0 {
+		return
+	}
+	if !settingsDropClsReg {
+		cls, _ := syscall.UTF16PtrFromString(dropCls)
+		cb := syscall.NewCallback(settingsDropWndProc)
+		cur, _, _ := pLoadCursorW.Call(0, idcArrow)
+		wc := wndClassExW{
+			cbSize:        uint32(unsafe.Sizeof(wndClassExW{})),
+			style:         csHRedraw | csVRedraw,
+			lpfnWndProc:   cb,
+			hInstance:     moduleHandle(),
+			hCursor:       cur,
+			hbrBackground: colorWin,
+			lpszClassName: cls,
+		}
+		pRegisterClassExW.Call(uintptr(unsafe.Pointer(&wc)))
+		settingsDropClsReg = true
+	}
+	var rc rect
+	pGetWindowRect.Call(btn, uintptr(unsafe.Pointer(&rc)))
+	w := rc.right - rc.left
+	h := int32(dropPadY*2 + dropItemH*2)
+	cls, _ := syscall.UTF16PtrFromString(dropCls)
+	owner, _, _ := pGetParent.Call(btn)
+	hwnd, _, _ := pCreateWindowExW.Call(
+		0, uintptr(unsafe.Pointer(cls)), 0,
+		wsPopup,
+		uintptr(rc.left), uintptr(rc.bottom+4), uintptr(w), uintptr(h),
+		owner, 0, moduleHandle(), 0,
+	)
+	if hwnd == 0 {
+		return
+	}
+	settingsDropHwnd = hwnd
+	settingsComboOpen = true
+	settingsDropHover = -1
+	pShowWindow.Call(hwnd, swShow)
+	pUpdateWindow.Call(hwnd)
+	pSetFocus.Call(hwnd)
+	settingsRedrawWidget(stIdLogCombo)
+}
+
+// settingsCloseDrop 收起日志下拉列表（可重复调用）。
+// reopenGuard=true 表示因失活自动收起：同一次点击产生的重新展开会被防抖吞掉。
+func settingsCloseDrop(reopenGuard bool) {
+	if settingsDropHwnd == 0 {
+		return
+	}
+	if reopenGuard {
+		settingsDropClosedAt = time.Now()
+	}
+	h := settingsDropHwnd
+	settingsDropHwnd = 0
+	settingsComboOpen = false
+	settingsDropHover = -1
+	pDestroyWindow.Call(h)
+	settingsRedrawWidget(stIdLogCombo)
+}
+
+// settingsDropPick 选中下拉项：切换日志文件并刷新。
+func settingsDropPick(idx int) {
+	if idx != settingsLogComboSel {
+		settingsLogComboSel = idx
+		settingsCloseDrop(false)
+		settingsLogReload(true)
+		return
+	}
+	settingsCloseDrop(false)
+}
+
 // settingsSetText 设置静态文本/EDIT 控件文本（多行控件自动转 CRLF，可跨线程调用）。
 func settingsSetText(id int, text string) {
 	w := settingsWidgetKey(uintptr(id))
@@ -1053,6 +1359,9 @@ func createSettingsWindow() uintptr {
 	settingsPaneImp = nil
 	settingsTitleHwnd = 0
 	settingsLogLastContent = "" // 重置上次内容，避免重开窗口后因内容未变而跳过刷新导致日志框空白
+	settingsLogComboSel = 0
+	settingsComboOpen = false
+	settingsDropHwnd = 0
 	settingsExpDirs = nil
 	settingsImpPath = ""
 	settingsImpItems = nil
@@ -1082,6 +1391,7 @@ func createSettingsWindow() uintptr {
 	settingsFontMono = makeMonoFont(14) // 日志字体 14px
 	settingsFontBtn = makeFont(16, 600)
 	settingsSideBrush, _, _ = pCreateSolidBrush.Call(stColorSidebarBg)
+	settingsLogBrush, _, _ = pCreateSolidBrush.Call(stColorSidebarBg)
 
 	titleText, _ := syscall.UTF16PtrFromString("设置")
 	r := rect{0, 0, stWinW, stWinH}
@@ -1160,6 +1470,19 @@ func createSettingsWindow() uintptr {
 	}
 
 	// ---- 常规面板 ----
+	// 区块卡片 1：开机自启动（浅灰圆角卡片，先创建以垫底）
+	card1, _, _ := pCreateWindowExW.Call(
+		0,
+		uintptr(unsafe.Pointer(staticCls)),
+		0,
+		wsChild|wsVisible|ssOwnerDraw,
+		uintptr(stContentX-12), 66, uintptr(stWinW-(stContentX-12)-16), 72,
+		hwnd, stIdCardGeneral1, moduleHandle(), 0,
+	)
+	if card1 != 0 {
+		settingsWidgets[card1] = stIdCardGeneral1
+		settingsPaneGen = append(settingsPaneGen, stIdCardGeneral1)
+	}
 	at, _ := syscall.UTF16PtrFromString("开机自启动")
 	autoTitle, _, _ := pCreateWindowExW.Call(
 		0,
@@ -1203,21 +1526,20 @@ func createSettingsWindow() uintptr {
 		settingsPaneGen = append(settingsPaneGen, stIdAutoToggle)
 	}
 
-	// 区块分割线 1：开机自启动 与 后台服务 之间
-	div1, _, _ := pCreateWindowExW.Call(
+	// ---- 常规面板：后台服务（状态 + 重启按钮） ----
+	// 区块卡片 2：后台服务（先创建以垫底）
+	card2, _, _ := pCreateWindowExW.Call(
 		0,
 		uintptr(unsafe.Pointer(staticCls)),
 		0,
-		wsChild|wsVisible|ssEtchedHorz,
-		uintptr(stContentX), 132, uintptr(stWinW-stContentX-16), 2,
-		hwnd, stIdDivGeneral1, moduleHandle(), 0,
+		wsChild|wsVisible|ssOwnerDraw,
+		uintptr(stContentX-12), 150, uintptr(stWinW-(stContentX-12)-16), 88,
+		hwnd, stIdCardGeneral2, moduleHandle(), 0,
 	)
-	if div1 != 0 {
-		settingsWidgets[div1] = stIdDivGeneral1
-		settingsPaneGen = append(settingsPaneGen, stIdDivGeneral1)
+	if card2 != 0 {
+		settingsWidgets[card2] = stIdCardGeneral2
+		settingsPaneGen = append(settingsPaneGen, stIdCardGeneral2)
 	}
-
-	// ---- 常规面板：后台服务（状态 + 重启按钮） ----
 	// 状态用自绘 BUTTON（无 wsTabStop，纯展示）：绿/红圆点 + “后台服务：运行中/已停止”
 	rst, _ := syscall.UTF16PtrFromString("")
 	restInfo, _, _ := pCreateWindowExW.Call(
@@ -1225,7 +1547,7 @@ func createSettingsWindow() uintptr {
 		uintptr(unsafe.Pointer(btnCls)),
 		uintptr(unsafe.Pointer(rst)),
 		wsChild|wsVisible|bsOwnDraw,
-		uintptr(stContentX), 150, 240, 26,
+		uintptr(stContentX), 158, 240, 26,
 		hwnd, stIdRestartInfo, moduleHandle(), 0,
 	)
 	if restInfo != 0 {
@@ -1240,26 +1562,12 @@ func createSettingsWindow() uintptr {
 		uintptr(unsafe.Pointer(btnCls)),
 		uintptr(unsafe.Pointer(rb)),
 		wsChild|wsVisible|wsTabStop|bsOwnDraw,
-		uintptr(stContentX), 184, 124, 30,
+		uintptr(stContentX), 190, 124, 30,
 		hwnd, stIdRestartBtn, moduleHandle(), 0,
 	)
 	if restBtn != 0 {
 		settingsWidgets[restBtn] = stIdRestartBtn
 		settingsPaneGen = append(settingsPaneGen, stIdRestartBtn)
-	}
-
-	// 区块分割线 2：后台服务区块下方
-	div2, _, _ := pCreateWindowExW.Call(
-		0,
-		uintptr(unsafe.Pointer(staticCls)),
-		0,
-		wsChild|wsVisible|ssEtchedHorz,
-		uintptr(stContentX), 226, uintptr(stWinW-stContentX-16), 2,
-		hwnd, stIdDivGeneral2, moduleHandle(), 0,
-	)
-	if div2 != 0 {
-		settingsWidgets[div2] = stIdDivGeneral2
-		settingsPaneGen = append(settingsPaneGen, stIdDivGeneral2)
 	}
 
 	// ---- 关于面板 ----
@@ -1341,8 +1649,6 @@ func createSettingsWindow() uintptr {
 	}
 
 	// ---- 日志面板（只读、可复制、可刷新） ----
-	comboCls, _ := syscall.UTF16PtrFromString("COMBOBOX")
-
 	li, _ := syscall.UTF16PtrFromString(filepath.Join(logDir, "app.log"))
 	logInfo, _, _ := pCreateWindowExW.Call(
 		0, uintptr(unsafe.Pointer(staticCls)), uintptr(unsafe.Pointer(li)),
@@ -1355,19 +1661,16 @@ func createSettingsWindow() uintptr {
 		settingsPaneLog = append(settingsPaneLog, stIdLogInfo)
 	}
 
+	// 现代下拉选择器：自绘按钮 + 弹出圆角列表（替代原生 COMBOBOX）
+	lc, _ := syscall.UTF16PtrFromString("app.log")
 	logCombo, _, _ := pCreateWindowExW.Call(
-		0, uintptr(unsafe.Pointer(comboCls)), 0,
-		wsChild|wsVisible|wsTabStop|cbsDropList|cbsHasStrings|wsVScroll,
-		uintptr(stContentX), 100, 160, 200, hwnd, stIdLogCombo, moduleHandle(), 0,
+		0, uintptr(unsafe.Pointer(btnCls)), uintptr(unsafe.Pointer(lc)),
+		wsChild|wsVisible|wsTabStop|bsOwnDraw,
+		uintptr(stContentX), 98, 160, 34, hwnd, stIdLogCombo, moduleHandle(), 0,
 	)
 	if logCombo != 0 {
 		settingsWidgets[logCombo] = stIdLogCombo
 		pSendMessageW.Call(logCombo, wmSetFont, settingsFontBody, 1)
-		a, _ := syscall.UTF16PtrFromString("app.log")
-		b, _ := syscall.UTF16PtrFromString("server.log")
-		pSendMessageW.Call(logCombo, cbAddString, 0, uintptr(unsafe.Pointer(a)))
-		pSendMessageW.Call(logCombo, cbAddString, 0, uintptr(unsafe.Pointer(b)))
-		pSendMessageW.Call(logCombo, cbSetCurSel, 0, 0)
 		settingsPaneLog = append(settingsPaneLog, stIdLogCombo)
 	}
 
@@ -1375,25 +1678,38 @@ func createSettingsWindow() uintptr {
 	logRefresh, _, _ := pCreateWindowExW.Call(
 		0, uintptr(unsafe.Pointer(btnCls)), uintptr(unsafe.Pointer(lr)),
 		wsChild|wsVisible|wsTabStop|bsOwnDraw,
-		uintptr(stContentX+175), 96, 92, 32, hwnd, stIdLogRefresh, moduleHandle(), 0,
+		uintptr(stContentX+175), 99, 92, 32, hwnd, stIdLogRefresh, moduleHandle(), 0,
 	)
 	if logRefresh != 0 {
 		settingsWidgets[logRefresh] = stIdLogRefresh
 		settingsPaneLog = append(settingsPaneLog, stIdLogRefresh)
 	}
 
-	// 用 RICHEDIT50W（可靠的多行富文本：正确处理换行/大文本/滚动/复制）
+	// 日志内容卡片（浅灰圆角，先创建以垫底）
+	logCard, _, _ := pCreateWindowExW.Call(
+		0, uintptr(unsafe.Pointer(staticCls)), 0,
+		wsChild|wsVisible|ssOwnerDraw,
+		uintptr(stContentX-12), 140, uintptr(stWinW-(stContentX-12)-16), 300,
+		hwnd, stIdLogCard, moduleHandle(), 0,
+	)
+	if logCard != 0 {
+		settingsWidgets[logCard] = stIdLogCard
+		settingsPaneLog = append(settingsPaneLog, stIdLogCard)
+	}
+
+	// 用 RICHEDIT50W（可靠的多行富文本：正确处理换行/大文本/滚动/复制）；无边框、浅灰底、内边距
 	mdll, _ := syscall.UTF16PtrFromString("Msftedit.dll")
 	pLoadLibraryW.Call(uintptr(unsafe.Pointer(mdll)))
 	editCls, _ := syscall.UTF16PtrFromString("RICHEDIT50W")
 	logEdit, _, _ := pCreateWindowExW.Call(
 		0, uintptr(unsafe.Pointer(editCls)), 0,
-		wsChild|wsVisible|wsTabStop|esMultiline|esAutoVScroll|esReadOnly|wsVScroll|wsBorder,
-		uintptr(stContentX), 140, 424, 300, hwnd, stIdLogEdit, moduleHandle(), 0,
+		wsChild|wsVisible|wsTabStop|esMultiline|esAutoVScroll|esReadOnly|wsVScroll,
+		uintptr(stContentX-8), 144, uintptr(stWinW-stContentX-12), 292, hwnd, stIdLogEdit, moduleHandle(), 0,
 	)
 	if logEdit != 0 {
 		settingsWidgets[logEdit] = stIdLogEdit
 		pSendMessageW.Call(logEdit, emExLimitText, 1, 0x7FFFFFF) // 放开文本上限
+		pSendMessageW.Call(logEdit, emSetMargins, ecLeftMargin|ecRightMargin, 180|(180<<16)) // 左右内边距 12px（twips）
 		pSendMessageW.Call(logEdit, wmSetFont, settingsFontMono, 1)
 		settingsPaneLog = append(settingsPaneLog, stIdLogEdit)
 	}

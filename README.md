@@ -22,9 +22,16 @@
   <a href="https://github.com/refyon/dsh-systray/actions/workflows/release.yml"><img alt="Release build" src="https://github.com/refyon/dsh-systray/actions/workflows/release.yml/badge.svg" /></a>
 </p>
 
-<img src="docs/screenshot.png" alt="dsh-systray 设置窗口（常规 / 关于）" />
+dsh-systray 是一个 Windows / macOS 系统托盘应用：双击即可后台拉起 DeepSeek Harness Web 本地服务，托盘一望即知，无需记忆端口。设置窗口五页分类管理开机自启与后台服务、版本与更新、实时日志，支持会话/插件/目录的一键导出与恢复；托盘图标随系统深浅色自适应，内置自动更新。
 
-dsh-systray 是一个 Windows / macOS 系统托盘应用：双击即可后台拉起 DeepSeek Harness Web 本地服务，托盘一望即知，无需记忆端口。设置窗口统一管理开机自启、dsh-systray 与 DeepSeek Harness 版本号、检查更新，托盘图标随系统深浅色自适应，内置自动更新。
+| 截图 | 一句话简介 |
+| --- | --- |
+| <img src="docs/features/tray.png" width="420" alt="托盘常驻"> | **双击启动** — 双击托盘图标，无窗口、后台拉起 harness 服务 |
+| <img src="docs/features/splash.png" width="420" alt="启动进度"> | **启动 loading** — 进度窗口可视化，就绪后弹窗提示 |
+| <img src="docs/features/menu.png" width="420" alt="托盘右键菜单"> | **托盘右键菜单** — 打开 Web UI / 设置 / 退出，一步直达 |
+| <img src="docs/features/settings.png" width="420" alt="设置窗口"> | **设置窗口** — 五页分类：开机自启、版本、实时日志与导入导出 |
+| <img src="docs/features/single.png" width="420" alt="单实例提示"> | **单实例** — 已在运行时再次双击会弹窗提示，不重复启动 |
+| <img src="docs/features/update.png" width="420" alt="自动更新"> | **自动更新** — 后台检查新版本，进度窗口下载，安装后自动重启 |
 
 > [!IMPORTANT]
 > 这是一个社区维护的非官方工具，依赖快速演进的 `@deepseek-ai/dsh`。macOS 构建未经 Apple 公证，Windows 构建未做商业代码签名，首次运行可能需手动放行（Windows SmartScreen「仍要运行」/ macOS「右键 → 打开」）。首次启动约需 2–5 分钟自动部署环境。
@@ -42,8 +49,10 @@ dsh-systray 是一个 Windows / macOS 系统托盘应用：双击即可后台拉
 - **启动 loading**：服务启动期间显示加载窗口，就绪后弹窗提示（可一键打开 Web UI）
 - **托盘右键菜单**：
   - **打开 Web UI**：用默认浏览器打开 `http://127.0.0.1:<port>/`
-  - **设置**：打开设置窗口（左侧分类栏：常规-开机自启动 / 关于-版本号（dsh-systray 与 DeepSeek Harness）与检查更新 / 日志-只读可复制、可清空）
+  - **设置**：打开设置窗口（五页分类：常规-开机自启与后台服务重启 / 关于-版本与检查更新 / 日志-实时查看、复制与清空 / 导出、导入-数据打包与恢复）
   - **退出**：关闭后台服务器进程树（含外部启动的 dsh web 服务）并退出托盘
+- **日志**：「日志」页实时跟踪 app.log / server.log，显示完整路径，自动跟随最新写入，支持复制与一键清空
+- **导出 / 导入**：会话、插件、文件目录打包为 zip 备份；导入时解析压缩包罗列可恢复项，冲突询问并自动备份回滚，恢复期间自动暂停/重启后台服务
 - **单实例**：已在运行时再次双击会弹窗提示「已在运行中」，不产生第二个托盘图标
 - **依赖自检**：启动时检查 node / pnpm / harness 源码，缺失时运行内置安装脚本（含 `git clone` 拉取 harness 源码）
 - **自动更新**：后台自动检查 GitHub Releases 新版本，发现新版本时进度窗口下载并提示「立即更新 / 稍后」，安装完成自动重启（Windows / macOS 一致）

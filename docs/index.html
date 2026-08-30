@@ -45,6 +45,20 @@ a{color:inherit;text-decoration:none}
 .hub-copy h2{font-size:27px;margin:0 0 12px;letter-spacing:-.02em}
 .hub-copy p{color:var(--muted);line-height:1.65;max-width:44ch}
 
+/* carousel */
+.car{position:relative}
+.car-stage .shot{transition:opacity .45s ease,transform .45s ease}
+.car-stage .shot.fading{opacity:0;transform:scale(.982)}
+.car-arrow{position:absolute;top:42%;transform:translateY(-50%);width:42px;height:42px;border-radius:999px;border:1px solid var(--border);background:var(--surface);color:var(--text);font-size:22px;line-height:0;cursor:pointer;display:grid;place-items:center;box-shadow:0 8px 20px rgba(16,24,40,.12);z-index:3;transition:border-color .15s,color .15s}
+.car-arrow:hover{border-color:var(--primary);color:var(--primary)}
+.car-arrow.prev{left:-16px}
+.car-arrow.next{right:-16px}
+.car-caption{text-align:center;color:var(--muted);font-size:14px;margin-top:14px;min-height:20px}
+.car-dots{display:flex;gap:8px;justify-content:center;margin-top:10px}
+.car-dot{width:8px;height:8px;border-radius:999px;background:#c9d0da;border:0;padding:0;cursor:pointer;transition:width .25s,background .25s}
+.car-dot:hover{background:#9aa4b2}
+.car-dot.active{width:22px;background:var(--primary)}
+
 /* features */
 .features{padding:74px 0 8px}
 .features .head{text-align:center;margin-bottom:36px}
@@ -91,13 +105,19 @@ footer .sep{margin:0 8px;color:var(--border)}
     <div class="ver-chip">当前版本 <b id="version">v0.3.12</b> · 由 CI 自动构建发布</div>
   </section>
 
-  <section class="hub">
-    <div class="shot-stack" data-reveal>
-      <img class="shot" src="screenshot.png" alt="dsh-systray 设置窗口（常规 / 关于）" />
+  <section class="hub" id="screenshots">
+    <div class="car" data-reveal>
+      <div class="shot-stack car-stage">
+        <img class="shot" id="car-img" src="shots/splash.png" alt="dsh-systray 界面轮播" />
+      </div>
+      <button class="car-arrow prev" id="car-prev" type="button" aria-label="上一张">‹</button>
+      <button class="car-arrow next" id="car-next" type="button" aria-label="下一张">›</button>
+      <div class="car-caption" id="car-cap">启动进度 — 无窗口拉起服务，进度可视化</div>
+      <div class="car-dots" id="car-dots"></div>
     </div>
     <div class="hub-copy" data-reveal>
       <h2>安静，但全能</h2>
-      <p>系统托盘里的 DeepSeek Harness —— 无窗口拉起本地服务、进度可视化。设置窗口在「常规」页管理开机自启与后台服务重启，在「关于」页查看 dsh-systray 与 DeepSeek Harness 版本号、检查更新；托盘图标随系统深浅色自动适配。</p>
+      <p>系统托盘里的 DeepSeek Harness —— 无窗口拉起本地服务、进度可视化。五页设置窗口覆盖开机自启、版本更新、日志跟踪与数据导入导出；托盘图标随系统深浅色自动适配。左右滑动下方轮播，快速浏览每个页面。</p>
     </div>
   </section>
 
@@ -114,7 +134,15 @@ footer .sep{margin:0 8px;color:var(--border)}
       </div>
       <div class="feature" data-reveal>
         <div class="dot"><svg viewBox="0 0 24 24"><path d="M4 3h16a1 1 0 0 1 1 1v12a1 1 0 0 1-1 1H9l-4 4V4a1 1 0 0 1 1-1z"/></svg></div>
-        <h4>设置窗口</h4><p>左侧分类栏：开关开机自启、查看版本号、一键检查更新。</p>
+        <h4>设置窗口</h4><p>五页分类：开机自启、版本更新、实时日志、导入导出。</p>
+      </div>
+      <div class="feature" data-reveal>
+        <div class="dot"><svg viewBox="0 0 24 24"><path d="M4 4h16a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2zm4 6l3 3-3 3m5 0h4"/></svg></div>
+        <h4>实时日志</h4><p>app.log / server.log 自动跟随最新写入，支持复制与一键清空。</p>
+      </div>
+      <div class="feature" data-reveal>
+        <div class="dot"><svg viewBox="0 0 24 24"><path d="M7 7h10M13 3l4 4-4 4M17 17H7m-4 4l4-4-4-4"/></svg></div>
+        <h4>数据导入导出</h4><p>会话、插件、目录打包 zip 备份，导入冲突询问、自动恢复。</p>
       </div>
       <div class="feature" data-reveal>
         <div class="dot"><svg viewBox="0 0 24 24"><path d="M12 20a8 8 0 1 1 8-8 6 6 0 0 1-8 8zm-2-3h4v2h-4z"/></svg></div>
@@ -165,6 +193,72 @@ footer .sep{margin:0 8px;color:var(--border)}
   } else {
     els.forEach(function(el){ el.classList.add('in'); });
   }
+
+  // ---- 界面截图轮播：自动播放 + 箭头 + 圆点 + 悬停暂停 + 触摸滑动 ----
+  var shots = [
+    { src: 'shots/splash.png',  cap: '启动进度 — 无窗口拉起服务，进度可视化' },
+    { src: 'shots/general.png', cap: '常规 — 开机自启、后台服务状态与重启' },
+    { src: 'shots/about.png',   cap: '关于 — dsh-systray 与 Harness 版本、检查更新' },
+    { src: 'shots/logs.png',    cap: '日志 — 应用/服务日志实时跟踪、一键清空' },
+    { src: 'shots/export.png',  cap: '导出 — 会话、插件、目录一键打包' },
+    { src: 'shots/import.png',  cap: '导入 — 压缩包解析、冲突询问、逐项恢复' }
+  ];
+  var carImg = document.getElementById('car-img');
+  var carCap = document.getElementById('car-cap');
+  var carDots = document.getElementById('car-dots');
+  var carBox = document.querySelector('.car');
+  var cur = 0, seq = 0, playTimer = null;
+
+  // 预加载全部图片，切换时即时显示
+  shots.forEach(function(s){ var im = new Image(); im.src = s.src; });
+
+  var dotEls = shots.map(function(_, i){
+    var b = document.createElement('button');
+    b.type = 'button';
+    b.className = 'car-dot' + (i === 0 ? ' active' : '');
+    b.setAttribute('aria-label', '第 ' + (i + 1) + ' 张');
+    b.addEventListener('click', function(){ show(i); play(); });
+    carDots.appendChild(b);
+    return b;
+  });
+
+  function show(i){
+    cur = (i + shots.length) % shots.length;
+    var s = shots[cur];
+    var my = ++seq;
+    carImg.classList.add('fading');
+    setTimeout(function(){
+      if (my !== seq) return; // 快速连点时仅最后一次生效
+      carImg.src = s.src;
+      carImg.alt = s.cap;
+      carImg.classList.remove('fading');
+    }, 240);
+    carCap.textContent = s.cap;
+    dotEls.forEach(function(d, j){ d.classList.toggle('active', j === cur); });
+  }
+  function next(){ show(cur + 1); }
+  function prev(){ show(cur - 1); }
+  function play(){
+    stop();
+    playTimer = setInterval(next, 4500);
+  }
+  function stop(){
+    if (playTimer){ clearInterval(playTimer); playTimer = null; }
+  }
+
+  document.getElementById('car-prev').addEventListener('click', function(){ prev(); play(); });
+  document.getElementById('car-next').addEventListener('click', function(){ next(); play(); });
+  carBox.addEventListener('mouseenter', stop);
+  carBox.addEventListener('mouseleave', play);
+  var touchX = 0;
+  carBox.addEventListener('touchstart', function(e){ touchX = e.touches[0].clientX; stop(); }, { passive: true });
+  carBox.addEventListener('touchend', function(e){
+    var dx = e.changedTouches[0].clientX - touchX;
+    if (dx > 42){ prev(); play(); }
+    else if (dx < -42){ next(); play(); }
+    else { play(); }
+  }, { passive: true });
+  play();
 })();
 </script>
 </body>

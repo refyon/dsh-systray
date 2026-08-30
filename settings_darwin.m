@@ -85,6 +85,21 @@ static DSHSetController *g_ctrl = nil;
     [parent addSubview:sep];
 }
 
+// makeCard 浅灰圆角卡片（1px 边框 + 浅灰底），用于区块分组与日志内容容器。
+- (NSBox *)makeCard:(NSRect)frame {
+    NSBox *box = [[NSBox alloc] initWithFrame:frame];
+    box.boxType = NSBoxCustom;
+    box.cornerRadius = 10;
+    box.borderWidth = 1;
+    box.borderColor = [NSColor colorWithCalibratedRed:0.894 green:0.906 blue:0.925 alpha:1.0]; // #E4E7EC
+    box.fillColor = [NSColor colorWithCalibratedRed:0.961 green:0.969 blue:0.980 alpha:1.0];   // #F5F7FA
+    box.titlePosition = NSNoTitle;
+    if (@available(macOS 10.13, *)) {
+        box.contentViewMargins = NSZeroSize;
+    }
+    return box;
+}
+
 - (void)selectPane:(NSInteger)idx {
     [self.generalPane removeFromSuperview];
     [self.aboutPane removeFromSuperview];
@@ -471,12 +486,15 @@ static DSHSetController *g_ctrl = nil;
     sv.autohidesScrollers = YES;
     [root addSubview:sv];
 
-    // 常规面板：开机自启动开关 + 后台服务（区块分割线隔开）
+    // 常规面板：开机自启动开关 + 后台服务（浅灰圆角卡片分组，替代分割线）
     self.generalPane = [[NSView alloc] initWithFrame:NSMakeRect(160, 0, 440, 420)];
     [self addLabel:@"常规" font:[self uiFontOfSize:19 weight:NSFontWeightSemibold] color:nil frame:NSMakeRect(0, 372, 300, 24) to:self.generalPane];
-    [self addLabel:@"开机自启动" font:[self uiFontOfSize:17 weight:NSFontWeightRegular] color:nil frame:NSMakeRect(0, 326, 220, 24) to:self.generalPane];
 
-    self.autoSwitch = [[NSButton alloc] initWithFrame:NSMakeRect(310, 324, 60, 24)];
+    // 区块卡片 1：开机自启动（先添加以垫底）
+    [self.generalPane addSubview:[self makeCard:NSMakeRect(0, 296, 430, 74)]];
+    [self addLabel:@"开机自启动" font:[self uiFontOfSize:17 weight:NSFontWeightRegular] color:nil frame:NSMakeRect(14, 320, 220, 24) to:self.generalPane];
+
+    self.autoSwitch = [[NSButton alloc] initWithFrame:NSMakeRect(310, 318, 60, 24)];
     [self.autoSwitch setButtonType:NSButtonTypeSwitch];
     self.autoSwitch.title = @"";
     self.autoSwitch.state = (autoOn ? NSControlStateValueOn : NSControlStateValueOff);
@@ -484,8 +502,8 @@ static DSHSetController *g_ctrl = nil;
     self.autoSwitch.action = @selector(autostartChanged:);
     [self.generalPane addSubview:self.autoSwitch];
 
-    // 区块分割线 1：开机自启动 与 后台服务 之间
-    [self addSeparator:NSMakeRect(0, 296, 430, 1) to:self.generalPane];
+    // 区块卡片 2：后台服务（先添加以垫底）
+    [self.generalPane addSubview:[self makeCard:NSMakeRect(0, 194, 430, 86)]];
 
     // 常规面板：后台服务状态（绿/红圆点）+ 重启按钮
     char *svcState = dshSettingsGoServiceState();
@@ -498,19 +516,16 @@ static DSHSetController *g_ctrl = nil;
     [svcAttr addAttribute:NSForegroundColorAttributeName value:[NSColor secondaryLabelColor] range:NSMakeRange(2, svcAttr.length - 2)];
     NSTextField *svcLabel = [NSTextField labelWithAttributedString:svcAttr];
     svcLabel.font = [self uiFontOfSize:16 weight:NSFontWeightRegular];
-    svcLabel.frame = NSMakeRect(0, 258, 320, 18);
+    svcLabel.frame = NSMakeRect(14, 240, 320, 18);
     [self.generalPane addSubview:svcLabel];
 
-    NSButton *restartBtn = [[NSButton alloc] initWithFrame:NSMakeRect(0, 220, 108, 30)];
+    NSButton *restartBtn = [[NSButton alloc] initWithFrame:NSMakeRect(14, 206, 108, 30)];
     restartBtn.title = @"重启后台服务";
     restartBtn.bezelStyle = NSBezelStyleRounded;
     restartBtn.font = [self uiFontOfSize:13 weight:NSFontWeightSemibold];
     restartBtn.target = self;
     restartBtn.action = @selector(restartServiceClicked:);
     [self.generalPane addSubview:restartBtn];
-
-    // 区块分割线 2：后台服务区块下方
-    [self addSeparator:NSMakeRect(0, 196, 430, 1) to:self.generalPane];
 
     // 关于面板：dsh-systray 版本号 + DeepSeek Harness 版本号 + 检查更新
     self.aboutPane = [[NSView alloc] initWithFrame:NSMakeRect(160, 0, 440, 420)];
@@ -536,38 +551,51 @@ static DSHSetController *g_ctrl = nil;
     checkBtn.action = @selector(checkUpdateClicked:);
     [self.aboutPane addSubview:checkBtn];
 
-    // 日志面板：完整路径说明 + 下拉选择 + 只读日志（14px 等宽）
+    // 日志面板：完整路径说明 + 圆角下拉选择 + 只读日志（浅灰圆角卡片，14px 等宽）
     self.logPane = [[NSView alloc] initWithFrame:NSMakeRect(160, 0, 440, 420)];
     self.logPathLabel = [NSTextField labelWithString:@""];
     self.logPathLabel.font = [self uiFontOfSize:12 weight:NSFontWeightRegular];
     self.logPathLabel.textColor = [NSColor secondaryLabelColor];
-    self.logPathLabel.frame = NSMakeRect(0, 376, 430, 18);
+    self.logPathLabel.frame = NSMakeRect(0, 378, 430, 18);
     self.logPathLabel.lineBreakMode = NSLineBreakByTruncatingMiddle;
     [self.logPane addSubview:self.logPathLabel];
 
-    self.logPopup = [[NSPopUpButton alloc] initWithFrame:NSMakeRect(0, 342, 130, 28)];
+    self.logPopup = [[NSPopUpButton alloc] initWithFrame:NSMakeRect(0, 340, 130, 30)];
+    self.logPopup.bezelStyle = NSBezelStyleRounded;
     self.logPopup.font = [self uiFontOfSize:15 weight:NSFontWeightRegular];
     [self.logPopup addItemsWithTitles:@[@"app.log", @"server.log"]];
     self.logPopup.target = self;
     self.logPopup.action = @selector(logChanged:);
     [self.logPane addSubview:self.logPopup];
 
-    NSButton *refresh = [[NSButton alloc] initWithFrame:NSMakeRect(140, 338, 90, 30)];
+    NSButton *refresh = [[NSButton alloc] initWithFrame:NSMakeRect(140, 336, 90, 30)];
     refresh.title = @"清空";
     refresh.bezelStyle = NSBezelStyleRounded;
     refresh.font = [self uiFontOfSize:13 weight:NSFontWeightSemibold];
     refresh.target = self;
     refresh.action = @selector(clearLogClicked:);
+    if (@available(macOS 10.14, *)) {
+        refresh.contentTintColor = [NSColor colorWithCalibratedRed:0.114 green:0.306 blue:0.847 alpha:1.0];
+    }
     [self.logPane addSubview:refresh];
 
-    NSScrollView *logSV = [[NSScrollView alloc] initWithFrame:NSMakeRect(0, 16, 432, 312)];
-    NSTextView *tv = [[NSTextView alloc] initWithFrame:NSMakeRect(0, 0, 432, 312)];
-    tv.editable = NO;
-    tv.selectable = YES;
-    tv.font = [NSFont monospacedSystemFontOfSize:14 weight:NSFontWeightRegular]; // 日志字体 14px
-    logSV.documentView = tv;
+    // 日志内容卡片（浅灰圆角）+ 无边框滚动区（先添加卡片以垫底）
+    [self.logPane addSubview:[self makeCard:NSMakeRect(0, 8, 432, 322)]];
+
+    NSScrollView *logSV = [[NSScrollView alloc] initWithFrame:NSMakeRect(5, 13, 422, 312)];
+    logSV.borderType = NSNoBorder;
+    logSV.drawsBackground = NO;
     logSV.hasVerticalScroller = YES;
     logSV.autohidesScrollers = YES;
+    logSV.scrollerStyle = NSScrollerStyleOverlay;
+    NSTextView *tv = [[NSTextView alloc] initWithFrame:NSMakeRect(0, 0, 422, 312)];
+    tv.editable = NO;
+    tv.selectable = YES;
+    tv.drawsBackground = YES;
+    tv.backgroundColor = [NSColor colorWithCalibratedRed:0.961 green:0.969 blue:0.980 alpha:1.0]; // #F5F7FA 与卡片同色
+    tv.font = [NSFont monospacedSystemFontOfSize:14 weight:NSFontWeightRegular]; // 日志字体 14px
+    tv.textContainerInset = NSMakeSize(10, 8);
+    logSV.documentView = tv;
     [self.logPane addSubview:logSV];
     self.logTV = tv;
     [self refreshLogPathLabel];
