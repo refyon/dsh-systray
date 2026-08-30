@@ -380,7 +380,7 @@ func drawExport(c *canvas, f *fonts, cx, wy int) {
 		on       bool
 	}{
 		{"所有历史会话", "sessions.zip · ~/.dsh/sessions", true},
-		{"已安装的插件", "plugins.zip · ~/.dsh/profiles/node_modules", false},
+		{"已安装的插件", "plugins.zip · 通过 dsh add 安装的插件", false},
 		{"需要打包的文件目录", "files.zip · 恢复时选择解压位置", false},
 	}
 	for i, r := range rows {

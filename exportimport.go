@@ -72,12 +72,138 @@ func sessionsSourceDir() string {
 	return filepath.Join(dshHomeDir(), "sessions")
 }
 
-// pluginsSourceDir 已安装插件目录（~/.dsh/profiles/node_modules，pnpm 托管）。
+// pluginsSourceDir 已安装插件目录（profile 的 node_modules；优先带名称的 profile，如 web）。
 func pluginsSourceDir() string {
 	if dshHomeDir() == "" {
 		return ""
 	}
-	return filepath.Join(dshHomeDir(), "profiles", "node_modules")
+	dir, _, err := profilePlugins()
+	if err != nil {
+		return ""
+	}
+	return filepath.Join(dir, "node_modules")
+}
+
+// profilePlugins 定位 profile 目录（含 package.json）并读取其 dependencies ——
+// 即通过 `dsh add` / `dsh plugin add` 安装的插件清单（harness 自带依赖不在其中）。
+func profilePlugins() (profileDir string, deps []string, err error) {
+	home := dshHomeDir()
+	if home == "" {
+		return "", nil, fmt.Errorf("无法确定 harness 数据目录（DSH_HOME）")
+	}
+	profilesRoot := filepath.Join(home, "profiles")
+	dir := ""
+	if ents, e := os.ReadDir(profilesRoot); e == nil {
+		for _, ent := range ents {
+			if !ent.IsDir() {
+				continue
+			}
+			p := filepath.Join(profilesRoot, ent.Name(), "package.json")
+			if st, e2 := os.Stat(p); e2 == nil && !st.IsDir() {
+				dir = filepath.Join(profilesRoot, ent.Name())
+				break
+			}
+		}
+	}
+	if dir == "" {
+		// 兼容旧布局：~/.dsh/profiles/package.json
+		if st, e := os.Stat(filepath.Join(profilesRoot, "package.json")); e == nil && !st.IsDir() {
+			dir = profilesRoot
+		}
+	}
+	if dir == "" {
+		return "", nil, fmt.Errorf("未找到 profile 清单，无法识别通过 dsh add 安装的插件")
+	}
+	data, e := os.ReadFile(filepath.Join(dir, "package.json"))
+	if e != nil {
+		return "", nil, fmt.Errorf("读取 profile 清单失败：%w", e)
+	}
+	var m struct {
+		Dependencies map[string]string `json:"dependencies"`
+	}
+	_ = json.Unmarshal(data, &m)
+	for name := range m.Dependencies {
+		if name != "" {
+			deps = append(deps, name)
+		}
+	}
+	sort.Strings(deps)
+	return dir, deps, nil
+}
+
+// pluginsRelPrefix 插件在导出 zip 内的路径前缀（相对 DSH_HOME，恢复侧同源），
+// 如 "profiles/web/node_modules/"（命名 profile）或 "profiles/node_modules/"（旧布局）。
+func pluginsRelPrefix() string {
+	home := dshHomeDir()
+	if home == "" {
+		return "profiles/node_modules/"
+	}
+	dir, _, err := profilePlugins()
+	if err != nil {
+		return "profiles/node_modules/"
+	}
+	rel, err := filepath.Rel(home, filepath.Join(dir, "node_modules"))
+	if err != nil || rel == "." || strings.HasPrefix(rel, "..") {
+		return "profiles/node_modules/"
+	}
+	return filepath.ToSlash(rel) + "/"
+}
+
+// resolveNodeModules 在 profile 的 node_modules 中解析包名（兼容 pnpm 符号链接与 .pnpm/node_modules 布局）。
+func resolveNodeModules(root, name string) (string, bool) {
+	candidates := []string{
+		filepath.Join(root, filepath.FromSlash(name)),
+		filepath.Join(root, ".pnpm", "node_modules", filepath.FromSlash(name)),
+	}
+	for _, p := range candidates {
+		if st, err := os.Stat(p); err == nil && st.IsDir() {
+			if real, err := filepath.EvalSymlinks(p); err == nil {
+				return real, true
+			}
+			return p, true
+		}
+	}
+	return "", false
+}
+
+// collectPluginClosure 从插件包出发递归收集其依赖闭包（跳过 @deepseek-ai/* harness 自带包），
+// 返回 包名 → 解析后真实目录。
+func collectPluginClosure(root string, roots []string) map[string]string {
+	out := map[string]string{}
+	visited := map[string]bool{}
+	var walk func(name string)
+	walk = func(name string) {
+		if visited[name] {
+			return
+		}
+		visited[name] = true
+		real, ok := resolveNodeModules(root, name)
+		if !ok {
+			log.Printf("export: plugin dep not found in node_modules: %s", name)
+			return
+		}
+		out[name] = real
+		data, err := os.ReadFile(filepath.Join(real, "package.json"))
+		if err != nil {
+			return
+		}
+		var m struct {
+			Dependencies map[string]string `json:"dependencies"`
+		}
+		if json.Unmarshal(data, &m) != nil {
+			return
+		}
+		for dep := range m.Dependencies {
+			if strings.HasPrefix(dep, "@deepseek-ai/") {
+				continue // harness 自身包：恢复目标机必然存在，不打包
+			}
+			walk(dep)
+		}
+	}
+	for _, r := range roots {
+		walk(r)
+	}
+	return out
 }
 
 // packBaseName 用户所选目录在 files.zip 内的顶层名（取目录名，重名加序号）。
@@ -139,18 +265,32 @@ func buildExportZip(includeSessions, includePlugins bool, dirs []string, destDir
 
 	progress(onStatus, "正在打包已安装的插件…", 0)
 	if includePlugins {
-		src := pluginsSourceDir()
-		if _, err := os.Stat(src); err != nil {
-			log.Printf("export: plugins dir missing %s: %v", src, err)
+		_, deps, err := profilePlugins()
+		if err != nil {
+			return "", err
+		}
+		if len(deps) == 0 {
+			return "", fmt.Errorf("没有通过 dsh add 安装的插件，无需导出")
+		}
+		root := filepath.Join(pluginsSourceDir())
+		if _, err := os.Stat(root); err != nil {
+			log.Printf("export: plugins dir missing %s: %v", root, err)
 		} else {
+			// 仅打包用户通过 dsh add 安装的插件及其非 harness 依赖闭包
+			closure := collectPluginClosure(root, deps)
+			prefix := pluginsRelPrefix()
+			entries := make(map[string]string, len(closure))
+			for name, real := range closure {
+				entries[filepath.ToSlash(filepath.Join(filepath.FromSlash(prefix), filepath.FromSlash(name)))] = real
+			}
 			zp := filepath.Join(tmp, exportZipPlugins)
-			if err := zipCreate(zp, map[string]string{"profiles/node_modules": src}, func(p float64) {
+			if err := zipCreate(zp, entries, func(p float64) {
 				progress(onStatus, "正在打包已安装的插件…", p)
 			}); err != nil {
 				return "", fmt.Errorf("打包已安装的插件失败：%w", err)
 			}
 			if st, err := os.Stat(zp); err == nil {
-				manifest.Items = append(manifest.Items, exportItemInfo{Kind: "plugins", Label: "已安装的插件", Zip: exportZipPlugins, Size: st.Size()})
+				manifest.Items = append(manifest.Items, exportItemInfo{Kind: "plugins", Label: fmt.Sprintf("已安装的插件（%d 个）", len(deps)), Zip: exportZipPlugins, Size: st.Size()})
 				staged[exportZipPlugins] = zp
 			}
 		}
@@ -281,10 +421,10 @@ func parseExportZip(zipPath string) ([]importItem, error) {
 	return items, nil
 }
 
-// restoreEntryPrefix 子包在总 zip 内的条目前缀（sessions/ 或 profiles/node_modules/）。
+// restoreEntryPrefix 子包在总 zip 内的条目前缀（sessions/ 或插件前缀 profiles/…/node_modules/）。
 func restoreEntryPrefix(kind string) string {
 	if kind == "plugins" {
-		return "profiles/node_modules/"
+		return pluginsRelPrefix()
 	}
 	return "sessions/"
 }

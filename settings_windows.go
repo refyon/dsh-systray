@@ -507,10 +507,11 @@ func settingsShowPane(hwnd uintptr) {
 		t, _ := syscall.UTF16PtrFromString(title)
 		pSendMessageW.Call(settingsTitleHwnd, wmSetText, 0, uintptr(unsafe.Pointer(t)))
 	}
-	// 日志页卡片由父窗口绘制：切入时让父窗口重绘卡片区域
-	if settingsCat == 2 {
-		card := rect{stContentX - 12, 140, stWinW - (stContentX - 12) - 16, 440}
-		pInvalidateRect.Call(hwnd, uintptr(unsafe.Pointer(&card)), 0)
+	// 日志卡片由父窗口绘制：切入/切出都重绘卡片区域；切出时同步清除，避免残影出现在其它页
+	card := rect{stContentX - 12, 140, stWinW - (stContentX - 12) - 16, 440}
+	pInvalidateRect.Call(hwnd, uintptr(unsafe.Pointer(&card)), 0)
+	if settingsCat != 2 {
+		pUpdateWindow.Call(hwnd) // 立即重绘：非日志页走 DefWindowProc 擦白该区域
 	}
 }
 
@@ -878,7 +879,7 @@ func settingsDrawCheck(dis drawItemStruct, checked bool) {
 	}
 }
 
-// settingsDrawHelp 绘制问号图标（灰圈 + ?），悬停时由原生泡泡提示显示说明。
+// settingsDrawHelp 绘制问号图标（灰圈 + ?，问号在圆心精确居中），悬停时由原生泡泡提示显示说明。
 func settingsDrawHelp(dis drawItemStruct) {
 	hdc := dis.hDC
 	if wb, _, _ := pGetStockObject.Call(whiteBrush); wb != 0 {
@@ -897,8 +898,22 @@ func settingsDrawHelp(dis drawItemStruct) {
 	if settingsFontSmall != 0 {
 		pSelectObject.Call(hdc, settingsFontSmall)
 	}
+	// 测量 "?" 实际宽高，在圆内居中绘制（字形视觉重心略偏上，上移 1px）
 	q, _ := syscall.UTF16PtrFromString("?")
-	pDrawTextW.Call(hdc, uintptr(unsafe.Pointer(q)), ^uintptr(0), uintptr(unsafe.Pointer(&dis.rcItem)), dtCenter|dtVCenter|dtSingle)
+	var sz rect
+	pDrawTextW.Call(hdc, uintptr(unsafe.Pointer(q)), ^uintptr(0), uintptr(unsafe.Pointer(&sz)), dtCalcRect|dtSingle)
+	w := sz.right - sz.left
+	h := sz.bottom - sz.top
+	if w <= 0 {
+		w = 8
+	}
+	if h <= 0 {
+		h = 12
+	}
+	cx := (dis.rcItem.left + dis.rcItem.right) / 2
+	cy := (dis.rcItem.top + dis.rcItem.bottom) / 2
+	tr := rect{cx - w/2, cy - h/2 - 1, cx + w/2, cy + h/2 - 1}
+	pDrawTextW.Call(hdc, uintptr(unsafe.Pointer(q)), ^uintptr(0), uintptr(unsafe.Pointer(&tr)), 0) // DT_LEFT|DT_TOP
 }
 
 // settingsDrawCombo 绘制现代下拉选择器（圆角白底 + 边框 + 当前项文案 + 箭头）。
@@ -1743,7 +1758,7 @@ func createSettingsWindow() uintptr {
 		checked            *bool
 	}{
 		{stIdExpSessions, stIdExpSessLbl, stIdExpSessSub, "所有历史会话", "sessions.zip · " + filepath.Join(expHome, "sessions"), 62, &settingsExpSessions},
-		{stIdExpPlugins, stIdExpPlugLbl, stIdExpPlugSub, "已安装的插件", "plugins.zip · " + filepath.Join(expHome, "profiles", "node_modules"), 112, &settingsExpPlugins},
+		{stIdExpPlugins, stIdExpPlugLbl, stIdExpPlugSub, "已安装的插件", "plugins.zip · 通过 dsh add 安装的插件", 112, &settingsExpPlugins},
 		{stIdExpFiles, stIdExpFilesLbl, stIdExpFilesSub, "需要打包的文件目录", "files.zip · 恢复时选择解压位置", 162, &settingsExpFiles},
 	}
 	for _, d := range expDefs {
@@ -1794,12 +1809,26 @@ func createSettingsWindow() uintptr {
 		settingsPaneExp = append(settingsPaneExp, stIdExpAddDir)
 	}
 
-	// 「已安装的插件」右侧问号图标（自绘），悬停弹出泡泡说明
+	// 「已安装的插件」右侧问号图标（自绘）：紧贴文字放置，悬停弹出泡泡说明
 	hp, _ := syscall.UTF16PtrFromString("")
+	plugHelpX := int32(stContentX + 140)
+	if settingsFontBody != 0 {
+		if dc, _, _ := pGetDC.Call(0); dc != 0 {
+			old, _, _ := pSelectObject.Call(dc, settingsFontBody)
+			pt, _ := syscall.UTF16PtrFromString("已安装的插件")
+			var mrc rect
+			pDrawTextW.Call(dc, uintptr(unsafe.Pointer(pt)), ^uintptr(0), uintptr(unsafe.Pointer(&mrc)), dtCalcRect|dtSingle)
+			pSelectObject.Call(dc, old)
+			pReleaseDC.Call(0, dc)
+			if w := mrc.right - mrc.left; w > 0 {
+				plugHelpX = stContentX + 32 + w + 4
+			}
+		}
+	}
 	plugHelp, _, _ := pCreateWindowExW.Call(
 		0, uintptr(unsafe.Pointer(btnCls)), uintptr(unsafe.Pointer(hp)),
 		wsChild|wsVisible|bsOwnDraw,
-		uintptr(stContentX+140), 116, 18, 18,
+		uintptr(plugHelpX), 117, 18, 18,
 		hwnd, stIdExpPlugHelp, moduleHandle(), 0,
 	)
 	if plugHelp != 0 {

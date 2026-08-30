@@ -10,7 +10,7 @@ import (
 func TestExportImportPipeline(t *testing.T) {
 	root := t.TempDir()
 	homeA := filepath.Join(root, "homeA")
-	// 源环境：sessions（两个 scope 各一个会话）+ plugins（两个包）+ 一个用户目录
+	// 源环境：sessions（两个 scope 各一个会话）+ 命名 profile（web）的 plugins + 一个用户目录
 	if err := os.MkdirAll(filepath.Join(homeA, "sessions", "--S1--", "session-1"), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -23,10 +23,13 @@ func TestExportImportPipeline(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(homeA, "sessions", "--S2--", "session-2", "session.jsonl.zstd"), []byte("data2"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.MkdirAll(filepath.Join(homeA, "profiles", "node_modules", "pkg-a"), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Join(homeA, "profiles", "web", "node_modules", "pkg-a"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(homeA, "profiles", "node_modules", "pkg-a", "index.js"), []byte("a"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(homeA, "profiles", "web", "node_modules", "pkg-a", "index.js"), []byte("a"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(homeA, "profiles", "web", "package.json"), []byte(`{"dependencies":{"pkg-a":"1.0.0"}}`), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	userDir := filepath.Join(root, "mydocs")
@@ -83,7 +86,7 @@ func TestExportImportPipeline(t *testing.T) {
 	if _, err := restoreItem("plugins", mustInner(t, p, exportZipPlugins), "", true, nil); err != nil {
 		t.Fatalf("restore plugins: %v", err)
 	}
-	if _, err := os.Stat(filepath.Join(homeB, "profiles", "node_modules", "pkg-a", "index.js")); err != nil {
+	if _, err := os.Stat(filepath.Join(homeB, "profiles", "web", "node_modules", "pkg-a", "index.js")); err != nil {
 		t.Fatalf("restored plugin missing: %v", err)
 	}
 	filesDest := filepath.Join(root, "files-restored")

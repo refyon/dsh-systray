@@ -605,12 +605,15 @@ static DSHSetController *g_ctrl = nil;
     self.expPlugins.frame = NSMakeRect(0, 288, 280, 24);
     self.expPlugins.font = [self uiFontOfSize:16 weight:NSFontWeightRegular];
     [self.exportPane addSubview:self.expPlugins];
-    [self addLabel:@"plugins.zip · ~/.dsh/profiles/node_modules" font:[self uiFontOfSize:12 weight:NSFontWeightRegular] color:[NSColor secondaryLabelColor] frame:NSMakeRect(22, 270, 400, 16) to:self.exportPane];
+    [self addLabel:@"plugins.zip · 通过 dsh add 安装的插件" font:[self uiFontOfSize:12 weight:NSFontWeightRegular] color:[NSColor secondaryLabelColor] frame:NSMakeRect(22, 270, 400, 16) to:self.exportPane];
 
-    // 「已安装的插件」右侧问号图标：悬停显示泡泡说明
+    // 「已安装的插件」右侧问号图标：紧贴文字放置，悬停显示泡泡说明
+    NSString *plugLabel = @"已安装的插件";
+    NSFont *plugFont = [self uiFontOfSize:16 weight:NSFontWeightRegular];
+    CGFloat plugTW = [plugLabel sizeWithAttributes:@{NSFontAttributeName: plugFont}].width;
     NSButton *plugHelp = [NSButton buttonWithTitle:@"" target:nil action:nil];
     plugHelp.bezelStyle = NSHelpButtonBezelStyle;
-    plugHelp.frame = NSMakeRect(128, 290, 20, 20);
+    plugHelp.frame = NSMakeRect(18 + plugTW + 4, 290, 20, 20);
     plugHelp.toolTip = @"仅打包用户安装的插件";
     [self.exportPane addSubview:plugHelp];
 
