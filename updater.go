@@ -131,6 +131,13 @@ func registerActiveUpdate(cancel context.CancelFunc) {
 	updateMu.Unlock()
 }
 
+// progress 安全地调用可选的进度回调（t 为空表示无字面文本更新；p 为 0~1 进度）。
+func progress(onStatus func(string, float64), t string, p float64) {
+	if onStatus != nil {
+		onStatus(t, p)
+	}
+}
+
 func clearActiveUpdate() {
 	updateMu.Lock()
 	activeCancel = nil

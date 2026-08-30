@@ -65,31 +65,40 @@ func isNotoSansSCAvailable() bool {
 
 // ensureNotoSansSC 启动时确保 Noto Sans SC 可用：已装→直接用；未装→下载到用户目录并(会话级)注册，
 // 失败则回退系统默认字体。仅注册到当前会话（FR_PRIVATE），不写系统、无需管理员。
-func ensureNotoSansSC() {
+// onStatus 可选：用于进度窗口同步阶段/下载进度（text 为空表示无字面文本更新）。
+func ensureNotoSansSC(onStatus func(text string, pct float64)) {
+	logf := func(s string) { log.Print(s) }
 	if isNotoSansSCAvailable() {
-		log.Printf("noto sans sc available")
+		logf("noto sans sc available")
+		progress(onStatus, "", 1)
 		return
 	}
 	dir := notoSansSCFontDir()
 	if err := os.MkdirAll(dir, 0o755); err != nil {
-		log.Printf("noto sans font dir create failed: %v", err)
+		logf("noto sans font dir create failed: " + err.Error())
+		progress(onStatus, "", 0)
 		return
 	}
 	fontPath := filepath.Join(dir, "NotoSansSC-VF.ttf")
 	if _, err := os.Stat(fontPath); err != nil {
-		log.Printf("noto sans sc not installed; downloading ...")
-		if err := downloadFileTo(context.Background(), notoSansSCURLs[0], fontPath); err != nil {
-			log.Printf("noto sans sc download failed: %v; using system font", err)
+		logf("noto sans sc not installed; downloading ...")
+		progress(onStatus, "正在下载 UI 字体…", 0)
+		if err := downloadFileWithProgress(context.Background(), notoSansSCURLs[0], fontPath, func(p float64) {
+			progress(onStatus, "正在下载 UI 字体…", p)
+		}); err != nil {
+			logf("noto sans sc download failed: " + err.Error() + "; using system font")
+			progress(onStatus, "", 0)
 			return
 		}
 	}
 	pp, _ := syscall.UTF16PtrFromString(fontPath)
 	res, _, _ := pAddFontResourceExW.Call(uintptr(unsafe.Pointer(pp)), 0x10 /* FR_PRIVATE */, 0)
 	if res == 0 {
-		log.Printf("noto sans sc register failed; using system font")
+		logf("noto sans sc register failed; using system font")
 	} else {
-		log.Printf("noto sans sc registered from %s", fontPath)
+		logf("noto sans sc registered from " + fontPath)
 	}
+	progress(onStatus, "", 1)
 }
 
 const (

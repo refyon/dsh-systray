@@ -229,9 +229,6 @@ func main() {
 		log.Printf("autostart entry refreshed with --autostart flag")
 	}
 
-	// 确保 UI 字体可用：系统已装 Noto Sans SC 则直接用；未装则下载并注册（失败回退系统默认字体）
-	ensureNotoSansSC()
-
 	cfgDir, err := os.UserConfigDir()
 	if err != nil {
 		cfgDir = os.TempDir()
@@ -280,6 +277,11 @@ func main() {
 	}
 
 	splash := maybeStartSplash("正在准备运行环境…")
+
+	// 0) UI 字体：检查系统是否已装 Noto Sans SC，未装则下载注册（失败回退系统默认字体）。
+	//    与下方运行环境检查同为启动流程的一步，进度窗口同步显示。
+	splash.Update("正在检查 UI 字体…", 0.02)
+	ensureNotoSansSC(func(t string, pct float64) { splash.Update(t, 0.02+0.05*pct) })
 
 	// 1) 运行环境：优先便携 Node.js / pnpm（无管理员权限、无窗口、后台静默）
 	if !runtimeOK() {

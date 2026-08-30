@@ -48,24 +48,31 @@ func notoSansSCFontDir() string {
 
 // ensureNotoSansSC 启动时确保 Noto Sans SC 可用：已装→直接用；未装→下载到用户目录并注册到进程；
 // 失败则回退系统默认字体。注册为进程级（kCTFontManagerScopeProcess），不写系统、无需管理员。
-func ensureNotoSansSC() {
+// onStatus 可选：用于进度窗口同步阶段/下载进度。
+func ensureNotoSansSC(onStatus func(text string, pct float64)) {
 	cs := C.CString(notoSansSCFamily)
 	exists := C.dshFontExists(cs) != 0
 	C.free(unsafe.Pointer(cs))
 	if exists {
 		log.Printf("noto sans sc available")
+		progress(onStatus, "", 1)
 		return
 	}
 	dir := notoSansSCFontDir()
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		log.Printf("noto sans font dir create failed: %v", err)
+		progress(onStatus, "", 0)
 		return
 	}
 	fontPath := filepath.Join(dir, "NotoSansSC-VF.ttf")
 	if _, err := os.Stat(fontPath); err != nil {
 		log.Printf("noto sans sc not installed; downloading ...")
-		if err := downloadFileTo(context.Background(), notoSansSCURLs[0], fontPath); err != nil {
+		progress(onStatus, "正在下载 UI 字体…", 0)
+		if err := downloadFileWithProgress(context.Background(), notoSansSCURLs[0], fontPath, func(p float64) {
+			progress(onStatus, "正在下载 UI 字体…", p)
+		}); err != nil {
 			log.Printf("noto sans sc download failed: %v; using system font", err)
+			progress(onStatus, "", 0)
 			return
 		}
 	}
@@ -76,4 +83,5 @@ func ensureNotoSansSC() {
 	} else {
 		log.Printf("noto sans sc registered from %s", fontPath)
 	}
+	progress(onStatus, "", 1)
 }
