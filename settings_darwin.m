@@ -187,12 +187,10 @@ static DSHSetController *g_ctrl = nil;
     if (!s) return;
     NSString *str = [NSString stringWithUTF8String:s];
     free(s);
-    // 打开/切换到日志页（或切换文件/清空）：无论内容是否变化都滚动到底部一次
+    // 打开/切换到日志页（或切换文件/清空）：无论内容是否变化都重设文本并滚动到底部一次
     if (forceBottom) {
-        if (![str isEqualToString:self.lastLogContent]) {
-            self.logTV.string = str;
-            self.lastLogContent = str;
-        }
+        self.logTV.string = str;
+        self.lastLogContent = str;
         [self.logTV scrollRangeToVisible:NSMakeRange(str.length, 0)];
         return;
     }

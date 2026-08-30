@@ -121,9 +121,9 @@ func (c *canvas) roundRect(x0, y0, x1, y1, r int, col rgba) {
 
 // shadow 多层偏移半透明圆角矩形，近似柔和投影。
 func (c *canvas) shadow(x0, y0, x1, y1, r int) {
-	for i := 5; i >= 1; i-- {
+	for i := 6; i >= 1; i-- {
 		ex := i * 2
-		c.roundRectA(x0-ex/2, y0-ex/2+4, x1+ex/2, y1+ex/2+4, r+ex/2, rgba{16, 24, 40, 255}, 0.035)
+		c.roundRectA(x0-ex/2, y0-ex/2+5, x1+ex/2, y1+ex/2+5, r+ex/2, rgba{16, 24, 40, 255}, 0.055)
 	}
 }
 
@@ -277,14 +277,15 @@ const (
 func winControls(c *canvas, f *fonts, right, cy int) {
 	glyphs := []string{"—", "□", "×"}
 	for i, g := range glyphs {
-		c.textIn(g, right-110+i*34, cy, right-76+i*34, cy+30, f.body, cSub, "center")
+		c.textIn(g, right-110+i*34, cy, right-76+i*34, cy+28, f.body, cSub, "center")
 	}
 }
 
+// winBar 低矮标题栏（约 36px）：标题 + 窗口控制 + 分隔线。
 func winBar(c *canvas, f *fonts, x, y, w int, title string) {
-	c.textIn(title, x+32, y+16, x+180, y+46, f.title, cInk, "left")
-	winControls(c, f, x+w, y+14)
-	c.fillRect(x, y+46, x+w, y+48, cBorder)
+	c.textIn(title, x+32, y+6, x+180, y+32, f.title, cInk, "left")
+	winControls(c, f, x+w, y+4)
+	c.fillRect(x, y+36, x+w, y+38, cBorder)
 }
 
 // drawSlide 带窗口框架的轮播页；content 绘制右侧内容区（cx 为内容左缘，wy 为窗口顶）。
@@ -296,10 +297,10 @@ func drawSlide(f *fonts, sel int, title string, content func(*canvas, *fonts, in
 	c.roundRect(wx, wy, wx+ww, wy+wh, 16, cWhite)
 	winBar(c, f, wx, wy, ww, "设置")
 	// 侧栏
-	c.roundRect(wx+24, wy+62, wx+24+168, wy+496, 14, cCardBg)
+	c.roundRect(wx+24, wy+46, wx+24+168, wy+496, 14, cCardBg)
 	items := []string{"常规", "关于", "日志", "导出", "导入"}
 	for i, it := range items {
-		y := wy + 74 + i*52
+		y := wy + 58 + i*52
 		if i == sel {
 			c.roundRect(wx+32, y-9, wx+32+152, y+35, 10, cSel)
 			c.textIn(it, wx+46, y, wx+46+130, y+26, f.bodyB, cBlue, "left")
@@ -308,7 +309,7 @@ func drawSlide(f *fonts, sel int, title string, content func(*canvas, *fonts, in
 		}
 	}
 	// 页面标题
-	c.textIn(title, wx+232, wy+56, wx+232+300, wy+84, f.head, cInk, "left")
+	c.textIn(title, wx+232, wy+40, wx+232+300, wy+68, f.head, cInk, "left")
 	content(c, f, wx+232, wy)
 	return c
 }
@@ -416,13 +417,13 @@ func drawImport(c *canvas, f *fonts, cx, wy int) {
 
 func drawSplash(c *canvas, f *fonts) {
 	c.fillRect(0, 0, slideW, slideH, cBG)
-	wx, wy, ww, wh := 310, 240, 480, 180
+	wx, wy, ww, wh := 310, 240, 480, 150
 	c.shadow(wx, wy, ww, wh, 18)
 	c.roundRect(wx, wy, wx+ww, wy+wh, 16, cWhite)
 	winBar(c, f, wx, wy, ww, "DeepSeek Harness")
-	c.textIn("正在启动后台服务…", wx+30, wy+70, wx+ww-30, wy+104, f.body, cSub, "center")
-	c.roundRect(wx+50, wy+124, wx+ww-50, wy+134, 5, cBorder)
-	c.roundRect(wx+50, wy+124, wx+50+int(float64(ww-100)*0.35), wy+134, 5, cBlue)
+	c.textIn("正在启动后台服务…", wx+30, wy+48, wx+ww-30, wy+82, f.body, cSub, "center")
+	c.roundRect(wx+50, wy+100, wx+ww-50, wy+110, 5, cBorder)
+	c.roundRect(wx+50, wy+100, wx+50+int(float64(ww-100)*0.35), wy+110, 5, cBlue)
 }
 
 // ==================== README 主图：检查更新下载 DeepSeek Harness 新版本 ====================
@@ -431,14 +432,14 @@ func drawHero(c *canvas, f *fonts) {
 	// 底图：关于页（已含检查更新按钮）
 	base := drawSlide(f, 1, "关于", drawAbout)
 	draw.Draw(c.img, c.img.Bounds(), base.img, image.Point{}, draw.Src)
-	// 叠加：下载进度窗口
-	wx, wy, ww, wh := 420, 262, 560, 170
+	// 叠加：下载进度窗口（右下角，不遮挡「检查更新」按钮）
+	wx, wy, ww, wh := 560, 372, 460, 140
 	c.shadow(wx, wy, ww, wh, 18)
 	c.roundRect(wx, wy, wx+ww, wy+wh, 16, cWhite)
 	winBar(c, f, wx, wy, ww, "DeepSeek Harness")
-	c.textIn("正在下载 DeepSeek Harness v0.1.1-rc.3…", wx+30, wy+70, wx+ww-30, wy+104, f.body, cSub, "center")
-	c.roundRect(wx+50, wy+124, wx+ww-50, wy+134, 5, cBorder)
-	c.roundRect(wx+50, wy+124, wx+50+int(float64(ww-100)*0.55), wy+134, 5, cBlue)
+	c.textIn("正在下载 DeepSeek Harness 新版本…", wx+30, wy+48, wx+ww-30, wy+82, f.body, cSub, "center")
+	c.roundRect(wx+50, wy+100, wx+ww-50, wy+110, 5, cBorder)
+	c.roundRect(wx+50, wy+100, wx+50+int(float64(ww-100)*0.55), wy+110, 5, cBlue)
 }
 
 // ==================== 生成与自检 ====================
@@ -481,8 +482,8 @@ func TestRegenerateDocsImages(t *testing.T) {
 		{"splash", func() *canvas { c := newCanvas(slideW, slideH); drawSplash(c, f); return c },
 			func(t *testing.T, img *image.RGBA) {
 				expectColor(t, img, 20, 20, cBG, "splash bg")
-				expectColor(t, img, 390, 300, cWhite, "splash window")
-				expectColor(t, img, 380, 369, cBlue, "splash progress")
+				expectColor(t, img, 600, 260, cWhite, "splash window")
+				expectColor(t, img, 380, 345, cBlue, "splash progress")
 			}},
 		{"general", func() *canvas { return drawSlide(f, 0, "常规", drawGeneral) },
 			func(t *testing.T, img *image.RGBA) {
@@ -530,7 +531,7 @@ func TestRegenerateDocsImages(t *testing.T) {
 		t.Fatal(err)
 	}
 	expectColor(t, hero.img, 20, 20, cBG, "hero bg")
-	expectColor(t, hero.img, 700, 300, cWhite, "hero progress window")
-	expectColor(t, hero.img, 480, 391, cBlue, "hero progress fill")
+	expectColor(t, hero.img, 990, 500, cWhite, "hero progress window")
+	expectColor(t, hero.img, 640, 477, cBlue, "hero progress fill")
 	t.Logf("generated %s (%dx%d)", heroPath, hero.img.Bounds().Dx(), hero.img.Bounds().Dy())
 }

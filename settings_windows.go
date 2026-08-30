@@ -111,6 +111,7 @@ const (
 	sbThumbPos            = 3
 	settingsLogTimer      = 1
 	ssOwnerDraw           = 0x000D
+	wsClipSiblings        = 0x04000000
 	// 现代下拉列表（日志文件选择弹层）
 	dropCls      = "DSH_Systray_LogDropdown"
 	dropPadX     = 8
@@ -636,13 +637,12 @@ func settingsLogReload(forceScroll bool) {
 		return
 	}
 
-	// 打开/切换到日志页（或清空/切换日志文件）：无论内容是否变化都滚到底部一次
+	// 打开/切换到日志页（或清空/切换日志文件）：无论内容是否变化都重设文本并重绘，保证每次切入都渲染出内容
 	if forceScroll {
-		if text != settingsLogLastContent {
-			ep, _ := syscall.UTF16PtrFromString(text)
-			pSendMessageW.Call(edit, wmSetText, 0, uintptr(unsafe.Pointer(ep)))
-			settingsLogLastContent = text
-		}
+		ep, _ := syscall.UTF16PtrFromString(text)
+		pSendMessageW.Call(edit, wmSetText, 0, uintptr(unsafe.Pointer(ep)))
+		settingsLogLastContent = text
+		pInvalidateRect.Call(edit, 0, 0)
 		// 先强制一次重绘：让 RichEdit 完成文本排版/建立滚动范围，否则首次打开时滚动范围未就绪、SB_BOTTOM 不生效
 		pUpdateWindow.Call(edit)
 		pSendMessageW.Call(edit, wmVScroll, sbBottom, 0)
@@ -1402,7 +1402,7 @@ func createSettingsWindow() uintptr {
 		0,
 		uintptr(unsafe.Pointer(cls)),
 		uintptr(unsafe.Pointer(titleText)),
-		wsCaption|wsSysMenu,
+		wsCaption|wsSysMenu|wsClipChildren, // wsClipChildren：防止子控件互绘覆盖（日志卡片与编辑框）
 		uintptr(x), uintptr(y), uintptr(winW), uintptr(winH),
 		0, 0, moduleHandle(), 0,
 	)
@@ -1421,7 +1421,7 @@ func createSettingsWindow() uintptr {
 		0,
 		uintptr(unsafe.Pointer(staticCls)),
 		uintptr(unsafe.Pointer(sb)),
-		wsChild|wsVisible,
+		wsChild|wsVisible|wsClipSiblings, // wsClipSiblings：不覆盖其上的分类按钮
 		0, 0, stSidebarW, stWinH,
 		hwnd, stIdSidebarBg, moduleHandle(), 0,
 	)
@@ -1654,10 +1654,10 @@ func createSettingsWindow() uintptr {
 		settingsPaneLog = append(settingsPaneLog, stIdLogRefresh)
 	}
 
-	// 日志内容卡片（浅灰圆角，先创建以垫底）
+	// 日志内容卡片（浅灰圆角，先创建以垫底；wsClipSiblings 保证不覆盖其上的日志编辑框）
 	logCard, _, _ := pCreateWindowExW.Call(
 		0, uintptr(unsafe.Pointer(staticCls)), 0,
-		wsChild|wsVisible|ssOwnerDraw,
+		wsChild|wsVisible|ssOwnerDraw|wsClipSiblings,
 		uintptr(stContentX-12), 140, uintptr(stWinW-(stContentX-12)-16), 300,
 		hwnd, stIdLogCard, moduleHandle(), 0,
 	)
