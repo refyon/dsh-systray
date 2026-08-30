@@ -69,6 +69,7 @@ const (
 	stIdExpDirs     = 3431
 	stIdExpGo       = 3440
 	stIdExpStatus   = 3441
+	stIdExpPlugHelp = 3413
 	// 导入页
 	stIdImpAdd      = 3500
 	stIdImpPath     = 3501
@@ -79,8 +80,7 @@ const (
 	stIdImpPlugBtn  = 3521
 	stIdImpFilesRow = 3530
 	stIdImpFilesBtn = 3531
-	// 常规页区块卡片 + 日志页卡片
-	stIdLogCard = 3304
+	// 常规页区块卡片 + 日志页卡片（日志卡片改由父窗口 WM_PAINT 绘制，避免盖住编辑框）
 
 	// EDIT / COMBOBOX / STATIC 样式
 	esMultiline           = 0x0004
@@ -110,7 +110,6 @@ const (
 	sbBottom              = 7
 	sbThumbPos            = 3
 	settingsLogTimer      = 1
-	ssOwnerDraw           = 0x000D
 	wsClipSiblings        = 0x04000000
 	// 现代下拉列表（日志文件选择弹层）
 	dropCls      = "DSH_Systray_LogDropdown"
@@ -130,6 +129,18 @@ const (
 	vkDown       = 0x28
 	vkReturn     = 0x0D
 	vkEscape     = 0x1B
+	// RedrawWindow 标志：完整失效 + 擦除背景 + 立即重绘 + 子控件
+	rdwInvalidate  = 0x0001
+	rdwErase       = 0x0004
+	rdwAllChildren = 0x0080
+	rdwUpdateNow   = 0x0100
+	// 原生工具提示（泡泡样式）
+	ttsAlwaysTip       = 0x01
+	ttsNoprefix        = 0x02
+	ttsBalloon         = 0x40
+	ttfSubclass        = 0x0010
+	ttmAddToolW        = 0x0432 // WM_USER + 50
+	ttmSetMaxTipWidthW = 0x0418 // WM_USER + 24
 
 	// 颜色（COLORREF = 0xBBGGRR）
 	stColorSidebarBg = 0x00FAF7F5 // #F5F7FA 侧栏浅灰底
@@ -150,6 +161,7 @@ var (
 	pSetFocus            = modUser32.NewProc("SetFocus")
 	pGetParent           = modUser32.NewProc("GetParent")
 	pTrackMouseEvent     = modUser32.NewProc("TrackMouseEvent")
+	pRedrawWindow        = modUser32.NewProc("RedrawWindow")
 
 	settingsOpenFlag        atomic.Bool
 	settingsHwnd            uintptr
@@ -170,7 +182,8 @@ var (
 	settingsDropHover       int                     // 下拉列表悬停项
 	settingsDropClsReg      bool                    // 下拉列表窗口类是否已注册
 	settingsDropClosedAt    time.Time               // 最近一次因失活自动收起的时间（防抖）
-	settingsLogBrush        uintptr                 // 日志卡片浅灰底画刷（wmCtlColorEdit）
+	settingsTipHwnd         uintptr                 // 原生泡泡提示窗口
+	settingsPlugHelpTip     *uint16                 // 插件选项说明文案（保持指针存活）
 	settingsFontTitle       uintptr
 	settingsFontBody        uintptr
 	settingsFontBold        uintptr
@@ -304,6 +317,22 @@ func settingsWndProc(hwnd, uMsg, wParam, lParam uintptr) uintptr {
 			settingsLogReload(false) // 定时跟随：仅新写入且贴底时滚动
 		}
 		return 0
+	case wmPaint:
+		// 日志页卡片由父窗口绘制：WS_CLIPCHILDREN 保证不会覆盖编辑框内容（白底 + 1px 边框，与编辑框白底一致）
+		if settingsCat == 2 {
+			var ps paintStruct
+			hdc, _, _ := pBeginPaint.Call(hwnd, uintptr(unsafe.Pointer(&ps)))
+			if hdc != 0 {
+				card := rect{stContentX - 12, 140, stWinW - (stContentX - 12) - 16, 440}
+				fillRoundedRectAA(hdc, card, 10, colorRefToARGB(stColorGray))
+				inner := rect{card.left + 1, card.top + 1, card.right - 1, card.bottom - 1}
+				fillRoundedRectAA(hdc, inner, 9, 0xFFFFFFFF)
+				pEndPaint.Call(hwnd, uintptr(unsafe.Pointer(&ps)))
+				return 0
+			}
+		}
+		ret, _, _ := pDefWindowProcW.Call(hwnd, uMsg, wParam, lParam)
+		return ret
 	case wmClose:
 		pDestroyWindow.Call(hwnd)
 		return 0
@@ -329,8 +358,9 @@ func settingsWndProc(hwnd, uMsg, wParam, lParam uintptr) uintptr {
 		if settingsSideBrush != 0 {
 			pDeleteObject.Call(settingsSideBrush)
 		}
-		if settingsLogBrush != 0 {
-			pDeleteObject.Call(settingsLogBrush)
+		if settingsTipHwnd != 0 {
+			pDestroyWindow.Call(settingsTipHwnd)
+			settingsTipHwnd = 0
 		}
 		settingsCloseDrop(false)
 		pKillTimer.Call(hwnd, settingsLogTimer)
@@ -362,13 +392,6 @@ func settingsWndProc(hwnd, uMsg, wParam, lParam uintptr) uintptr {
 		white, _, _ := pGetStockObject.Call(whiteBrush)
 		return white
 	case wmCtlColorEdit:
-		if settingsWidgets[lParam] == stIdLogEdit {
-			pSetTextColor.Call(wParam, stColorText)
-			pSetBkColor.Call(wParam, stColorSidebarBg)
-			if settingsLogBrush != 0 {
-				return settingsLogBrush
-			}
-		}
 		pSetTextColor.Call(wParam, stColorText)
 		pSetBkColor.Call(wParam, colorWhite)
 		white, _, _ := pGetStockObject.Call(whiteBrush)
@@ -386,10 +409,10 @@ func settingsWndProc(hwnd, uMsg, wParam, lParam uintptr) uintptr {
 		switch settingsWidgets[dis.hwndItem] {
 		case stIdCatGeneral, stIdCatAbout, stIdCatLog, stIdCatExport, stIdCatImport:
 			settingsDrawCat(dis)
-		case stIdLogCard:
-			settingsDrawCard(dis)
 		case stIdLogCombo:
 			settingsDrawCombo(dis)
+		case stIdExpPlugHelp:
+			settingsDrawHelp(dis)
 		case stIdAutoToggle:
 			settingsDrawToggle(dis)
 		case stIdCheckBtn:
@@ -483,6 +506,11 @@ func settingsShowPane(hwnd uintptr) {
 	if settingsTitleHwnd != 0 {
 		t, _ := syscall.UTF16PtrFromString(title)
 		pSendMessageW.Call(settingsTitleHwnd, wmSetText, 0, uintptr(unsafe.Pointer(t)))
+	}
+	// 日志页卡片由父窗口绘制：切入时让父窗口重绘卡片区域
+	if settingsCat == 2 {
+		card := rect{stContentX - 12, 140, stWinW - (stContentX - 12) - 16, 440}
+		pInvalidateRect.Call(hwnd, uintptr(unsafe.Pointer(&card)), 0)
 	}
 }
 
@@ -642,10 +670,9 @@ func settingsLogReload(forceScroll bool) {
 		ep, _ := syscall.UTF16PtrFromString(text)
 		pSendMessageW.Call(edit, wmSetText, 0, uintptr(unsafe.Pointer(ep)))
 		settingsLogLastContent = text
-		pInvalidateRect.Call(edit, 0, 0)
-		// 先强制一次重绘：让 RichEdit 完成文本排版/建立滚动范围，否则首次打开时滚动范围未就绪、SB_BOTTOM 不生效
+		// 先强制一次重绘：让 RichEdit 完成文本排版/建立滚动范围
 		pUpdateWindow.Call(edit)
-		pSendMessageW.Call(edit, wmVScroll, sbBottom, 0)
+		settingsLogScrollToEnd(edit, text)
 		// 校准可视行数（真实值 = 行数 - 首可见行），供后续“是否贴底”判断
 		lc, _, _ := pSendMessageW.Call(edit, emGetLineCount, 0, 0)
 		fv, _, _ := pSendMessageW.Call(edit, emGetFirstVisibleLine, 0, 0)
@@ -670,7 +697,7 @@ func settingsLogReload(forceScroll bool) {
 	pUpdateWindow.Call(edit) // 强制重绘以确保滚动范围就绪
 	if atBottom {
 		// 贴底：跟随追加内容，自动滚到最后（tail -f 式）
-		pSendMessageW.Call(edit, wmVScroll, sbBottom, 0)
+		settingsLogScrollToEnd(edit, text)
 		lc, _, _ := pSendMessageW.Call(edit, emGetLineCount, 0, 0)
 		fv, _, _ := pSendMessageW.Call(edit, emGetFirstVisibleLine, 0, 0)
 		if lc > 0 {
@@ -679,7 +706,16 @@ func settingsLogReload(forceScroll bool) {
 	} else {
 		// 用户手动上翻：重置文本后回滚到原位置，不打断阅读
 		pSendMessageW.Call(edit, wmVScroll, sbThumbPos, firstVisible)
+		pRedrawWindow.Call(edit, 0, 0, rdwInvalidate|rdwUpdateNow|rdwAllChildren)
 	}
+}
+
+// settingsLogScrollToEnd 把日志滚动到文末：按总行数 EM_LINESCROLL（系统钳制，不会滚过头），
+// 再同步强制完整重绘，避免视口停在空白区（需手动滚动才恢复的问题）。
+func settingsLogScrollToEnd(edit uintptr, text string) {
+	lc, _, _ := pSendMessageW.Call(edit, emGetLineCount, 0, 0)
+	pSendMessageW.Call(edit, emLineScroll, 0, lc)
+	pRedrawWindow.Call(edit, 0, 0, rdwInvalidate|rdwUpdateNow|rdwAllChildren)
 }
 
 // settingsDrawCat 绘制侧栏分类按钮（选中项浅灰胶囊 + 蓝色文字）。
@@ -842,12 +878,27 @@ func settingsDrawCheck(dis drawItemStruct, checked bool) {
 	}
 }
 
-// settingsDrawCard 绘制浅灰圆角卡片（1px 边框 + 浅灰底），用于常规页分组与日志页容器。
-func settingsDrawCard(dis drawItemStruct) {
+// settingsDrawHelp 绘制问号图标（灰圈 + ?），悬停时由原生泡泡提示显示说明。
+func settingsDrawHelp(dis drawItemStruct) {
 	hdc := dis.hDC
-	fillRoundedRectAA(hdc, dis.rcItem, 10, colorRefToARGB(stColorGray))
+	if wb, _, _ := pGetStockObject.Call(whiteBrush); wb != 0 {
+		pFillRect.Call(hdc, uintptr(unsafe.Pointer(&dis.rcItem)), wb)
+	}
+	pressed := dis.itemState&odsSelected != 0
+	ring := uintptr(stColorGray)
+	if pressed {
+		ring = stColorSub
+	}
+	fillRoundedRectAA(hdc, dis.rcItem, 9, colorRefToARGB(ring))
 	inner := rect{dis.rcItem.left + 1, dis.rcItem.top + 1, dis.rcItem.right - 1, dis.rcItem.bottom - 1}
-	fillRoundedRectAA(hdc, inner, 9, colorRefToARGB(stColorSidebarBg))
+	fillRoundedRectAA(hdc, inner, 8, 0xFFFFFFFF)
+	pSetTextColor.Call(hdc, stColorSub)
+	pSetBkMode.Call(hdc, bkTransparent)
+	if settingsFontSmall != 0 {
+		pSelectObject.Call(hdc, settingsFontSmall)
+	}
+	q, _ := syscall.UTF16PtrFromString("?")
+	pDrawTextW.Call(hdc, uintptr(unsafe.Pointer(q)), ^uintptr(0), uintptr(unsafe.Pointer(&dis.rcItem)), dtCenter|dtVCenter|dtSingle)
 }
 
 // settingsDrawCombo 绘制现代下拉选择器（圆角白底 + 边框 + 当前项文案 + 箭头）。
@@ -889,6 +940,17 @@ type trackMouseEvent struct {
 	dwFlags     uint32
 	hwndTrack   uintptr
 	dwHoverTime uint32
+}
+
+// toolInfoW 对应 TOOLINFO（TTM_ADDTOOLW 用）。
+type toolInfoW struct {
+	cbSize   uint32
+	uFlags   uint32
+	hwnd     uintptr
+	uId      uintptr
+	rect     rect
+	hinst    uintptr
+	lpszText *uint16
 }
 
 // settingsDropWndProc 下拉列表窗口：悬停高亮、点击/回车选择、Esc 关闭、失活收起。
@@ -1386,7 +1448,6 @@ func createSettingsWindow() uintptr {
 	settingsFontMono = makeMonoFont(14) // 日志字体 14px
 	settingsFontBtn = makeFont(16, 600)
 	settingsSideBrush, _, _ = pCreateSolidBrush.Call(stColorSidebarBg)
-	settingsLogBrush, _, _ = pCreateSolidBrush.Call(stColorSidebarBg)
 
 	titleText, _ := syscall.UTF16PtrFromString("设置")
 	r := rect{0, 0, stWinW, stWinH}
@@ -1654,19 +1715,7 @@ func createSettingsWindow() uintptr {
 		settingsPaneLog = append(settingsPaneLog, stIdLogRefresh)
 	}
 
-	// 日志内容卡片（浅灰圆角，先创建以垫底；wsClipSiblings 保证不覆盖其上的日志编辑框）
-	logCard, _, _ := pCreateWindowExW.Call(
-		0, uintptr(unsafe.Pointer(staticCls)), 0,
-		wsChild|wsVisible|ssOwnerDraw|wsClipSiblings,
-		uintptr(stContentX-12), 140, uintptr(stWinW-(stContentX-12)-16), 300,
-		hwnd, stIdLogCard, moduleHandle(), 0,
-	)
-	if logCard != 0 {
-		settingsWidgets[logCard] = stIdLogCard
-		settingsPaneLog = append(settingsPaneLog, stIdLogCard)
-	}
-
-	// 用 RICHEDIT50W（可靠的多行富文本：正确处理换行/大文本/滚动/复制）；无边框、浅灰底、内边距
+	// 用 RICHEDIT50W（可靠的多行富文本：正确处理换行/大文本/滚动/复制）；无边框、浅灰底
 	mdll, _ := syscall.UTF16PtrFromString("Msftedit.dll")
 	pLoadLibraryW.Call(uintptr(unsafe.Pointer(mdll)))
 	editCls, _ := syscall.UTF16PtrFromString("RICHEDIT50W")
@@ -1743,6 +1792,39 @@ func createSettingsWindow() uintptr {
 	if addDirBtn != 0 {
 		settingsWidgets[addDirBtn] = stIdExpAddDir
 		settingsPaneExp = append(settingsPaneExp, stIdExpAddDir)
+	}
+
+	// 「已安装的插件」右侧问号图标（自绘），悬停弹出泡泡说明
+	hp, _ := syscall.UTF16PtrFromString("")
+	plugHelp, _, _ := pCreateWindowExW.Call(
+		0, uintptr(unsafe.Pointer(btnCls)), uintptr(unsafe.Pointer(hp)),
+		wsChild|wsVisible|bsOwnDraw,
+		uintptr(stContentX+140), 116, 18, 18,
+		hwnd, stIdExpPlugHelp, moduleHandle(), 0,
+	)
+	if plugHelp != 0 {
+		settingsWidgets[plugHelp] = stIdExpPlugHelp
+		settingsPaneExp = append(settingsPaneExp, stIdExpPlugHelp)
+		// 原生泡泡提示：悬停显示说明
+		if settingsTipHwnd == 0 {
+			tipCls, _ := syscall.UTF16PtrFromString("tooltips_class32")
+			settingsTipHwnd, _, _ = pCreateWindowExW.Call(
+				0, uintptr(unsafe.Pointer(tipCls)), 0,
+				wsPopup|ttsAlwaysTip|ttsNoprefix|ttsBalloon,
+				0, 0, 0, 0, hwnd, 0, moduleHandle(), 0,
+			)
+		}
+		if settingsTipHwnd != 0 {
+			settingsPlugHelpTip, _ = syscall.UTF16PtrFromString("仅打包用户安装的插件")
+			var ti toolInfoW
+			ti.cbSize = uint32(unsafe.Sizeof(ti))
+			ti.uFlags = ttfSubclass
+			ti.hwnd = hwnd
+			ti.uId = plugHelp
+			ti.lpszText = settingsPlugHelpTip
+			pSendMessageW.Call(settingsTipHwnd, ttmAddToolW, 0, uintptr(unsafe.Pointer(&ti)))
+			pSendMessageW.Call(settingsTipHwnd, ttmSetMaxTipWidthW, 0, 300)
+		}
 	}
 	dirsEdit, _, _ := pCreateWindowExW.Call(
 		0, uintptr(unsafe.Pointer(editCls)), 0,

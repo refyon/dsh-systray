@@ -119,11 +119,10 @@ func (c *canvas) roundRect(x0, y0, x1, y1, r int, col rgba) {
 	c.roundRectA(x0, y0, x1, y1, r, col, 1)
 }
 
-// shadow 多层偏移半透明圆角矩形，近似柔和投影。
-func (c *canvas) shadow(x0, y0, x1, y1, r int) {
+// shadow 四边对称的柔和投影：w/h 为窗口宽高（与调用方约定一致），每层向外扩展 i 像素。
+func (c *canvas) shadow(x0, y0, w, h, r int) {
 	for i := 6; i >= 1; i-- {
-		ex := i * 2
-		c.roundRectA(x0-ex/2, y0-ex/2+5, x1+ex/2, y1+ex/2+5, r+ex/2, rgba{16, 24, 40, 255}, 0.055)
+		c.roundRectA(x0-i, y0-i, x0+w+i, y0+h+i, r+i, rgba{16, 24, 40, 255}, 0.04)
 	}
 }
 
@@ -288,11 +287,11 @@ func winBar(c *canvas, f *fonts, x, y, w int, title string) {
 	c.fillRect(x, y+36, x+w, y+38, cBorder)
 }
 
-// drawSlide 带窗口框架的轮播页；content 绘制右侧内容区（cx 为内容左缘，wy 为窗口顶）。
-func drawSlide(f *fonts, sel int, title string, content func(*canvas, *fonts, int, int)) *canvas {
+// drawSlide 带窗口框架的轮播页；ww 为窗口宽度，content 绘制右侧内容区（cx 为内容左缘，wy 为窗口顶）。
+func drawSlide(f *fonts, sel int, title string, ww int, content func(*canvas, *fonts, int, int)) *canvas {
 	c := newCanvas(slideW, slideH)
 	c.fillRect(0, 0, slideW, slideH, cBG)
-	wx, wy, ww, wh := 150, 62, 920, 536
+	wx, wy, wh := 150, 62, 536
 	c.shadow(wx, wy, ww, wh, 18)
 	c.roundRect(wx, wy, wx+ww, wy+wh, 16, cWhite)
 	winBar(c, f, wx, wy, ww, "设置")
@@ -344,9 +343,9 @@ func drawLogs(c *canvas, f *fonts, cx, wy int) {
 	// 清空
 	c.roundRect(cx+175, wy+99, cx+267, wy+131, 16, cBlue)
 	c.textIn("清空", cx+175, wy+99, cx+267, wy+131, f.btnS, cWhite, "center")
-	// 日志卡片
+	// 日志卡片（白底 + 边框，与真实应用一致）
 	c.roundRect(cx-14, wy+144, cx+646, wy+444, 12, cBorder)
-	c.roundRect(cx-13, wy+145, cx+645, wy+443, 11, cCardBg)
+	c.roundRect(cx-13, wy+145, cx+645, wy+443, 11, cWhite)
 	lines := []struct {
 		t, lvl, msg string
 		col         rgba
@@ -429,15 +428,15 @@ func drawSplash(c *canvas, f *fonts) {
 // ==================== README 主图：检查更新下载 DeepSeek Harness 新版本 ====================
 
 func drawHero(c *canvas, f *fonts) {
-	// 底图：关于页（已含检查更新按钮）
-	base := drawSlide(f, 1, "关于", drawAbout)
+	// 底图：关于页（窄窗口 800，已含检查更新按钮）
+	base := drawSlide(f, 1, "关于", 800, drawAbout)
 	draw.Draw(c.img, c.img.Bounds(), base.img, image.Point{}, draw.Src)
-	// 叠加：下载进度窗口（右下角，不遮挡「检查更新」按钮）
-	wx, wy, ww, wh := 560, 372, 460, 140
+	// 叠加：下载进度窗口（位于「检查更新」按钮正下方，不遮挡按钮）
+	wx, wy, ww, wh := 382, 366, 420, 140
 	c.shadow(wx, wy, ww, wh, 18)
 	c.roundRect(wx, wy, wx+ww, wy+wh, 16, cWhite)
 	winBar(c, f, wx, wy, ww, "DeepSeek Harness")
-	c.textIn("正在下载 DeepSeek Harness 新版本…", wx+30, wy+48, wx+ww-30, wy+82, f.body, cSub, "center")
+	c.textIn("正在下载 DeepSeek Harness 新版本…", wx+30, wy+48, wx+ww-30, wy+82, f.small, cSub, "center")
 	c.roundRect(wx+50, wy+100, wx+ww-50, wy+110, 5, cBorder)
 	c.roundRect(wx+50, wy+100, wx+50+int(float64(ww-100)*0.55), wy+110, 5, cBlue)
 }
@@ -485,30 +484,30 @@ func TestRegenerateDocsImages(t *testing.T) {
 				expectColor(t, img, 600, 260, cWhite, "splash window")
 				expectColor(t, img, 380, 345, cBlue, "splash progress")
 			}},
-		{"general", func() *canvas { return drawSlide(f, 0, "常规", drawGeneral) },
+		{"general", func() *canvas { return drawSlide(f, 0, "常规", 920, drawGeneral) },
 			func(t *testing.T, img *image.RGBA) {
 				expectColor(t, img, 20, 20, cBG, "general bg")
 				expectColor(t, img, 950, 152, cWhite, "general body")
 				expectColor(t, img, 522, 166, cBlue, "general toggle")
 				expectColor(t, img, 600, 248, cWhite, "general restart row")
 			}},
-		{"about", func() *canvas { return drawSlide(f, 1, "关于", drawAbout) },
+		{"about", func() *canvas { return drawSlide(f, 1, "关于", 920, drawAbout) },
 			func(t *testing.T, img *image.RGBA) {
 				expectColor(t, img, 20, 20, cBG, "about bg")
 				expectColor(t, img, 510, 158, cWhite, "about body")
 			}},
-		{"logs", func() *canvas { return drawSlide(f, 2, "日志", drawLogs) },
+		{"logs", func() *canvas { return drawSlide(f, 2, "日志", 920, drawLogs) },
 			func(t *testing.T, img *image.RGBA) {
 				expectColor(t, img, 20, 20, cBG, "logs bg")
 				expectColor(t, img, 460, 177, cWhite, "logs select")
-				expectColor(t, img, 600, 212, cCardBg, "logs card")
+				expectColor(t, img, 600, 212, cWhite, "logs card")
 			}},
-		{"export", func() *canvas { return drawSlide(f, 3, "导出", drawExport) },
+		{"export", func() *canvas { return drawSlide(f, 3, "导出", 920, drawExport) },
 			func(t *testing.T, img *image.RGBA) {
 				expectColor(t, img, 20, 20, cBG, "export bg")
 				expectColor(t, img, 390, 160, cBlue, "export checkbox")
 			}},
-		{"import", func() *canvas { return drawSlide(f, 4, "导入", drawImport) },
+		{"import", func() *canvas { return drawSlide(f, 4, "导入", 920, drawImport) },
 			func(t *testing.T, img *image.RGBA) {
 				expectColor(t, img, 20, 20, cBG, "import bg")
 				expectColor(t, img, 472, 159, cBlue, "import button")
@@ -531,7 +530,7 @@ func TestRegenerateDocsImages(t *testing.T) {
 		t.Fatal(err)
 	}
 	expectColor(t, hero.img, 20, 20, cBG, "hero bg")
-	expectColor(t, hero.img, 990, 500, cWhite, "hero progress window")
-	expectColor(t, hero.img, 640, 477, cBlue, "hero progress fill")
+	expectColor(t, hero.img, 700, 458, cWhite, "hero progress window")
+	expectColor(t, hero.img, 500, 471, cBlue, "hero progress fill")
 	t.Logf("generated %s (%dx%d)", heroPath, hero.img.Bounds().Dx(), hero.img.Bounds().Dy())
 }
