@@ -610,10 +610,10 @@ func settingsDrawServiceStatus(dis drawItemStruct) {
 		pFillRect.Call(hdc, uintptr(unsafe.Pointer(&dis.rcItem)), wb)
 	}
 	up := settingsSvcUp.Load()
-	// 圆点（8px，垂直居中）
-	dotColorBound := uint32(0xFF2626DC) // #DC2626 红
+	// 圆点（8px，垂直居中）：ARGB——红=已停止 #DC2626，绿=运行中 #16A34A
+	dotColorBound := uint32(0xFFDC2626)
 	if up {
-		dotColorBound = 0xFF4AA316 // #16A34A 绿
+		dotColorBound = 0xFF16A34A
 	}
 	dotD := int32(8)
 	dy := dis.rcItem.top + (dis.rcItem.bottom-dis.rcItem.top-dotD)/2
