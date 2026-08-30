@@ -53,8 +53,8 @@ a{color:inherit;text-decoration:none}
 .car-arrow:hover{border-color:var(--primary);color:var(--primary)}
 .car-arrow.prev{left:-16px}
 .car-arrow.next{right:-16px}
-.car-caption{text-align:center;color:var(--muted);font-size:14px;margin-top:14px;min-height:20px}
-.car-dots{display:flex;gap:8px;justify-content:center;margin-top:10px}
+.car-bubble{position:absolute;left:18px;bottom:18px;z-index:3;background:rgba(16,24,40,.72);color:#fff;padding:9px 16px;border-radius:999px;font-size:13.5px;line-height:1.4;max-width:calc(100% - 36px);box-shadow:0 4px 14px rgba(16,24,40,.28);backdrop-filter:blur(4px);-webkit-backdrop-filter:blur(4px);pointer-events:none}
+.car-dots{display:flex;gap:8px;justify-content:center;margin-top:16px}
 .car-dot{width:8px;height:8px;border-radius:999px;background:#c9d0da;border:0;padding:0;cursor:pointer;transition:width .25s,background .25s}
 .car-dot:hover{background:#9aa4b2}
 .car-dot.active{width:22px;background:var(--primary)}
@@ -111,10 +111,10 @@ footer .sep{margin:0 8px;color:var(--border)}
     <div class="car" data-reveal>
       <div class="shot-stack car-stage">
         <img class="shot" id="car-img" src="shots/splash.png" alt="dsh-systray 界面轮播" />
+        <div class="car-bubble" id="car-cap">启动进度 — 无窗口拉起服务，进度可视化</div>
       </div>
       <button class="car-arrow prev" id="car-prev" type="button" aria-label="上一张">‹</button>
       <button class="car-arrow next" id="car-next" type="button" aria-label="下一张">›</button>
-      <div class="car-caption" id="car-cap">启动进度 — 无窗口拉起服务，进度可视化</div>
       <div class="car-dots" id="car-dots"></div>
     </div>
     <div class="hub-copy" data-reveal>
