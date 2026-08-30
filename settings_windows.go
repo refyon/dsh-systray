@@ -412,8 +412,14 @@ type textmetric struct {
 // settingsLogLastContent 上次加载的日志文本（用于判断是否有新写入，避免无变化时重置滚动）。
 var settingsLogLastContent string
 
-// settingsLogVisibleLines 估算日志控件可视行数（按实际行高与客户区高度）。
+// settingsLogVL 校准后的可视行数：每次滚到底后 = 行数 - 首可见行，比静态预估更准（用于判断贴底）。
+var settingsLogVL int32
+
+// settingsLogVisibleLines 估算日志控件可视行数（初次使用；之后由 settingsLogVL 校准）。
 func settingsLogVisibleLines(edit uintptr) int32 {
+	if settingsLogVL > 0 {
+		return settingsLogVL
+	}
 	if edit == 0 {
 		return 14
 	}
@@ -486,8 +492,15 @@ func settingsLogReload(forceScroll bool) {
 			pSendMessageW.Call(edit, wmSetText, 0, uintptr(unsafe.Pointer(ep)))
 			settingsLogLastContent = text
 		}
-		// WM_VSCROLL SB_BOTTOM：可靠滚动到底（不依赖焦点，EM_SCROLLCARET/EM_LINESCROLL 在富编辑上不可靠）
+		// 先强制一次重绘：让 RichEdit 完成文本排版/建立滚动范围，否则首次打开时滚动范围未就绪、SB_BOTTOM 不生效
+		pUpdateWindow.Call(edit)
 		pSendMessageW.Call(edit, wmVScroll, sbBottom, 0)
+		// 校准可视行数（真实值 = 行数 - 首可见行），供后续“是否贴底”判断
+		lc, _, _ := pSendMessageW.Call(edit, emGetLineCount, 0, 0)
+		fv, _, _ := pSendMessageW.Call(edit, emGetFirstVisibleLine, 0, 0)
+		if lc > 0 {
+			settingsLogVL = int32(lc - fv)
+		}
 		return
 	}
 
@@ -503,9 +516,15 @@ func settingsLogReload(forceScroll bool) {
 
 	ep, _ := syscall.UTF16PtrFromString(text)
 	pSendMessageW.Call(edit, wmSetText, 0, uintptr(unsafe.Pointer(ep)))
+	pUpdateWindow.Call(edit) // 强制重绘以确保滚动范围就绪
 	if atBottom {
 		// 贴底：跟随追加内容，自动滚到最后（tail -f 式）
 		pSendMessageW.Call(edit, wmVScroll, sbBottom, 0)
+		lc, _, _ := pSendMessageW.Call(edit, emGetLineCount, 0, 0)
+		fv, _, _ := pSendMessageW.Call(edit, emGetFirstVisibleLine, 0, 0)
+		if lc > 0 {
+			settingsLogVL = int32(lc - fv)
+		}
 	} else {
 		// 用户手动上翻：重置文本后回滚到原位置，不打断阅读
 		pSendMessageW.Call(edit, wmVScroll, sbThumbPos, firstVisible)
@@ -961,7 +980,7 @@ func createSettingsWindow() uintptr {
 	if logEdit != 0 {
 		settingsWidgets[logEdit] = stIdLogEdit
 		pSendMessageW.Call(logEdit, emExLimitText, 1, 0x7FFFFFF) // 放开文本上限
-		pSendMessageW.Call(logEdit, wmSetFont, settingsFontSmall, 1)
+		pSendMessageW.Call(logEdit, wmSetFont, settingsFontMono, 1)
 		settingsPaneLog = append(settingsPaneLog, stIdLogEdit)
 	}
 
