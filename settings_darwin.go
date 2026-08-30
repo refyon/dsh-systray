@@ -4,7 +4,7 @@ package main
 
 /*
 #cgo darwin CFLAGS: -x objective-c -fobjc-arc -Wno-deprecated-declarations
-#cgo darwin LDFLAGS: -framework Cocoa
+#cgo darwin LDFLAGS: -framework Cocoa -framework UniformTypeIdentifiers
 #include <stdlib.h>
 // 原生设置窗口入口（settings_darwin.m 实现，窗口创建于主线程）
 void dsh_settings_open(const char* version, const char* harnessVersion, int autostartOn);
