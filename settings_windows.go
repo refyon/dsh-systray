@@ -345,19 +345,7 @@ func settingsWndProc(hwnd, uMsg, wParam, lParam uintptr) uintptr {
 		}
 		return 0
 	case wmPaint:
-		// 日志页卡片由父窗口绘制：WS_CLIPCHILDREN 保证不会覆盖编辑框内容（白底 + 1px 边框，与编辑框白底一致）
-		if settingsCat == 2 {
-			var ps paintStruct
-			hdc, _, _ := pBeginPaint.Call(hwnd, uintptr(unsafe.Pointer(&ps)))
-			if hdc != 0 {
-				card := rect{stContentX - 12, 140, stWinW - (stContentX - 12) - 16, 440}
-				fillRoundedRectAA(hdc, card, 10, colorRefToARGB(stColorGray))
-				inner := rect{card.left + 1, card.top + 1, card.right - 1, card.bottom - 1}
-				fillRoundedRectAA(hdc, inner, 9, 0xFFFFFFFF)
-				pEndPaint.Call(hwnd, uintptr(unsafe.Pointer(&ps)))
-				return 0
-			}
-		}
+		// 日志卡片由自绘日志视图自身绘制（边框+白底），父窗口不参与，避免切页残影
 		ret, _, _ := pDefWindowProcW.Call(hwnd, uMsg, wParam, lParam)
 		return ret
 	case wmClose:
@@ -553,13 +541,6 @@ func settingsShowPane(hwnd uintptr) {
 		t, _ := syscall.UTF16PtrFromString(title)
 		pSendMessageW.Call(settingsTitleHwnd, wmSetText, 0, uintptr(unsafe.Pointer(t)))
 	}
-	// 日志卡片由父窗口绘制：切入/切出都重绘卡片区域（bErase=1 擦除旧像素），
-	// 切出时同步更新，避免残影出现在其它页
-	card := rect{stContentX - 12, 140, stWinW - (stContentX - 12) - 16, 440}
-	pInvalidateRect.Call(hwnd, uintptr(unsafe.Pointer(&card)), 0)
-	if settingsCat != 2 {
-		pUpdateWindow.Call(hwnd) // 立即重绘：非日志页走 DefWindowProc 擦白该区域
-	}
 }
 
 // settingsRedrawCats 重绘两个分类按钮（选中态变化）。
@@ -690,11 +671,17 @@ func logViewAtBottom() bool {
 }
 
 // logViewUpdateScrollbar 同步系统垂直滚动条（范围/页大小/位置）。
+// 规范：nMin=0，nMax=总行数-1，nPage=可视行数，nPos=首可见行（拇指行程 = nMax-nPage+1 = 最大滚动量）。
 func logViewUpdateScrollbar() {
 	if settingsLogView == 0 {
 		return
 	}
-	si := scrollInfo{cbSize: uint32(unsafe.Sizeof(scrollInfo{})), fMask: sifRange | sifPage | sifPos, nMin: 0, nMax: int32(logViewMaxScroll()), nPage: uint32(logViewVisibleRows()), nPos: int32(settingsLogViewScroll)}
+	total := len(logViewLines)
+	si := scrollInfo{cbSize: uint32(unsafe.Sizeof(scrollInfo{})), fMask: sifRange | sifPage | sifPos, nMin: 0, nMax: int32(total - 1), nPage: uint32(logViewVisibleRows()), nPos: int32(settingsLogViewScroll)}
+	if total < 1 {
+		si.nMax = 0
+		si.nPage = 1
+	}
 	pSetScrollInfo.Call(settingsLogView, sbVert, uintptr(unsafe.Pointer(&si)), 1)
 }
 
@@ -774,22 +761,21 @@ func logViewDraw(hdc uintptr, s string, x, y int32) {
 	pDrawTextW.Call(hdc, uintptr(unsafe.Pointer(t)), ^uintptr(0), uintptr(unsafe.Pointer(&rc)), dtLeft|dtVCenter|dtSingle)
 }
 
-// logViewPaint 绘制日志行：白底 + 等宽分色（时间灰 / 级别红琥珀 / 消息深灰）。
+// logViewPaint 绘制日志视图：圆角边框 + 白底（自绘卡片，随视图显隐，无父窗口残影问题）+ 等宽分色行。
 func logViewPaint(hdc uintptr) {
-	if wb, _, _ := pGetStockObject.Call(whiteBrush); wb != 0 {
-		rc := rect{0, 0, settingsLogViewW, settingsLogViewH}
-		pFillRect.Call(hdc, uintptr(unsafe.Pointer(&rc)), wb)
+	if settingsLogViewH <= 0 {
+		return
 	}
-	if settingsLogViewH <= 0 || len(logViewLines) == 0 {
+	fillRoundedRectAA(hdc, rect{0, 0, settingsLogViewW, settingsLogViewH}, 10, colorRefToARGB(stColorGray))
+	inner := rect{1, 1, settingsLogViewW - 1, settingsLogViewH - 1}
+	fillRoundedRectAA(hdc, inner, 9, 0xFFFFFFFF)
+	if len(logViewLines) == 0 {
 		return
 	}
 	if settingsFontMono != 0 {
 		pSelectObject.Call(hdc, settingsFontMono)
 	}
 	pSetBkMode.Call(hdc, bkTransparent)
-	if wb, _, _ := pGetStockObject.Call(whiteBrush); wb != 0 {
-		pIntersectClipRect.Call(hdc, 0, 0, uintptr(settingsLogViewW), uintptr(settingsLogViewH))
-	}
 	rows := logViewVisibleRows()
 	if rows < 1 {
 		rows = 1
