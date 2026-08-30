@@ -142,11 +142,11 @@ const (
 	ttmAddToolW        = 0x0432 // WM_USER + 50
 	ttmSetMaxTipWidthW = 0x0418 // WM_USER + 24
 	// 低层 Win32 滚动条
-	sifRange   = 0x1
-	sifPage    = 0x2
-	sifPos     = 0x4
+	sifRange           = 0x1
+	sifPage            = 0x2
+	sifPos             = 0x4
 	sifDisableNoScroll = 0x8
-	swScrollbar = 0x00030000 // SW_SCROLLCHILDREN|SW_ERASE|SW_INVALIDATE
+	swScrollbar        = 0x00030000 // SW_SCROLLCHILDREN|SW_ERASE|SW_INVALIDATE
 	// 自绘日志视图
 	logViewCls   = "DSH_Systray_LogView"
 	logViewLineH = 22
@@ -342,6 +342,20 @@ func settingsWndProc(hwnd, uMsg, wParam, lParam uintptr) uintptr {
 	case wmTimer:
 		if int(wParam) == settingsLogTimer && settingsCat == 2 {
 			settingsLogReload(false) // 定时跟随：仅新写入且贴底时滚动
+		}
+		return 0
+	case wmMouseWheel:
+		// 兜底路由：焦点不在日志视图时，滚轮消息经 DefWindowProc 上抛到设置窗口；
+		// 若光标位于日志视图内则滚动它（wParam 高字节 = 增量，lParam = 屏幕坐标）
+		if settingsCat == 2 && settingsLogView != 0 {
+			scx := int32(lParam & 0xFFFF)
+			scy := int32((lParam >> 16) & 0xFFFF)
+			var vrc rect
+			pGetWindowRect.Call(settingsLogView, uintptr(unsafe.Pointer(&vrc)))
+			if scx >= vrc.left && scx < vrc.right && scy >= vrc.top && scy < vrc.bottom {
+				delta := int32(int16((wParam >> 16) & 0xFFFF))
+				logViewSetScroll(settingsLogViewScroll + int(-delta/120)*3)
+			}
 		}
 		return 0
 	case wmPaint:
@@ -845,7 +859,8 @@ func logViewWndProc(hwnd, uMsg, wParam, lParam uintptr) uintptr {
 		}
 		return 0
 	case wmMouseWheel:
-		delta := int32(int16((lParam >> 16) & 0xFFFF))
+		// WM_MOUSEWHEEL：wParam 高字节 = 滚轮增量（±120/格），lParam = 屏幕坐标
+		delta := int32(int16((wParam >> 16) & 0xFFFF))
 		logViewSetScroll(settingsLogViewScroll + int(-delta/120)*3)
 		return 0
 	case wmKeyDown:
