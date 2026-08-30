@@ -422,7 +422,7 @@ func drawSplash(c *canvas, f *fonts) {
 	c.shadow(wx, wy, ww, wh, 18)
 	c.roundRect(wx, wy, wx+ww, wy+wh, 16, cWhite)
 	winBar(c, f, wx, wy, ww, "DeepSeek Harness")
-	c.textIn("正在启动后台服务…", wx+30, wy+48, wx+ww-30, wy+82, f.body, cSub, "center")
+	c.textIn("正在安装运行环境依赖（首次约 2-5 分钟）…", wx+30, wy+48, wx+ww-30, wy+82, f.body, cSub, "center")
 	c.roundRect(wx+50, wy+100, wx+ww-50, wy+110, 5, cBorder)
 	c.roundRect(wx+50, wy+100, wx+50+int(float64(ww-100)*0.35), wy+110, 5, cBlue)
 }
