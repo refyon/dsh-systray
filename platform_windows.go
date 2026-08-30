@@ -24,23 +24,7 @@ import (
 //go:embed scripts/install-prereqs.ps1
 var installScript []byte
 
-// notoSansSCFamily 首选 UI 字体：Google Noto Sans SC（中英文统一）。系统已装则直接使用，
-// 未装则尝试下载并注册；下载/注册失败则回退系统默认字体（微软雅黑/Segoe）。
-const notoSansSCFamily = "Noto Sans SC"
-
-// notoSansSCURL Noto Sans SC 可变字体下载地址（含全部字重）。经 downloadFileTo 的多镜像回退。
-var notoSansSCURLs = []string{
-	"https://github.com/googlefonts/noto-cjk/raw/main/Sans/Variable/TTF/NotoSansSC%5Bwght%5D.ttf",
-}
-
-// notoSansSCFontDir 存放已下载字体的目录（用户配置目录下，避免写入系统、无需管理员）。
-func notoSansSCFontDir() string {
-	d, err := os.UserConfigDir()
-	if err != nil {
-		d = os.TempDir()
-	}
-	return filepath.Join(d, "dsh-systray", "fonts")
-}
+// notoSansSCFamily / notoSansSCURLs / notoSansSCFontDir / downloadNotoSansSC 定义在 updater.go（跨平台共享）。
 
 // isNotoSansSCAvailable 判断系统能否解析 "Noto Sans SC" 字体。
 func isNotoSansSCAvailable() bool {
@@ -83,7 +67,7 @@ func ensureNotoSansSC(onStatus func(text string, pct float64)) {
 	if _, err := os.Stat(fontPath); err != nil {
 		logf("noto sans sc not installed; downloading ...")
 		progress(onStatus, "正在下载 UI 字体…", 0)
-		if err := downloadFileWithProgress(context.Background(), notoSansSCURLs[0], fontPath, func(p float64) {
+		if err := downloadNotoSansSC(fontPath, func(p float64) {
 			progress(onStatus, "正在下载 UI 字体…", p)
 		}); err != nil {
 			logf("noto sans sc download failed: " + err.Error() + "; using system font")

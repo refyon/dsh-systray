@@ -138,6 +138,42 @@ func progress(onStatus func(string, float64), t string, p float64) {
 	}
 }
 
+// notoSansSCFamily 首选 UI 字体：Google Noto Sans SC（中英文统一）。系统已装→直接用，
+// 未装→依次尝试多个 CDN 下载并注册；全部失败则回退系统默认字体。
+const notoSansSCFamily = "Noto Sans SC"
+
+// notoSansSCURLs Noto Sans SC 可变字体（含全部字重）的多个 CDN 候选源，依次尝试直至成功。
+// 下载时每个候选还会走 downloadFileWithProgress 的多镜像回退。
+var notoSansSCURLs = []string{
+	"https://github.com/googlefonts/noto-cjk/raw/main/Sans/Variable/TTF/NotoSansSC%5Bwght%5D.ttf",
+	"https://raw.githubusercontent.com/googlefonts/noto-cjk/main/Sans/Variable/TTF/NotoSansSC%5Bwght%5D.ttf",
+	"https://cdn.jsdelivr.net/gh/googlefonts/noto-cjk@main/Sans/Variable/TTF/NotoSansSC%5Bwght%5D.ttf",
+}
+
+// notoSansSCFontDir 存放已下载字体的目录（用户配置目录下，避免写入系统、无需管理员）。
+func notoSansSCFontDir() string {
+	d, err := os.UserConfigDir()
+	if err != nil {
+		d = os.TempDir()
+	}
+	return filepath.Join(d, "dsh-systray", "fonts")
+}
+
+// downloadNotoSansSC 依次尝试多个 CDN 字体源下载到 dest；成功返回 nil，全部失败返回错误。
+func downloadNotoSansSC(dest string, onProgress func(pct float64)) error {
+	var lastErr error
+	for _, u := range notoSansSCURLs {
+		if err := downloadFileWithProgress(context.Background(), u, dest, onProgress); err != nil {
+			log.Printf("noto sans source failed: %v (%s); trying next", err, u)
+			lastErr = err
+			_ = os.Remove(dest) // 清理半成品，避免下一个候选追加
+			continue
+		}
+		return nil
+	}
+	return lastErr
+}
+
 func clearActiveUpdate() {
 	updateMu.Lock()
 	activeCancel = nil
