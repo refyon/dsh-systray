@@ -783,14 +783,14 @@ func createSettingsWindow() uintptr {
 		pSendMessageW.Call(autoSub, wmSetFont, settingsFontSmall, 1)
 		settingsPaneGen = append(settingsPaneGen, stIdAutoSub)
 	}
-	// 开关（自绘胶囊）
+	// 开关（自绘胶囊）：放在“开机自启动”文案右侧，同排右对齐
 	tb, _ := syscall.UTF16PtrFromString("")
 	autoToggle, _, _ := pCreateWindowExW.Call(
 		0,
 		uintptr(unsafe.Pointer(btnCls)),
 		uintptr(unsafe.Pointer(tb)),
 		wsChild|wsVisible|wsTabStop|bsOwnDraw,
-		uintptr(stContentX), 136, 56, 32,
+		uintptr(stContentX+250), 75, 56, 28,
 		hwnd, stIdAutoToggle, moduleHandle(), 0,
 	)
 	if autoToggle != 0 {
