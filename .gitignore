@@ -13,3 +13,6 @@ config.json
 # ç³»ç»Ÿ / ç¼–è¾‘å™¨
 Thumbs.db
 .DS_Store
+
+# Í¼±ê/Õ¾µãÔ¤ÀÀ²úÎï£¨ÎğÌá½»£©
+preview*.png

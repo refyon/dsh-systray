@@ -675,7 +675,7 @@ func createSettingsWindow() uintptr {
 	settingsFontBold = makeFont(17, 600)
 	settingsFontSmall = makeFont(15, 400)
 	settingsFontMono = makeMonoFont(17)
-	settingsFontBtn = makeFont(18, 600)
+	settingsFontBtn = makeFont(16, 600)
 	settingsSideBrush, _, _ = pCreateSolidBrush.Call(stColorSidebarBg)
 
 	titleText, _ := syscall.UTF16PtrFromString("设置")
@@ -821,7 +821,7 @@ func createSettingsWindow() uintptr {
 		uintptr(unsafe.Pointer(btnCls)),
 		uintptr(unsafe.Pointer(rb)),
 		wsChild|wsVisible|wsTabStop|bsOwnDraw,
-		uintptr(stContentX), 150, 150, 34,
+		uintptr(stContentX), 150, 140, 32,
 		hwnd, stIdRestartBtn, moduleHandle(), 0,
 	)
 	if restBtn != 0 {
@@ -899,7 +899,7 @@ func createSettingsWindow() uintptr {
 		uintptr(unsafe.Pointer(btnCls)),
 		uintptr(unsafe.Pointer(cb2)),
 		wsChild|wsVisible|wsTabStop|bsOwnDraw,
-		uintptr(stContentX), 200, 130, 34,
+		uintptr(stContentX), 200, 118, 32,
 		hwnd, stIdCheckBtn, moduleHandle(), 0,
 	)
 	if checkBtn != 0 {

@@ -542,8 +542,8 @@ const (
 
 	dlgPad    = 20
 	dlgW      = 380
-	dlgBtnH   = 36
-	dlgBtnW   = 96
+	dlgBtnH   = 32
+	dlgBtnW   = 88
 	dlgBtnGap = 16
 
 	dialogColorMsg   = 0x00857066 // #667085
@@ -772,7 +772,7 @@ func runModernDialog(caption, message string, buttons []string, primary int) int
 	dialogButtons = nil
 	dialogResult = -1
 	dialogMsgFont = makeSystemFont(16, 400)
-	dialogBtnFont = makeFont(18, 600)
+	dialogBtnFont = makeFont(16, 600)
 
 	resultCh := make(chan int, 1)
 	go func() {

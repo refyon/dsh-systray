@@ -5,7 +5,7 @@ package main
 /*
 #cgo darwin CFLAGS: -x objective-c -fobjc-arc
 #cgo darwin LDFLAGS: -framework Cocoa -framework CoreText
-#import <Foundation/Foundation.h>
+#import <Cocoa/Cocoa.h>
 #import <CoreText/CoreText.h>
 #include <stdlib.h>
 static int dshFontExists(const char* name) {
