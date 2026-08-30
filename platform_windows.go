@@ -24,6 +24,74 @@ import (
 //go:embed scripts/install-prereqs.ps1
 var installScript []byte
 
+// notoSansSCFamily 首选 UI 字体：Google Noto Sans SC（中英文统一）。系统已装则直接使用，
+// 未装则尝试下载并注册；下载/注册失败则回退系统默认字体（微软雅黑/Segoe）。
+const notoSansSCFamily = "Noto Sans SC"
+
+// notoSansSCURL Noto Sans SC 可变字体下载地址（含全部字重）。经 downloadFileTo 的多镜像回退。
+var notoSansSCURLs = []string{
+	"https://github.com/googlefonts/noto-cjk/raw/main/Sans/Variable/TTF/NotoSansSC%5Bwght%5D.ttf",
+}
+
+// notoSansSCFontDir 存放已下载字体的目录（用户配置目录下，避免写入系统、无需管理员）。
+func notoSansSCFontDir() string {
+	d, err := os.UserConfigDir()
+	if err != nil {
+		d = os.TempDir()
+	}
+	return filepath.Join(d, "dsh-systray", "fonts")
+}
+
+// isNotoSansSCAvailable 判断系统能否解析 "Noto Sans SC" 字体。
+func isNotoSansSCAvailable() bool {
+	face, _ := syscall.UTF16PtrFromString(notoSansSCFamily)
+	h, _, _ := pCreateFontW.Call(16, 0, 0, 0, 400, 0, 0, 0, defaultCharset, 0, 0, cleartypeQual, 0, uintptr(unsafe.Pointer(face)))
+	if h == 0 {
+		return false
+	}
+	dc, _, _ := pGetDC.Call(0)
+	if dc == 0 {
+		pDeleteObject.Call(h)
+		return false
+	}
+	old, _, _ := pSelectObject.Call(dc, h)
+	var buf [64]uint16
+	n, _, _ := pGetTextFaceW.Call(dc, 64, uintptr(unsafe.Pointer(&buf[0])))
+	pSelectObject.Call(dc, old)
+	pReleaseDC.Call(0, dc)
+	pDeleteObject.Call(h)
+	return n > 0 && strings.EqualFold(syscall.UTF16ToString(buf[:n]), notoSansSCFamily)
+}
+
+// ensureNotoSansSC 启动时确保 Noto Sans SC 可用：已装→直接用；未装→下载到用户目录并(会话级)注册，
+// 失败则回退系统默认字体。仅注册到当前会话（FR_PRIVATE），不写系统、无需管理员。
+func ensureNotoSansSC() {
+	if isNotoSansSCAvailable() {
+		log.Printf("noto sans sc available")
+		return
+	}
+	dir := notoSansSCFontDir()
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		log.Printf("noto sans font dir create failed: %v", err)
+		return
+	}
+	fontPath := filepath.Join(dir, "NotoSansSC-VF.ttf")
+	if _, err := os.Stat(fontPath); err != nil {
+		log.Printf("noto sans sc not installed; downloading ...")
+		if err := downloadFileTo(context.Background(), notoSansSCURLs[0], fontPath); err != nil {
+			log.Printf("noto sans sc download failed: %v; using system font", err)
+			return
+		}
+	}
+	pp, _ := syscall.UTF16PtrFromString(fontPath)
+	res, _, _ := pAddFontResourceExW.Call(uintptr(unsafe.Pointer(pp)), 0x10 /* FR_PRIVATE */, 0)
+	if res == 0 {
+		log.Printf("noto sans sc register failed; using system font")
+	} else {
+		log.Printf("noto sans sc registered from %s", fontPath)
+	}
+}
+
 const (
 	registryPath = `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`
 	registryName = `DeepSeekHarness`

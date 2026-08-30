@@ -229,6 +229,9 @@ func main() {
 		log.Printf("autostart entry refreshed with --autostart flag")
 	}
 
+	// 确保 UI 字体可用：系统已装 Noto Sans SC 则直接用；未装则下载并注册（失败回退系统默认字体）
+	ensureNotoSansSC()
+
 	cfgDir, err := os.UserConfigDir()
 	if err != nil {
 		cfgDir = os.TempDir()

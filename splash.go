@@ -111,6 +111,7 @@ var (
 	pDeleteDC              = modGdi32.NewProc("DeleteDC")
 	pBitBlt                = modGdi32.NewProc("BitBlt")
 	pGetTextMetrics        = modGdi32.NewProc("GetTextMetricsA")
+	pAddFontResourceExW    = modGdi32.NewProc("AddFontResourceExW")
 	pDwmSetWindowAttribute = modDwmapi.NewProc("DwmSetWindowAttribute")
 	// GDI+（抗锯齿绘图）
 	modGdiplus    = syscall.NewLazyDLL("gdiplus.dll")
@@ -364,6 +365,14 @@ func selectedFace() string {
 // makeFont 创建与网站同源的字体（height 像素、weight 400/600）。
 func makeFont(height, weight int32) uintptr {
 	return makeFontQuality(height, weight, cleartypeQual)
+}
+
+// makeSystemFont 使用系统默认 UI 字体（微软雅黑 UI），用于动态文本（如弹窗错误信息/文件路径），
+// 避免 Noto 子集之外的字符（如未收录的罕见中文）显示为方框。
+func makeSystemFont(height, weight int32) uintptr {
+	face, _ := syscall.UTF16PtrFromString("Microsoft YaHei UI")
+	h, _, _ := pCreateFontW.Call(uintptr(height), 0, 0, 0, uintptr(weight), 0, 0, 0, defaultCharset, 0, 0, cleartypeQual, 0, uintptr(unsafe.Pointer(face)))
+	return h
 }
 
 // makeFontQuality 带指定抗锯齿质量的字体（quality：cleartypeQual 亚像素 / antialiasQual 灰度）。
@@ -762,8 +771,8 @@ func runModernDialog(caption, message string, buttons []string, primary int) int
 	dialogPrimary = primary
 	dialogButtons = nil
 	dialogResult = -1
-	dialogMsgFont = makeFont(16, 400)
-	dialogBtnFont = makeFont(18, 400)
+	dialogMsgFont = makeSystemFont(16, 400)
+	dialogBtnFont = makeFont(18, 600)
 
 	resultCh := make(chan int, 1)
 	go func() {
