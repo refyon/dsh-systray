@@ -675,7 +675,7 @@ func createSettingsWindow() uintptr {
 	settingsFontBold = makeFont(17, 600)
 	settingsFontSmall = makeFont(15, 400)
 	settingsFontMono = makeMonoFont(17)
-	settingsFontBtn = makeFont(14, 600)
+	settingsFontBtn = makeFont(16, 600)
 	settingsSideBrush, _, _ = pCreateSolidBrush.Call(stColorSidebarBg)
 
 	titleText, _ := syscall.UTF16PtrFromString("设置")
