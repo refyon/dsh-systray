@@ -141,6 +141,24 @@ const (
 	ttfSubclass        = 0x0010
 	ttmAddToolW        = 0x0432 // WM_USER + 50
 	ttmSetMaxTipWidthW = 0x0418 // WM_USER + 24
+	// 低层 Win32 滚动条
+	sifRange   = 0x1
+	sifPage    = 0x2
+	sifPos     = 0x4
+	sifDisableNoScroll = 0x8
+	swScrollbar = 0x00030000 // SW_SCROLLCHILDREN|SW_ERASE|SW_INVALIDATE
+	// 自绘日志视图
+	logViewCls   = "DSH_Systray_LogView"
+	logViewLineH = 22
+	logViewPadX  = 3
+	logViewPadY  = 5
+	wmSize       = 0x0005
+	wmMouseWheel = 0x020A
+	sbVert       = 1
+	vkPageUp     = 0x21
+	vkPageDown   = 0x22
+	vkHome       = 0x24
+	vkEnd        = 0x23
 
 	// 颜色（COLORREF = 0xBBGGRR）
 	stColorSidebarBg = 0x00FAF7F5 // #F5F7FA 侧栏浅灰底
@@ -162,6 +180,8 @@ var (
 	pGetParent           = modUser32.NewProc("GetParent")
 	pTrackMouseEvent     = modUser32.NewProc("TrackMouseEvent")
 	pRedrawWindow        = modUser32.NewProc("RedrawWindow")
+	pSetScrollInfo       = modUser32.NewProc("SetScrollInfo")
+	pIntersectClipRect   = modGdi32.NewProc("IntersectClipRect")
 
 	settingsOpenFlag        atomic.Bool
 	settingsHwnd            uintptr
@@ -175,7 +195,14 @@ var (
 	settingsPaneLog         []uintptr               // 日志面板控件
 	settingsPaneExp         []uintptr               // 导出面板控件
 	settingsPaneImp         []uintptr               // 导入面板控件
-	settingsLogEdit         uintptr                 // 日志 readonly EDIT
+	settingsLogEdit         uintptr                 // 日志视图（自绘窗口句柄）
+	settingsLogView         uintptr                 // 自绘日志视图句柄（同 settingsLogEdit，语义化）
+	settingsLogViewScroll   int                     // 日志视图首可见行
+	settingsLogViewW        int32                   // 日志视图客户区宽
+	settingsLogViewH        int32                   // 日志视图客户区高
+	settingsLogViewClsReg   bool                    // 日志视图窗口类是否已注册
+	logViewLines            []logLine               // 当前日志行（自绘视图专用）
+	settingsRestorePending  bool                    // 恢复过会话/插件：关闭设置窗口时提示重启
 	settingsLogComboSel     int                     // 日志文件选择 0=app.log / 1=server.log
 	settingsComboOpen       bool                    // 日志下拉列表是否展开
 	settingsDropHwnd        uintptr                 // 日志下拉列表窗口
@@ -334,6 +361,25 @@ func settingsWndProc(hwnd, uMsg, wParam, lParam uintptr) uintptr {
 		ret, _, _ := pDefWindowProcW.Call(hwnd, uMsg, wParam, lParam)
 		return ret
 	case wmClose:
+		// 恢复过会话/插件：提示重启服务生效（复用常规页「重启后台服务」处理流程）
+		if settingsRestorePending {
+			settingsRestorePending = false
+			r := runModernDialog(appName, "恢复数据需要重启服务生效，是否重启后台服务？", []string{"重启", "稍后"}, 0)
+			if r == 0 {
+				go func() {
+					restartBackgroundService(func(stage string) {
+						switch stage {
+						case "stopping", "stopped", "error":
+							settingsSetServiceStatus(false)
+						case "running":
+							settingsSetServiceStatus(true)
+						}
+					})
+					// 结束（含失败）以实际探测为准
+					settingsSetServiceStatus(serverResponding(webURL))
+				}()
+			}
+		}
 		pDestroyWindow.Call(hwnd)
 		return 0
 	case wmDestroy:
@@ -507,7 +553,8 @@ func settingsShowPane(hwnd uintptr) {
 		t, _ := syscall.UTF16PtrFromString(title)
 		pSendMessageW.Call(settingsTitleHwnd, wmSetText, 0, uintptr(unsafe.Pointer(t)))
 	}
-	// 日志卡片由父窗口绘制：切入/切出都重绘卡片区域；切出时同步清除，避免残影出现在其它页
+	// 日志卡片由父窗口绘制：切入/切出都重绘卡片区域（bErase=1 擦除旧像素），
+	// 切出时同步更新，避免残影出现在其它页
 	card := rect{stContentX - 12, 140, stWinW - (stContentX - 12) - 16, 440}
 	pInvalidateRect.Call(hwnd, uintptr(unsafe.Pointer(&card)), 0)
 	if settingsCat != 2 {
@@ -565,91 +612,126 @@ func settingsLogClear() {
 	settingsLogReload(true) // 清空后刷新：滚动到底部
 }
 
-// textmetric 与 gdi32 TEXTMETRIC 对应，用于计算日志行高。
-type textmetric struct {
-	tmHeight       int32
-	tmAscent       int32
-	tmDescent      int32
-	tmInternalLead int32
-	tmExternalLead int32
-	tmAveCharWidth int32
-	tmMaxCharWidth int32
-	tmWeight       int32
-	tmOverhang     int32
-	tmDigitizedX   int32
-	tmDigitizedY   int32
-	tmFirstChar    byte
-	tmLastChar     byte
-	tmDefaultChar  byte
-	tmBreakChar    byte
-	tmItalic       byte
-	tmUnderlined   byte
-	tmStruckOut    byte
-	tmPitchFamily  byte
-	tmCharSet      byte
+// ==================== 自绘日志视图（替代 RichEdit：渲染完全受控，杜绝空白/滚动异常） ====================
+
+// logLine 单行日志：拆出时间/级别/消息，便于分色绘制。
+type logLine struct {
+	timeStr string
+	level   string
+	msg     string
+}
+
+// splitLogLine 解析常见日志行 "2026/08/30 12:00:00 LEVEL message"；不匹配则整行作为消息。
+func splitLogLine(line string) logLine {
+	ll := logLine{msg: line}
+	if len(line) < 19 {
+		return ll
+	}
+	// 日期(10) + 空格 + 时间(8) = 前 19 字符
+	ll.timeStr = line[:19]
+	rest := strings.TrimPrefix(line[19:], " ")
+	if i := strings.Index(rest, " "); i > 0 && i <= 12 {
+		ll.level = rest[:i]
+		if m := strings.TrimSpace(rest[i+1:]); m != "" {
+			ll.msg = m
+		} else {
+			ll.msg = ll.level
+			ll.level = ""
+		}
+	} else {
+		ll.msg = line
+		ll.level = ""
+	}
+	return ll
 }
 
 // settingsLogLastContent 上次加载的日志文本（用于判断是否有新写入，避免无变化时重置滚动）。
 var settingsLogLastContent string
 
-// settingsLogVL 校准后的可视行数：每次滚到底后 = 行数 - 首可见行，比静态预估更准（用于判断贴底）。
-var settingsLogVL int32
-
-// settingsLogVisibleLines 估算日志控件可视行数（初次使用；之后由 settingsLogVL 校准）。
-func settingsLogVisibleLines(edit uintptr) int32 {
-	if settingsLogVL > 0 {
-		return settingsLogVL
+// logViewVisibleRows 当前可视行数。
+func logViewVisibleRows() int {
+	if settingsLogViewH <= 0 {
+		return 12
 	}
-	if edit == 0 {
-		return 14
-	}
-	var rc rect
-	pGetClientRect.Call(edit, uintptr(unsafe.Pointer(&rc)))
-	H := int32(rc.bottom - rc.top)
-	if H <= 0 {
-		return 14
-	}
-	dc, _, _ := pGetDC.Call(0)
-	if dc == 0 {
-		return 14
-	}
-	defer pReleaseDC.Call(0, dc)
-	old, _, _ := pSelectObject.Call(dc, settingsFontMono)
-	var tm textmetric
-	pGetTextMetrics.Call(dc, uintptr(unsafe.Pointer(&tm)))
-	pSelectObject.Call(dc, old)
-	lh := tm.tmHeight + tm.tmExternalLead
-	if lh <= 0 {
-		lh = 18
-	}
-	return H / lh
+	return int(settingsLogViewH) / logViewLineH
 }
 
-// settingsLogAtBottom 判断当前日志是否已滚动到底部（用于决定是否跟随新增内容自动滚到底）。
-func settingsLogAtBottom(edit uintptr) bool {
-	lc, _, _ := pSendMessageW.Call(edit, emGetLineCount, 0, 0)
-	fv, _, _ := pSendMessageW.Call(edit, emGetFirstVisibleLine, 0, 0)
-	vl := settingsLogVisibleLines(edit)
-	if vl < 1 {
-		vl = 1
+// logViewMaxScroll 允许的最大首行偏移。
+func logViewMaxScroll() int {
+	m := len(logViewLines) - logViewVisibleRows()
+	if m < 0 {
+		return 0
 	}
-	return int64(fv)+int64(vl) >= int64(lc)-1
+	return m
 }
 
-// settingsLogReload 按当前选择重新加载日志到只读文本框（CRLF 换行）。
-// forceScroll：打开/切换日志页时传 true，无论内容是否变化都滚动到底部一次；
+// logViewSetScroll 设置滚动位置并刷新滚动条/视图。
+func logViewSetScroll(pos int) {
+	m := logViewMaxScroll()
+	if pos < 0 {
+		pos = 0
+	}
+	if pos > m {
+		pos = m
+	}
+	if settingsLogViewScroll == pos && settingsLogView != 0 {
+		return
+	}
+	settingsLogViewScroll = pos
+	if settingsLogView != 0 {
+		logViewUpdateScrollbar()
+		pInvalidateRect.Call(settingsLogView, 0, 0)
+	}
+}
+
+// logViewAtBottom 是否贴底（决定定时跟随是否自动滚动）。
+func logViewAtBottom() bool {
+	return settingsLogViewScroll >= logViewMaxScroll()
+}
+
+// logViewUpdateScrollbar 同步系统垂直滚动条（范围/页大小/位置）。
+func logViewUpdateScrollbar() {
+	if settingsLogView == 0 {
+		return
+	}
+	si := scrollInfo{cbSize: uint32(unsafe.Sizeof(scrollInfo{})), fMask: sifRange | sifPage | sifPos, nMin: 0, nMax: int32(logViewMaxScroll()), nPage: uint32(logViewVisibleRows()), nPos: int32(settingsLogViewScroll)}
+	pSetScrollInfo.Call(settingsLogView, sbVert, uintptr(unsafe.Pointer(&si)), 1)
+}
+
+// logViewUpdateContent 设置文本（按行解析）；scrollToEnd=true 滚到底，false 保持当前位置（超出则钳制）。
+func logViewUpdateContent(text string, scrollToEnd bool) {
+	raw := strings.Split(strings.ReplaceAll(text, "\r\n", "\n"), "\n")
+	for len(raw) > 0 && raw[len(raw)-1] == "" {
+		raw = raw[:len(raw)-1]
+	}
+	lines := make([]logLine, 0, len(raw))
+	for _, s := range raw {
+		lines = append(lines, splitLogLine(s))
+	}
+	logViewLines = lines
+	if scrollToEnd {
+		settingsLogViewScroll = logViewMaxScroll()
+	} else if settingsLogViewScroll > logViewMaxScroll() {
+		settingsLogViewScroll = logViewMaxScroll()
+	}
+	if settingsLogView != 0 {
+		logViewUpdateScrollbar()
+		pInvalidateRect.Call(settingsLogView, 0, 0)
+	}
+}
+
+// settingsLogReload 按当前选择重新加载日志到自绘视图。
+// forceScroll：打开/切换日志页时传 true，无论内容是否变化都滚动到底；
 // 定时跟随传 false——仅当有新写入且用户贴底时才自动滚到底，用户手动上翻则不打断。
 func settingsLogReload(forceScroll bool) {
 	name := settingsCurrentLogName()
 	if info := settingsWidgetKey(stIdLogInfo); info != 0 {
-		// 说明文本显示当前日志文件的完整路径
 		ip, _ := syscall.UTF16PtrFromString(filepath.Join(logDir, name))
 		pSendMessageW.Call(info, wmSetText, 0, uintptr(unsafe.Pointer(ip)))
 	}
 	text := ""
 	p := filepath.Join(logDir, name)
 	if data, err := os.ReadFile(p); err == nil && len(data) > 0 {
-		// 只展示尾部（最新）100KB，且截到完整行，避免翻页/换行问题
 		const max = 100 * 1024
 		if len(data) > max {
 			data = data[len(data)-max:]
@@ -658,65 +740,147 @@ func settingsLogReload(forceScroll bool) {
 	} else {
 		text = "（暂无日志：" + p + "）"
 	}
-	// Win32 多行 EDIT 需 \r\n 换行；Go 日志为 \n，这里统一转 CRLF，否则文字堆叠。
-	text = strings.ReplaceAll(strings.ReplaceAll(text, "\r\n", "\n"), "\n", "\r\n")
-
-	edit := settingsWidgetKey(stIdLogEdit)
-	if edit == 0 {
-		return
-	}
-
-	// 打开/切换到日志页（或清空/切换日志文件）：无论内容是否变化都重设文本并重绘，保证每次切入都渲染出内容
 	if forceScroll {
-		ep, _ := syscall.UTF16PtrFromString(text)
-		pSendMessageW.Call(edit, wmSetText, 0, uintptr(unsafe.Pointer(ep)))
+		logViewUpdateContent(text, true)
 		settingsLogLastContent = text
-		// 先强制一次重绘：让 RichEdit 完成文本排版/建立滚动范围
-		pUpdateWindow.Call(edit)
-		settingsLogScrollToEnd(edit, text)
-		// 校准可视行数（真实值 = 行数 - 首可见行），供后续“是否贴底”判断
-		lc, _, _ := pSendMessageW.Call(edit, emGetLineCount, 0, 0)
-		fv, _, _ := pSendMessageW.Call(edit, emGetFirstVisibleLine, 0, 0)
-		if lc > 0 {
-			settingsLogVL = int32(lc - fv)
-		}
 		return
 	}
-
-	// 定时刷新（跟随最新日志）：无新写入则不重设文本（避免把用户手动上翻的位置拉回顶部）
 	if text == settingsLogLastContent {
 		return
 	}
+	atBottom := logViewAtBottom()
 	settingsLogLastContent = text
+	logViewUpdateContent(text, atBottom) // 贴底跟随；上翻时保持位置
+}
 
-	// 记录当前滚动位置与是否贴底，用于文本重置后决定是否跟随
-	atBottom := settingsLogAtBottom(edit)
-	firstVisible, _, _ := pSendMessageW.Call(edit, emGetFirstVisibleLine, 0, 0)
+// logViewLevelColor 级别配色（COLORREF=0xBBGGRR）。
+func logViewLevelColor(level string) uintptr {
+	switch level {
+	case "ERROR":
+		return 0x002626DC // #DC2626 红
+	case "WARN":
+		return 0x000953B4 // #B45309 琥珀
+	}
+	return stColorSub // 其余（INFO 等）次要灰
+}
 
-	ep, _ := syscall.UTF16PtrFromString(text)
-	pSendMessageW.Call(edit, wmSetText, 0, uintptr(unsafe.Pointer(ep)))
-	pUpdateWindow.Call(edit) // 强制重绘以确保滚动范围就绪
-	if atBottom {
-		// 贴底：跟随追加内容，自动滚到最后（tail -f 式）
-		settingsLogScrollToEnd(edit, text)
-		lc, _, _ := pSendMessageW.Call(edit, emGetLineCount, 0, 0)
-		fv, _, _ := pSendMessageW.Call(edit, emGetFirstVisibleLine, 0, 0)
-		if lc > 0 {
-			settingsLogVL = int32(lc - fv)
+// logViewDraw 用当前字体/颜色在 (x,y) 绘制单行文本（右侧/下侧裁剪）。
+func logViewDraw(hdc uintptr, s string, x, y int32) {
+	if s == "" {
+		return
+	}
+	t, _ := syscall.UTF16PtrFromString(s)
+	rc := rect{x, y, x + settingsLogViewW, y + int32(logViewLineH)}
+	pDrawTextW.Call(hdc, uintptr(unsafe.Pointer(t)), ^uintptr(0), uintptr(unsafe.Pointer(&rc)), dtLeft|dtVCenter|dtSingle)
+}
+
+// logViewPaint 绘制日志行：白底 + 等宽分色（时间灰 / 级别红琥珀 / 消息深灰）。
+func logViewPaint(hdc uintptr) {
+	if wb, _, _ := pGetStockObject.Call(whiteBrush); wb != 0 {
+		rc := rect{0, 0, settingsLogViewW, settingsLogViewH}
+		pFillRect.Call(hdc, uintptr(unsafe.Pointer(&rc)), wb)
+	}
+	if settingsLogViewH <= 0 || len(logViewLines) == 0 {
+		return
+	}
+	if settingsFontMono != 0 {
+		pSelectObject.Call(hdc, settingsFontMono)
+	}
+	pSetBkMode.Call(hdc, bkTransparent)
+	if wb, _, _ := pGetStockObject.Call(whiteBrush); wb != 0 {
+		pIntersectClipRect.Call(hdc, 0, 0, uintptr(settingsLogViewW), uintptr(settingsLogViewH))
+	}
+	rows := logViewVisibleRows()
+	if rows < 1 {
+		rows = 1
+	}
+	for i := 0; i < rows; i++ {
+		idx := settingsLogViewScroll + i
+		if idx >= len(logViewLines) {
+			break
 		}
-	} else {
-		// 用户手动上翻：重置文本后回滚到原位置，不打断阅读
-		pSendMessageW.Call(edit, wmVScroll, sbThumbPos, firstVisible)
-		pRedrawWindow.Call(edit, 0, 0, rdwInvalidate|rdwUpdateNow|rdwAllChildren)
+		ln := logViewLines[idx]
+		y := int32(logViewPadY + i*logViewLineH)
+		x := int32(logViewPadX)
+		if ln.timeStr != "" {
+			pSetTextColor.Call(hdc, stColorSub)
+			logViewDraw(hdc, ln.timeStr, x, y)
+			x += int32(len(ln.timeStr)) * 8 // 等宽 14px ≈ 8px/字符
+			if ln.level != "" {
+				pSetTextColor.Call(hdc, logViewLevelColor(ln.level))
+				logViewDraw(hdc, " "+ln.level, x, y)
+				x += int32(len(ln.level)+1) * 8
+			}
+		}
+		pSetTextColor.Call(hdc, stColorText)
+		logViewDraw(hdc, ln.msg, x, y)
 	}
 }
 
-// settingsLogScrollToEnd 把日志滚动到文末：按总行数 EM_LINESCROLL（系统钳制，不会滚过头），
-// 再同步强制完整重绘，避免视口停在空白区（需手动滚动才恢复的问题）。
-func settingsLogScrollToEnd(edit uintptr, text string) {
-	lc, _, _ := pSendMessageW.Call(edit, emGetLineCount, 0, 0)
-	pSendMessageW.Call(edit, emLineScroll, 0, lc)
-	pRedrawWindow.Call(edit, 0, 0, rdwInvalidate|rdwUpdateNow|rdwAllChildren)
+// logViewWndProc 自绘日志视图：滚轮/键盘/系统滚动条全部可控。
+func logViewWndProc(hwnd, uMsg, wParam, lParam uintptr) uintptr {
+	switch uMsg {
+	case wmSize:
+		settingsLogViewW = int32(lParam & 0xFFFF)
+		settingsLogViewH = int32((lParam >> 16) & 0xFFFF)
+		logViewUpdateScrollbar()
+		return 0
+	case wmPaint:
+		var ps paintStruct
+		hdc, _, _ := pBeginPaint.Call(hwnd, uintptr(unsafe.Pointer(&ps)))
+		if hdc != 0 {
+			logViewPaint(hdc)
+			pEndPaint.Call(hwnd, uintptr(unsafe.Pointer(&ps)))
+		}
+		return 0
+	case wmVScroll:
+		code := int(wParam & 0xFFFF)
+		pos := int32((wParam >> 16) & 0xFFFF)
+		cur := settingsLogViewScroll
+		v := logViewVisibleRows()
+		if v < 1 {
+			v = 1
+		}
+		switch code {
+		case sbTop:
+			logViewSetScroll(0)
+		case sbBottom:
+			logViewSetScroll(logViewMaxScroll())
+		case 0: // SB_LINEUP
+			logViewSetScroll(cur - 1)
+		case 1: // SB_LINEDOWN
+			logViewSetScroll(cur + 1)
+		case 2: // SB_PAGEUP
+			logViewSetScroll(cur - v)
+		case 3, 4: // SB_PAGEDOWN / SB_THUMBPOSITION
+			logViewSetScroll(cur + v)
+		case 5: // SB_THUMBTRACK
+			logViewSetScroll(int(pos))
+		}
+		return 0
+	case wmMouseWheel:
+		delta := int32(int16((lParam >> 16) & 0xFFFF))
+		logViewSetScroll(settingsLogViewScroll + int(-delta/120)*3)
+		return 0
+	case wmKeyDown:
+		switch wParam {
+		case vkUp:
+			logViewSetScroll(settingsLogViewScroll - 1)
+		case vkDown:
+			logViewSetScroll(settingsLogViewScroll + 1)
+		case vkPageUp:
+			logViewSetScroll(settingsLogViewScroll - logViewVisibleRows())
+		case vkPageDown:
+			logViewSetScroll(settingsLogViewScroll + logViewVisibleRows())
+		case vkHome:
+			logViewSetScroll(0)
+		case vkEnd:
+			logViewSetScroll(logViewMaxScroll())
+		}
+		return 0
+	}
+	ret, _, _ := pDefWindowProcW.Call(hwnd, uMsg, wParam, lParam)
+	return ret
 }
 
 // settingsDrawCat 绘制侧栏分类按钮（选中项浅灰胶囊 + 蓝色文字）。
@@ -966,6 +1130,17 @@ type toolInfoW struct {
 	rect     rect
 	hinst    uintptr
 	lpszText *uint16
+}
+
+// scrollInfo 对应 SCROLLINFO（SetScrollInfo 用）。
+type scrollInfo struct {
+	cbSize    uint32
+	fMask     uint32
+	nMin      int32
+	nMax      int32
+	nPage     uint32
+	nPos      int32
+	nTrackPos int32
 }
 
 // settingsDropWndProc 下拉列表窗口：悬停高亮、点击/回车选择、Esc 关闭、失活收起。
@@ -1352,9 +1527,9 @@ func settingsRestoreRun(kind, filesDest string) {
 				settingsSetText(stIdImpStatus, t)
 			}
 		})
-		if stopped {
-			resumeServiceAfterRestore()
-			settingsSetServiceStatus(serverResponding(webURL))
+		if stopped && kind != "files" {
+			// 不自动重启：关闭设置窗口时提示用户重启生效（复用常规页重启流程）
+			settingsRestorePending = true
 		}
 		if err != nil {
 			settingsSetText(stIdImpStatus, "恢复失败")
@@ -1362,9 +1537,6 @@ func settingsRestoreRun(kind, filesDest string) {
 			return
 		}
 		msg := "恢复完成。"
-		if stopped {
-			msg = "恢复完成，后台服务已自动重启。"
-		}
 		settingsSetText(stIdImpStatus, msg)
 		runModernDialog(appName, msg, []string{"确定"}, 0)
 	}()
@@ -1730,21 +1902,40 @@ func createSettingsWindow() uintptr {
 		settingsPaneLog = append(settingsPaneLog, stIdLogRefresh)
 	}
 
-	// 用 RICHEDIT50W（可靠的多行富文本：正确处理换行/大文本/滚动/复制）；无边框、浅灰底
-	mdll, _ := syscall.UTF16PtrFromString("Msftedit.dll")
-	pLoadLibraryW.Call(uintptr(unsafe.Pointer(mdll)))
-	editCls, _ := syscall.UTF16PtrFromString("RICHEDIT50W")
+	// 自绘日志视图（GDI 渲染，彻底规避 RichEdit 的渲染/滚动缺陷）
+	if !settingsLogViewClsReg {
+		lvCls, _ := syscall.UTF16PtrFromString(logViewCls)
+		cb2 := syscall.NewCallback(logViewWndProc)
+		cur2, _, _ := pLoadCursorW.Call(0, idcArrow)
+		wc2 := wndClassExW{
+			cbSize:        uint32(unsafe.Sizeof(wndClassExW{})),
+			style:         csHRedraw | csVRedraw,
+			lpfnWndProc:   cb2,
+			hInstance:     moduleHandle(),
+			hCursor:       cur2,
+			hbrBackground: colorWin,
+			lpszClassName: lvCls,
+		}
+		pRegisterClassExW.Call(uintptr(unsafe.Pointer(&wc2)))
+		settingsLogViewClsReg = true
+	}
+	lvCls, _ := syscall.UTF16PtrFromString(logViewCls)
 	logEdit, _, _ := pCreateWindowExW.Call(
-		0, uintptr(unsafe.Pointer(editCls)), 0,
-		wsChild|wsVisible|wsTabStop|esMultiline|esAutoVScroll|esReadOnly|wsVScroll,
+		0, uintptr(unsafe.Pointer(lvCls)), 0,
+		wsChild|wsVisible|wsTabStop|wsVScroll,
 		uintptr(stContentX-8), 144, uintptr(stWinW-stContentX-12), 292, hwnd, stIdLogEdit, moduleHandle(), 0,
 	)
 	if logEdit != 0 {
 		settingsWidgets[logEdit] = stIdLogEdit
-		pSendMessageW.Call(logEdit, emExLimitText, 1, 0x7FFFFFF) // 放开文本上限
+		settingsLogView = logEdit
+		settingsLogViewScroll = 0
+		settingsLogViewW = int32(stWinW - stContentX - 12)
+		settingsLogViewH = 292
 		pSendMessageW.Call(logEdit, wmSetFont, settingsFontMono, 1)
 		settingsPaneLog = append(settingsPaneLog, stIdLogEdit)
 	}
+	// 导出/导入页的普通 EDIT 控件类名
+	editCls, _ := syscall.UTF16PtrFromString("EDIT")
 
 	// ---- 导出面板 ----
 	expHome := dshHomeDir()
@@ -1828,7 +2019,7 @@ func createSettingsWindow() uintptr {
 	plugHelp, _, _ := pCreateWindowExW.Call(
 		0, uintptr(unsafe.Pointer(btnCls)), uintptr(unsafe.Pointer(hp)),
 		wsChild|wsVisible|bsOwnDraw,
-		uintptr(plugHelpX), 117, 18, 18,
+		uintptr(plugHelpX), 114, 18, 18,
 		hwnd, stIdExpPlugHelp, moduleHandle(), 0,
 	)
 	if plugHelp != 0 {

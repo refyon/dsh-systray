@@ -22,11 +22,12 @@ import (
 
 // dshResult 返回给 ObjC 的 JSON 结果（{ok, path/error/message/items}）。
 type dshResult struct {
-	OK      bool         `json:"ok"`
-	Path    string       `json:"path,omitempty"`
-	Error   string       `json:"error,omitempty"`
-	Message string       `json:"message,omitempty"`
-	Items   []importItem `json:"items,omitempty"`
+	OK            bool         `json:"ok"`
+	Path          string       `json:"path,omitempty"`
+	Error         string       `json:"error,omitempty"`
+	Message       string       `json:"message,omitempty"`
+	Items         []importItem `json:"items,omitempty"`
+	RestartPending bool        `json:"restartPending,omitempty"` // 恢复会话/插件后需重启服务生效
 }
 
 func dshResultCString(r dshResult) *C.char {
@@ -178,17 +179,12 @@ func dshSettingsGoRestore(kindC, zipPathC, destDirC *C.char, overwrite C.int) *C
 
 	stopped := pauseServiceForRestore()
 	_, err = restoreItem(kind, tmp, C.GoString(destDirC), overwrite != 0, nil)
-	if stopped {
-		resumeServiceAfterRestore()
-	}
+	restartPending := stopped && kind != "files" // 不自动重启：由设置窗口关闭时提示用户重启
 	if err != nil {
 		return dshResultCString(dshResult{OK: false, Error: err.Error()})
 	}
 	msg := "恢复完成"
-	if stopped {
-		msg = "恢复完成，后台服务已自动重启"
-	}
-	return dshResultCString(dshResult{OK: true, Message: msg})
+	return dshResultCString(dshResult{OK: true, Message: msg, RestartPending: restartPending})
 }
 
 // innerZipName 子包在总 zip 内的文件名。

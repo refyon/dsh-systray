@@ -28,8 +28,9 @@ int dshSettingsGoCountConflicts(const char* kind, const char* zipPath);
 // 恢复子包（阻塞）：返回 JSON C 字符串（调用方 free）
 char* dshSettingsGoRestore(const char* kind, const char* zipPath, const char* destDir, int overwrite);
 
-@interface DSHSetController : NSObject <NSTableViewDataSource, NSTableViewDelegate>
+@interface DSHSetController : NSObject <NSTableViewDataSource, NSTableViewDelegate, NSWindowDelegate>
 @property (nonatomic, strong) NSWindow *window;
+@property (nonatomic, assign) BOOL restoreNeedsRestart; // 恢复过会话/插件：关闭窗口时提示重启
 @property (nonatomic, strong) NSTableView *catTable;
 @property (nonatomic, strong) NSView *generalPane;
 @property (nonatomic, strong) NSView *aboutPane;
@@ -430,6 +431,9 @@ static DSHSetController *g_ctrl = nil;
             NSDictionary *d = [self parseJSON:json];
             if (d && [d[@"ok"] boolValue]) {
                 self.impStatusLabel.stringValue = d[@"message"] ?: @"恢复完成";
+                if ([d[@"restartPending"] boolValue]) {
+                    self.restoreNeedsRestart = YES; // 关闭设置窗口时提示重启服务
+                }
                 NSAlert *a = [[NSAlert alloc] init];
                 a.messageText = @"恢复完成";
                 a.informativeText = d[@"message"] ?: @"";
@@ -451,6 +455,22 @@ static DSHSetController *g_ctrl = nil;
     }
 }
 
+// 窗口关闭前：若刚恢复过会话/插件，提示重启服务生效（复用常规页「重启后台服务」流程）。
+- (BOOL)windowShouldClose:(NSWindow *)sender {
+    if (self.restoreNeedsRestart) {
+        self.restoreNeedsRestart = NO;
+        NSAlert *a = [[NSAlert alloc] init];
+        a.messageText = @"恢复数据需要重启服务生效，是否重启后台服务？";
+        a.informativeText = @"重启后 Web UI 会短暂不可用。";
+        [a addButtonWithTitle:@"重启"];
+        [a addButtonWithTitle:@"稍后"];
+        if ([a runModal] == NSAlertFirstButtonReturn) {
+            dshSettingsGoRestartService();
+        }
+    }
+    return YES;
+}
+
 // ==================== 窗口构建 ====================
 
 - (void)buildWindowWithVersion:(const char *)ver harness:(const char *)hver autostart:(int)autoOn {
@@ -460,6 +480,7 @@ static DSHSetController *g_ctrl = nil;
                                                 backing:NSBackingStoreBuffered
                                                   defer:NO];
     self.window.title = @"设置";
+    self.window.delegate = self;
     [self.window center];
     [self.window setReleasedWhenClosed:NO];
 
@@ -613,7 +634,7 @@ static DSHSetController *g_ctrl = nil;
     CGFloat plugTW = [plugLabel sizeWithAttributes:@{NSFontAttributeName: plugFont}].width;
     NSButton *plugHelp = [NSButton buttonWithTitle:@"" target:nil action:nil];
     plugHelp.bezelStyle = NSHelpButtonBezelStyle;
-    plugHelp.frame = NSMakeRect(18 + plugTW + 4, 290, 20, 20);
+    plugHelp.frame = NSMakeRect(18 + plugTW + 4, 287, 20, 20);
     plugHelp.toolTip = @"仅打包用户安装的插件";
     [self.exportPane addSubview:plugHelp];
 
