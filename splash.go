@@ -763,7 +763,7 @@ func runModernDialog(caption, message string, buttons []string, primary int) int
 	dialogButtons = nil
 	dialogResult = -1
 	dialogMsgFont = makeFont(16, 400)
-	dialogBtnFont = makeFont(16, 400)
+	dialogBtnFont = makeFont(18, 400)
 
 	resultCh := make(chan int, 1)
 	go func() {
