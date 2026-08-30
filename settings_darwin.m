@@ -34,6 +34,13 @@ static DSHSetController *g_ctrl = nil;
 
 @implementation DSHSetController
 
+// 优先用 Google Noto Sans SC（中英文统一、现代）；系统未安装则回退系统字体。
+- (NSFont *)uiFontOfSize:(CGFloat)size weight:(NSFontWeight)w {
+    NSFont *f = [NSFont fontWithName:@"Noto Sans SC" size:size];
+    if (f) return f;
+    return [NSFont systemFontOfSize:size weight:w];
+}
+
 - (void)addLabel:(NSString *)text font:(NSFont *)font color:(NSColor *)color frame:(NSRect)frame to:(NSView *)parent {
     NSTextField *l = [NSTextField labelWithString:text];
     l.font = font;
@@ -76,7 +83,7 @@ static DSHSetController *g_ctrl = nil;
         cell.identifier = cid;
         NSTextField *tf = [NSTextField labelWithString:@""];
         tf.frame = NSMakeRect(10, 3, 130, 20);
-        tf.font = [NSFont systemFontOfSize:16];
+        tf.font = [self uiFontOfSize:16 weight:NSFontWeightRegular];
         cell.textField = tf;
         [cell addSubview:tf];
     }
@@ -183,9 +190,9 @@ static DSHSetController *g_ctrl = nil;
 
     // 常规面板：开机自启动开关
     self.generalPane = [[NSView alloc] initWithFrame:NSMakeRect(160, 0, 400, 360)];
-    [self addLabel:@"常规" font:[NSFont systemFontOfSize:19] color:nil frame:NSMakeRect(0, 316, 300, 24) to:self.generalPane];
-    [self addLabel:@"开机自启动" font:[NSFont systemFontOfSize:17] color:nil frame:NSMakeRect(0, 270, 220, 24) to:self.generalPane];
-    [self addLabel:@"登录系统时自动启动托盘程序" font:[NSFont systemFontOfSize:14] color:[NSColor secondaryLabelColor] frame:NSMakeRect(0, 248, 320, 18) to:self.generalPane];
+    [self addLabel:@"常规" font:[self uiFontOfSize:19 weight:NSFontWeightSemibold] color:nil frame:NSMakeRect(0, 316, 300, 24) to:self.generalPane];
+    [self addLabel:@"开机自启动" font:[self uiFontOfSize:17 weight:NSFontWeightRegular] color:nil frame:NSMakeRect(0, 270, 220, 24) to:self.generalPane];
+    [self addLabel:@"登录系统时自动启动托盘程序" font:[self uiFontOfSize:14 weight:NSFontWeightRegular] color:[NSColor secondaryLabelColor] frame:NSMakeRect(0, 248, 320, 18) to:self.generalPane];
 
     self.autoSwitch = [[NSButton alloc] initWithFrame:NSMakeRect(310, 268, 60, 24)];
     [self.autoSwitch setButtonType:NSButtonTypeSwitch];
@@ -205,30 +212,30 @@ static DSHSetController *g_ctrl = nil;
     [svcAttr addAttribute:NSForegroundColorAttributeName value:svcDot range:NSMakeRange(0, 1)];
     [svcAttr addAttribute:NSForegroundColorAttributeName value:[NSColor secondaryLabelColor] range:NSMakeRange(2, svcAttr.length - 2)];
     NSTextField *svcLabel = [NSTextField labelWithAttributedString:svcAttr];
-    svcLabel.font = [NSFont systemFontOfSize:14];
+    svcLabel.font = [self uiFontOfSize:14 weight:NSFontWeightRegular];
     svcLabel.frame = NSMakeRect(0, 210, 320, 18);
     [self.generalPane addSubview:svcLabel];
 
     NSButton *restartBtn = [[NSButton alloc] initWithFrame:NSMakeRect(0, 172, 130, 34)];
     restartBtn.title = @"重启后台服务";
     restartBtn.bezelStyle = NSBezelStyleRounded;
-    restartBtn.font = [NSFont systemFontOfSize:17];
+    restartBtn.font = [self uiFontOfSize:17 weight:NSFontWeightRegular];
     restartBtn.target = self;
     restartBtn.action = @selector(restartServiceClicked:);
     [self.generalPane addSubview:restartBtn];
 
     // 关于面板：dsh-systray 版本号 + DeepSeek Harness 版本号 + 检查更新
     self.aboutPane = [[NSView alloc] initWithFrame:NSMakeRect(160, 0, 400, 360)];
-    [self addLabel:@"关于" font:[NSFont systemFontOfSize:19] color:nil frame:NSMakeRect(0, 316, 300, 24) to:self.aboutPane];
-    [self addLabel:@"dsh-systray 版本号" font:[NSFont systemFontOfSize:17] color:nil frame:NSMakeRect(0, 270, 220, 24) to:self.aboutPane];
+    [self addLabel:@"关于" font:[self uiFontOfSize:19 weight:NSFontWeightSemibold] color:nil frame:NSMakeRect(0, 316, 300, 24) to:self.aboutPane];
+    [self addLabel:@"dsh-systray 版本号" font:[self uiFontOfSize:17 weight:NSFontWeightRegular] color:nil frame:NSMakeRect(0, 270, 220, 24) to:self.aboutPane];
     [self addLabel:[NSString stringWithFormat:@"%s", ver]
-               font:[NSFont systemFontOfSize:19]
+               font:[self uiFontOfSize:19 weight:NSFontWeightSemibold]
               color:[NSColor colorWithCalibratedRed:0.114 green:0.306 blue:0.847 alpha:1.0]
               frame:NSMakeRect(0, 244, 220, 26)
                   to:self.aboutPane];
-    [self addLabel:@"DeepSeek Harness 版本号" font:[NSFont systemFontOfSize:17] color:nil frame:NSMakeRect(0, 214, 240, 22) to:self.aboutPane];
+    [self addLabel:@"DeepSeek Harness 版本号" font:[self uiFontOfSize:17 weight:NSFontWeightRegular] color:nil frame:NSMakeRect(0, 214, 240, 22) to:self.aboutPane];
     [self addLabel:[NSString stringWithFormat:@"%s", hver]
-               font:[NSFont systemFontOfSize:19]
+               font:[self uiFontOfSize:19 weight:NSFontWeightSemibold]
               color:[NSColor colorWithCalibratedRed:0.114 green:0.306 blue:0.847 alpha:1.0]
               frame:NSMakeRect(0, 190, 220, 26)
                   to:self.aboutPane];
@@ -236,17 +243,17 @@ static DSHSetController *g_ctrl = nil;
     NSButton *checkBtn = [[NSButton alloc] initWithFrame:NSMakeRect(0, 146, 130, 34)];
     checkBtn.title = @"检查更新";
     checkBtn.bezelStyle = NSBezelStyleRounded;
-    checkBtn.font = [NSFont systemFontOfSize:17];
+    checkBtn.font = [self uiFontOfSize:17 weight:NSFontWeightRegular];
     checkBtn.target = self;
     checkBtn.action = @selector(checkUpdateClicked:);
     [self.aboutPane addSubview:checkBtn];
 
     // 日志面板：只读、可复制、自动滚动
     self.logPane = [[NSView alloc] initWithFrame:NSMakeRect(160, 0, 400, 360)];
-    [self addLabel:@"日志（只读，可复制）" font:[NSFont systemFontOfSize:14] color:[NSColor secondaryLabelColor] frame:NSMakeRect(0, 322, 320, 20) to:self.logPane];
+    [self addLabel:@"日志（只读，可复制）" font:[self uiFontOfSize:14 weight:NSFontWeightRegular] color:[NSColor secondaryLabelColor] frame:NSMakeRect(0, 322, 320, 20) to:self.logPane];
 
     self.logPopup = [[NSPopUpButton alloc] initWithFrame:NSMakeRect(0, 288, 130, 28)];
-    self.logPopup.font = [NSFont systemFontOfSize:15];
+    self.logPopup.font = [self uiFontOfSize:15 weight:NSFontWeightRegular];
     [self.logPopup addItemsWithTitles:@[@"app.log", @"server.log"]];
     self.logPopup.target = self;
     self.logPopup.action = @selector(logChanged:);
@@ -255,7 +262,7 @@ static DSHSetController *g_ctrl = nil;
     NSButton *refresh = [[NSButton alloc] initWithFrame:NSMakeRect(140, 284, 90, 30)];
     refresh.title = @"清空";
     refresh.bezelStyle = NSBezelStyleRounded;
-    refresh.font = [NSFont systemFontOfSize:15];
+    refresh.font = [self uiFontOfSize:15 weight:NSFontWeightRegular];
     refresh.target = self;
     refresh.action = @selector(clearLogClicked:);
     [self.logPane addSubview:refresh];

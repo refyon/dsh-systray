@@ -333,8 +333,8 @@ func setWindowIcon(hwnd uintptr) {
 }
 
 // makeFont 创建字体（height 像素、weight 400/600）。
-// Windows 优先用原生「微软雅黑 UI」——中英文统一、系统原生渲染最清晰（避免拉丁/中文两种字体混排）。
-var fontCandidates = []string{"Microsoft YaHei UI", "Segoe UI"}
+// 首选 Google Noto Sans SC（中英文统一、现代）；系统未安装则回退微软雅黑 UI / Segoe UI。
+var fontCandidates = []string{"Noto Sans SC", "Microsoft YaHei UI", "Segoe UI"}
 
 func selectedFace() string {
 	for _, name := range fontCandidates {

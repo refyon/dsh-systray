@@ -670,7 +670,7 @@ func createSettingsWindow() uintptr {
 		settingsClassReg = true
 	}
 
-	settingsFontTitle = makeFont(21, 400)
+	settingsFontTitle = makeFont(21, 600)
 	settingsFontBody = makeFont(17, 400)
 	settingsFontBold = makeFont(17, 600)
 	settingsFontSmall = makeFont(15, 400)
