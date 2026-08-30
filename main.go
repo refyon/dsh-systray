@@ -161,11 +161,11 @@ func maybeStartSplash(text string) *SplashState {
 // serverReady=曾运行，serviceFailed=启动失败，serviceFailReason=失败原因。
 // 服务就绪 → 只显示「打开 Web UI」；未就绪 → 隐藏「打开 Web UI」，显示状态说明行。
 var (
-	serverReady        atomic.Bool
-	serviceFailed      atomic.Bool
-	serviceFailReason  atomic.Value // string
-	menuOpen           *systray.MenuItem // “打开 Web UI”
-	menuStatus         *systray.MenuItem // 状态说明行
+	serverReady       atomic.Bool
+	serviceFailed     atomic.Bool
+	serviceFailReason atomic.Value      // string
+	menuOpen          *systray.MenuItem // “打开 Web UI”
+	menuStatus        *systray.MenuItem // 状态说明行
 )
 
 func serviceStatusText() string {
@@ -282,6 +282,10 @@ func main() {
 	//    与下方运行环境检查同为启动流程的一步，进度窗口同步显示。
 	splash.Update("正在检查 UI 字体…", 0.02)
 	ensureNotoSansSC(func(t string, pct float64) { splash.Update(t, 0.02+0.05*pct) })
+
+	// 0.5) 解压工具：环境检查加入 7-Zip（优先下载使用，Windows/macOS 均可）；失败不阻塞启动（zip 有 Go 兜底）。
+	splash.Update("正在检查解压工具…", 0.07)
+	ensureArchiveTool(func(t string, pct float64) { splash.Update(t, 0.07+0.01*pct) })
 
 	// 1) 运行环境：优先便携 Node.js / pnpm（无管理员权限、无窗口、后台静默）
 	if !runtimeOK() {
