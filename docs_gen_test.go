@@ -96,13 +96,15 @@ func (c *canvas) roundRectA(x0, y0, x1, y1, r int, col rgba, am float64) {
 				dy = 0
 			}
 			d := math.Sqrt(dx*dx+dy*dy) - rr
-			a := (0.5 - d) * am
-			if a <= 0 {
+			// 边缘覆盖度钳制到 0..1，再乘整体透明度（否则矩形内部 am 被放大数倍）
+			cov := 0.5 - d
+			if cov <= 0 {
 				continue
 			}
-			if a > 1 {
-				a = 1
+			if cov > 1 {
+				cov = 1
 			}
+			a := cov * am
 			cur := c.img.RGBAAt(x, y)
 			na := 1 - a
 			c.img.SetRGBA(x, y, rgba{
@@ -119,10 +121,10 @@ func (c *canvas) roundRect(x0, y0, x1, y1, r int, col rgba) {
 	c.roundRectA(x0, y0, x1, y1, r, col, 1)
 }
 
-// shadow 四边对称的柔和投影：w/h 为窗口宽高（与调用方约定一致），每层向外扩展 i 像素。
+// shadow 极淡的四边对称投影（4 层、4px 宽、低透明度）：仅用于明确窗口边界，不喧宾夺主。
 func (c *canvas) shadow(x0, y0, w, h, r int) {
-	for i := 6; i >= 1; i-- {
-		c.roundRectA(x0-i, y0-i, x0+w+i, y0+h+i, r+i, rgba{16, 24, 40, 255}, 0.04)
+	for i := 4; i >= 1; i-- {
+		c.roundRectA(x0-i, y0-i, x0+w+i, y0+h+i, r+i, rgba{16, 24, 40, 255}, 0.025)
 	}
 }
 
