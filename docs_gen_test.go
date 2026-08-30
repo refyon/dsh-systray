@@ -336,7 +336,7 @@ func drawAbout(c *canvas, f *fonts, cx, wy int) {
 }
 
 func drawLogs(c *canvas, f *fonts, cx, wy int) {
-	c.textIn(`C:\Users\lenovo\AppData\Roaming\dsh-systray\logs\app.log`, cx, wy+70, cx+630, wy+94, f.small, cSub, "left")
+	c.textIn(`C:\Users\demo\AppData\Roaming\dsh-systray\logs\app.log`, cx, wy+70, cx+630, wy+94, f.small, cSub, "left")
 	// 现代选择器
 	c.roundRect(cx, wy+98, cx+160, wy+132, 8, cBorder)
 	c.roundRect(cx+1, wy+99, cx+159, wy+131, 7, cWhite)
@@ -405,7 +405,7 @@ func drawExport(c *canvas, f *fonts, cx, wy int) {
 func drawImport(c *canvas, f *fonts, cx, wy int) {
 	c.roundRect(cx, wy+80, cx+180, wy+114, 17, cBlue)
 	c.textIn("添加导入压缩包…", cx, wy+80, cx+180, wy+114, f.btnS, cWhite, "center")
-	c.textIn(`C:\Users\lenovo\Downloads\dsh-systray-export-20260830-103102-a1b2c3.zip`, cx, wy+128, cx+630, wy+152, f.small, cSub, "left")
+	c.textIn(`C:\Users\demo\Downloads\dsh-systray-export-20260830-103102-a1b2c3.zip`, cx, wy+128, cx+630, wy+152, f.small, cSub, "left")
 	rows := []string{"所有历史会话（12.4 MB）", "已安装的插件（3.1 MB）", "需要打包的文件目录"}
 	for i, lbl := range rows {
 		y := wy + 176 + i*44
