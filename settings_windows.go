@@ -159,6 +159,16 @@ const (
 	vkPageDown   = 0x22
 	vkHome       = 0x24
 	vkEnd        = 0x23
+	vkA          = 0x41
+	vkC          = 0x43
+	vkControl    = 0x11
+	// 剪贴板 / 鼠标捕获 / 选中等
+	gmemMoveable     = 0x0002
+	cfUnicodeText    = 13
+	wmLButtonDown    = 0x0201
+	wmCaptureChanged = 0x0215
+	idcIbeam         = 32513
+	logViewSelColor  = 0xFFD6E4F7 // 选中高亮浅蓝（ARGB）
 
 	// 颜色（COLORREF = 0xBBGGRR）
 	stColorSidebarBg = 0x00FAF7F5 // #F5F7FA 侧栏浅灰底
@@ -182,6 +192,18 @@ var (
 	pRedrawWindow        = modUser32.NewProc("RedrawWindow")
 	pSetScrollInfo       = modUser32.NewProc("SetScrollInfo")
 	pIntersectClipRect   = modGdi32.NewProc("IntersectClipRect")
+	// 鼠标捕获 / 键盘修饰键 / 剪贴板
+	pGetKeyState      = modUser32.NewProc("GetKeyState")
+	pSetCapture       = modUser32.NewProc("SetCapture")
+	pReleaseCapture   = modUser32.NewProc("ReleaseCapture")
+	pOpenClipboard    = modUser32.NewProc("OpenClipboard")
+	pEmptyClipboard   = modUser32.NewProc("EmptyClipboard")
+	pSetClipboardData = modUser32.NewProc("SetClipboardData")
+	pCloseClipboard   = modUser32.NewProc("CloseClipboard")
+	pGlobalAlloc      = modKernel32.NewProc("GlobalAlloc")
+	pGlobalLock       = modKernel32.NewProc("GlobalLock")
+	pGlobalUnlock     = modKernel32.NewProc("GlobalUnlock")
+	pGlobalFree       = modKernel32.NewProc("GlobalFree")
 
 	settingsOpenFlag        atomic.Bool
 	settingsHwnd            uintptr
@@ -202,6 +224,11 @@ var (
 	settingsLogViewH        int32                   // 日志视图客户区高
 	settingsLogViewClsReg   bool                    // 日志视图窗口类是否已注册
 	logViewLines            []logLine               // 当前日志行（自绘视图专用）
+	logViewRows             []logViewRow            // 自动换行后的显示行（自绘视图专用）
+	logViewSelActive        bool                    // 是否有选中
+	logViewSelAnchor        int                     // 选择锚点（扁平字符索引，含换行符占位）
+	logViewSelPos           int                     // 选择当前位置（扁平字符索引）
+	logViewSelDrag          bool                    // 鼠标拖选中
 	settingsRestorePending  bool                    // 恢复过会话/插件：关闭设置窗口时提示重启
 	settingsLogComboSel     int                     // 日志文件选择 0=app.log / 1=server.log
 	settingsComboOpen       bool                    // 日志下拉列表是否展开
@@ -616,6 +643,20 @@ type logLine struct {
 	msg     string
 }
 
+// logViewRow 自动换行后的显示行：保存该显示行内容及其在原文本中的扁平偏移。
+// flatStart/flatLen 针对"行拼接后的构建文本"（每逻辑行后加一个 '\n'），
+// 按下述规则：displayText = join(每逻辑行 timeStr+level+msg, "\n")，供选中/复制使用。
+type logViewRow struct {
+	flatStart int    // 本显示行首字符在 displayText 中的偏移
+	flatLen   int    // 本显示行字符数（不含换行）
+	timeStr   string // 本显示行时间戳片段（可能为空）
+	level     string // 本显示行级别片段
+	msg       string // 本显示行消息片段
+}
+
+// logViewDisplayText 重构后的扁平文本（逻辑行以 '\n' 连接），用于选中与复制。
+var logViewDisplayText []rune
+
 // splitLogLine 解析常见日志行 "2026/08/30 12:00:00 LEVEL message"；不匹配则整行作为消息。
 func splitLogLine(line string) logLine {
 	ll := logLine{msg: line}
@@ -651,9 +692,9 @@ func logViewVisibleRows() int {
 	return int(settingsLogViewH) / logViewLineH
 }
 
-// logViewMaxScroll 允许的最大首行偏移。
+// logViewMaxScroll 允许的最大首行偏移（基于自动换行后的显示行）。
 func logViewMaxScroll() int {
-	m := len(logViewLines) - logViewVisibleRows()
+	m := len(logViewRows) - logViewVisibleRows()
 	if m < 0 {
 		return 0
 	}
@@ -690,13 +731,106 @@ func logViewUpdateScrollbar() {
 	if settingsLogView == 0 {
 		return
 	}
-	total := len(logViewLines)
+	total := len(logViewRows)
 	si := scrollInfo{cbSize: uint32(unsafe.Sizeof(scrollInfo{})), fMask: sifRange | sifPage | sifPos, nMin: 0, nMax: int32(total - 1), nPage: uint32(logViewVisibleRows()), nPos: int32(settingsLogViewScroll)}
 	if total < 1 {
 		si.nMax = 0
 		si.nPage = 1
 	}
 	pSetScrollInfo.Call(settingsLogView, sbVert, uintptr(unsafe.Pointer(&si)), 1)
+}
+
+// logViewRuneW 字符近似宽度：等宽 14px 下 ASCII≈8px，CJK/全角≈16px（等宽字体中恰 2 倍）。
+func logViewRuneW(r rune) int32 {
+	if r >= 0x2E80 && r <= 0x9FFF {
+		return 16
+	}
+	return 8
+}
+
+// logViewTextW 文本近似宽度（与绘制 X 累加规则一致）。
+func logViewTextW(s string) int32 {
+	var w int32
+	for _, r := range s {
+		w += logViewRuneW(r)
+	}
+	return w
+}
+
+// logViewRowUnit 换行切分的绘制单元（kind：0=时间戳 1=级别 2=消息；级别/消息单元自带前导空格）。
+type logViewRowUnit struct {
+	text string
+	kind int
+}
+
+// logViewRebuildRows 按当前视口宽度把逻辑行重排为显示行（自动换行），并重建扁平选择文本。
+func logViewRebuildRows() {
+	maxW := settingsLogViewW - 2*logViewPadX
+	if maxW < 40 {
+		maxW = 40
+	}
+	logViewRows = logViewRows[:0]
+	flat := make([]rune, 0, len(logViewLines)*48)
+	for li := range logViewLines {
+		ln := &logViewLines[li]
+		var units []logViewRowUnit
+		if ln.level != "" {
+			units = []logViewRowUnit{{ln.timeStr, 0}, {" " + ln.level, 1}, {" " + ln.msg, 2}}
+		} else if ln.msg != "" {
+			units = []logViewRowUnit{{ln.msg, 2}}
+		}
+		if len(units) == 0 {
+			units = []logViewRowUnit{{"", 2}} // 空行也占一个显示行
+		}
+		cur := []logViewRowUnit{}
+		curW := int32(0)
+		flush := func() {
+			if len(cur) == 0 {
+				return
+			}
+			vr := logViewRow{flatStart: len(flat)}
+			var b strings.Builder
+			for _, u := range cur {
+				b.WriteString(u.text)
+				flat = append(flat, []rune(u.text)...)
+				switch u.kind {
+				case 0:
+					vr.timeStr += u.text
+				case 1:
+					vr.level += u.text
+				case 2:
+					vr.msg += u.text
+				}
+			}
+			vr.flatLen = len([]rune(b.String()))
+			logViewRows = append(logViewRows, vr)
+			cur = nil
+			curW = 0
+		}
+		for _, u := range units {
+			for _, r := range u.text {
+				w := logViewRuneW(r)
+				if curW > 0 && curW+w > maxW {
+					flush()
+				}
+				cur = append(cur, logViewRowUnit{string(r), u.kind})
+				curW += w
+			}
+		}
+		flush()
+		if li < len(logViewLines)-1 {
+			flat = append(flat, '\n')
+		}
+	}
+	logViewDisplayText = flat
+}
+
+// logViewFlatRange 选中区间（排序后）[start,end) 的扁平字符范围。
+func logViewFlatRange() (int, int) {
+	if logViewSelAnchor <= logViewSelPos {
+		return logViewSelAnchor, logViewSelPos
+	}
+	return logViewSelPos, logViewSelAnchor
 }
 
 // logViewUpdateContent 设置文本（按行解析）；scrollToEnd=true 滚到底，false 保持当前位置（超出则钳制）。
@@ -710,6 +844,9 @@ func logViewUpdateContent(text string, scrollToEnd bool) {
 		lines = append(lines, splitLogLine(s))
 	}
 	logViewLines = lines
+	logViewRebuildRows()
+	logViewSelActive = false
+	logViewSelAnchor, logViewSelPos = 0, 0
 	if scrollToEnd {
 		settingsLogViewScroll = logViewMaxScroll()
 	} else if settingsLogViewScroll > logViewMaxScroll() {
@@ -775,7 +912,65 @@ func logViewDraw(hdc uintptr, s string, x, y int32) {
 	pDrawTextW.Call(hdc, uintptr(unsafe.Pointer(t)), ^uintptr(0), uintptr(unsafe.Pointer(&rc)), dtLeft|dtVCenter|dtSingle)
 }
 
-// logViewPaint 绘制日志视图：圆角边框 + 白底（自绘卡片，随视图显隐，无父窗口残影问题）+ 等宽分色行。
+// logViewRowText 显示行完整文本（命中测试/复制用）。
+func logViewRowText(vr logViewRow) string {
+	return vr.timeStr + vr.level + vr.msg
+}
+
+// logViewRowRuneAt 显示行第 idx 个字符的偏移：用于把行内列号转扁平索引。
+func logViewRowRuneAt(vr logViewRow, idx int) int {
+	if idx >= vr.flatLen {
+		return vr.flatLen
+	}
+	return idx
+}
+
+// logViewHitFlat 命中测试：客户区坐标 → 扁平索引（越界钳制到 [0,len(displayText)]）。
+func logViewHitFlat(x, y int32) int {
+	row := int((y-logViewPadY)/logViewLineH) + settingsLogViewScroll
+	if row < 0 {
+		row = 0
+	}
+	if row >= len(logViewRows) {
+		return len(logViewDisplayText)
+	}
+	vr := logViewRows[row]
+	// 列：x 相对行首文本像素宽累加（与绘制同规则）
+	lineX := x - logViewPadX
+	txt := logViewRowText(vr)
+	col := 0
+	var acc int32
+	for _, r := range txt {
+		w := logViewRuneW(r)
+		if acc+w > lineX {
+			break
+		}
+		acc += w
+		col++
+	}
+	return vr.flatStart + logViewRowRuneAt(vr, col)
+}
+
+// logViewSelDrawRange 显示行与选中区间的交叠（返回行内字符范围 [a,b)）。
+func logViewSelDrawRange(vr logViewRow) (int, int) {
+	s, e := logViewFlatRange()
+	rs, re := vr.flatStart, vr.flatStart+vr.flatLen
+	if e <= rs || s >= re {
+		return -1, -1
+	}
+	a := s - rs
+	b := e - rs
+	if a < 0 {
+		a = 0
+	}
+	if b > vr.flatLen {
+		b = vr.flatLen
+	}
+	return a, b
+}
+
+// logViewPaint 绘制日志视图：圆角边框 + 白底（自绘卡片，随视图显隐，无父窗口残影问题）
+// + 自动换行分色行 + 选中高亮。
 func logViewPaint(hdc uintptr) {
 	if settingsLogViewH <= 0 {
 		return
@@ -783,7 +978,7 @@ func logViewPaint(hdc uintptr) {
 	fillRoundedRectAA(hdc, rect{0, 0, settingsLogViewW, settingsLogViewH}, 10, colorRefToARGB(stColorGray))
 	inner := rect{1, 1, settingsLogViewW - 1, settingsLogViewH - 1}
 	fillRoundedRectAA(hdc, inner, 9, 0xFFFFFFFF)
-	if len(logViewLines) == 0 {
+	if len(logViewRows) == 0 {
 		return
 	}
 	if settingsFontMono != 0 {
@@ -796,34 +991,118 @@ func logViewPaint(hdc uintptr) {
 	}
 	for i := 0; i < rows; i++ {
 		idx := settingsLogViewScroll + i
-		if idx >= len(logViewLines) {
+		if idx >= len(logViewRows) {
 			break
 		}
-		ln := logViewLines[idx]
+		vr := logViewRows[idx]
 		y := int32(logViewPadY + i*logViewLineH)
-		x := int32(logViewPadX)
-		if ln.timeStr != "" {
-			pSetTextColor.Call(hdc, stColorSub)
-			logViewDraw(hdc, ln.timeStr, x, y)
-			x += int32(len(ln.timeStr)) * 8 // 等宽 14px ≈ 8px/字符
-			if ln.level != "" {
-				pSetTextColor.Call(hdc, logViewLevelColor(ln.level))
-				logViewDraw(hdc, " "+ln.level, x, y)
-				x += int32(len(ln.level)+1) * 8
+		// 选中高亮背景（先画背景再画文本）
+		if logViewSelActive && len(logViewDisplayText) > 0 {
+			if a, b := logViewSelDrawRange(vr); a >= 0 && b > a {
+				x := int32(logViewPadX)
+				for j := 0; j < a; j++ {
+					x += logViewRuneW(runeAt(logViewRowText(vr), j))
+				}
+				w := int32(0)
+				for j := a; j < b; j++ {
+					w += logViewRuneW(runeAt(logViewRowText(vr), j))
+				}
+				fillRoundedRectAA(hdc, rect{x, y, x + w, y + int32(logViewLineH)}, 0, logViewSelColor)
 			}
 		}
+		x := int32(logViewPadX)
+		if vr.timeStr != "" {
+			pSetTextColor.Call(hdc, stColorSub)
+			logViewDraw(hdc, vr.timeStr, x, y)
+			x += logViewTextW(vr.timeStr)
+		}
+		if vr.level != "" {
+			pSetTextColor.Call(hdc, logViewLevelColor(strings.TrimSpace(vr.level)))
+			logViewDraw(hdc, vr.level, x, y)
+			x += logViewTextW(vr.level)
+		}
 		pSetTextColor.Call(hdc, stColorText)
-		logViewDraw(hdc, ln.msg, x, y)
+		if vr.msg != "" {
+			logViewDraw(hdc, vr.msg, x, y)
+		}
 	}
 }
 
-// logViewWndProc 自绘日志视图：滚轮/键盘/系统滚动条全部可控。
+// runeAt 返回字符串第 idx 个 rune。
+func runeAt(s string, idx int) rune {
+	for i, r := range s {
+		if i == idx {
+			return r
+		}
+	}
+	return 0
+}
+
+// logViewCtrlDown 是否按住 Ctrl。
+func logViewCtrlDown() bool {
+	k, _, _ := pGetKeyState.Call(vkControl)
+	return int16(k&0xFFFF) < 0
+}
+
+// logViewCopySel 复制选中文本到剪贴板。
+func logViewCopySel() {
+	if !logViewSelActive || len(logViewDisplayText) == 0 {
+		return
+	}
+	s, e := logViewFlatRange()
+	if e <= s {
+		return
+	}
+	text := string(logViewDisplayText[s:e])
+	u16, _ := syscall.UTF16FromString(text)
+	if len(u16) == 0 {
+		return
+	}
+	oc, _, _ := pOpenClipboard.Call(settingsLogView)
+	if oc == 0 {
+		return
+	}
+	pEmptyClipboard.Call()
+	sz := uintptr(len(u16)) * 2
+	h, _, _ := pGlobalAlloc.Call(uintptr(gmemMoveable), sz)
+	if h != 0 {
+		p0, _, _ := pGlobalLock.Call(h)
+		if p0 != 0 {
+			// unsafe.Slice 在 Go1.17+；从 GlobalLock 得到的句柄内指针仅在本函数有效
+			dst := unsafe.Slice((*uint16)(unsafe.Pointer(p0)), len(u16))
+			copy(dst, u16)
+			pGlobalUnlock.Call(h)
+			pSetClipboardData.Call(uintptr(cfUnicodeText), h)
+		} else {
+			pGlobalFree.Call(h)
+		}
+	}
+	pCloseClipboard.Call()
+}
+
+// logViewSelAll 全选。
+func logViewSelAll() {
+	if len(logViewDisplayText) == 0 {
+		return
+	}
+	logViewSelActive = true
+	logViewSelAnchor = 0
+	logViewSelPos = len(logViewDisplayText)
+	pInvalidateRect.Call(settingsLogView, 0, 0)
+}
+
+// logViewWndProc 自绘日志视图：滚轮/键盘/系统滚动条全部可控 + 拖选复制。
 func logViewWndProc(hwnd, uMsg, wParam, lParam uintptr) uintptr {
 	switch uMsg {
 	case wmSize:
 		settingsLogViewW = int32(lParam & 0xFFFF)
 		settingsLogViewH = int32((lParam >> 16) & 0xFFFF)
+		logViewRebuildRows() // 宽度变化 → 换行点变化
+		if settingsLogViewScroll > logViewMaxScroll() {
+			settingsLogViewScroll = logViewMaxScroll()
+		}
 		logViewUpdateScrollbar()
+		pInvalidateRect.Call(hwnd, 0, 0)
 		return 0
 	case wmPaint:
 		var ps paintStruct
@@ -863,7 +1142,54 @@ func logViewWndProc(hwnd, uMsg, wParam, lParam uintptr) uintptr {
 		delta := int32(int16((wParam >> 16) & 0xFFFF))
 		logViewSetScroll(settingsLogViewScroll + int(-delta/120)*3)
 		return 0
+	case wmLButtonDown:
+		pSetFocus.Call(hwnd)
+		pSetCapture.Call(hwnd)
+		p := logViewHitFlat(int32(lParam&0xFFFF), int32((lParam>>16)&0xFFFF))
+		logViewSelActive = true
+		logViewSelAnchor, logViewSelPos = p, p
+		logViewSelDrag = true
+		pInvalidateRect.Call(hwnd, 0, 0)
+		return 0
+	case wmMouseMove:
+		if logViewSelDrag {
+			x := int32(lParam & 0xFFFF)
+			y := int32((lParam >> 16) & 0xFFFF)
+			// 拖出上下边缘自动滚动
+			if y < logViewPadY {
+				logViewSetScroll(settingsLogViewScroll - 1)
+			} else if y > settingsLogViewH-logViewPadY {
+				logViewSetScroll(settingsLogViewScroll + 1)
+			}
+			p := logViewHitFlat(x, y)
+			if p != logViewSelPos {
+				logViewSelPos = p
+				pInvalidateRect.Call(hwnd, 0, 0)
+			}
+		}
+		return 0
+	case wmLButtonUp:
+		if logViewSelDrag {
+			logViewSelDrag = false
+			pReleaseCapture.Call()
+			if logViewSelAnchor == logViewSelPos { // 单击（无拖动）清除选择
+				logViewSelActive = false
+			}
+			pInvalidateRect.Call(hwnd, 0, 0)
+		}
+		return 0
+	case wmCaptureChanged:
+		logViewSelDrag = false
+		return 0
 	case wmKeyDown:
+		if wParam == vkA && logViewCtrlDown() {
+			logViewSelAll()
+			return 0
+		}
+		if wParam == vkC && logViewCtrlDown() {
+			logViewCopySel()
+			return 0
+		}
 		switch wParam {
 		case vkUp:
 			logViewSetScroll(settingsLogViewScroll - 1)
