@@ -608,8 +608,8 @@ func settingsDrawServiceStatus(dis drawItemStruct) {
 	pSetTextColor.Call(hdc, stColorSub)
 	pSetBkColor.Call(hdc, colorWhite)
 	pSetBkMode.Call(hdc, bkOpaque)
-	if settingsFontSmall != 0 {
-		pSelectObject.Call(hdc, settingsFontSmall)
+	if settingsFontBody != 0 {
+		pSelectObject.Call(hdc, settingsFontBody)
 	}
 	lp, _ := syscall.UTF16PtrFromString(label)
 	tr := rect{dis.rcItem.left + 16, dis.rcItem.top, dis.rcItem.right, dis.rcItem.bottom}
@@ -769,7 +769,7 @@ func createSettingsWindow() uintptr {
 		pSendMessageW.Call(autoTitle, wmSetFont, settingsFontBody, 1)
 		settingsPaneGen = append(settingsPaneGen, stIdAutoTitle)
 	}
-	asub, _ := syscall.UTF16PtrFromString("登录系统时自动启动托盘程序")
+	asub, _ := syscall.UTF16PtrFromString("")
 	autoSub, _, _ := pCreateWindowExW.Call(
 		0,
 		uintptr(unsafe.Pointer(staticCls)),
@@ -806,7 +806,7 @@ func createSettingsWindow() uintptr {
 		uintptr(unsafe.Pointer(btnCls)),
 		uintptr(unsafe.Pointer(rst)),
 		wsChild|wsVisible|bsOwnDraw,
-		uintptr(stContentX), 178, 240, 26,
+		uintptr(stContentX), 116, 240, 26,
 		hwnd, stIdRestartInfo, moduleHandle(), 0,
 	)
 	if restInfo != 0 {
@@ -821,7 +821,7 @@ func createSettingsWindow() uintptr {
 		uintptr(unsafe.Pointer(btnCls)),
 		uintptr(unsafe.Pointer(rb)),
 		wsChild|wsVisible|wsTabStop|bsOwnDraw,
-		uintptr(stContentX), 204, 150, 34,
+		uintptr(stContentX), 150, 150, 34,
 		hwnd, stIdRestartBtn, moduleHandle(), 0,
 	)
 	if restBtn != 0 {

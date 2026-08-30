@@ -1,4 +1,4 @@
-﻿// 设置窗口原生实现（macOS Cocoa）：左侧分类列表（常规 / 关于）+ 右侧内容面板。
+// 设置窗口原生实现（macOS Cocoa）：左侧分类列表（常规 / 关于）+ 右侧内容面板。
 // 由 cgo 编译（settings_darwin.go 中 #cgo darwin CFLAGS: -x objective-c -fobjc-arc）。
 #import <Cocoa/Cocoa.h>
 #import <dispatch/dispatch.h>
@@ -192,7 +192,6 @@ static DSHSetController *g_ctrl = nil;
     self.generalPane = [[NSView alloc] initWithFrame:NSMakeRect(160, 0, 400, 360)];
     [self addLabel:@"常规" font:[self uiFontOfSize:19 weight:NSFontWeightSemibold] color:nil frame:NSMakeRect(0, 316, 300, 24) to:self.generalPane];
     [self addLabel:@"开机自启动" font:[self uiFontOfSize:17 weight:NSFontWeightRegular] color:nil frame:NSMakeRect(0, 270, 220, 24) to:self.generalPane];
-    [self addLabel:@"登录系统时自动启动托盘程序" font:[self uiFontOfSize:14 weight:NSFontWeightRegular] color:[NSColor secondaryLabelColor] frame:NSMakeRect(0, 248, 320, 18) to:self.generalPane];
 
     self.autoSwitch = [[NSButton alloc] initWithFrame:NSMakeRect(310, 268, 60, 24)];
     [self.autoSwitch setButtonType:NSButtonTypeSwitch];
@@ -212,7 +211,7 @@ static DSHSetController *g_ctrl = nil;
     [svcAttr addAttribute:NSForegroundColorAttributeName value:svcDot range:NSMakeRange(0, 1)];
     [svcAttr addAttribute:NSForegroundColorAttributeName value:[NSColor secondaryLabelColor] range:NSMakeRange(2, svcAttr.length - 2)];
     NSTextField *svcLabel = [NSTextField labelWithAttributedString:svcAttr];
-    svcLabel.font = [self uiFontOfSize:14 weight:NSFontWeightRegular];
+    svcLabel.font = [self uiFontOfSize:16 weight:NSFontWeightRegular];
     svcLabel.frame = NSMakeRect(0, 210, 320, 18);
     [self.generalPane addSubview:svcLabel];
 
