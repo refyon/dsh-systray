@@ -42,9 +42,10 @@ var (
 	cLine   = rgba{71, 84, 103, 255}   // 日志正文 #475467
 )
 
-// scale 全局渲染倍率：2x 视网膜级成图。文字按 2 倍分辨率渲染，显示端若按逻辑尺寸（图片一半像素宽）
-// 展示则等于精确 2x 缩小，文字锐利（比 1x 原生灰度更清晰）。README 主图用较小逻辑宽以贴合 GitHub 容器。
-const scale = 2
+// scale 全局渲染倍率：3x 超采样成图。文字按 3 倍分辨率渲染，显示端按逻辑尺寸（图片三分之一像素宽）
+// 展示则等于精确 3x 缩小，文字锐利（比 1x/2x 灰度更清晰，接近系统级渲染观感）。
+// README 主图用较小逻辑宽以贴合 GitHub 容器。
+const scale = 3
 
 // heroW README 主图逻辑宽度（≈GitHub markdown 内容宽度），避免 2x 成图被 GitHub 缩减发虚。
 const heroW = 980
@@ -209,7 +210,14 @@ func docTextLayer(s string, font uintptr, maxW int) (*image.RGBA, int, int) {
 	for y := 0; y < h; y++ {
 		for x := 0; x < w; x++ {
 			gray := int(data[(y*w+x)*4]) // 白底黑字时 RGB 三通道相同
-			if a := uint8(255 - gray); a > 0 {
+			// alpha gamma 校正：GDI 灰度掩码的边缘像素是线性覆盖度，直接作为 alpha 会让笔画中调偏虚。
+			// a' = a^(1/1.5) 提升中间调 alpha，笔画更实更黑，接近系统级文字渲染的锐度。
+			cover := float64(255-gray) / 255
+			if cover <= 0 {
+				continue
+			}
+			a := uint8(math.Pow(cover, 1.0/1.5)*255 + 0.5)
+			if a > 0 {
 				mask.SetRGBA(x, y, rgba{0, 0, 0, a})
 			}
 		}
@@ -260,7 +268,7 @@ func loadFonts() *fonts {
 		small: makeFontQuality(13*scale, 400, antialiasQual),
 		btn:   makeFontQuality(16*scale, 600, antialiasQual),
 		btnS:  makeFontQuality(14*scale, 600, antialiasQual),
-		mono:  makeMonoFont(14 * scale),
+		mono:  makeMonoFontQuality(14*scale, antialiasQual),
 	}
 }
 

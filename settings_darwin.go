@@ -46,6 +46,25 @@ func dshSettingsGoAutostartToggled(on C.int) {
 	}()
 }
 
+//export dshSettingsGoHarnessPreToggled
+func dshSettingsGoHarnessPreToggled(on C.int) {
+	onBool := on != 0
+	go func() {
+		harnessPrereleaseOverride = onBool
+		cfg := loadConfig()
+		cfg.HarnessPrerelease = onBool
+		saveConfig(cfg)
+	}()
+}
+
+//export dshSettingsGoHarnessPreState
+func dshSettingsGoHarnessPreState() C.int {
+	if harnessPrereleaseOverride {
+		return 1
+	}
+	return 0
+}
+
 //export dshSettingsGoCheckUpdate
 func dshSettingsGoCheckUpdate() {
 	go func() {

@@ -51,6 +51,9 @@ const (
 	stIdCheckBtn    = 3203
 	stIdHarTitle    = 3204
 	stIdHarValue    = 3205
+	stIdHarPreTitle = 3206
+	stIdHarPreSub   = 3207
+	stIdHarPreToggle = 3208
 	stIdLogInfo     = 3300
 	stIdLogCombo    = 3301
 	stIdLogRefresh  = 3302
@@ -192,6 +195,7 @@ var (
 	settingsHwnd            uintptr
 	settingsCat             int
 	settingsAutoOn          bool
+	settingsHarPreOn        bool // 「开启预发布通道」开关状态（来自 config.harnessPrerelease）
 	settingsClassReg        bool
 	settingsWidgets         = map[uintptr]uintptr{} // hwnd → ctlID
 	settingsCatBtns         [5]uintptr              // 分类按钮句柄（常规/关于/日志/导出/导入）
@@ -223,6 +227,7 @@ var (
 	settingsFontMono        uintptr // 日志等宽字体 Consolas（14px）
 	settingsFontBtn         uintptr // 胶囊按钮字体（略大于正文）
 	settingsFontHelp        uintptr // 问号图标内 ? 字号（小号加粗）
+	settingsFontTip         uintptr // 气泡提示文字字体（灰度抗锯齿）
 	settingsSideBrush       uintptr
 	settingsTitleHwnd       uintptr
 	settingsRestartInfoHwnd uintptr
@@ -255,6 +260,7 @@ func openSettingsWindow() {
 		runtime.LockOSThread()
 		defer runtime.UnlockOSThread()
 		settingsAutoOn = isAutostartEnabled()
+		settingsHarPreOn = harnessPrereleaseOverride
 		hwnd := createSettingsWindow()
 		if hwnd == 0 {
 			settingsOpenFlag.Store(false)
@@ -291,6 +297,19 @@ func settingsWndProc(hwnd, uMsg, wParam, lParam uintptr) uintptr {
 			settingsAutoOn = !settingsAutoOn
 			setAutostartOn(settingsAutoOn)
 			settingsRedrawWidget(stIdAutoToggle)
+		case id == stIdHarPreToggle:
+			settingsHarPreOn = !settingsHarPreOn
+			if settingsHarPreOn {
+				// 首次开启：弹窗告知风险；用户取消则回退
+				if runModernDialog(appName, "开启「预发布通道」后，检查更新将包含 alpha/beta/rc 预发布版本，\n可能与已安装插件不兼容，导致服务启动失败。\n\n是否开启？", []string{"开启", "取消"}, 0) != 0 {
+					settingsHarPreOn = false
+					settingsRedrawWidget(stIdHarPreToggle)
+					break
+				}
+			}
+			harnessPrereleaseOverride = settingsHarPreOn
+			settingsSaveHarnessPrerelease(settingsHarPreOn)
+			settingsRedrawWidget(stIdHarPreToggle)
 		case id == stIdExpSessions:
 			settingsExpSessions = !settingsExpSessions
 			settingsRedrawWidget(stIdExpSessions)
@@ -403,6 +422,9 @@ func settingsWndProc(hwnd, uMsg, wParam, lParam uintptr) uintptr {
 		if settingsFontHelp != 0 {
 			pDeleteObject.Call(settingsFontHelp)
 		}
+		if settingsFontTip != 0 {
+			pDeleteObject.Call(settingsFontTip)
+		}
 		if settingsSideBrush != 0 {
 			pDeleteObject.Call(settingsSideBrush)
 		}
@@ -423,11 +445,11 @@ func settingsWndProc(hwnd, uMsg, wParam, lParam uintptr) uintptr {
 	case wmCtlColorStatic:
 		h := settingsWidgets[lParam]
 		switch h {
-		case stIdPaneTitle, stIdAutoTitle, stIdVerTitle, stIdHarTitle:
+		case stIdPaneTitle, stIdAutoTitle, stIdVerTitle, stIdHarTitle, stIdHarPreTitle:
 			pSetTextColor.Call(wParam, stColorText)
 		case stIdVerValue, stIdHarValue:
 			pSetTextColor.Call(wParam, stColorBlue)
-		case stIdAutoSub, stIdLogInfo, stIdRestartInfo, stIdExpSessSub, stIdExpPlugSub, stIdExpFilesSub, stIdExpStatus, stIdImpPath, stIdImpStatus:
+		case stIdAutoSub, stIdHarPreSub, stIdLogInfo, stIdRestartInfo, stIdExpSessSub, stIdExpPlugSub, stIdExpFilesSub, stIdExpStatus, stIdImpPath, stIdImpStatus:
 			pSetTextColor.Call(wParam, stColorSub)
 		case stIdExpSessLbl, stIdExpPlugLbl, stIdExpFilesLbl, stIdImpSessRow, stIdImpPlugRow, stIdImpFilesRow:
 			pSetTextColor.Call(wParam, stColorText)
@@ -468,7 +490,9 @@ func settingsWndProc(hwnd, uMsg, wParam, lParam uintptr) uintptr {
 		case stIdExpPlugHelp:
 			settingsDrawHelp(dis)
 		case stIdAutoToggle:
-			settingsDrawToggle(dis)
+			settingsDrawToggle(dis, settingsAutoOn)
+		case stIdHarPreToggle:
+			settingsDrawToggle(dis, settingsHarPreOn)
 		case stIdCheckBtn:
 			settingsDrawCapsule(dis, "检查更新")
 		case stIdRestartBtn:
@@ -590,8 +614,13 @@ func settingsWidgetKey(id uintptr) uintptr {
 
 // makeMonoFont 创建等宽字体（日志展示用 Consolas）。
 func makeMonoFont(height int32) uintptr {
+	return makeMonoFontQuality(height, cleartypeQual)
+}
+
+// makeMonoFontQuality 带抗锯齿质量的等宽字体（文档图渲染用灰度抗锯齿，避免 ClearType 亚像素取灰度时边缘发虚）。
+func makeMonoFontQuality(height int32, quality uintptr) uintptr {
 	face, _ := syscall.UTF16PtrFromString("Consolas")
-	h, _, _ := pCreateFontW.Call(uintptr(height), 0, 0, 0, 400, 0, 0, 0, defaultCharset, 0, 0, cleartypeQual, 0, uintptr(unsafe.Pointer(face)))
+	h, _, _ := pCreateFontW.Call(uintptr(height), 0, 0, 0, 400, 0, 0, 0, defaultCharset, 0, 0, quality, 0, uintptr(unsafe.Pointer(face)))
 	return h
 }
 
@@ -809,8 +838,8 @@ func settingsDrawCat(dis drawItemStruct) {
 	pDrawTextW.Call(hdc, uintptr(unsafe.Pointer(t)), ^uintptr(0), uintptr(unsafe.Pointer(&rc)), dtLeft|dtVCenter|dtSingle)
 }
 
-// settingsDrawToggle 绘制开关（圆形轨道 + 滑动圆钮）。
-func settingsDrawToggle(dis drawItemStruct) {
+// settingsDrawToggle 绘制开关（圆形轨道 + 滑动圆钮）；on 为当前状态。
+func settingsDrawToggle(dis drawItemStruct, on bool) {
 	hdc := dis.hDC
 	if wb, _, _ := pGetStockObject.Call(whiteBrush); wb != 0 {
 		pFillRect.Call(hdc, uintptr(unsafe.Pointer(&dis.rcItem)), wb)
@@ -821,14 +850,14 @@ func settingsDrawToggle(dis drawItemStruct) {
 	ty := dis.rcItem.top + (dis.rcItem.bottom-dis.rcItem.top-th)/2
 	track := rect{tx, ty, tx + tw, ty + th}
 	trackColor := uint32(colorRefToARGB(stColorGray))
-	if settingsAutoOn {
+	if on {
 		trackColor = colorRefToARGB(stColorBlue)
 	}
 	fillRoundedRectAA(hdc, track, th/2, trackColor)
 	// 圆钮 20x20（半径=高度一半即正圆）
 	knobD := int32(20)
 	kx := tx + 4
-	if settingsAutoOn {
+	if on {
 		kx = tx + tw - knobD - 4
 	}
 	ky := ty + (th-knobD)/2
@@ -921,6 +950,13 @@ func settingsDrawCapsule(dis drawItemStruct, label string) {
 	}
 	t, _ := syscall.UTF16PtrFromString(label)
 	pDrawTextW.Call(hdc, uintptr(unsafe.Pointer(t)), ^uintptr(0), uintptr(unsafe.Pointer(&dis.rcItem)), dtCenter|dtVCenter|dtSingle)
+}
+
+// settingsSaveHarnessPrerelease 把「开启预发布通道」状态写入 config.json（保留其它配置项）。
+func settingsSaveHarnessPrerelease(on bool) {
+	cfg := loadConfig()
+	cfg.HarnessPrerelease = on
+	saveConfig(cfg)
 }
 
 // settingsDrawCheck 绘制自绘复选框（圆角方框，选中=品牌蓝底+白色对勾）。
@@ -1080,7 +1116,7 @@ func settingsTipRenderDIB(text string, dw, dh int32) (hbmp uintptr, memDC uintpt
 	fillRoundedRectAA(memDC, capRect, ch/2, 0xD9000000)
 
 	// 白色文字：渲染灰度掩码后把工具 DIB 对应像素设为预乘白色
-	if settingsFontSmall != 0 && text != "" {
+	if settingsFontTip != 0 && text != "" {
 		tw := int(cw - 8)
 		maskDC, _, _ := pCreateCompatibleDC.Call(0)
 		if maskDC != 0 {
@@ -1092,7 +1128,7 @@ func settingsTipRenderDIB(text string, dw, dh int32) (hbmp uintptr, memDC uintpt
 				if wb, _, _ := pGetStockObject.Call(whiteBrush); wb != 0 {
 					pFillRect.Call(maskDC, uintptr(unsafe.Pointer(&rect{0, 0, int32(tw), ch})), wb)
 				}
-				pSelectObject.Call(maskDC, settingsFontSmall)
+				pSelectObject.Call(maskDC, settingsFontTip)
 				pSetTextColor.Call(maskDC, 0)
 				pSetBkColor.Call(maskDC, 0xFFFFFF)
 				pSetBkMode.Call(maskDC, bkOpaque)
@@ -1789,6 +1825,9 @@ func createSettingsWindow() uintptr {
 	settingsFontMono = makeMonoFont(14) // 日志字体 14px
 	settingsFontBtn = makeFont(16, 600)
 	settingsFontHelp = makeFont(18, 600) // 问号图标内 ?：大号加粗、深色（18px）
+	// 气泡提示文字：灰度抗锯齿（非 ClearType 亚像素）。黑底白字的胶囊上用 ClearType 会被 GDI
+	// 退化为单调灰度叠加，视觉发粗发糊；灰度渲染笔画更细、更接近常规字重（顺带解决“气泡字体加粗”观感）。
+	settingsFontTip = makeFontQuality(15, 400, antialiasQual)
 	settingsSideBrush, _, _ = pCreateSolidBrush.Call(stColorSidebarBg)
 
 	titleText, _ := syscall.UTF16PtrFromString("设置")
@@ -2004,6 +2043,48 @@ func createSettingsWindow() uintptr {
 		settingsWidgets[harValue] = stIdHarValue
 		pSendMessageW.Call(harValue, wmSetFont, settingsFontTitle, 1)
 		settingsPaneAbout = append(settingsPaneAbout, stIdHarValue)
+	}
+	// 开启预发布通道开关（紧跟 harness 版本号右侧）：默认关闭；开启后检查更新包含 alpha/beta/rc 预发布版
+	hst, _ := syscall.UTF16PtrFromString("开启预发布通道")
+	harPreTitle, _, _ := pCreateWindowExW.Call(
+		0,
+		uintptr(unsafe.Pointer(staticCls)),
+		uintptr(unsafe.Pointer(hst)),
+		wsChild|wsVisible,
+		uintptr(stContentX+245), 140, 115, 22,
+		hwnd, stIdHarPreTitle, moduleHandle(), 0,
+	)
+	if harPreTitle != 0 {
+		settingsWidgets[harPreTitle] = stIdHarPreTitle
+		pSendMessageW.Call(harPreTitle, wmSetFont, settingsFontSmall, 1)
+		settingsPaneAbout = append(settingsPaneAbout, stIdHarPreTitle)
+	}
+	hps, _ := syscall.UTF16PtrFromString("alpha/beta/rc 预发布版")
+	harPreSub, _, _ := pCreateWindowExW.Call(
+		0,
+		uintptr(unsafe.Pointer(staticCls)),
+		uintptr(unsafe.Pointer(hps)),
+		wsChild|wsVisible,
+		uintptr(stContentX+245), 164, 183, 18,
+		hwnd, stIdHarPreSub, moduleHandle(), 0,
+	)
+	if harPreSub != 0 {
+		settingsWidgets[harPreSub] = stIdHarPreSub
+		pSendMessageW.Call(harPreSub, wmSetFont, settingsFontSmall, 1)
+		settingsPaneAbout = append(settingsPaneAbout, stIdHarPreSub)
+	}
+	hpt, _ := syscall.UTF16PtrFromString("")
+	harPreToggle, _, _ := pCreateWindowExW.Call(
+		0,
+		uintptr(unsafe.Pointer(btnCls)),
+		uintptr(unsafe.Pointer(hpt)),
+		wsChild|wsVisible|wsTabStop|bsOwnDraw,
+		uintptr(stContentX+365), 137, 56, 28,
+		hwnd, stIdHarPreToggle, moduleHandle(), 0,
+	)
+	if harPreToggle != 0 {
+		settingsWidgets[harPreToggle] = stIdHarPreToggle
+		settingsPaneAbout = append(settingsPaneAbout, stIdHarPreToggle)
 	}
 	// 检查更新（自绘胶囊）
 	cb2, _ := syscall.UTF16PtrFromString("检查更新")

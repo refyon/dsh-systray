@@ -9,6 +9,8 @@
 // Go 侧回调（settings_darwin.go //export）
 extern void dshSettingsGoAutostartToggled(int on);
 extern void dshSettingsGoCheckUpdate(void);
+extern void dshSettingsGoHarnessPreToggled(int on);
+extern int dshSettingsGoHarnessPreState(void);
 // 返回 malloc 的日志文本 C 字符串（调用方 free）；which=0 app.log / 1 server.log
 char* dshSettingsGoLoadLog(int which);
 // 返回当前所选日志文件完整路径 C 字符串（调用方 free）
@@ -40,6 +42,7 @@ char* dshSettingsGoRestore(const char* kind, const char* zipPath, const char* de
 @property (nonatomic, strong) NSView *exportPane;
 @property (nonatomic, strong) NSView *importPane;
 @property (nonatomic, strong) NSButton *autoSwitch;
+@property (nonatomic, strong) NSButton *harPreSwitch; // 开启预发布通道开关
 @property (nonatomic, strong) NSTextView *logTV;
 @property (nonatomic, strong) NSTextField *logPathLabel;
 @property (nonatomic, strong) NSPopUpButton *logPopup;
@@ -173,6 +176,23 @@ static DSHSetController *g_ctrl = nil;
 
 - (void)autostartChanged:(id)sender {
     dshSettingsGoAutostartToggled((int)((NSButton *)sender).state);
+}
+
+- (void)harnessPreChanged:(id)sender {
+    NSButton *sw = (NSButton *)sender;
+    BOOL on = (sw.state == NSControlStateValueOn);
+    if (on) {
+        NSAlert *alert = [[NSAlert alloc] init];
+        alert.messageText = @"开启「预发布通道」？";
+        alert.informativeText = @"开启后检查更新将包含 alpha/beta/rc 预发布版本，\n可能与已安装插件不兼容，导致服务启动失败。";
+        [alert addButtonWithTitle:@"开启"];
+        [alert addButtonWithTitle:@"取消"];
+        if ([alert runModal] != NSAlertFirstButtonReturn) {
+            sw.state = NSControlStateValueOff;
+            on = NO;
+        }
+    }
+    dshSettingsGoHarnessPreToggled(on ? 1 : 0);
 }
 
 - (void)checkUpdateClicked:(id)sender {
@@ -562,6 +582,17 @@ static DSHSetController *g_ctrl = nil;
               color:[NSColor colorWithCalibratedRed:0.114 green:0.306 blue:0.847 alpha:1.0]
               frame:NSMakeRect(0, 246, 220, 26)
                    to:self.aboutPane];
+
+    // 开启预发布通道开关（紧跟 harness 版本号）：默认关闭；开启后检查更新包含 alpha/beta/rc 预发布版
+    [self addLabel:@"开启预发布通道" font:[self uiFontOfSize:15 weight:NSFontWeightRegular] color:nil frame:NSMakeRect(240, 246, 120, 22) to:self.aboutPane];
+    [self addLabel:@"alpha/beta/rc 预发布版" font:[self uiFontOfSize:12 weight:NSFontWeightRegular] color:[NSColor secondaryLabelColor] frame:NSMakeRect(240, 270, 180, 16) to:self.aboutPane];
+    self.harPreSwitch = [[NSButton alloc] initWithFrame:NSMakeRect(360, 245, 60, 24)];
+    [self.harPreSwitch setButtonType:NSButtonTypeSwitch];
+    self.harPreSwitch.title = @"";
+    self.harPreSwitch.state = (dshSettingsGoHarnessPreState() ? NSControlStateValueOn : NSControlStateValueOff);
+    self.harPreSwitch.target = self;
+    self.harPreSwitch.action = @selector(harnessPreChanged:);
+    [self.aboutPane addSubview:self.harPreSwitch];
 
     NSButton *checkBtn = [[NSButton alloc] initWithFrame:NSMakeRect(0, 202, 108, 30)];
     checkBtn.title = @"检查更新";
