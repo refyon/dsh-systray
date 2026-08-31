@@ -198,7 +198,7 @@ var (
 	settingsSideBrush       uintptr
 	settingsTitleHwnd       uintptr
 	settingsRestartInfoHwnd uintptr
-	settingsSvcUp           atomic.Bool // 后台服务是否运行（绿色点=运行中，红色点=已停止）
+	settingsSvcState        atomic.Int32 // 后台服务状态：0=已停止 1=启动中 2=运行中
 
 	// 导出/导入页状态
 	settingsExpSessions bool
@@ -295,7 +295,7 @@ func settingsWndProc(hwnd, uMsg, wParam, lParam uintptr) uintptr {
 			// 异步检查，避免 GitHub 超时阻塞设置窗口 UI 线程（结果弹窗独立线程显示）
 			go checkForUpdatesManual()
 		case id == stIdRestartBtn:
-			// 先确认再重启；过程中实时刷新服务状态（停止后标红“已停止”，就绪后标绿“运行中”）
+			// 先确认再重启；过程中实时刷新服务状态（停止后标红“已停止”，拉起时标黄“启动中”，就绪后标绿“运行中”）
 			if !askRestartService() {
 				break
 			}
@@ -303,13 +303,15 @@ func settingsWndProc(hwnd, uMsg, wParam, lParam uintptr) uintptr {
 				restartBackgroundService(func(stage string) {
 					switch stage {
 					case "stopping", "stopped", "error":
-						settingsSetServiceStatus(false)
+						settingsSetServiceState(serviceStateStopped)
+					case "starting":
+						settingsSetServiceState(serviceStateStarting)
 					case "running":
-						settingsSetServiceStatus(true)
+						settingsSetServiceState(serviceStateRunning)
 					}
 				})
 				// 结束（含失败）以实际探测为准
-				settingsSetServiceStatus(serverResponding(webURL))
+				settingsSetServiceState(settingsCurrentServiceState())
 			}()
 		case id == stIdLogCombo:
 			settingsToggleDrop() // 展开/收起日志文件下拉列表
@@ -336,13 +338,15 @@ func settingsWndProc(hwnd, uMsg, wParam, lParam uintptr) uintptr {
 					restartBackgroundService(func(stage string) {
 						switch stage {
 						case "stopping", "stopped", "error":
-							settingsSetServiceStatus(false)
+							settingsSetServiceState(serviceStateStopped)
+						case "starting":
+							settingsSetServiceState(serviceStateStarting)
 						case "running":
-							settingsSetServiceStatus(true)
+							settingsSetServiceState(serviceStateRunning)
 						}
 					})
 					// 结束（含失败）以实际探测为准
-					settingsSetServiceStatus(serverResponding(webURL))
+					settingsSetServiceState(settingsCurrentServiceState())
 				}()
 			}
 		}
@@ -794,35 +798,56 @@ func settingsDrawToggle(dis drawItemStruct) {
 	fillRoundedRectAA(hdc, knob, knobD/2, 0xFFFFFFFF)
 }
 
-// settingsSetServiceStatus 记录后台服务状态并触发状态控件重绘（可跨线程调用）。
-func settingsSetServiceStatus(up bool) {
-	settingsSvcUp.Store(up)
+// 后台服务三态：已停止 / 启动中 / 运行中。
+const (
+	serviceStateStopped int32 = iota
+	serviceStateStarting
+	serviceStateRunning
+)
+
+// settingsSetServiceState 记录后台服务状态并触发状态控件重绘（可跨线程调用）。
+func settingsSetServiceState(state int32) {
+	settingsSvcState.Store(state)
 	if settingsRestartInfoHwnd != 0 {
 		pInvalidateRect.Call(settingsRestartInfoHwnd, 0, 1)
 	}
 }
 
-// settingsDrawServiceStatus 自绘“后台服务”状态：绿点=运行中，红点=已停止。
+// settingsCurrentServiceState 依据服务实际运行状态推导展示状态：就绪→运行中；
+// 尚未就绪且未判定失败→启动中（后台拉起阶段）；已失败→已停止。
+func settingsCurrentServiceState() int32 {
+	if serverResponding(webURL) {
+		return serviceStateRunning
+	}
+	if serviceFailed.Load() {
+		return serviceStateStopped
+	}
+	return serviceStateStarting
+}
+
+// settingsDrawServiceStatus 自绘“后台服务”状态：红点=已停止，黄点=启动中，绿点=运行中。
 func settingsDrawServiceStatus(dis drawItemStruct) {
 	hdc := dis.hDC
 	if wb, _, _ := pGetStockObject.Call(whiteBrush); wb != 0 {
 		pFillRect.Call(hdc, uintptr(unsafe.Pointer(&dis.rcItem)), wb)
 	}
-	up := settingsSvcUp.Load()
-	// 圆点（8px，垂直居中）：ARGB——红=已停止 #DC2626，绿=运行中 #16A34A
-	dotColorBound := uint32(0xFFDC2626)
-	if up {
-		dotColorBound = 0xFF16A34A
+	st := settingsSvcState.Load()
+	// 圆点（8px，垂直居中）：ARGB——红=已停止 #DC2626，黄=启动中 #F59E0B，绿=运行中 #16A34A
+	dotColor := uint32(0xFFDC2626)
+	label := "后台服务：已停止"
+	switch st {
+	case serviceStateStarting:
+		dotColor = 0xFFF59E0B
+		label = "后台服务：启动中"
+	case serviceStateRunning:
+		dotColor = 0xFF16A34A
+		label = "后台服务：运行中"
 	}
 	dotD := int32(8)
 	dy := dis.rcItem.top + (dis.rcItem.bottom-dis.rcItem.top-dotD)/2
 	dot := rect{dis.rcItem.left + 2, dy, dis.rcItem.left + 2 + dotD, dy + dotD}
-	fillRoundedRectAA(hdc, dot, dotD/2, dotColorBound)
+	fillRoundedRectAA(hdc, dot, dotD/2, dotColor)
 	// 文本
-	label := "后台服务：已停止"
-	if up {
-		label = "后台服务：运行中"
-	}
 	pSetTextColor.Call(hdc, stColorSub)
 	pSetBkColor.Call(hdc, colorWhite)
 	pSetBkMode.Call(hdc, bkOpaque)
@@ -896,13 +921,14 @@ func settingsDrawHelp(dis drawItemStruct) {
 	if pressed {
 		ring = stColorSub
 	}
-	fillRoundedRectAA(hdc, dis.rcItem, 9, colorRefToARGB(ring))
+	fillRoundedRectAA(hdc, dis.rcItem, 7, colorRefToARGB(ring))
 	inner := rect{dis.rcItem.left + 1, dis.rcItem.top + 1, dis.rcItem.right - 1, dis.rcItem.bottom - 1}
-	fillRoundedRectAA(hdc, inner, 8, 0xFFFFFFFF)
-	pSetTextColor.Call(hdc, stColorSub)
+	fillRoundedRectAA(hdc, inner, 6, 0xFFFFFFFF)
+	// 加粗加深的 ?”：用正文加粗字号（600）、深色文字
+	pSetTextColor.Call(hdc, stColorText)
 	pSetBkMode.Call(hdc, bkTransparent)
-	if settingsFontSmall != 0 {
-		pSelectObject.Call(hdc, settingsFontSmall)
+	if settingsFontBold != 0 {
+		pSelectObject.Call(hdc, settingsFontBold)
 	}
 	// 测量 "?" 实际宽高，在圆内居中绘制（字形视觉重心略偏上，上移 1px）
 	q, _ := syscall.UTF16PtrFromString("?")
@@ -1603,7 +1629,7 @@ func createSettingsWindow() uintptr {
 		settingsRestartInfoHwnd = restInfo
 		settingsPaneGen = append(settingsPaneGen, stIdRestartInfo)
 	}
-	settingsSetServiceStatus(serverResponding(webURL))
+	settingsSetServiceState(settingsCurrentServiceState())
 	rb, _ := syscall.UTF16PtrFromString("重启后台服务")
 	restBtn, _, _ := pCreateWindowExW.Call(
 		0,
@@ -1831,7 +1857,7 @@ func createSettingsWindow() uintptr {
 	plugHelp, _, _ := pCreateWindowExW.Call(
 		0, uintptr(unsafe.Pointer(btnCls)), uintptr(unsafe.Pointer(hp)),
 		wsChild|wsVisible|bsOwnDraw,
-		uintptr(plugHelpX), 114, 18, 18,
+		uintptr(plugHelpX), 117, 16, 16,
 		hwnd, stIdExpPlugHelp, moduleHandle(), 0,
 	)
 	if plugHelp != 0 {
@@ -1851,8 +1877,10 @@ func createSettingsWindow() uintptr {
 			var ti toolInfoW
 			ti.cbSize = uint32(unsafe.Sizeof(ti))
 			ti.uFlags = ttfSubclass
-			ti.hwnd = hwnd
-			ti.uId = plugHelp
+			// TTF_SUBCLASS：tooltip 会子类化 hwnd（即问号按钮）并监听其鼠标消息，uId 为工具标识。
+			ti.hwnd = plugHelp
+			ti.uId = 1
+			ti.rect = rect{0, 0, 16, 16}
 			ti.lpszText = settingsPlugHelpTip
 			pSendMessageW.Call(settingsTipHwnd, ttmAddToolW, 0, uintptr(unsafe.Pointer(&ti)))
 			pSendMessageW.Call(settingsTipHwnd, ttmSetMaxTipWidthW, 0, 300)

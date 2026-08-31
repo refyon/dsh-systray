@@ -338,29 +338,70 @@ func queryHarnessUpdate() (latest, cur string, newer bool) {
 	return latest, cur, isNewerVersion("v"+latest, "v"+cur)
 }
 
-// fetchLatestHarnessVersion 查询 npm 上 @deepseek-ai/dsh 的最新版本号（harness 本体）。
+// harnessRepoOwner / harnessRepoName DeepSeek Harness 本体 GitHub 仓库（其 Release 标签带 dsh- 前缀，如 dsh-v0.1.2-alpha.2）。
+// 与 npm 包 @deepseek-ai/dsh（对应 apps/cli）同源；npm 发布往往滞后，故此处以 GitHub Release 为准。
+const (
+	harnessRepoOwner = "deepseek-ai"
+	harnessRepoName  = "deepseek-harness"
+)
+
+// fetchLatestHarnessVersion 查询 DeepSeek Harness 在 GitHub 上的最新 Release 版本号（去掉 dsh- / v 前缀）。
+// 与 fetchLatestRelease 相同：直连失败依次回退镜像前缀；取返回 Release 中版本号最大者。
 func fetchLatestHarnessVersion() (string, error) {
+	direct := fmt.Sprintf("https://api.github.com/repos/%s/%s/releases?per_page=20", harnessRepoOwner, harnessRepoName)
+	var candidates []string
+	candidates = append(candidates, direct)
+	for _, m := range buildMirrors() {
+		if m != "" {
+			candidates = append(candidates, m+direct)
+		}
+	}
+
 	client := &http.Client{Timeout: updateAPITimeout}
-	req, err := http.NewRequest("GET", "https://registry.npmjs.org/@deepseek-ai/dsh/latest", nil)
-	if err != nil {
-		return "", err
+	var lastErr error
+	for _, u := range candidates {
+		req, err := http.NewRequest("GET", u, nil)
+		if err != nil {
+			lastErr = err
+			continue
+		}
+		req.Header.Set("User-Agent", "dsh-systray/"+appVersion)
+		req.Header.Set("Accept", "application/vnd.github+json")
+		resp, err := client.Do(req)
+		if err != nil {
+			lastErr = err
+			continue
+		}
+		if resp.StatusCode != http.StatusOK {
+			resp.Body.Close()
+			lastErr = fmt.Errorf("HTTP %d", resp.StatusCode)
+			continue
+		}
+		var rels []struct {
+			TagName string `json:"tag_name"`
+		}
+		if err := json.NewDecoder(io.LimitReader(resp.Body, updateMaxBodySize)).Decode(&rels); err != nil {
+			resp.Body.Close()
+			lastErr = err
+			continue
+		}
+		resp.Body.Close()
+		best := ""
+		for _, r := range rels {
+			v := strings.TrimPrefix(strings.TrimPrefix(r.TagName, "dsh-"), "v")
+			if v == "" {
+				continue
+			}
+			if best == "" || compareVersions(v, best) > 0 {
+				best = v
+			}
+		}
+		if best != "" {
+			return best, nil
+		}
+		lastErr = fmt.Errorf("harness 仓库未发现可用 Release")
 	}
-	req.Header.Set("User-Agent", "dsh-systray/"+appVersion)
-	resp, err := client.Do(req)
-	if err != nil {
-		return "", err
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("npm 接口返回 HTTP %d", resp.StatusCode)
-	}
-	var v struct {
-		Version string `json:"version"`
-	}
-	if err := json.NewDecoder(io.LimitReader(resp.Body, updateMaxBodySize)).Decode(&v); err != nil {
-		return "", err
-	}
-	return strings.TrimPrefix(v.Version, "v"), nil
+	return "", lastErr
 }
 
 // installedHarnessVersion 读取已安装 harness（@deepseek-ai/dsh 或源码 package.json）的版本号。
@@ -483,14 +524,16 @@ func fetchLatestRelease() (*latestRelease, error) {
 	return nil, lastErr
 }
 
-// isNewerVersion 判断最新标签是否比当前版本新（忽略标签前导 v）。
+// isNewerVersion 判断最新标签是否比当前版本新（忽略前导 v/dsh-）。
 func isNewerVersion(latest, current string) bool {
-	return compareVersions(strings.TrimPrefix(latest, "v"), strings.TrimPrefix(current, "v")) > 0
+	return compareVersions(latest, current) > 0
 }
 
-// compareVersions 简单数字版本比较：按 "." 分段逐段比较，忽略预发布后缀（如 -rc.1）。
+// compareVersions 语义化版本比较：按 "." 分段逐段比较数值部分；数值相同再比较预发布标识符
+// （如 alpha.2 > alpha.1，稳定版 > 预发布版）。可容忍前导 v / dsh- 前缀。
 func compareVersions(a, b string) int {
-	pa, pb := splitVersion(a), splitVersion(b)
+	pa, preA := splitVersionParts(a)
+	pb, preB := splitVersionParts(b)
 	for i := 0; i < len(pa) || i < len(pb); i++ {
 		var na, nb int
 		if i < len(pa) {
@@ -506,15 +549,68 @@ func compareVersions(a, b string) int {
 			return 1
 		}
 	}
-	return 0
+	return comparePrerelease(preA, preB)
 }
 
-func splitVersion(v string) []string {
+// splitVersionParts 拆出版本字符串的数值段与预发布段；容忍前导 v / dsh- / dsh-v 前缀。
+func splitVersionParts(v string) (num, pre []string) {
 	v = strings.TrimSpace(v)
+	v = strings.TrimPrefix(v, "dsh-")
+	v = strings.TrimPrefix(v, "v")
 	if i := strings.IndexByte(v, '-'); i >= 0 {
+		pre = strings.Split(v[i+1:], ".")
 		v = v[:i]
 	}
-	return strings.Split(v, ".")
+	num = strings.Split(v, ".")
+	return num, pre
+}
+
+// comparePrerelease 预发布标识符比较：稳定版（无预发布）大于预发布版；
+// 同为预发布时逐段比较，数值段按大小、非数值段按字典序，短列表（如 alpha < alpha.1）更小。
+func comparePrerelease(a, b []string) int {
+	if len(a) == 0 && len(b) == 0 {
+		return 0
+	}
+	if len(a) == 0 {
+		return 1 // a 为稳定版，b 为预发布 → a 更新
+	}
+	if len(b) == 0 {
+		return -1
+	}
+	n := len(a)
+	if len(b) < n {
+		n = len(b)
+	}
+	for i := 0; i < n; i++ {
+		if a[i] == b[i] {
+			continue
+		}
+		ai, aErr := strconv.Atoi(a[i])
+		bi, bErr := strconv.Atoi(b[i])
+		if aErr == nil && bErr == nil {
+			if ai < bi {
+				return -1
+			}
+			return 1
+		}
+		if aErr == nil {
+			return -1 // 数值段 < 字母段（semver 规则）
+		}
+		if bErr == nil {
+			return 1
+		}
+		if a[i] < b[i] {
+			return -1
+		}
+		return 1
+	}
+	if len(a) < len(b) {
+		return -1
+	}
+	if len(a) > len(b) {
+		return 1
+	}
+	return 0
 }
 
 // downloadAndApplyUpdate 下载更新包 → SHA256 校验 → 解压 → 替换并重启。
