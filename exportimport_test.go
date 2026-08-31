@@ -46,7 +46,7 @@ func TestExportImportPipeline(t *testing.T) {
 	if err := os.MkdirAll(destDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	p, err := buildExportZip(true, true, []string{userDir}, destDir, nil)
+	p, err := buildExportZip(true, true, true, []string{userDir}, destDir, nil)
 	if err != nil {
 		t.Fatalf("buildExportZip: %v", err)
 	}

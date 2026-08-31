@@ -22,7 +22,7 @@ void dshSettingsGoRestartService(void);
 // 返回后台服务状态 C 字符串（"运行中"/"未运行"，调用方 free）
 char* dshSettingsGoServiceState(void);
 // 导出（阻塞）：返回 JSON C 字符串（调用方 free）
-char* dshSettingsGoExport(int sessions, int plugins, const char* dirsJSON, const char* destDir);
+char* dshSettingsGoExport(int sessions, int plugins, int files, const char* dirsJSON, const char* destDir);
 // 解析导入压缩包（阻塞）：返回 JSON C 字符串（调用方 free）
 char* dshSettingsGoInspect(const char* zipPath);
 // 统计冲突项数（阻塞）：-1=出错，>=0=冲突数
@@ -50,6 +50,7 @@ char* dshSettingsGoRestore(const char* kind, const char* zipPath, const char* de
 @property (nonatomic, strong) NSButton *expSessions;
 @property (nonatomic, strong) NSButton *expPlugins;
 @property (nonatomic, strong) NSButton *expFiles;
+@property (nonatomic, strong) NSButton *addDirBtn;
 @property (nonatomic, strong) NSButton *expBtn;
 @property (nonatomic, strong) NSTextField *expStatus;
 @property (nonatomic, strong) NSTextView *expDirsView;
@@ -246,6 +247,10 @@ static DSHSetController *g_ctrl = nil;
     self.expDirsView.string = [self.expDirs componentsJoinedByString:@"\n"];
 }
 
+- (void)expFilesToggled:(id)sender {
+    self.addDirBtn.enabled = (self.expFiles.state == NSControlStateValueOn);
+}
+
 - (void)exportClicked:(id)sender {
     BOOL sess = (self.expSessions.state == NSControlStateValueOn);
     BOOL plug = (self.expPlugins.state == NSControlStateValueOn);
@@ -275,7 +280,7 @@ static DSHSetController *g_ctrl = nil;
     NSData *dirsJSON = [NSJSONSerialization dataWithJSONObject:self.expDirs options:0 error:nil];
     NSString *dirsStr = dirsJSON ? [[NSString alloc] initWithData:dirsJSON encoding:NSUTF8StringEncoding] : @"[]";
     dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
-        char *res = dshSettingsGoExport(sess ? 1 : 0, plug ? 1 : 0, dirsStr.UTF8String, dest.UTF8String);
+        char *res = dshSettingsGoExport(sess ? 1 : 0, plug ? 1 : 0, files ? 1 : 0, dirsStr.UTF8String, dest.UTF8String);
         NSString *json = res ? [NSString stringWithUTF8String:res] : @"";
         if (res) free(res);
         dispatch_async(dispatch_get_main_queue(), ^{
@@ -643,7 +648,7 @@ static DSHSetController *g_ctrl = nil;
     plugHelp.toolTip = @"仅打包用户安装的插件";
     [self.exportPane addSubview:plugHelp];
 
-    self.expFiles = [NSButton checkboxWithTitle:@"需要打包的文件目录" target:nil action:nil];
+    self.expFiles = [NSButton checkboxWithTitle:@"需要打包的文件目录" target:self action:@selector(expFilesToggled:)];
     self.expFiles.frame = NSMakeRect(0, 242, 280, 24);
     self.expFiles.font = [self uiFontOfSize:16 weight:NSFontWeightRegular];
     [self.exportPane addSubview:self.expFiles];
@@ -655,6 +660,8 @@ static DSHSetController *g_ctrl = nil;
     addDirBtn.font = [self uiFontOfSize:13 weight:NSFontWeightSemibold];
     addDirBtn.target = self;
     addDirBtn.action = @selector(addDirClicked:);
+    addDirBtn.enabled = (self.expFiles.state == NSControlStateValueOn);
+    self.addDirBtn = addDirBtn;
     [self.exportPane addSubview:addDirBtn];
 
     self.expDirs = [NSMutableArray array];

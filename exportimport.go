@@ -280,10 +280,10 @@ func packBaseName(dir string, used map[string]bool) string {
 }
 
 // buildExportZip 构建导出总 zip 并放入 destDir，返回最终文件路径。
-// includeSessions/includePlugins 勾选会话/插件；dirs 为要打包的目录列表（可空）。
+// includeSessions/includePlugins/includeFiles 分别勾选会话/插件/文件目录；dirs 为要打包的目录列表（可空）。
 // 子包在总 zip 内布局：manifest.json + sessions.zip（sessions/…）+ plugins.zip（profiles/node_modules/…）
 // + files.zip（<目录名>/…，恢复时由用户选解压位置）。
-func buildExportZip(includeSessions, includePlugins bool, dirs []string, destDir string, onStatus func(text string, pct float64)) (string, error) {
+func buildExportZip(includeSessions, includePlugins, includeFiles bool, dirs []string, destDir string, onStatus func(text string, pct float64)) (string, error) {
 	home := dshHomeDir()
 	if home == "" {
 		return "", fmt.Errorf("无法确定 harness 数据目录（DSH_HOME）")
@@ -357,7 +357,7 @@ func buildExportZip(includeSessions, includePlugins bool, dirs []string, destDir
 	}
 
 	progress(onStatus, "正在打包文件目录…", 0)
-	if len(dirs) > 0 {
+	if includeFiles && len(dirs) > 0 {
 		entries := map[string]string{}
 		used := map[string]bool{}
 		for _, d := range dirs {

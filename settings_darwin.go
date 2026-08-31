@@ -122,13 +122,13 @@ func dshSettingsGoServiceState() *C.char {
 // destDir=保存位置。返回 dshResult JSON（调用方 free）。
 //
 //export dshSettingsGoExport
-func dshSettingsGoExport(sessions, plugins C.int, dirsJSON, destDir *C.char) *C.char {
+func dshSettingsGoExport(sessions, plugins, files C.int, dirsJSON, destDir *C.char) *C.char {
 	var dirs []string
 	if s := C.GoString(dirsJSON); s != "" {
 		_ = json.Unmarshal([]byte(s), &dirs)
 	}
 	dest := C.GoString(destDir)
-	path, err := buildExportZip(sessions != 0, plugins != 0, dirs, dest, nil)
+	path, err := buildExportZip(sessions != 0, plugins != 0, files != 0, dirs, dest, nil)
 	if err != nil {
 		return dshResultCString(dshResult{OK: false, Error: err.Error()})
 	}

@@ -42,9 +42,12 @@ var (
 	cLine   = rgba{71, 84, 103, 255}   // 日志正文 #475467
 )
 
-// scale 全局渲染倍率：1x 原生尺寸成图。文字按目标尺寸直接渲染，避免 2x 成图后在
-// 网页/README 中缩小导致的非整数倍缩放发虚（截图类图片 1x 更清晰）。
-const scale = 1
+// scale 全局渲染倍率：2x 视网膜级成图。文字按 2 倍分辨率渲染，显示端若按逻辑尺寸（图片一半像素宽）
+// 展示则等于精确 2x 缩小，文字锐利（比 1x 原生灰度更清晰）。README 主图用较小逻辑宽以贴合 GitHub 容器。
+const scale = 2
+
+// heroW README 主图逻辑宽度（≈GitHub markdown 内容宽度），避免 2x 成图被 GitHub 缩减发虚。
+const heroW = 980
 
 // ==================== 画布与矢量原语 ====================
 
@@ -526,7 +529,7 @@ func TestRegenerateDocsImages(t *testing.T) {
 		t.Logf("generated %s (%dx%d)", path, c.img.Bounds().Dx(), c.img.Bounds().Dy())
 	}
 
-	hero := newCanvas(slideW, slideH)
+	hero := newCanvas(heroW, slideH)
 	drawHero(hero, f)
 	heroPath := filepath.Join("docs", "screenshot.png")
 	if err := hero.save(heroPath); err != nil {

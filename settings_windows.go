@@ -186,6 +186,7 @@ var (
 	pGetWindowLongPtrW          = modUser32.NewProc("GetWindowLongPtrW")
 	pSetWindowLongPtrW          = modUser32.NewProc("SetWindowLongPtrW")
 	pCallWindowProcW            = modUser32.NewProc("CallWindowProcW")
+	pEnableWindow               = modUser32.NewProc("EnableWindow")
 
 	settingsOpenFlag        atomic.Bool
 	settingsHwnd            uintptr
@@ -299,6 +300,7 @@ func settingsWndProc(hwnd, uMsg, wParam, lParam uintptr) uintptr {
 		case id == stIdExpFiles:
 			settingsExpFiles = !settingsExpFiles
 			settingsRedrawWidget(stIdExpFiles)
+			settingsUpdateExpFilesState()
 		case id == stIdExpAddDir:
 			if dir := pickHarnessDir("选择要打包的目录", ""); dir != "" {
 				settingsExpDirs = append(settingsExpDirs, dir)
@@ -984,43 +986,44 @@ func settingsDrawHelp(dis drawItemStruct) {
 	pDrawTextW.Call(hdc, uintptr(unsafe.Pointer(q)), ^uintptr(0), uintptr(unsafe.Pointer(&tr)), 0) // DT_LEFT|DT_TOP
 }
 
-// ==================== 自定义半透明黑色胶囊提示 ====================
+// ==================== 自定义半透明黑色胶囊提示（UpdateLayeredWindow 逐像素 alpha） ====================
 
-// settingsTipPopupWndProc 提示窗消息处理：WM_PAINT 绘制胶囊底色 + 白色文字。
+// bmpInfoTip 32bpp DIB 结构（CreateDIBSection）。
+type bmpInfoTip struct {
+	biSize          uint32
+	biWidth         int32
+	biHeight        int32
+	biPlanes        uint16
+	biBitCount      uint16
+	biCompression   uint32
+	biSizeImage     uint32
+	biXPelsPerMeter int32
+	biYPelsPerMeter int32
+	biClrUsed       uint32
+	biClrImportant  uint32
+}
+
+// sizeTip SIZE 结构（UpdateLayeredWindow）。
+type sizeTip struct{ w, h int32 }
+
+// blendFuncTip BLENDFUNCTION（AC_SRC_ALPHA）。
+type blendFuncTip struct{ srcBlend, dstBlend, alphaOp, flags byte }
+
+const tipShadowPad int32 = 6
+
+// settingsTipPopupWndProc 提示窗消息处理：内容由 UpdateLayeredWindow（逐像素 alpha）提供，WM_PAINT 无需自绘。
 func settingsTipPopupWndProc(hwnd, uMsg, wParam, lParam uintptr) uintptr {
 	switch uMsg {
-	case wmPaint:
-		var ps paintStruct
-		hdc, _, _ := pBeginPaint.Call(hwnd, uintptr(unsafe.Pointer(&ps)))
-		if hdc != 0 {
-			var cr rect
-			pGetClientRect.Call(hwnd, uintptr(unsafe.Pointer(&cr)))
-			if settingsTipPopupBrush == 0 {
-				settingsTipPopupBrush, _, _ = pCreateSolidBrush.Call(0x00111111) // 深灰黑 #111111
-			}
-			pFillRect.Call(hdc, uintptr(unsafe.Pointer(&cr)), settingsTipPopupBrush)
-			pSetTextColor.Call(hdc, 0xFFFFFF) // 白色文字
-			pSetBkMode.Call(hdc, bkTransparent)
-			if settingsFontSmall != 0 {
-				pSelectObject.Call(hdc, settingsFontSmall)
-			}
-			if settingsTipPopupText != "" {
-				t, _ := syscall.UTF16PtrFromString(settingsTipPopupText)
-				pDrawTextW.Call(hdc, uintptr(unsafe.Pointer(t)), ^uintptr(0), uintptr(unsafe.Pointer(&cr)), dtCenter|dtVCenter|dtSingle)
-			}
-			pEndPaint.Call(hwnd, uintptr(unsafe.Pointer(&ps)))
-		}
-		return 0
 	case wmMouseActivate:
 		return maNoActivate // 不抢焦点
 	case wmEraseBkgnd:
-		return 1 // 已自绘背景，抑制闪烁
+		return 1
 	}
 	ret, _, _ := pDefWindowProcW.Call(hwnd, uMsg, wParam, lParam)
 	return ret
 }
 
-// settingsTipPopupCreate 惰性创建半透明胶囊提示窗（层叠 + 置顶 + 工具窗口，不抢焦点）。
+// settingsTipPopupCreate 惰性创建层叠提示窗（置顶 + 工具窗口，不抢焦点）。
 func settingsTipPopupCreate() {
 	if !settingsTipPopupReg {
 		cls, _ := syscall.UTF16PtrFromString(tipPopupCls)
@@ -1045,14 +1048,92 @@ func settingsTipPopupCreate() {
 	)
 	if hwnd != 0 {
 		settingsTipPopupHwnd = hwnd
-		pSetLayeredWindowAttributes.Call(hwnd, 0, 214, lwaAlpha) // ~84% 不透明度 → 半透明黑
 	}
 }
 
-// settingsTipPopupShow 在 anchor 右侧垂直居中显示胶囊提示。
+// settingsTipRenderDIB 把提示渲染成 32bpp 预乘 alpha DIB：柔和投影 + 半透明黑胶囊 + 白色文字。
+func settingsTipRenderDIB(text string, dw, dh int32) (hbmp uintptr, memDC uintptr) {
+	memDC, _, _ = pCreateCompatibleDC.Call(0)
+	if memDC == 0 {
+		return
+	}
+	bmi := bmpInfoTip{
+		biSize:     uint32(unsafe.Sizeof(bmpInfoTip{})),
+		biWidth:    dw,
+		biHeight:   dh,
+		biPlanes:   1,
+		biBitCount: 32,
+	}
+	var bits unsafe.Pointer
+	hbmp, _, _ = pCreateDIBSection.Call(memDC, uintptr(unsafe.Pointer(&bmi)), 0, uintptr(unsafe.Pointer(&bits)), 0, 0)
+	if hbmp == 0 {
+		pDeleteDC.Call(memDC)
+		memDC = 0
+		return
+	}
+	pSelectObject.Call(memDC, hbmp)
+
+	cw := dw - tipShadowPad*2
+	ch := dh - tipShadowPad*2
+	capRect := rect{tipShadowPad, tipShadowPad, tipShadowPad + cw, tipShadowPad + ch}
+	// 柔和投影：数层略大圆角、低透明度（向下偏移，GDI+ 抗锯齿产生柔和边缘）
+	for i := int32(3); i >= 1; i-- {
+		sr := rect{tipShadowPad - i, tipShadowPad - i + 3, tipShadowPad + cw + i, tipShadowPad + ch + i + 3}
+		fillRoundedRectAA(memDC, sr, (ch+2*i)/2, 0x14000000)
+	}
+	// 半透明黑色胶囊
+	fillRoundedRectAA(memDC, capRect, ch/2, 0xD9000000)
+
+	// 白色文字：渲染灰度掩码后把工具 DIB 对应像素设为预乘白色
+	if settingsFontSmall != 0 && text != "" {
+		tw := int(cw - 8)
+		maskDC, _, _ := pCreateCompatibleDC.Call(0)
+		if maskDC != 0 {
+			mbmi := bmpInfoTip{biSize: uint32(unsafe.Sizeof(bmpInfoTip{})), biWidth: int32(tw), biHeight: -ch, biPlanes: 1, biBitCount: 32}
+			var mbits unsafe.Pointer
+			mhbmp, _, _ := pCreateDIBSection.Call(maskDC, uintptr(unsafe.Pointer(&mbmi)), 0, uintptr(unsafe.Pointer(&mbits)), 0, 0)
+			if mhbmp != 0 {
+				pSelectObject.Call(maskDC, mhbmp)
+				if wb, _, _ := pGetStockObject.Call(whiteBrush); wb != 0 {
+					pFillRect.Call(maskDC, uintptr(unsafe.Pointer(&rect{0, 0, int32(tw), ch})), wb)
+				}
+				pSelectObject.Call(maskDC, settingsFontSmall)
+				pSetTextColor.Call(maskDC, 0)
+				pSetBkColor.Call(maskDC, 0xFFFFFF)
+				pSetBkMode.Call(maskDC, bkOpaque)
+				t, _ := syscall.UTF16PtrFromString(text)
+				pDrawTextW.Call(maskDC, uintptr(unsafe.Pointer(t)), ^uintptr(0), uintptr(unsafe.Pointer(&rect{0, 0, int32(tw), ch})), dtCenter|dtVCenter|dtSingle)
+				mbits2 := unsafe.Slice((*byte)(mbits), tw*int(ch)*4)
+				dbits := unsafe.Slice((*byte)(bits), int(dw)*int(dh)*4)
+				tx := int(tipShadowPad + 4)
+				ty := int(tipShadowPad)
+				for yy := 0; yy < int(ch); yy++ {
+					for xx := 0; xx < tw; xx++ {
+						g := int(mbits2[(yy*tw+xx)*4]) // 白底黑字 → R 通道为灰度
+						if g >= 255 {
+							continue
+						}
+						a := byte(255 - g)
+						dIdx := ((yy+ty)*int(dw) + xx + tx) * 4
+						dbits[dIdx] = a
+						dbits[dIdx+1] = a
+						dbits[dIdx+2] = a
+						dbits[dIdx+3] = a
+					}
+				}
+				pDeleteObject.Call(mhbmp)
+			}
+			pDeleteDC.Call(maskDC)
+		}
+	}
+	pGdiFlush.Call()
+	return
+}
+
+// settingsTipPopupShow 在 anchor 右侧垂直居中显示胶囊提示（UpdateLayeredWindow 逐像素透明）。
 func settingsTipPopupShow(text string, anchor uintptr) {
 	if settingsTipPopupVisible && settingsTipPopupAnchor == anchor && settingsTipPopupText == text {
-		return // 已显示同一条提示：避免 WM_MOUSEMOVE 高频触发时反复移动窗口/重建区域
+		return
 	}
 	settingsTipPopupText = text
 	mrc := rect{}
@@ -1079,14 +1160,30 @@ func settingsTipPopupShow(text string, anchor uintptr) {
 	if settingsTipPopupHwnd == 0 {
 		return
 	}
+	dw := w + tipShadowPad*2
+	dh := h + tipShadowPad*2
+	hbmp, memDC := settingsTipRenderDIB(text, dw, dh)
+	if hbmp == 0 || memDC == 0 {
+		return
+	}
+	defer pDeleteObject.Call(hbmp)
+	defer pDeleteDC.Call(memDC)
+
 	var arc rect
 	pGetWindowRect.Call(anchor, uintptr(unsafe.Pointer(&arc)))
-	x := arc.right + 8
-	y := (arc.top+arc.bottom)/2 - h/2
-	hrgn, _, _ := pCreateRoundRectRgn.Call(0, 0, uintptr(w), uintptr(h), uintptr(h), uintptr(h)) // 胶囊：圆角=高度
-	pSetWindowRgn.Call(settingsTipPopupHwnd, hrgn, 1)
-	pMoveWindow.Call(settingsTipPopupHwnd, uintptr(x), uintptr(y), uintptr(w), uintptr(h), 1)
-	pInvalidateRect.Call(settingsTipPopupHwnd, 0, 1)
+	x := arc.right + 8 - tipShadowPad
+	y := (arc.top+arc.bottom)/2 - dh/2
+	pos := point{x, y}
+	sizeV := sizeTip{dw, dh}
+	blend := blendFuncTip{flags: 1} // AC_SRC_ALPHA
+	screenDC, _, _ := pGetDC.Call(0)
+	if screenDC != 0 {
+		src := point{0, 0}
+		pUpdateLayeredWindow.Call(settingsTipPopupHwnd, screenDC,
+			uintptr(unsafe.Pointer(&pos)), uintptr(unsafe.Pointer(&sizeV)),
+			memDC, uintptr(unsafe.Pointer(&src)), 0, uintptr(unsafe.Pointer(&blend)), 2)
+		pReleaseDC.Call(0, screenDC)
+	}
 	pShowWindow.Call(settingsTipPopupHwnd, swShowNoActivate)
 	settingsTipPopupVisible = true
 	settingsTipPopupAnchor = anchor
@@ -1417,6 +1514,17 @@ func settingsExpDirsUpdate() {
 	settingsSetText(stIdExpDirs, "已选目录：\n"+strings.Join(settingsExpDirs, "\n"))
 }
 
+// settingsUpdateExpFilesState 依据「需要打包的文件目录」勾选状态启用/禁用「选择目录…」按钮。
+func settingsUpdateExpFilesState() {
+	if w := settingsWidgetKey(stIdExpAddDir); w != 0 {
+		enable := uintptr(0)
+		if settingsExpFiles {
+			enable = 1
+		}
+		pEnableWindow.Call(w, enable)
+	}
+}
+
 // settingsExportRun 执行导出：选择保存位置 → 后台打包 → 结果弹窗。
 func settingsExportRun() {
 	if settingsExpBusy.Load() {
@@ -1440,7 +1548,7 @@ func settingsExportRun() {
 		dirs := append([]string(nil), settingsExpDirs...) // 快照，避免导出期间列表被修改
 		splash := startSplash("正在导出…")
 		settingsSetText(stIdExpStatus, "正在导出…")
-		path, err := buildExportZip(settingsExpSessions, settingsExpPlugins, dirs, destDir, func(t string, pct float64) {
+		path, err := buildExportZip(settingsExpSessions, settingsExpPlugins, settingsExpFiles, dirs, destDir, func(t string, pct float64) {
 			if t != "" {
 				settingsSetText(stIdExpStatus, t)
 				splash.Update(t, pct)
@@ -2073,6 +2181,7 @@ func createSettingsWindow() uintptr {
 		settingsPaneExp = append(settingsPaneExp, stIdExpDirs)
 	}
 	settingsExpDirsUpdate()
+	settingsUpdateExpFilesState()
 	eg, _ := syscall.UTF16PtrFromString("导出…")
 	expGoBtn, _, _ := pCreateWindowExW.Call(
 		0, uintptr(unsafe.Pointer(btnCls)), uintptr(unsafe.Pointer(eg)),
