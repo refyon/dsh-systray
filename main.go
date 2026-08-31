@@ -41,6 +41,9 @@ type appConfig struct {
 	HarnessDir        string `json:"harnessDir"`
 	StartupTimeoutSec int    `json:"startupTimeoutSec"`
 	UpdateMirror      string `json:"updateMirror"`
+	// HarnessPrerelease 允许将 alpha/beta/rc 等预发布版视为 DeepSeek Harness 的可更新版本（默认关闭，
+	// 只更新稳定版，避免预发布与已装插件不兼容导致服务启动失败）。
+	HarnessPrerelease bool `json:"harnessPrerelease"`
 }
 
 // configFilePath 用户配置目录下的 config.json（Windows: %APPDATA%\dsh-systray；macOS: ~/Library/Application Support/dsh-systray）。
@@ -83,6 +86,9 @@ func applyConfigFile(cfg *appConfig, path string) {
 	}
 	if f.UpdateMirror != "" {
 		cfg.UpdateMirror = f.UpdateMirror
+	}
+	if f.HarnessPrerelease {
+		cfg.HarnessPrerelease = true
 	}
 }
 
@@ -217,6 +223,7 @@ func pollServiceMenu() {
 func main() {
 	cfg := loadConfig()
 	updateMirrorOverride = cfg.UpdateMirror
+	harnessPrereleaseOverride = cfg.HarnessPrerelease
 	port = cfg.Port
 	webURL = fmt.Sprintf("http://127.0.0.1:%d/", port)
 	harnessDir = cfg.HarnessDir

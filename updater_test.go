@@ -36,3 +36,47 @@ func TestIsNewerVersion(t *testing.T) {
 		t.Errorf("v0.4.7 should NOT be newer than 0.4.7")
 	}
 }
+
+func TestIsStableVersion(t *testing.T) {
+	cases := []struct {
+		v    string
+		want bool
+	}{
+		{"0.1.2", true},
+		{"0.4.13", true},
+		{"1.0.0", true},
+		{"0.1.1-rc.2", false},
+		{"0.1.2-alpha.2", false},
+		{"0.1.2-beta.1", false},
+	}
+	for _, c := range cases {
+		if got := isStableVersion(c.v); got != c.want {
+			t.Errorf("isStableVersion(%q)=%v, want %v", c.v, got, c.want)
+		}
+	}
+}
+
+func TestPickHarnessVersion(t *testing.T) {
+	tags := []string{
+		"dsh-v0.1.1-rc.1",
+		"dsh-v0.1.1-rc.2",
+		"dsh-v0.1.2-alpha.2",
+		"dsh-v0.1.1",
+	}
+	// 默认仅稳定版：0.1.1（稳定）> 0.1.1-rc.2（预发布），alpha/rc 全部排除
+	if got := pickHarnessVersion(tags, false); got != "0.1.1" {
+		t.Errorf("stable-only pick = %q, want 0.1.1", got)
+	}
+	// 允许预发布：0.1.2-alpha.2 > 0.1.1
+	if got := pickHarnessVersion(tags, true); got != "0.1.2-alpha.2" {
+		t.Errorf("prerelease pick = %q, want 0.1.2-alpha.2", got)
+	}
+	// 全部为预发布且不允许预发布 → 无可更新版本
+	preOnly := []string{"dsh-v0.1.1-rc.2", "dsh-v0.1.2-alpha.2"}
+	if got := pickHarnessVersion(preOnly, false); got != "" {
+		t.Errorf("pre-only stable pick = %q, want empty", got)
+	}
+	if got := pickHarnessVersion(nil, true); got != "" {
+		t.Errorf("empty tags pick = %q, want empty", got)
+	}
+}

@@ -959,9 +959,9 @@ func settingsDrawHelp(dis drawItemStruct) {
 	if pressed {
 		ring = stColorSub
 	}
-	fillRoundedRectAA(hdc, dis.rcItem, 7, colorRefToARGB(ring))
+	fillRoundedRectAA(hdc, dis.rcItem, 8, colorRefToARGB(ring))
 	inner := rect{dis.rcItem.left + 1, dis.rcItem.top + 1, dis.rcItem.right - 1, dis.rcItem.bottom - 1}
-	fillRoundedRectAA(hdc, inner, 6, 0xFFFFFFFF)
+	fillRoundedRectAA(hdc, inner, 7, 0xFFFFFFFF)
 	// 加粗加深的 ?”：用问号专用小号加粗字体（600）、深色文字
 	pSetTextColor.Call(hdc, stColorText)
 	pSetBkMode.Call(hdc, bkTransparent)
@@ -1009,7 +1009,7 @@ type sizeTip struct{ w, h int32 }
 // blendFuncTip BLENDFUNCTION（AC_SRC_ALPHA）。
 type blendFuncTip struct{ srcBlend, dstBlend, alphaOp, flags byte }
 
-const tipShadowPad int32 = 6
+const tipShadowPad int32 = 3 // 只保留抗锯齿边缘留白（去掉阴影）
 
 // settingsTipPopupWndProc 提示窗消息处理：内容由 UpdateLayeredWindow（逐像素 alpha）提供，WM_PAINT 无需自绘。
 func settingsTipPopupWndProc(hwnd, uMsg, wParam, lParam uintptr) uintptr {
@@ -1076,12 +1076,7 @@ func settingsTipRenderDIB(text string, dw, dh int32) (hbmp uintptr, memDC uintpt
 	cw := dw - tipShadowPad*2
 	ch := dh - tipShadowPad*2
 	capRect := rect{tipShadowPad, tipShadowPad, tipShadowPad + cw, tipShadowPad + ch}
-	// 柔和投影：数层略大圆角、低透明度（向下偏移，GDI+ 抗锯齿产生柔和边缘）
-	for i := int32(3); i >= 1; i-- {
-		sr := rect{tipShadowPad - i, tipShadowPad - i + 3, tipShadowPad + cw + i, tipShadowPad + ch + i + 3}
-		fillRoundedRectAA(memDC, sr, (ch+2*i)/2, 0x14000000)
-	}
-	// 半透明黑色胶囊
+	// 半透明黑色胶囊（GDI+ 抗锯齿，无阴影）
 	fillRoundedRectAA(memDC, capRect, ch/2, 0xD9000000)
 
 	// 白色文字：渲染灰度掩码后把工具 DIB 对应像素设为预乘白色
@@ -1793,7 +1788,7 @@ func createSettingsWindow() uintptr {
 	settingsFontSmall = makeFont(15, 400)
 	settingsFontMono = makeMonoFont(14) // 日志字体 14px
 	settingsFontBtn = makeFont(16, 600)
-	settingsFontHelp = makeFont(13, 600) // 问号图标内 ?：小号加粗（更小、更醒目）
+	settingsFontHelp = makeFont(18, 600) // 问号图标内 ?：大号加粗、深色（18px）
 	settingsSideBrush, _, _ = pCreateSolidBrush.Call(stColorSidebarBg)
 
 	titleText, _ := syscall.UTF16PtrFromString("设置")
@@ -2160,7 +2155,7 @@ func createSettingsWindow() uintptr {
 	plugHelp, _, _ := pCreateWindowExW.Call(
 		0, uintptr(unsafe.Pointer(btnCls)), uintptr(unsafe.Pointer(hp)),
 		wsChild|wsVisible|bsOwnDraw,
-		uintptr(plugHelpX), 117, 16, 16,
+		uintptr(plugHelpX), 117, 18, 18,
 		hwnd, stIdExpPlugHelp, moduleHandle(), 0,
 	)
 	if plugHelp != 0 {

@@ -63,6 +63,9 @@ var updateMirrors = []string{
 // updateMirrorOverride 用户在 config.json 配置的 updateMirror（可空）。
 var updateMirrorOverride string
 
+// harnessPrereleaseOverride 是否允许把 harness 预发布版（alpha/beta/rc）作为可更新版本（config.json 的 harnessPrerelease）。
+var harnessPrereleaseOverride bool
+
 // 进行中更新的取消控制（托盘退出时调用 cancelActiveUpdate 终止下载/安装）。
 var (
 	updateMu     sync.Mutex
@@ -261,12 +264,12 @@ func checkForUpdatesManual() {
 		showMessageBox("检查更新失败：\n"+err.Error()+"\n\n请检查网络后重试。", appName)
 		return
 	}
-	// 3) harness 有新版本 → 优先提示先更新 harness
+	// 3) harness 有新版本 → 优先提示先更新 harness；用户选「稍后」则继续完成 dsh-systray 自身更新检查
 	if harnessNewer {
 		if askUpdateHarness(harnessLatest, harnessCur) {
 			go runHarnessUpdate(harnessLatest)
+			return
 		}
-		return
 	}
 	// 4) dsh-systray 自身
 	if !isNewerVersion(rel.TagName, appVersion) {
@@ -386,22 +389,41 @@ func fetchLatestHarnessVersion() (string, error) {
 			continue
 		}
 		resp.Body.Close()
-		best := ""
+		var tags []string
 		for _, r := range rels {
-			v := strings.TrimPrefix(strings.TrimPrefix(r.TagName, "dsh-"), "v")
-			if v == "" {
-				continue
-			}
-			if best == "" || compareVersions(v, best) > 0 {
-				best = v
-			}
+			tags = append(tags, r.TagName)
 		}
-		if best != "" {
+		if best := pickHarnessVersion(tags, harnessPrereleaseOverride); best != "" {
 			return best, nil
 		}
 		lastErr = fmt.Errorf("harness 仓库未发现可用 Release")
 	}
 	return "", lastErr
+}
+
+// isStableVersion 判断版本是否为稳定版（无 -alpha/-beta/-rc 等预发布后缀）。
+func isStableVersion(v string) bool {
+	return !strings.Contains(v, "-")
+}
+
+// pickHarnessVersion 从 Release 标签列表中选出应安装的版本号：
+// 默认仅考虑稳定版（避免预发布与已装插件不兼容导致服务启动失败）；harnessPrereleaseOverride 开启时才包含预发布，
+// 并在其中取版本号最大者（如 0.1.2-alpha.2 > 0.1.1-rc.2）。
+func pickHarnessVersion(tags []string, allowPrerelease bool) string {
+	best := ""
+	for _, tag := range tags {
+		v := strings.TrimPrefix(strings.TrimPrefix(tag, "dsh-"), "v")
+		if v == "" {
+			continue
+		}
+		if !allowPrerelease && !isStableVersion(v) {
+			continue
+		}
+		if best == "" || compareVersions(v, best) > 0 {
+			best = v
+		}
+	}
+	return best
 }
 
 // installedHarnessVersion 读取已安装 harness（@deepseek-ai/dsh 或源码 package.json）的版本号。
@@ -440,23 +462,166 @@ func runHarnessCmd(name string, args ...string) error {
 	return cmd.Run()
 }
 
-// runHarnessUpdate 更新 DeepSeek Harness（npm 模式更新 @deepseek-ai/dsh；源码模式 git pull+install+build），
-// 完成后重启服务。异步执行，带进度窗口。
-func runHarnessUpdate(latest string) {
-	splash := startSplash("正在更新 DeepSeek Harness…")
-	restart := func() {
-		killServer()
-		time.Sleep(2 * time.Second)
-		if !serverResponding(webURL) {
-			if started, exitCh := startServer(); started {
-				waitForServerReady(webURL, exitCh, startupTimeout)
-			}
+// harnessBackupSuffix 更新前快照文件后缀（更新失败时用于回退到上一可运行版本）。
+const harnessBackupSuffix = ".dshbak"
+
+// snapshotHarness 快照当前可运行版本：备份 package.json / pnpm-lock.yaml，并把 node_modules 整体改名备份
+// （同盘 rename，秒级完成；更新失败可本地直接移回，不依赖网络）。返回是否成功备份了 node_modules。
+// 注意：调用前必须先 killServer()，否则运行中的服务会占用 node_modules 内文件导致改名失败。
+func snapshotHarness() (nodeModulesBacked bool) {
+	for _, name := range []string{"package.json", "pnpm-lock.yaml"} {
+		src := filepath.Join(harnessDir, name)
+		if data, err := os.ReadFile(src); err == nil {
+			_ = os.WriteFile(src+harnessBackupSuffix, data, 0o644)
 		}
 	}
+	nm := filepath.Join(harnessDir, "node_modules")
+	if _, err := os.Stat(nm); err != nil {
+		return false
+	}
+	bak := nm + harnessBackupSuffix
+	_ = os.RemoveAll(bak)
+	return os.Rename(nm, bak) == nil
+}
 
+// restoreHarnessSnapshot 回退到快照版本：还原 package.json / pnpm-lock.yaml；
+// 有 node_modules 备份直接移回（秒级），否则按还原后的锁文件重装。
+func restoreHarnessSnapshot(hadNodeModulesBackup bool) {
+	for _, name := range []string{"package.json", "pnpm-lock.yaml"} {
+		src := filepath.Join(harnessDir, name+harnessBackupSuffix)
+		if data, err := os.ReadFile(src); err == nil {
+			_ = os.WriteFile(filepath.Join(harnessDir, name), data, 0o644)
+		}
+	}
+	nm := filepath.Join(harnessDir, "node_modules")
+	if hadNodeModulesBackup {
+		_ = os.RemoveAll(nm)
+		_ = os.Rename(nm+harnessBackupSuffix, nm)
+		return
+	}
+	if err := runHarnessCmd(pnpmCmd(), "install", "--frozen-lockfile"); err != nil {
+		log.Printf("rollback reinstall failed: %v", err)
+	}
+}
+
+// cleanupHarnessSnapshot 更新成功：删除更新前的快照备份。
+func cleanupHarnessSnapshot() {
+	for _, name := range []string{"package.json", "pnpm-lock.yaml"} {
+		_ = os.Remove(filepath.Join(harnessDir, name+harnessBackupSuffix))
+	}
+	_ = os.RemoveAll(filepath.Join(harnessDir, "node_modules"+harnessBackupSuffix))
+}
+
+// runHarnessCmdCapture 在 harness 目录执行命令并返回去除首尾空白的 stdout（不回显到日志文件）。
+func runHarnessCmdCapture(name string, args ...string) string {
+	cmd := exec.Command(name, args...)
+	cmd.Dir = harnessDir
+	hideCmdWindow(cmd)
+	out, err := cmd.Output()
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(out))
+}
+
+// harnessBootErrorMarkers 服务启动失败特征：版本混装 / 插件与 harness API 不兼容导致的 ESM 加载错误。
+var harnessBootErrorMarkers = []string{
+	"does not provide an export",
+	"failed to import loader entry",
+	"SyntaxError:",
+}
+
+// serverLogSize 当前 server.log 字节数（健康校验按追加段扫描，避免把历史日志的报错误判进来）。
+func serverLogSize() int64 {
+	fi, err := os.Stat(filepath.Join(logDir, "server.log"))
+	if err != nil {
+		return 0
+	}
+	return fi.Size()
+}
+
+// serverLogHasBootErrors 扫描 server.log 从 offset 起的追加段，判断本次启动是否出现加载报错。
+func serverLogHasBootErrors(offset int64) bool {
+	f, err := os.Open(filepath.Join(logDir, "server.log"))
+	if err != nil {
+		return false
+	}
+	defer f.Close()
+	if offset > 0 {
+		if _, err := f.Seek(offset, io.SeekStart); err != nil {
+			offset = 0
+		}
+	}
+	data, err := io.ReadAll(f)
+	if err != nil {
+		return false
+	}
+	s := string(data)
+	for _, m := range harnessBootErrorMarkers {
+		if strings.Contains(s, m) {
+			return true
+		}
+	}
+	return false
+}
+
+// restartAndVerifyServer 重启后台服务并做健康校验：先停服务，再拉起并等待就绪（HTTP 响应），
+// 就绪后扫描 server.log 本次启动追加段确认无加载报错。全部通过返回 true。
+func restartAndVerifyServer() bool {
+	killServer()
+	time.Sleep(1 * time.Second)
+	if serverResponding(webURL) {
+		return true // 端口已有可用服务（异常残留场景），视为可用
+	}
+	before := serverLogSize()
+	started, exitCh := startServer()
+	if !started {
+		return false
+	}
+	if ok, _ := waitForServerReady(webURL, exitCh, startupTimeout); !ok {
+		return false
+	}
+	// 就绪后再等 2 秒让启动日志刷完，扫描追加段
+	time.Sleep(2 * time.Second)
+	return !serverLogHasBootErrors(before)
+}
+
+// rollbackUpdate 更新失败处理：停止服务 → 回退快照 → 重启校验 → 弹窗报告。
+func rollbackUpdate(splash *SplashState, prev string, hadNMBackup bool, reason string) {
+	splash.Update("更新失败，正在回退到上一可用版本…", 0.6)
+	killServer()
+	restoreHarnessSnapshot(hadNMBackup)
+	splash.Update("正在重启服务…", 0.85)
+	restartAndVerifyServer()
+	splash.Close()
+	msg := "DeepSeek Harness 更新失败（" + reason + "），已回退到"
+	if prev != "" {
+		msg += " v" + prev + "。"
+	} else {
+		msg += "上一可用版本。"
+	}
+	msg += "\n\n日志：" + filepath.Join(logDir, "harness-update.log")
+	showMessageBox(msg, appName)
+}
+
+// runHarnessUpdate 更新 DeepSeek Harness（npm 模式更新 @deepseek-ai/dsh；源码模式 git pull+install+build），
+// 完成后重启服务并校验；失败自动回退到上一可运行版本。异步执行，带进度窗口。
+func runHarnessUpdate(latest string) {
+	splash := startSplash("正在更新 DeepSeek Harness…")
+	prev := installedHarnessVersion()
+
+	// 0) 先停止服务（否则运行中的 node 进程会占用 node_modules 文件，快照/回退改名会失败）
+	killServer()
+	time.Sleep(1 * time.Second)
+
+	// 1) 快照当前可运行版本（本地回退用）
+	splash.Update("正在备份当前版本…", 0.15)
+	hadNMBackup := snapshotHarness()
+
+	// 2) 安装新版本
 	var err error
 	if isNpmHarnessReady() {
-		splash.Update("正在更新 DeepSeek Harness 依赖…", 0.3)
+		splash.Update("正在更新 DeepSeek Harness 依赖…", 0.35)
 		// 安装检查到的新版本而非 @latest：npm 的 prerelease（如 0.1.2-alpha.2）不会成为 latest 标签，
 		// 用 @latest 会装回旧版导致“更新后仍是旧版本”。
 		ver := latest
@@ -464,25 +629,45 @@ func runHarnessUpdate(latest string) {
 			ver = "latest"
 		}
 		err = runHarnessCmd(pnpmCmd(), "add", "@deepseek-ai/dsh@"+ver, "--save-exact")
+		if err == nil {
+			// 全量 install 重新 reconcile 整个依赖树，避免只改根依赖导致的新旧版本混装
+			splash.Update("正在安装依赖…", 0.55)
+			err = runHarnessCmd(pnpmCmd(), "install")
+		}
 	} else {
-		splash.Update("正在拉取 DeepSeek Harness 最新代码…", 0.2)
+		prevHead := runHarnessCmdCapture("git", "rev-parse", "HEAD")
+		splash.Update("正在拉取 DeepSeek Harness 最新代码…", 0.3)
 		err = runHarnessCmd("git", "pull")
 		if err == nil {
-			splash.Update("正在安装 harness 依赖…", 0.45)
+			splash.Update("正在安装 harness 依赖…", 0.5)
 			err = runHarnessCmd(pnpmCmd(), "install")
 		}
 		if err == nil {
 			splash.Update("正在构建 harness 前端…", 0.7)
 			err = runHarnessCmd(pnpmCmd(), "run", "build")
 		}
+		if err != nil && prevHead != "" {
+			// 源码模式回退：回到更新前 HEAD 并重装
+			splash.Update("正在回退代码…", 0.6)
+			_ = runHarnessCmd("git", "reset", "--hard", prevHead)
+			_ = runHarnessCmd(pnpmCmd(), "install")
+			_ = runHarnessCmd(pnpmCmd(), "run", "build")
+		}
 	}
 	if err != nil {
-		splash.Close()
-		showMessageBox("DeepSeek Harness 更新失败：\n"+err.Error()+"\n\n日志："+filepath.Join(logDir, "harness-update.log"), appName)
+		rollbackUpdate(splash, prev, hadNMBackup, "安装失败")
 		return
 	}
-	splash.Update("正在重启服务…", 0.9)
-	restart()
+
+	// 3) 重启并健康校验（就绪 + 启动日志无报错）
+	splash.Update("正在重启服务…", 0.85)
+	if !restartAndVerifyServer() {
+		rollbackUpdate(splash, prev, hadNMBackup, "新版本启动失败")
+		return
+	}
+
+	// 4) 成功：清理快照
+	cleanupHarnessSnapshot()
 	splash.Close()
 	showMessageBox(fmt.Sprintf("DeepSeek Harness 已更新到 v%s，服务已重启。", withV(latest)), appName)
 }
