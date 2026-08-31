@@ -225,7 +225,7 @@ func docTextLayer(s string, font uintptr, maxW int) (*image.RGBA, int, int) {
 	return mask, w, h
 }
 
-// textIn 在给定盒内绘制文本（左对齐或水平居中，垂直居中）。
+// textIn 在给定盒内绘制文本（左对齐 / 水平居中 / 右对齐，垂直居中）。
 func (c *canvas) textIn(s string, x0, y0, x1, y1 int, font uintptr, col rgba, align string) {
 	mask, w, h := docTextLayer(s, font, (x1-x0)*scale)
 	if mask == nil {
@@ -234,6 +234,8 @@ func (c *canvas) textIn(s string, x0, y0, x1, y1 int, font uintptr, col rgba, al
 	x := x0 * scale
 	if align == "center" {
 		x += ((x1 - x0) * scale - w) / 2
+	} else if align == "right" {
+		x = x1*scale - w
 	}
 	y := y0*scale + ((y1-y0)*scale-h)/2
 	colored := image.NewRGBA(mask.Bounds())
@@ -301,19 +303,20 @@ func winBar(c *canvas, f *fonts, x, y, w int, title string) {
 	c.fillRect(x, y+36, x+w, y+38, cBorder)
 }
 
-// drawSlide 带窗口框架的轮播页；ww 为窗口宽度，content 绘制右侧内容区（cx 为内容左缘，wy 为窗口顶）。
-func drawSlide(f *fonts, sel int, title string, ww int, content func(*canvas, *fonts, int, int)) *canvas {
+// drawSlide 带窗口框架的轮播页；ww 为窗口宽度，content 绘制右侧内容区。
+// cx 为内容左缘、rx 为内容右缘（含右内边距）、wy 为窗口顶。
+func drawSlide(f *fonts, sel int, title string, ww int, content func(*canvas, *fonts, int, int, int)) *canvas {
 	c := newCanvas(slideW, slideH)
 	c.fillRect(0, 0, slideW, slideH, cBG)
 	wx, wy, wh := 150, 62, 536
 	c.shadow(wx, wy, ww, wh, 18)
 	c.roundRect(wx, wy, wx+ww, wy+wh, 16, cWhite)
 	winBar(c, f, wx, wy, ww, "设置")
-	// 侧栏
+	// 侧栏（浅灰卡片，留 16px 内边距）
 	c.roundRect(wx+24, wy+46, wx+24+168, wy+496, 14, cCardBg)
 	items := []string{"常规", "关于", "日志", "导出", "导入"}
 	for i, it := range items {
-		y := wy + 58 + i*52
+		y := wy + 60 + i*50
 		if i == sel {
 			c.roundRect(wx+32, y-9, wx+32+152, y+35, 10, cSel)
 			c.textIn(it, wx+46, y, wx+46+130, y+26, f.bodyB, cBlue, "left")
@@ -322,44 +325,91 @@ func drawSlide(f *fonts, sel int, title string, ww int, content func(*canvas, *f
 		}
 	}
 	// 页面标题
-	c.textIn(title, wx+232, wy+40, wx+232+300, wy+68, f.head, cInk, "left")
-	content(c, f, wx+232, wy)
+	c.textIn(title, wx+224, wy+38, wx+224+320, wy+66, f.head, cInk, "left")
+	// 内容主区：右缘对齐内容底部的右内边距（与标题左缘对齐留白）
+	content(c, f, wx+224, wx+ww-24, wy)
 	return c
 }
 
-func drawGeneral(c *canvas, f *fonts, cx, wy int) {
-	c.textIn("开机自启动", cx, wy+84, cx+200, wy+110, f.body, cInk, "left")
-	c.roundRect(cx+130, wy+91, cx+176, wy+117, 13, cBlue) // 开关轨道 ON
-	c.roundRect(cx+152, wy+95, cx+172, wy+115, 10, cWhite) // 圆钮
-	c.textIn("登录后自动启动后台服务并常驻托盘", cx, wy+116, cx+440, wy+140, f.small, cSub, "left")
-	c.roundRect(cx+2, wy+176, cx+10, wy+184, 4, cGreen)
-	c.textIn("后台服务：运行中", cx+18, wy+168, cx+280, wy+194, f.body, cSub, "left")
-	c.roundRect(cx, wy+200, cx+150, wy+240, 20, cBlue)
-	c.textIn("重启后台服务", cx, wy+200, cx+150, wy+240, f.btn, cWhite, "center")
+// card 白底内容卡片（1px 边框浅灰 + 白底 + 圆角），用于内容分组。
+func card(c *canvas, x0, y0, x1, y1 int) {
+	c.roundRect(x0, y0, x1, y1, 12, cBorder)
+	c.roundRect(x0+1, y0+1, x1-1, y1-1, 11, cWhite)
 }
 
-func drawAbout(c *canvas, f *fonts, cx, wy int) {
-	c.textIn("dsh-systray 版本号", cx, wy+116, cx+320, wy+142, f.body, cSub, "left")
-	c.textIn("v0.3.12", cx, wy+142, cx+320, wy+168, f.title, cBlue, "left")
-	c.textIn("DeepSeek Harness 版本号", cx, wy+178, cx+360, wy+204, f.body, cSub, "left")
-	c.textIn("v0.1.1-rc.2", cx, wy+204, cx+320, wy+230, f.title, cBlue, "left")
-	c.roundRect(cx, wy+244, cx+150, wy+288, 22, cBlue)
-	c.textIn("检查更新", cx, wy+244, cx+150, wy+288, f.btn, cWhite, "center")
+// ctlTrack 绘制开关（轨道 + 圆钮）；right 为基础外框 x0，on 为状态。
+func ctlTrack(c *canvas, x0, y0 int, on bool) {
+	tw, th := 46, 26
+	if on {
+		c.roundRect(x0, y0, x0+tw, y0+th, th/2, cBlue)
+		c.roundRect(x0+tw-22, y0+4, x0+tw-4, y0+th-4, 9, cWhite)
+	} else {
+		c.roundRect(x0, y0, x0+tw, y0+th, th/2, cBorder)
+		c.roundRect(x0+4, y0+4, x0+22, y0+th-4, 9, cWhite)
+	}
 }
 
-func drawLogs(c *canvas, f *fonts, cx, wy int) {
-	c.textIn(`C:\Users\demo\AppData\Roaming\dsh-systray\logs\app.log`, cx, wy+70, cx+630, wy+94, f.small, cSub, "left")
-	// 现代选择器
-	c.roundRect(cx, wy+98, cx+160, wy+132, 8, cBorder)
-	c.roundRect(cx+1, wy+99, cx+159, wy+131, 7, cWhite)
-	c.textIn("app.log", cx+12, wy+98, cx+130, wy+132, f.body, cInk, "left")
-	c.textIn("▾", cx+130, wy+98, cx+158, wy+132, f.body, cSub, "center")
-	// 清空
-	c.roundRect(cx+175, wy+99, cx+267, wy+131, 16, cBlue)
-	c.textIn("清空", cx+175, wy+99, cx+267, wy+131, f.btnS, cWhite, "center")
-	// 日志卡片（白底 + 边框，与真实应用一致）
-	c.roundRect(cx-14, wy+144, cx+646, wy+444, 12, cBorder)
-	c.roundRect(cx-13, wy+145, cx+645, wy+443, 11, cWhite)
+// ctlPill 绘制胶囊按钮（w×h，primary=品牌蓝/否则灰）；text 居中。
+func ctlPill(c *canvas, f *fonts, x0, y0, w, h int, text string, primary bool) {
+	fill := cBorder
+	if primary {
+		fill = cBlue
+	}
+	c.roundRect(x0, y0, x0+w, y0+h, h/2, fill)
+	var col rgba
+	if primary {
+		col = cWhite
+	} else {
+		col = cInk
+	}
+	c.textIn(text, x0, y0, x0+w, y0+h, f.body, col, "center")
+}
+
+func drawGeneral(c *canvas, f *fonts, cx, rx, wy int) {
+	// 卡片1：开机自启动 → 开关行
+	card(c, cx, wy+76, rx, wy+150)
+	c.textIn("开机自启动", cx+20, wy+88, cx+220, wy+114, f.body, cInk, "left")
+	c.textIn("登录后自动启动后台服务并常驻托盘", cx+20, wy+120, cx+560, wy+140, f.small, cSub, "left")
+	// 开关（轨道 ON + 圆钮，右对齐）
+	ctlTrack(c, rx-64, wy+94, true)
+
+	// 卡片2：后台服务状态 → 状态行 + 重启按钮
+	card(c, cx, wy+166, rx, wy+250)
+	c.roundRect(cx+20, wy+192, cx+28, wy+200, 4, cGreen)
+	c.textIn("后台服务：运行中", cx+38, wy+184, cx+260, wy+210, f.body, cSub, "left")
+	ctlPill(c, f, rx-164, wy+188, 144, 30, "重启后台服务", true)
+}
+
+func drawAbout(c *canvas, f *fonts, cx, rx, wy int) {
+	// 卡片1：版本信息两行（标签左 / 值右）
+	card(c, cx, wy+76, rx, wy+172)
+	c.textIn("dsh-systray 版本号", cx+20, wy+92, cx+280, wy+116, f.body, cSub, "left")
+	c.textIn("v0.3.12", rx-260, wy+88, rx-20, wy+118, f.title, cBlue, "right")
+	c.textIn("DeepSeek Harness 版本号", cx+20, wy+136, cx+320, wy+160, f.body, cSub, "left")
+	c.textIn("v0.1.1-rc.2", rx-260, wy+132, rx-20, wy+162, f.title, cBlue, "right")
+
+	// 卡片2：预发布通道开关
+	card(c, cx, wy+188, rx, wy+252)
+	c.textIn("开启预发布通道", cx+20, wy+204, cx+220, wy+228, f.body, cInk, "left")
+	c.textIn("alpha/beta/rc 预发布版", cx+20, wy+228, cx+300, wy+246, f.small, cSub, "left")
+	ctlTrack(c, rx-64, wy+206, false)
+
+	// 主操作：检查更新
+	c.roundRect(cx, wy+276, cx+156, wy+316, 20, cBlue)
+	c.textIn("检查更新", cx, wy+276, cx+156, wy+316, f.btn, cWhite, "center")
+}
+
+func drawLogs(c *canvas, f *fonts, cx, rx, wy int) {
+	c.textIn(`C:\Users\demo\AppData\Roaming\dsh-systray\logs\app.log`, cx, wy+70, rx, wy+92, f.small, cSub, "left")
+	// 选择器 + 清空（同排）
+	c.roundRect(cx, wy+96, cx+160, wy+130, 8, cBorder)
+	c.roundRect(cx+1, wy+97, cx+159, wy+129, 7, cWhite)
+	c.textIn("app.log", cx+12, wy+96, cx+130, wy+130, f.body, cInk, "left")
+	c.textIn("▾", cx+130, wy+96, cx+158, wy+130, f.body, cSub, "center")
+	ctlPill(c, f, cx+175, wy+98, 92, 30, "清空", true)
+
+	// 日志卡片（白底 + 边框，宽度充满内容区）
+	card(c, cx, wy+148, rx, wy+452)
 	lines := []struct {
 		t, lvl, msg string
 		col         rgba
@@ -377,16 +427,16 @@ func drawLogs(c *canvas, f *fonts, cx, wy int) {
 		{"2026-08-30 10:52:58", "INFO", "update installed, restarting", cBlue},
 		{"2026-08-30 10:53:02", "INFO", "server ready at http://127.0.0.1:3080", cBlue},
 	}
-	y := wy + 158
+	y := wy + 166
 	for _, ln := range lines {
-		c.textIn(ln.t, cx+2, y, cx+134, y+22, f.mono, cSub, "left")
-		c.textIn(ln.lvl+" ", cx+136, y, cx+196, y+22, f.mono, ln.col, "left")
-		c.textIn(ln.msg, cx+198, y, cx+630, y+22, f.mono, cLine, "left")
-		y += 22
+		c.textIn(ln.t, cx+4, y, cx+136, y+22, f.mono, cSub, "left")
+		c.textIn(ln.lvl+" ", cx+140, y, cx+200, y+22, f.mono, ln.col, "left")
+		c.textIn(ln.msg, cx+202, y, rx-16, y+22, f.mono, cLine, "left")
+		y += 24
 	}
 }
 
-func drawExport(c *canvas, f *fonts, cx, wy int) {
+func drawExport(c *canvas, f *fonts, cx, rx, wy int) {
 	rows := []struct {
 		lbl, sub string
 		on       bool
@@ -395,37 +445,39 @@ func drawExport(c *canvas, f *fonts, cx, wy int) {
 		{"已安装的插件", "plugins.zip · 通过 dsh add 安装的插件", false},
 		{"需要打包的文件目录", "files.zip · 恢复时选择解压位置", false},
 	}
-	for i, r := range rows {
-		y := wy + 88 + i*52
+	y := wy + 78
+	for _, r := range rows {
+		card(c, cx, y, rx, y+66)
 		if r.on {
-			c.roundRect(cx, y+2, cx+18, y+20, 5, cBlue)
-			c.textIn("✓", cx, y+2, cx+18, y+20, f.btnS, cWhite, "center")
+			c.roundRect(cx+20, y+24, cx+38, y+42, 5, cBlue)
+			c.textIn("✓", cx+20, y+21, cx+38, y+42, f.btnS, cWhite, "center")
 		} else {
-			c.roundRect(cx, y+2, cx+18, y+20, 5, cBorder)
-			c.roundRect(cx+1, y+3, cx+17, y+19, 4, cWhite)
+			c.roundRect(cx+20, y+24, cx+38, y+42, 5, cBorder)
+			c.roundRect(cx+21, y+25, cx+37, y+41, 4, cWhite)
 		}
-		c.textIn(r.lbl, cx+30, y, cx+300, y+24, f.body, cInk, "left")
-		c.textIn(r.sub, cx+30, y+26, cx+620, y+46, f.small, cSub, "left")
+		c.textIn(r.lbl, cx+52, y+12, cx+300, y+38, f.body, cInk, "left")
+		c.textIn(r.sub, cx+52, y+38, rx-16, y+58, f.small, cSub, "left")
+		y += 66
 	}
-	c.roundRect(cx, wy+256, cx+110, wy+288, 16, cBlue)
-	c.textIn("选择目录…", cx, wy+256, cx+110, wy+288, f.btnS, cWhite, "center")
-	c.roundRect(cx, wy+314, cx+120, wy+350, 18, cBlue)
-	c.textIn("导出…", cx, wy+314, cx+120, wy+350, f.btn, cWhite, "center")
-	c.textIn("已选 1 项，点击「导出…」打包为 zip", cx, wy+372, cx+620, wy+394, f.small, cSub, "left")
+	// 底部操作行：次操作「选择目录…」（仅文件目录需要） + 主操作「导出…」
+	ctlPill(c, f, cx, y+18, 132, 34, "选择目录…", false)
+	ctlPill(c, f, cx+148, y+18, 120, 34, "导出…", true)
+	c.textIn("已选 1 项，点击「导出…」打包为 zip", cx, y+62, rx-16, y+82, f.small, cSub, "left")
 }
 
-func drawImport(c *canvas, f *fonts, cx, wy int) {
-	c.roundRect(cx, wy+80, cx+180, wy+114, 17, cBlue)
-	c.textIn("添加导入压缩包…", cx, wy+80, cx+180, wy+114, f.btnS, cWhite, "center")
-	c.textIn(`C:\Users\demo\Downloads\dsh-systray-export-20260830-103102-a1b2c3.zip`, cx, wy+128, cx+630, wy+152, f.small, cSub, "left")
+func drawImport(c *canvas, f *fonts, cx, rx, wy int) {
+	// 顶部：添加导入压缩包按钮
+	ctlPill(c, f, cx, wy+80, 190, 30, "添加导入压缩包…", true)
+	c.textIn(`C:\Users\demo\Downloads\dsh-systray-export-20260830-103102-a1b2c3.zip`, cx, wy+124, rx-16, wy+146, f.small, cSub, "left")
 	rows := []string{"所有历史会话（12.4 MB）", "已安装的插件（3.1 MB）", "需要打包的文件目录"}
-	for i, lbl := range rows {
-		y := wy + 176 + i*44
-		c.textIn(lbl, cx, y+2, cx+420, y+28, f.body, cInk, "left")
-		c.roundRect(cx+530, y, cx+626, y+30, 15, cBlue)
-		c.textIn("恢复", cx+530, y, cx+626, y+30, f.btnS, cWhite, "center")
+	y := wy + 164
+	for _, lbl := range rows {
+		card(c, cx, y, rx, y+44)
+		c.textIn(lbl, cx+20, y+8, cx+420, y+34, f.body, cInk, "left")
+		ctlPill(c, f, rx-104, y+7, 84, 30, "恢复", true)
+		y += 44
 	}
-	c.textIn("解析成功：共 3 个可恢复项，点击右侧「恢复」逐项恢复。", cx, wy+312, cx+640, wy+336, f.small, cSub, "left")
+	c.textIn("解析成功：共 3 个可恢复项，点击右侧「恢复」逐项恢复。", cx, y+10, rx-16, y+34, f.small, cSub, "left")
 }
 
 func drawSplash(c *canvas, f *fonts) {
@@ -445,8 +497,8 @@ func drawHero(c *canvas, f *fonts) {
 	// 底图：关于页（窄窗口 800，已含检查更新按钮）
 	base := drawSlide(f, 1, "关于", 800, drawAbout)
 	draw.Draw(c.img, c.img.Bounds(), base.img, image.Point{}, draw.Src)
-	// 叠加：下载进度窗口（位于「检查更新」按钮正下方，不遮挡按钮）
-	wx, wy, ww, wh := 382, 366, 420, 140
+	// 叠加：下载进度窗口（位于「检查更新」按钮正下方，横向居中，不遮挡按钮）
+	wx, wy, ww, wh := 282, 400, 420, 140
 	c.shadow(wx, wy, ww, wh, 18)
 	c.roundRect(wx, wy, wx+ww, wy+wh, 16, cWhite)
 	winBar(c, f, wx, wy, ww, "DeepSeek Harness")
@@ -501,30 +553,29 @@ func TestRegenerateDocsImages(t *testing.T) {
 		{"general", func() *canvas { return drawSlide(f, 0, "常规", 920, drawGeneral) },
 			func(t *testing.T, img *image.RGBA) {
 				expectColor(t, img, 20, 20, cBG, "general bg")
-				expectColor(t, img, 950, 152, cWhite, "general body")
-				expectColor(t, img, 522, 166, cBlue, "general toggle")
-				expectColor(t, img, 600, 248, cWhite, "general restart row")
+				expectColor(t, img, 700, 175, cWhite, "general card")
+				expectColor(t, img, 995, 168, cBlue, "general toggle")
 			}},
 		{"about", func() *canvas { return drawSlide(f, 1, "关于", 920, drawAbout) },
 			func(t *testing.T, img *image.RGBA) {
 				expectColor(t, img, 20, 20, cBG, "about bg")
-				expectColor(t, img, 510, 158, cWhite, "about body")
+				expectColor(t, img, 700, 186, cWhite, "about card")
 			}},
 		{"logs", func() *canvas { return drawSlide(f, 2, "日志", 920, drawLogs) },
 			func(t *testing.T, img *image.RGBA) {
 				expectColor(t, img, 20, 20, cBG, "logs bg")
-				expectColor(t, img, 460, 177, cWhite, "logs select")
-				expectColor(t, img, 600, 212, cWhite, "logs card")
+				expectColor(t, img, 450, 175, cWhite, "logs select")
+				expectColor(t, img, 700, 300, cWhite, "logs card")
 			}},
 		{"export", func() *canvas { return drawSlide(f, 3, "导出", 920, drawExport) },
 			func(t *testing.T, img *image.RGBA) {
 				expectColor(t, img, 20, 20, cBG, "export bg")
-				expectColor(t, img, 390, 160, cBlue, "export checkbox")
+				expectColor(t, img, 403, 172, cBlue, "export checkbox")
 			}},
 		{"import", func() *canvas { return drawSlide(f, 4, "导入", 920, drawImport) },
 			func(t *testing.T, img *image.RGBA) {
 				expectColor(t, img, 20, 20, cBG, "import bg")
-				expectColor(t, img, 388, 162, cBlue, "import button")
+				expectColor(t, img, 984, 248, cBlue, "import button")
 			}},
 	}
 	for _, s := range slides {
@@ -544,7 +595,7 @@ func TestRegenerateDocsImages(t *testing.T) {
 		t.Fatal(err)
 	}
 	expectColor(t, hero.img, 20, 20, cBG, "hero bg")
-	expectColor(t, hero.img, 700, 458, cWhite, "hero progress window")
-	expectColor(t, hero.img, 500, 471, cBlue, "hero progress fill")
+	expectColor(t, hero.img, 500, 450, cWhite, "hero progress window")
+	expectColor(t, hero.img, 420, 505, cBlue, "hero progress fill")
 	t.Logf("generated %s (%dx%d)", heroPath, hero.img.Bounds().Dx(), hero.img.Bounds().Dy())
 }

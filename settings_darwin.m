@@ -532,12 +532,16 @@ static DSHSetController *g_ctrl = nil;
     sv.autohidesScrollers = YES;
     [root addSubview:sv];
 
-    // 常规面板：开机自启动开关 + 后台服务
+    // 常规面板：开机自启动开关 + 后台服务（卡片分组，右对齐开关/按钮）
     self.generalPane = [[NSView alloc] initWithFrame:NSMakeRect(160, 0, 440, 420)];
-    [self addLabel:@"常规" font:[self uiFontOfSize:19 weight:NSFontWeightSemibold] color:nil frame:NSMakeRect(0, 372, 300, 24) to:self.generalPane];
-    [self addLabel:@"开机自启动" font:[self uiFontOfSize:17 weight:NSFontWeightRegular] color:nil frame:NSMakeRect(0, 326, 220, 24) to:self.generalPane];
+    [self addLabel:@"常规" font:[self uiFontOfSize:19 weight:NSFontWeightSemibold] color:nil frame:NSMakeRect(16, 372, 300, 24) to:self.generalPane];
 
-    self.autoSwitch = [[NSButton alloc] initWithFrame:NSMakeRect(310, 324, 60, 24)];
+    // 卡片1：开机自启动
+    NSBox *genCard1 = [self makeCard:NSMakeRect(16, 276, 408, 84)];
+    [self.generalPane addSubview:genCard1];
+    [self addLabel:@"开机自启动" font:[self uiFontOfSize:17 weight:NSFontWeightRegular] color:nil frame:NSMakeRect(30, 332, 220, 24) to:self.generalPane];
+    [self addLabel:@"登录后自动启动后台服务并常驻托盘" font:[self uiFontOfSize:13 weight:NSFontWeightRegular] color:[NSColor secondaryLabelColor] frame:NSMakeRect(30, 306, 300, 18) to:self.generalPane];
+    self.autoSwitch = [[NSButton alloc] initWithFrame:NSMakeRect(368, 322, 60, 24)];
     [self.autoSwitch setButtonType:NSButtonTypeSwitch];
     self.autoSwitch.title = @"";
     self.autoSwitch.state = (autoOn ? NSControlStateValueOn : NSControlStateValueOff);
@@ -545,7 +549,10 @@ static DSHSetController *g_ctrl = nil;
     self.autoSwitch.action = @selector(autostartChanged:);
     [self.generalPane addSubview:self.autoSwitch];
 
-    // 常规面板：后台服务状态（绿/红圆点）+ 重启按钮
+    // 卡片2：后台服务状态 + 重启按钮
+    NSBox *genCard2 = [self makeCard:NSMakeRect(16, 178, 408, 84)];
+    [self.generalPane addSubview:genCard2];
+    // 后台服务状态（绿/红圆点）+ 重启按钮
     char *svcState = dshSettingsGoServiceState();
     BOOL svcRunning = (strcmp(svcState, "运行中") == 0);
     free(svcState);
@@ -556,10 +563,10 @@ static DSHSetController *g_ctrl = nil;
     [svcAttr addAttribute:NSForegroundColorAttributeName value:[NSColor secondaryLabelColor] range:NSMakeRange(2, svcAttr.length - 2)];
     NSTextField *svcLabel = [NSTextField labelWithAttributedString:svcAttr];
     svcLabel.font = [self uiFontOfSize:16 weight:NSFontWeightRegular];
-    svcLabel.frame = NSMakeRect(0, 258, 320, 18);
+    svcLabel.frame = NSMakeRect(30, 214, 320, 18);
     [self.generalPane addSubview:svcLabel];
 
-    NSButton *restartBtn = [[NSButton alloc] initWithFrame:NSMakeRect(0, 220, 108, 30)];
+    NSButton *restartBtn = [[NSButton alloc] initWithFrame:NSMakeRect(316, 204, 108, 30)];
     restartBtn.title = @"重启后台服务";
     restartBtn.bezelStyle = NSBezelStyleRounded;
     restartBtn.font = [self uiFontOfSize:13 weight:NSFontWeightSemibold];
@@ -567,26 +574,34 @@ static DSHSetController *g_ctrl = nil;
     restartBtn.action = @selector(restartServiceClicked:);
     [self.generalPane addSubview:restartBtn];
 
-    // 关于面板：dsh-systray 版本号 + DeepSeek Harness 版本号 + 检查更新
+    // 关于面板：dsh-systray 版本号 + DeepSeek Harness 版本号 + 检查更新（卡片分组）
     self.aboutPane = [[NSView alloc] initWithFrame:NSMakeRect(160, 0, 440, 420)];
-    [self addLabel:@"关于" font:[self uiFontOfSize:19 weight:NSFontWeightSemibold] color:nil frame:NSMakeRect(0, 372, 300, 24) to:self.aboutPane];
-    [self addLabel:@"dsh-systray 版本号" font:[self uiFontOfSize:17 weight:NSFontWeightRegular] color:nil frame:NSMakeRect(0, 326, 220, 24) to:self.aboutPane];
-    [self addLabel:[NSString stringWithFormat:@"%s", ver]
-               font:[self uiFontOfSize:19 weight:NSFontWeightSemibold]
-              color:[NSColor colorWithCalibratedRed:0.114 green:0.306 blue:0.847 alpha:1.0]
-              frame:NSMakeRect(0, 300, 220, 26)
-                   to:self.aboutPane];
-    [self addLabel:@"DeepSeek Harness 版本号" font:[self uiFontOfSize:17 weight:NSFontWeightRegular] color:nil frame:NSMakeRect(0, 270, 240, 22) to:self.aboutPane];
-    [self addLabel:[NSString stringWithFormat:@"%s", hver]
-               font:[self uiFontOfSize:19 weight:NSFontWeightSemibold]
-              color:[NSColor colorWithCalibratedRed:0.114 green:0.306 blue:0.847 alpha:1.0]
-              frame:NSMakeRect(0, 246, 220, 26)
-                   to:self.aboutPane];
+    [self addLabel:@"关于" font:[self uiFontOfSize:19 weight:NSFontWeightSemibold] color:nil frame:NSMakeRect(16, 372, 300, 24) to:self.aboutPane];
 
-    // 开启预发布通道开关（紧跟 harness 版本号）：默认关闭；开启后检查更新包含 alpha/beta/rc 预发布版
-    [self addLabel:@"开启预发布通道" font:[self uiFontOfSize:15 weight:NSFontWeightRegular] color:nil frame:NSMakeRect(240, 246, 120, 22) to:self.aboutPane];
-    [self addLabel:@"alpha/beta/rc 预发布版" font:[self uiFontOfSize:12 weight:NSFontWeightRegular] color:[NSColor secondaryLabelColor] frame:NSMakeRect(240, 270, 180, 16) to:self.aboutPane];
-    self.harPreSwitch = [[NSButton alloc] initWithFrame:NSMakeRect(360, 245, 60, 24)];
+    // 卡片1：版本信息（标签左 / 值右）
+    NSBox *aboutCard1 = [self makeCard:NSMakeRect(16, 246, 408, 112)];
+    [self.aboutPane addSubview:aboutCard1];
+    [self addLabel:@"dsh-systray 版本号" font:[self uiFontOfSize:17 weight:NSFontWeightRegular] color:nil frame:NSMakeRect(30, 328, 220, 24) to:self.aboutPane];
+    NSTextField *verVal = [NSTextField labelWithString:[NSString stringWithFormat:@"%s", ver]];
+    verVal.font = [self uiFontOfSize:19 weight:NSFontWeightSemibold];
+    verVal.textColor = [NSColor colorWithCalibratedRed:0.114 green:0.306 blue:0.847 alpha:1.0];
+    verVal.frame = NSMakeRect(240, 328, 184, 26);
+    verVal.alignment = NSTextAlignmentRight;
+    [self.aboutPane addSubview:verVal];
+    [self addLabel:@"DeepSeek Harness 版本号" font:[self uiFontOfSize:17 weight:NSFontWeightRegular] color:nil frame:NSMakeRect(30, 298, 240, 22) to:self.aboutPane];
+    NSTextField *harVal = [NSTextField labelWithString:[NSString stringWithFormat:@"%s", hver]];
+    harVal.font = [self uiFontOfSize:19 weight:NSFontWeightSemibold];
+    harVal.textColor = [NSColor colorWithCalibratedRed:0.114 green:0.306 blue:0.847 alpha:1.0];
+    harVal.frame = NSMakeRect(240, 298, 184, 26);
+    harVal.alignment = NSTextAlignmentRight;
+    [self.aboutPane addSubview:harVal];
+
+    // 卡片2：开启预发布通道开关
+    NSBox *aboutCard2 = [self makeCard:NSMakeRect(16, 168, 408, 66)];
+    [self.aboutPane addSubview:aboutCard2];
+    [self addLabel:@"开启预发布通道" font:[self uiFontOfSize:15 weight:NSFontWeightRegular] color:nil frame:NSMakeRect(30, 198, 160, 22) to:self.aboutPane];
+    [self addLabel:@"alpha/beta/rc 预发布版" font:[self uiFontOfSize:12 weight:NSFontWeightRegular] color:[NSColor secondaryLabelColor] frame:NSMakeRect(30, 222, 180, 16) to:self.aboutPane];
+    self.harPreSwitch = [[NSButton alloc] initWithFrame:NSMakeRect(368, 201, 60, 24)];
     [self.harPreSwitch setButtonType:NSButtonTypeSwitch];
     self.harPreSwitch.title = @"";
     self.harPreSwitch.state = (dshSettingsGoHarnessPreState() ? NSControlStateValueOn : NSControlStateValueOff);
@@ -594,7 +609,7 @@ static DSHSetController *g_ctrl = nil;
     self.harPreSwitch.action = @selector(harnessPreChanged:);
     [self.aboutPane addSubview:self.harPreSwitch];
 
-    NSButton *checkBtn = [[NSButton alloc] initWithFrame:NSMakeRect(0, 202, 108, 30)];
+    NSButton *checkBtn = [[NSButton alloc] initWithFrame:NSMakeRect(16, 128, 108, 30)];
     checkBtn.title = @"检查更新";
     checkBtn.bezelStyle = NSBezelStyleRounded;
     checkBtn.font = [self uiFontOfSize:13 weight:NSFontWeightSemibold];
@@ -607,11 +622,11 @@ static DSHSetController *g_ctrl = nil;
     self.logPathLabel = [NSTextField labelWithString:@""];
     self.logPathLabel.font = [self uiFontOfSize:12 weight:NSFontWeightRegular];
     self.logPathLabel.textColor = [NSColor secondaryLabelColor];
-    self.logPathLabel.frame = NSMakeRect(0, 378, 430, 18);
+    self.logPathLabel.frame = NSMakeRect(16, 378, 408, 18);
     self.logPathLabel.lineBreakMode = NSLineBreakByTruncatingMiddle;
     [self.logPane addSubview:self.logPathLabel];
 
-    self.logPopup = [[NSPopUpButton alloc] initWithFrame:NSMakeRect(0, 340, 130, 30)];
+    self.logPopup = [[NSPopUpButton alloc] initWithFrame:NSMakeRect(16, 340, 130, 30)];
     self.logPopup.bezelStyle = NSBezelStyleRounded;
     self.logPopup.font = [self uiFontOfSize:15 weight:NSFontWeightRegular];
     [self.logPopup addItemsWithTitles:@[@"app.log", @"server.log"]];
@@ -619,7 +634,7 @@ static DSHSetController *g_ctrl = nil;
     self.logPopup.action = @selector(logChanged:);
     [self.logPane addSubview:self.logPopup];
 
-    NSButton *refresh = [[NSButton alloc] initWithFrame:NSMakeRect(140, 336, 90, 30)];
+    NSButton *refresh = [[NSButton alloc] initWithFrame:NSMakeRect(156, 336, 90, 30)];
     refresh.title = @"清空";
     refresh.bezelStyle = NSBezelStyleRounded;
     refresh.font = [self uiFontOfSize:13 weight:NSFontWeightSemibold];
@@ -631,15 +646,15 @@ static DSHSetController *g_ctrl = nil;
     [self.logPane addSubview:refresh];
 
     // 日志内容卡片（浅灰圆角）+ 无边框滚动区（先添加卡片以垫底）
-    [self.logPane addSubview:[self makeCard:NSMakeRect(0, 8, 432, 322)]];
+    [self.logPane addSubview:[self makeCard:NSMakeRect(16, 8, 408, 322)]];
 
-    NSScrollView *logSV = [[NSScrollView alloc] initWithFrame:NSMakeRect(5, 13, 422, 312)];
+    NSScrollView *logSV = [[NSScrollView alloc] initWithFrame:NSMakeRect(21, 13, 398, 312)];
     logSV.borderType = NSNoBorder;
     logSV.drawsBackground = NO;
     logSV.hasVerticalScroller = YES;
     logSV.autohidesScrollers = YES;
     logSV.scrollerStyle = NSScrollerStyleOverlay;
-    NSTextView *tv = [[NSTextView alloc] initWithFrame:NSMakeRect(0, 0, 422, 312)];
+    NSTextView *tv = [[NSTextView alloc] initWithFrame:NSMakeRect(0, 0, 398, 312)];
     tv.editable = NO;
     tv.selectable = YES;
     tv.drawsBackground = YES;
@@ -653,39 +668,42 @@ static DSHSetController *g_ctrl = nil;
 
     // 导出面板
     self.exportPane = [[NSView alloc] initWithFrame:NSMakeRect(160, 0, 440, 420)];
-    [self addLabel:@"导出" font:[self uiFontOfSize:19 weight:NSFontWeightSemibold] color:nil frame:NSMakeRect(0, 372, 300, 24) to:self.exportPane];
+    [self addLabel:@"导出" font:[self uiFontOfSize:19 weight:NSFontWeightSemibold] color:nil frame:NSMakeRect(16, 372, 300, 24) to:self.exportPane];
+    // 卡片：三个导出选项
+    [self.exportPane addSubview:[self makeCard:NSMakeRect(16, 212, 408, 148)]];
     self.expSessions = [NSButton checkboxWithTitle:@"所有历史会话" target:nil action:nil];
-    self.expSessions.frame = NSMakeRect(0, 334, 280, 24);
-    self.expSessions.font = [self uiFontOfSize:16 weight:NSFontWeightRegular];
+    self.expSessions.frame = NSMakeRect(30, 328, 280, 24);
+    self.expSessions.font = [self uiFontOfSize:15 weight:NSFontWeightRegular];
     [self.exportPane addSubview:self.expSessions];
     char *sessPathC = dshSettingsGoSessionsPath();
     NSString *sessPath = sessPathC ? [NSString stringWithUTF8String:sessPathC] : @"";
     free(sessPathC);
-    [self addLabel:[NSString stringWithFormat:@"sessions.zip · %@", sessPath] font:[self uiFontOfSize:12 weight:NSFontWeightRegular] color:[NSColor secondaryLabelColor] frame:NSMakeRect(22, 316, 400, 16) to:self.exportPane];
+    [self addLabel:[NSString stringWithFormat:@"sessions.zip · %@", sessPath] font:[self uiFontOfSize:12 weight:NSFontWeightRegular] color:[NSColor secondaryLabelColor] frame:NSMakeRect(50, 310, 360, 16) to:self.exportPane];
 
     self.expPlugins = [NSButton checkboxWithTitle:@"已安装的插件" target:nil action:nil];
-    self.expPlugins.frame = NSMakeRect(0, 288, 280, 24);
-    self.expPlugins.font = [self uiFontOfSize:16 weight:NSFontWeightRegular];
+    self.expPlugins.frame = NSMakeRect(30, 282, 280, 24);
+    self.expPlugins.font = [self uiFontOfSize:15 weight:NSFontWeightRegular];
     [self.exportPane addSubview:self.expPlugins];
-    [self addLabel:@"plugins.zip · 通过 dsh add 安装的插件" font:[self uiFontOfSize:12 weight:NSFontWeightRegular] color:[NSColor secondaryLabelColor] frame:NSMakeRect(22, 270, 400, 16) to:self.exportPane];
+    [self addLabel:@"plugins.zip · 通过 dsh add 安装的插件" font:[self uiFontOfSize:12 weight:NSFontWeightRegular] color:[NSColor secondaryLabelColor] frame:NSMakeRect(50, 264, 360, 16) to:self.exportPane];
 
     // 「已安装的插件」右侧问号图标：紧贴文字放置，悬停显示泡泡说明
     NSString *plugLabel = @"已安装的插件";
-    NSFont *plugFont = [self uiFontOfSize:16 weight:NSFontWeightRegular];
+    NSFont *plugFont = [self uiFontOfSize:15 weight:NSFontWeightRegular];
     CGFloat plugTW = [plugLabel sizeWithAttributes:@{NSFontAttributeName: plugFont}].width;
     NSButton *plugHelp = [NSButton buttonWithTitle:@"" target:nil action:nil];
     plugHelp.bezelStyle = NSHelpButtonBezelStyle;
-    plugHelp.frame = NSMakeRect(18 + plugTW + 4, 287, 20, 20);
+    plugHelp.frame = NSMakeRect(34 + plugTW + 4, 281, 20, 20);
     plugHelp.toolTip = @"仅打包用户安装的插件";
     [self.exportPane addSubview:plugHelp];
 
     self.expFiles = [NSButton checkboxWithTitle:@"需要打包的文件目录" target:self action:@selector(expFilesToggled:)];
-    self.expFiles.frame = NSMakeRect(0, 242, 280, 24);
-    self.expFiles.font = [self uiFontOfSize:16 weight:NSFontWeightRegular];
+    self.expFiles.frame = NSMakeRect(30, 236, 280, 24);
+    self.expFiles.font = [self uiFontOfSize:15 weight:NSFontWeightRegular];
     [self.exportPane addSubview:self.expFiles];
-    [self addLabel:@"files.zip · 恢复时选择解压位置" font:[self uiFontOfSize:12 weight:NSFontWeightRegular] color:[NSColor secondaryLabelColor] frame:NSMakeRect(22, 224, 400, 16) to:self.exportPane];
+    [self addLabel:@"files.zip · 恢复时选择解压位置" font:[self uiFontOfSize:12 weight:NSFontWeightRegular] color:[NSColor secondaryLabelColor] frame:NSMakeRect(50, 218, 360, 16) to:self.exportPane];
 
-    NSButton *addDirBtn = [[NSButton alloc] initWithFrame:NSMakeRect(0, 186, 110, 28)];
+    // 底部操作行：次操作「选择目录…」 + 主操作「导出…」
+    NSButton *addDirBtn = [[NSButton alloc] initWithFrame:NSMakeRect(16, 178, 110, 28)];
     addDirBtn.title = @"选择目录…";
     addDirBtn.bezelStyle = NSBezelStyleRounded;
     addDirBtn.font = [self uiFontOfSize:13 weight:NSFontWeightSemibold];
@@ -696,16 +714,16 @@ static DSHSetController *g_ctrl = nil;
     [self.exportPane addSubview:addDirBtn];
 
     self.expDirs = [NSMutableArray array];
-    self.expDirsView = [[NSTextView alloc] initWithFrame:NSMakeRect(0, 0, 430, 64)];
+    self.expDirsView = [[NSTextView alloc] initWithFrame:NSMakeRect(0, 0, 408, 40)];
     self.expDirsView.editable = NO;
     self.expDirsView.font = [self uiFontOfSize:12 weight:NSFontWeightRegular];
-    NSScrollView *dirsSV = [[NSScrollView alloc] initWithFrame:NSMakeRect(0, 112, 430, 66)];
+    NSScrollView *dirsSV = [[NSScrollView alloc] initWithFrame:NSMakeRect(16, 70, 408, 42)];
     dirsSV.documentView = self.expDirsView;
     dirsSV.hasVerticalScroller = YES;
     dirsSV.autohidesScrollers = YES;
     [self.exportPane addSubview:dirsSV];
 
-    self.expBtn = [[NSButton alloc] initWithFrame:NSMakeRect(0, 68, 120, 32)];
+    self.expBtn = [[NSButton alloc] initWithFrame:NSMakeRect(16, 122, 120, 32)];
     self.expBtn.title = @"导出…";
     self.expBtn.bezelStyle = NSBezelStyleRounded;
     self.expBtn.font = [self uiFontOfSize:14 weight:NSFontWeightSemibold];
@@ -716,14 +734,14 @@ static DSHSetController *g_ctrl = nil;
     self.expStatus = [NSTextField labelWithString:@""];
     self.expStatus.font = [self uiFontOfSize:12 weight:NSFontWeightRegular];
     self.expStatus.textColor = [NSColor secondaryLabelColor];
-    self.expStatus.frame = NSMakeRect(0, 36, 430, 18);
+    self.expStatus.frame = NSMakeRect(16, 36, 408, 18);
     [self.exportPane addSubview:self.expStatus];
 
     // 导入面板
     self.importPane = [[NSView alloc] initWithFrame:NSMakeRect(160, 0, 440, 420)];
-    [self addLabel:@"导入" font:[self uiFontOfSize:19 weight:NSFontWeightSemibold] color:nil frame:NSMakeRect(0, 372, 300, 24) to:self.importPane];
+    [self addLabel:@"导入" font:[self uiFontOfSize:19 weight:NSFontWeightSemibold] color:nil frame:NSMakeRect(16, 372, 300, 24) to:self.importPane];
 
-    NSButton *addImportBtn = [[NSButton alloc] initWithFrame:NSMakeRect(0, 328, 180, 30)];
+    NSButton *addImportBtn = [[NSButton alloc] initWithFrame:NSMakeRect(16, 328, 180, 30)];
     addImportBtn.title = @"添加导入压缩包…";
     addImportBtn.bezelStyle = NSBezelStyleRounded;
     addImportBtn.font = [self uiFontOfSize:13 weight:NSFontWeightSemibold];
@@ -734,30 +752,32 @@ static DSHSetController *g_ctrl = nil;
     self.impPathLabel = [NSTextField labelWithString:@"（尚未选择导入压缩包）"];
     self.impPathLabel.font = [self uiFontOfSize:12 weight:NSFontWeightRegular];
     self.impPathLabel.textColor = [NSColor secondaryLabelColor];
-    self.impPathLabel.frame = NSMakeRect(0, 300, 430, 20);
+    self.impPathLabel.frame = NSMakeRect(16, 300, 408, 20);
     self.impPathLabel.lineBreakMode = NSLineBreakByTruncatingMiddle;
     [self.importPane addSubview:self.impPathLabel];
 
     self.impStatusLabel = [NSTextField labelWithString:@"点击上方按钮选择 dsh-systray-export 压缩包。"];
     self.impStatusLabel.font = [self uiFontOfSize:12 weight:NSFontWeightRegular];
     self.impStatusLabel.textColor = [NSColor secondaryLabelColor];
-    self.impStatusLabel.frame = NSMakeRect(0, 272, 430, 22);
+    self.impStatusLabel.frame = NSMakeRect(16, 272, 408, 22);
     self.impStatusLabel.lineBreakMode = NSLineBreakByTruncatingTail;
     [self.importPane addSubview:self.impStatusLabel];
 
+    // 卡片：三个可恢复项
+    [self.importPane addSubview:[self makeCard:NSMakeRect(16, 120, 408, 136)]];
     self.impRows = [NSMutableDictionary dictionary];
     self.impSizes = [NSMutableDictionary dictionary];
     NSArray *kinds = @[@"sessions", @"plugins", @"files"];
     NSInteger tags = 1;
-    CGFloat y = 228;
+    CGFloat y = 232;
     for (NSString *kind in kinds) {
         NSTextField *rowLabel = [NSTextField labelWithString:@""];
         rowLabel.font = [self uiFontOfSize:16 weight:NSFontWeightRegular];
-        rowLabel.frame = NSMakeRect(0, y + 3, 320, 24);
+        rowLabel.frame = NSMakeRect(32, y + 3, 300, 24);
         rowLabel.hidden = YES;
         [self.importPane addSubview:rowLabel];
 
-        NSButton *restoreBtn = [[NSButton alloc] initWithFrame:NSMakeRect(330, y, 96, 28)];
+        NSButton *restoreBtn = [[NSButton alloc] initWithFrame:NSMakeRect(328, y, 96, 28)];
         restoreBtn.title = @"恢复";
         restoreBtn.bezelStyle = NSBezelStyleRounded;
         restoreBtn.font = [self uiFontOfSize:13 weight:NSFontWeightSemibold];

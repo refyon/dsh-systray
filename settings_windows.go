@@ -84,6 +84,11 @@ const (
 	stIdImpFilesRow = 3530
 	stIdImpFilesBtn = 3531
 	// 常规页区块卡片 + 日志页卡片（日志卡片改由父窗口 WM_PAINT 绘制，避免盖住编辑框）
+	stIdGenCard1 = 2910 // 常规页分组卡片1（开机自启动）
+	stIdGenCard2 = 2911 // 常规页分组卡片2（后台服务）
+	stIdAboutCard1 = 2912 // 关于页分组卡片1（版本信息）
+	stIdAboutCard2 = 2913 // 关于页分组卡片2（预发布通道）
+	stIdLogCard = 2914     // 日志页分组卡片（内衬日志框）
 
 	// EDIT / COMBOBOX / STATIC 样式
 	esMultiline           = 0x0004
@@ -102,6 +107,7 @@ const (
 	wmTimer               = 0x0113
 	ssEtchedHorz          = 0x0010
 	ssEndEllipsis         = 0x4000
+	ssRight               = 0x0002 // SS_RIGHT，静态文本右对齐
 	emSetSel              = 0x00B1
 	emLineScroll          = 0x00B6
 	emScrollCaret         = 0x00B7
@@ -1262,6 +1268,63 @@ func settingsTipAttach(btn uintptr) {
 	pSetWindowLongPtrW.Call(btn, gwlWndProc, cb)
 }
 
+// ==================== 内容分组卡片（白底圆角 + 浅灰边框） ====================
+// 创建为父窗口的子窗口，且在内容控件之前创建（Win32 同级 z-order 后创建者在上），
+// 因此卡片垫在内容分组之下，仅以圆角与浅灰边框勾勒分组，不改变标签底色。
+
+const settingsCardCls = "DSH_Systray_SettingsCard"
+
+var settingsCardClsReg bool
+
+// settingsCardWndProc 自绘卡片：白底圆角 + 浅灰边框（复用弹窗/进度窗的 GDI+ 圆角原语）。
+func settingsCardWndProc(hwnd, uMsg, wParam, lParam uintptr) uintptr {
+	switch uMsg {
+	case wmEraseBkgnd:
+		return 1 // 自绘，避免背景闪烁
+	case wmPaint:
+		var ps paintStruct
+		hdc, _, _ := pBeginPaint.Call(hwnd, uintptr(unsafe.Pointer(&ps)))
+		if hdc != 0 {
+			var cr rect
+			pGetClientRect.Call(hwnd, uintptr(unsafe.Pointer(&cr)))
+			// 白底圆角 + 浅灰边框（先画边框描边，再叠白色内衬去色差）
+			fillRoundedRectAA(hdc, cr, 12, colorRefToARGB(stColorGray))
+			inner := rect{cr.left + 1, cr.top + 1, cr.right - 1, cr.bottom - 1}
+			fillRoundedRectAA(hdc, inner, 11, 0xFFFFFFFF)
+			pEndPaint.Call(hwnd, uintptr(unsafe.Pointer(&ps)))
+		}
+		return 0
+	}
+	ret, _, _ := pDefWindowProcW.Call(hwnd, uMsg, wParam, lParam)
+	return ret
+}
+
+// settingsAddGroupCard 在父窗口指定区域创建一个垫底分组卡片子窗口。
+func settingsAddGroupCard(parent uintptr, x, y, w, h int32) uintptr {
+	if !settingsCardClsReg {
+		cls, _ := syscall.UTF16PtrFromString(settingsCardCls)
+		cb := syscall.NewCallback(settingsCardWndProc)
+		cur, _, _ := pLoadCursorW.Call(0, idcArrow)
+		wc := wndClassExW{
+			cbSize:        uint32(unsafe.Sizeof(wndClassExW{})),
+			style:         csHRedraw | csVRedraw,
+			lpfnWndProc:   cb,
+			hInstance:     moduleHandle(),
+			hCursor:       cur,
+			lpszClassName: cls,
+		}
+		pRegisterClassExW.Call(uintptr(unsafe.Pointer(&wc)))
+		settingsCardClsReg = true
+	}
+	cls, _ := syscall.UTF16PtrFromString(settingsCardCls)
+	hwnd, _, _ := pCreateWindowExW.Call(
+		0, uintptr(unsafe.Pointer(cls)), 0,
+		wsChild|wsVisible, uintptr(x), uintptr(y), uintptr(w), uintptr(h),
+		parent, 0, moduleHandle(), 0,
+	)
+	return hwnd
+}
+
 // settingsDrawCombo 绘制现代下拉选择器（圆角白底 + 边框 + 当前项文案 + 箭头）。
 func settingsDrawCombo(dis drawItemStruct) {
 	hdc := dis.hDC
@@ -1906,14 +1969,22 @@ func createSettingsWindow() uintptr {
 		pSendMessageW.Call(settingsTitleHwnd, wmSetFont, settingsFontTitle, 1)
 	}
 
-	// ---- 常规面板 ----
+	// ---- 常规面板（两分组卡片：开机自启动 / 后台服务） ----
+	// 内容区右缘（左右对齐到窗口右下留白，避免右半留白）
+	contentR := int32(stWinW - 16)
+	// 卡片1：开机自启动（y≈66..140）
+	card1 := settingsAddGroupCard(hwnd, stContentX, 66, contentR-stContentX, 74)
+	if card1 != 0 {
+		settingsWidgets[card1] = stIdGenCard1
+		settingsPaneGen = append(settingsPaneGen, uintptr(stIdGenCard1))
+	}
 	at, _ := syscall.UTF16PtrFromString("开机自启动")
 	autoTitle, _, _ := pCreateWindowExW.Call(
 		0,
 		uintptr(unsafe.Pointer(staticCls)),
 		uintptr(unsafe.Pointer(at)),
 		wsChild|wsVisible,
-		uintptr(stContentX), 78, 220, 24,
+		uintptr(stContentX+20), 80, 220, 24,
 		hwnd, stIdAutoTitle, moduleHandle(), 0,
 	)
 	if autoTitle != 0 {
@@ -1927,7 +1998,7 @@ func createSettingsWindow() uintptr {
 		uintptr(unsafe.Pointer(staticCls)),
 		uintptr(unsafe.Pointer(asub)),
 		wsChild|wsVisible,
-		uintptr(stContentX), 104, 340, 18,
+		uintptr(stContentX+20), 106, 340, 18,
 		hwnd, stIdAutoSub, moduleHandle(), 0,
 	)
 	if autoSub != 0 {
@@ -1935,14 +2006,14 @@ func createSettingsWindow() uintptr {
 		pSendMessageW.Call(autoSub, wmSetFont, settingsFontSmall, 1)
 		settingsPaneGen = append(settingsPaneGen, stIdAutoSub)
 	}
-	// 开关（自绘胶囊）：放在“开机自启动”文案右侧，紧贴文字
+	// 开关（自绘胶囊）：右对齐到卡片右缘，紧贴分组
 	tb, _ := syscall.UTF16PtrFromString("")
 	autoToggle, _, _ := pCreateWindowExW.Call(
 		0,
 		uintptr(unsafe.Pointer(btnCls)),
 		uintptr(unsafe.Pointer(tb)),
 		wsChild|wsVisible|wsTabStop|bsOwnDraw,
-		uintptr(stContentX+115), 75, 56, 28,
+		uintptr(contentR-72), 82, 56, 28,
 		hwnd, stIdAutoToggle, moduleHandle(), 0,
 	)
 	if autoToggle != 0 {
@@ -1950,15 +2021,19 @@ func createSettingsWindow() uintptr {
 		settingsPaneGen = append(settingsPaneGen, stIdAutoToggle)
 	}
 
-	// ---- 常规面板：后台服务（状态 + 重启按钮） ----
-	// 状态用自绘 BUTTON（无 wsTabStop，纯展示）：绿/红圆点 + “后台服务：运行中/已停止”
+	// 卡片2：后台服务状态（y≈158..232）
+	card2 := settingsAddGroupCard(hwnd, stContentX, 158, contentR-stContentX, 74)
+	if card2 != 0 {
+		settingsWidgets[card2] = stIdGenCard2
+		settingsPaneGen = append(settingsPaneGen, uintptr(stIdGenCard2))
+	}
 	rst, _ := syscall.UTF16PtrFromString("")
 	restInfo, _, _ := pCreateWindowExW.Call(
 		0,
 		uintptr(unsafe.Pointer(btnCls)),
 		uintptr(unsafe.Pointer(rst)),
 		wsChild|wsVisible|bsOwnDraw,
-		uintptr(stContentX), 158, 240, 26,
+		uintptr(stContentX+20), 172, 260, 26,
 		hwnd, stIdRestartInfo, moduleHandle(), 0,
 	)
 	if restInfo != 0 {
@@ -1973,7 +2048,7 @@ func createSettingsWindow() uintptr {
 		uintptr(unsafe.Pointer(btnCls)),
 		uintptr(unsafe.Pointer(rb)),
 		wsChild|wsVisible|wsTabStop|bsOwnDraw,
-		uintptr(stContentX), 190, 124, 30,
+		uintptr(contentR-158), 172, 124, 30,
 		hwnd, stIdRestartBtn, moduleHandle(), 0,
 	)
 	if restBtn != 0 {
@@ -1981,14 +2056,21 @@ func createSettingsWindow() uintptr {
 		settingsPaneGen = append(settingsPaneGen, stIdRestartBtn)
 	}
 
-	// ---- 关于面板 ----
+	// ---- 关于面板（两分组卡片：版本信息 / 预发布通道） ----
+	contentR = int32(stWinW - 16)
+	// 卡片1：版本信息（y≈66..164），标签左 / 值右，占满内容区宽度
+	aboutCard1 := settingsAddGroupCard(hwnd, stContentX, 66, contentR-stContentX, 98)
+	if aboutCard1 != 0 {
+		settingsWidgets[aboutCard1] = stIdAboutCard1
+		settingsPaneAbout = append(settingsPaneAbout, uintptr(stIdAboutCard1))
+	}
 	vt, _ := syscall.UTF16PtrFromString("dsh-systray 版本号")
 	verTitle, _, _ := pCreateWindowExW.Call(
 		0,
 		uintptr(unsafe.Pointer(staticCls)),
 		uintptr(unsafe.Pointer(vt)),
 		wsChild|wsVisible,
-		uintptr(stContentX), 78, 220, 24,
+		uintptr(stContentX+20), 84, 240, 24,
 		hwnd, stIdVerTitle, moduleHandle(), 0,
 	)
 	if verTitle != 0 {
@@ -2002,8 +2084,8 @@ func createSettingsWindow() uintptr {
 		0,
 		uintptr(unsafe.Pointer(staticCls)),
 		uintptr(unsafe.Pointer(vv)),
-		wsChild|wsVisible,
-		uintptr(stContentX), 104, 220, 26,
+		wsChild|wsVisible|ssRight,
+		uintptr(stContentX+220), 82, uintptr(contentR-stContentX-236), 26,
 		hwnd, stIdVerValue, moduleHandle(), 0,
 	)
 	if verValue != 0 {
@@ -2022,7 +2104,7 @@ func createSettingsWindow() uintptr {
 		uintptr(unsafe.Pointer(staticCls)),
 		uintptr(unsafe.Pointer(ht)),
 		wsChild|wsVisible,
-		uintptr(stContentX), 140, 240, 22,
+		uintptr(stContentX+20), 126, 260, 22,
 		hwnd, stIdHarTitle, moduleHandle(), 0,
 	)
 	if harTitle != 0 {
@@ -2030,13 +2112,14 @@ func createSettingsWindow() uintptr {
 		pSendMessageW.Call(harTitle, wmSetFont, settingsFontBody, 1)
 		settingsPaneAbout = append(settingsPaneAbout, stIdHarTitle)
 	}
+	// 值右对齐到卡片右缘
 	fv, _ := syscall.UTF16PtrFromString(hvText)
 	harValue, _, _ := pCreateWindowExW.Call(
 		0,
 		uintptr(unsafe.Pointer(staticCls)),
 		uintptr(unsafe.Pointer(fv)),
-		wsChild|wsVisible,
-		uintptr(stContentX), 162, 220, 26,
+		wsChild|wsVisible|ssRight,
+		uintptr(stContentX+220), 124, uintptr(contentR-stContentX-236), 26,
 		hwnd, stIdHarValue, moduleHandle(), 0,
 	)
 	if harValue != 0 {
@@ -2044,14 +2127,19 @@ func createSettingsWindow() uintptr {
 		pSendMessageW.Call(harValue, wmSetFont, settingsFontTitle, 1)
 		settingsPaneAbout = append(settingsPaneAbout, stIdHarValue)
 	}
-	// 开启预发布通道开关（紧跟 harness 版本号右侧）：默认关闭；开启后检查更新包含 alpha/beta/rc 预发布版
+	// 卡片2：开启预发布通道开关（y≈180..244）
+	aboutCard2 := settingsAddGroupCard(hwnd, stContentX, 180, contentR-stContentX, 64)
+	if aboutCard2 != 0 {
+		settingsWidgets[aboutCard2] = stIdAboutCard2
+		settingsPaneAbout = append(settingsPaneAbout, uintptr(stIdAboutCard2))
+	}
 	hst, _ := syscall.UTF16PtrFromString("开启预发布通道")
 	harPreTitle, _, _ := pCreateWindowExW.Call(
 		0,
 		uintptr(unsafe.Pointer(staticCls)),
 		uintptr(unsafe.Pointer(hst)),
 		wsChild|wsVisible,
-		uintptr(stContentX+245), 140, 115, 22,
+		uintptr(stContentX+20), 190, 160, 22,
 		hwnd, stIdHarPreTitle, moduleHandle(), 0,
 	)
 	if harPreTitle != 0 {
@@ -2065,7 +2153,7 @@ func createSettingsWindow() uintptr {
 		uintptr(unsafe.Pointer(staticCls)),
 		uintptr(unsafe.Pointer(hps)),
 		wsChild|wsVisible,
-		uintptr(stContentX+245), 164, 183, 18,
+		uintptr(stContentX+20), 214, 183, 18,
 		hwnd, stIdHarPreSub, moduleHandle(), 0,
 	)
 	if harPreSub != 0 {
@@ -2079,7 +2167,7 @@ func createSettingsWindow() uintptr {
 		uintptr(unsafe.Pointer(btnCls)),
 		uintptr(unsafe.Pointer(hpt)),
 		wsChild|wsVisible|wsTabStop|bsOwnDraw,
-		uintptr(stContentX+365), 137, 56, 28,
+		uintptr(contentR-72), 191, 56, 28,
 		hwnd, stIdHarPreToggle, moduleHandle(), 0,
 	)
 	if harPreToggle != 0 {
@@ -2093,7 +2181,7 @@ func createSettingsWindow() uintptr {
 		uintptr(unsafe.Pointer(btnCls)),
 		uintptr(unsafe.Pointer(cb2)),
 		wsChild|wsVisible|wsTabStop|bsOwnDraw,
-		uintptr(stContentX), 200, 106, 30,
+		uintptr(stContentX), 262, 124, 30,
 		hwnd, stIdCheckBtn, moduleHandle(), 0,
 	)
 	if checkBtn != 0 {
@@ -2138,6 +2226,12 @@ func createSettingsWindow() uintptr {
 		settingsPaneLog = append(settingsPaneLog, stIdLogRefresh)
 	}
 
+	// 日志卡片（垫底，白底圆角 + 浅灰边框，与常规/关于页分组一致）
+	logCard := settingsAddGroupCard(hwnd, stContentX-8, 144, stWinW-stContentX-4, 300)
+	if logCard != 0 {
+		settingsWidgets[logCard] = stIdLogCard
+		settingsPaneLog = append(settingsPaneLog, uintptr(stIdLogCard))
+	}
 	// 用 RICHEDIT50W（可靠的多行富文本：正确处理换行/大文本/滚动/复制）；无边框、浅灰底
 	mdll, _ := syscall.UTF16PtrFromString("Msftedit.dll")
 	pLoadLibraryW.Call(uintptr(unsafe.Pointer(mdll)))
@@ -2145,7 +2239,7 @@ func createSettingsWindow() uintptr {
 	logEdit, _, _ := pCreateWindowExW.Call(
 		0, uintptr(unsafe.Pointer(editCls)), 0,
 		wsChild|wsVisible|wsTabStop|esMultiline|esAutoVScroll|esReadOnly|wsVScroll,
-		uintptr(stContentX-8), 144, uintptr(stWinW-stContentX-12), 292, hwnd, stIdLogEdit, moduleHandle(), 0,
+		uintptr(stContentX), 150, uintptr(stWinW-stContentX-16), 288, hwnd, stIdLogEdit, moduleHandle(), 0,
 	)
 	if logEdit != 0 {
 		settingsWidgets[logEdit] = stIdLogEdit
