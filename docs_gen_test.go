@@ -42,8 +42,9 @@ var (
 	cLine   = rgba{71, 84, 103, 255}   // 日志正文 #475467
 )
 
-// scale 全局 2x 渲染倍率：成图分辨率翻倍，浏览器/README 缩小显示时文字锐利。
-const scale = 2
+// scale 全局渲染倍率：1x 原生尺寸成图。文字按目标尺寸直接渲染，避免 2x 成图后在
+// 网页/README 中缩小导致的非整数倍缩放发虚（截图类图片 1x 更清晰）。
+const scale = 1
 
 // ==================== 画布与矢量原语 ====================
 
@@ -512,7 +513,7 @@ func TestRegenerateDocsImages(t *testing.T) {
 		{"import", func() *canvas { return drawSlide(f, 4, "导入", 920, drawImport) },
 			func(t *testing.T, img *image.RGBA) {
 				expectColor(t, img, 20, 20, cBG, "import bg")
-				expectColor(t, img, 472, 159, cBlue, "import button")
+				expectColor(t, img, 388, 162, cBlue, "import button")
 			}},
 	}
 	for _, s := range slides {

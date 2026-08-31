@@ -141,6 +141,20 @@ const (
 	ttfSubclass        = 0x0010
 	ttmAddToolW        = 0x0432 // WM_USER + 50
 	ttmSetMaxTipWidthW = 0x0418 // WM_USER + 24
+	// 自定义半透明黑色胶囊提示窗
+	tipPopupCls      = "DSH_Systray_TipPopup"
+	tipPadX          = 14
+	tipPadY          = 8
+	wsExLayered      = 0x00080000
+	wsExTopmost      = 0x00000008
+	wsExToolwindow   = 0x00000080
+	lwaAlpha         = 0x00000002
+	swShowNoActivate = 4
+	wmEraseBkgnd     = 0x0014
+	wmMouseActivate  = 0x0021
+	maNoActivate     = 3
+	wmNcDestroy      = 0x0082
+	gwlWndProc       = ^uintptr(3) // GWLP_WNDPROC = -4
 	vkPageUp           = 0x21
 	vkPageDown         = 0x22
 	vkHome             = 0x24
@@ -166,6 +180,12 @@ var (
 	pGetParent           = modUser32.NewProc("GetParent")
 	pTrackMouseEvent     = modUser32.NewProc("TrackMouseEvent")
 	pRedrawWindow        = modUser32.NewProc("RedrawWindow")
+	pSetLayeredWindowAttributes = modUser32.NewProc("SetLayeredWindowAttributes")
+	pSetWindowRgn               = modUser32.NewProc("SetWindowRgn")
+	pCreateRoundRectRgn         = modGdi32.NewProc("CreateRoundRectRgn")
+	pGetWindowLongPtrW          = modUser32.NewProc("GetWindowLongPtrW")
+	pSetWindowLongPtrW          = modUser32.NewProc("SetWindowLongPtrW")
+	pCallWindowProcW            = modUser32.NewProc("CallWindowProcW")
 
 	settingsOpenFlag        atomic.Bool
 	settingsHwnd            uintptr
@@ -187,14 +207,21 @@ var (
 	settingsDropHover       int                     // 下拉列表悬停项
 	settingsDropClsReg      bool                    // 下拉列表窗口类是否已注册
 	settingsDropClosedAt    time.Time               // 最近一次因失活自动收起的时间（防抖）
-	settingsTipHwnd         uintptr                 // 原生泡泡提示窗口
-	settingsPlugHelpTip     *uint16                 // 插件选项说明文案（保持指针存活）
+	settingsTipPopupHwnd    uintptr // 自定义半透明黑色胶囊提示窗
+	settingsTipPopupReg     bool    // 提示窗窗口类是否已注册
+	settingsTipPopupText    string  // 当前提示文案
+	settingsTipPopupBrush   uintptr // 提示窗背景画刷（深灰黑）
+	settingsTipPopupVisible bool    // 提示窗当前是否可见
+	settingsTipPopupAnchor  uintptr // 当前锚定控件（避免重复重建区域）
+	settingsPlugHelpHwnd    uintptr // 问号按钮（悬停触发提示）
+	settingsPlugHelpOrig    uintptr // 问号按钮原 WndProc
 	settingsFontTitle       uintptr
 	settingsFontBody        uintptr
 	settingsFontBold        uintptr
 	settingsFontSmall       uintptr
 	settingsFontMono        uintptr // 日志等宽字体 Consolas（14px）
 	settingsFontBtn         uintptr // 胶囊按钮字体（略大于正文）
+	settingsFontHelp        uintptr // 问号图标内 ? 字号（小号加粗）
 	settingsSideBrush       uintptr
 	settingsTitleHwnd       uintptr
 	settingsRestartInfoHwnd uintptr
@@ -371,13 +398,22 @@ func settingsWndProc(hwnd, uMsg, wParam, lParam uintptr) uintptr {
 		if settingsFontBtn != 0 {
 			pDeleteObject.Call(settingsFontBtn)
 		}
+		if settingsFontHelp != 0 {
+			pDeleteObject.Call(settingsFontHelp)
+		}
 		if settingsSideBrush != 0 {
 			pDeleteObject.Call(settingsSideBrush)
 		}
-		if settingsTipHwnd != 0 {
-			pDestroyWindow.Call(settingsTipHwnd)
-			settingsTipHwnd = 0
+		if settingsTipPopupHwnd != 0 {
+			pDestroyWindow.Call(settingsTipPopupHwnd)
+			settingsTipPopupHwnd = 0
 		}
+		if settingsTipPopupBrush != 0 {
+			pDeleteObject.Call(settingsTipPopupBrush)
+			settingsTipPopupBrush = 0
+		}
+		settingsPlugHelpOrig = 0 // 下次打开设置窗口时重新子类化新的问号按钮
+		settingsPlugHelpHwnd = 0
 		settingsCloseDrop(false)
 		pKillTimer.Call(hwnd, settingsLogTimer)
 		pPostQuitMessage.Call(0)
@@ -924,11 +960,11 @@ func settingsDrawHelp(dis drawItemStruct) {
 	fillRoundedRectAA(hdc, dis.rcItem, 7, colorRefToARGB(ring))
 	inner := rect{dis.rcItem.left + 1, dis.rcItem.top + 1, dis.rcItem.right - 1, dis.rcItem.bottom - 1}
 	fillRoundedRectAA(hdc, inner, 6, 0xFFFFFFFF)
-	// 加粗加深的 ?”：用正文加粗字号（600）、深色文字
+	// 加粗加深的 ?”：用问号专用小号加粗字体（600）、深色文字
 	pSetTextColor.Call(hdc, stColorText)
 	pSetBkMode.Call(hdc, bkTransparent)
-	if settingsFontBold != 0 {
-		pSelectObject.Call(hdc, settingsFontBold)
+	if settingsFontHelp != 0 {
+		pSelectObject.Call(hdc, settingsFontHelp)
 	}
 	// 测量 "?" 实际宽高，在圆内居中绘制（字形视觉重心略偏上，上移 1px）
 	q, _ := syscall.UTF16PtrFromString("?")
@@ -946,6 +982,156 @@ func settingsDrawHelp(dis drawItemStruct) {
 	cy := (dis.rcItem.top + dis.rcItem.bottom) / 2
 	tr := rect{cx - w/2, cy - h/2 - 1, cx + w/2, cy + h/2 - 1}
 	pDrawTextW.Call(hdc, uintptr(unsafe.Pointer(q)), ^uintptr(0), uintptr(unsafe.Pointer(&tr)), 0) // DT_LEFT|DT_TOP
+}
+
+// ==================== 自定义半透明黑色胶囊提示 ====================
+
+// settingsTipPopupWndProc 提示窗消息处理：WM_PAINT 绘制胶囊底色 + 白色文字。
+func settingsTipPopupWndProc(hwnd, uMsg, wParam, lParam uintptr) uintptr {
+	switch uMsg {
+	case wmPaint:
+		var ps paintStruct
+		hdc, _, _ := pBeginPaint.Call(hwnd, uintptr(unsafe.Pointer(&ps)))
+		if hdc != 0 {
+			var cr rect
+			pGetClientRect.Call(hwnd, uintptr(unsafe.Pointer(&cr)))
+			if settingsTipPopupBrush == 0 {
+				settingsTipPopupBrush, _, _ = pCreateSolidBrush.Call(0x00111111) // 深灰黑 #111111
+			}
+			pFillRect.Call(hdc, uintptr(unsafe.Pointer(&cr)), settingsTipPopupBrush)
+			pSetTextColor.Call(hdc, 0xFFFFFF) // 白色文字
+			pSetBkMode.Call(hdc, bkTransparent)
+			if settingsFontSmall != 0 {
+				pSelectObject.Call(hdc, settingsFontSmall)
+			}
+			if settingsTipPopupText != "" {
+				t, _ := syscall.UTF16PtrFromString(settingsTipPopupText)
+				pDrawTextW.Call(hdc, uintptr(unsafe.Pointer(t)), ^uintptr(0), uintptr(unsafe.Pointer(&cr)), dtCenter|dtVCenter|dtSingle)
+			}
+			pEndPaint.Call(hwnd, uintptr(unsafe.Pointer(&ps)))
+		}
+		return 0
+	case wmMouseActivate:
+		return maNoActivate // 不抢焦点
+	case wmEraseBkgnd:
+		return 1 // 已自绘背景，抑制闪烁
+	}
+	ret, _, _ := pDefWindowProcW.Call(hwnd, uMsg, wParam, lParam)
+	return ret
+}
+
+// settingsTipPopupCreate 惰性创建半透明胶囊提示窗（层叠 + 置顶 + 工具窗口，不抢焦点）。
+func settingsTipPopupCreate() {
+	if !settingsTipPopupReg {
+		cls, _ := syscall.UTF16PtrFromString(tipPopupCls)
+		cb := syscall.NewCallback(settingsTipPopupWndProc)
+		cur, _, _ := pLoadCursorW.Call(0, idcArrow)
+		wc := wndClassExW{
+			cbSize:        uint32(unsafe.Sizeof(wndClassExW{})),
+			style:         csHRedraw | csVRedraw,
+			lpfnWndProc:   cb,
+			hInstance:     moduleHandle(),
+			hCursor:       cur,
+			lpszClassName: cls,
+		}
+		pRegisterClassExW.Call(uintptr(unsafe.Pointer(&wc)))
+		settingsTipPopupReg = true
+	}
+	cls, _ := syscall.UTF16PtrFromString(tipPopupCls)
+	hwnd, _, _ := pCreateWindowExW.Call(
+		wsExLayered|wsExTopmost|wsExToolwindow, uintptr(unsafe.Pointer(cls)), 0,
+		wsPopup,
+		0, 0, 120, 26, 0, 0, moduleHandle(), 0,
+	)
+	if hwnd != 0 {
+		settingsTipPopupHwnd = hwnd
+		pSetLayeredWindowAttributes.Call(hwnd, 0, 214, lwaAlpha) // ~84% 不透明度 → 半透明黑
+	}
+}
+
+// settingsTipPopupShow 在 anchor 右侧垂直居中显示胶囊提示。
+func settingsTipPopupShow(text string, anchor uintptr) {
+	if settingsTipPopupVisible && settingsTipPopupAnchor == anchor && settingsTipPopupText == text {
+		return // 已显示同一条提示：避免 WM_MOUSEMOVE 高频触发时反复移动窗口/重建区域
+	}
+	settingsTipPopupText = text
+	mrc := rect{}
+	if settingsFontSmall != 0 {
+		if dc, _, _ := pGetDC.Call(0); dc != 0 {
+			old, _, _ := pSelectObject.Call(dc, settingsFontSmall)
+			t, _ := syscall.UTF16PtrFromString(text)
+			pDrawTextW.Call(dc, uintptr(unsafe.Pointer(t)), ^uintptr(0), uintptr(unsafe.Pointer(&mrc)), dtCalcRect|dtSingle)
+			pSelectObject.Call(dc, old)
+			pReleaseDC.Call(0, dc)
+		}
+	}
+	w := mrc.right - mrc.left + tipPadX*2
+	h := mrc.bottom - mrc.top + tipPadY*2
+	if w < 40 {
+		w = 40
+	}
+	if h < 24 {
+		h = 24
+	}
+	if settingsTipPopupHwnd == 0 {
+		settingsTipPopupCreate()
+	}
+	if settingsTipPopupHwnd == 0 {
+		return
+	}
+	var arc rect
+	pGetWindowRect.Call(anchor, uintptr(unsafe.Pointer(&arc)))
+	x := arc.right + 8
+	y := (arc.top+arc.bottom)/2 - h/2
+	hrgn, _, _ := pCreateRoundRectRgn.Call(0, 0, uintptr(w), uintptr(h), uintptr(h), uintptr(h)) // 胶囊：圆角=高度
+	pSetWindowRgn.Call(settingsTipPopupHwnd, hrgn, 1)
+	pMoveWindow.Call(settingsTipPopupHwnd, uintptr(x), uintptr(y), uintptr(w), uintptr(h), 1)
+	pInvalidateRect.Call(settingsTipPopupHwnd, 0, 1)
+	pShowWindow.Call(settingsTipPopupHwnd, swShowNoActivate)
+	settingsTipPopupVisible = true
+	settingsTipPopupAnchor = anchor
+}
+
+// settingsTipPopupHide 隐藏胶囊提示。
+func settingsTipPopupHide() {
+	if settingsTipPopupHwnd != 0 && settingsTipPopupVisible {
+		pShowWindow.Call(settingsTipPopupHwnd, swHide)
+	}
+	settingsTipPopupVisible = false
+	settingsTipPopupAnchor = 0
+}
+
+// settingsTipSubclassProc 问号按钮子类化：悬停显示提示、移出隐藏，其余消息转发原 WndProc。
+func settingsTipSubclassProc(hwnd, uMsg, wParam, lParam uintptr) uintptr {
+	switch uMsg {
+	case wmMouseMove:
+		settingsTipPopupShow("仅打包用户安装的插件", hwnd)
+		var tme trackMouseEvent
+		tme.cbSize = uint32(unsafe.Sizeof(tme))
+		tme.dwFlags = tmeLeave
+		tme.hwndTrack = hwnd
+		pTrackMouseEvent.Call(uintptr(unsafe.Pointer(&tme)))
+	case wmMouseLeave:
+		settingsTipPopupHide()
+	}
+	if settingsPlugHelpOrig != 0 {
+		r, _, _ := pCallWindowProcW.Call(settingsPlugHelpOrig, hwnd, uMsg, wParam, lParam)
+		return r
+	}
+	r, _, _ := pDefWindowProcW.Call(hwnd, uMsg, wParam, lParam)
+	return r
+}
+
+// settingsTipAttach 子类化问号按钮，使其悬停触发自定义提示。
+func settingsTipAttach(btn uintptr) {
+	if btn == 0 || settingsPlugHelpOrig != 0 {
+		return
+	}
+	settingsPlugHelpHwnd = btn
+	orig, _, _ := pGetWindowLongPtrW.Call(btn, gwlWndProc)
+	settingsPlugHelpOrig = orig
+	cb := syscall.NewCallback(settingsTipSubclassProc)
+	pSetWindowLongPtrW.Call(btn, gwlWndProc, cb)
 }
 
 // settingsDrawCombo 绘制现代下拉选择器（圆角白底 + 边框 + 当前项文案 + 箭头）。
@@ -1499,6 +1685,7 @@ func createSettingsWindow() uintptr {
 	settingsFontSmall = makeFont(15, 400)
 	settingsFontMono = makeMonoFont(14) // 日志字体 14px
 	settingsFontBtn = makeFont(16, 600)
+	settingsFontHelp = makeFont(13, 600) // 问号图标内 ?：小号加粗（更小、更醒目）
 	settingsSideBrush, _, _ = pCreateSolidBrush.Call(stColorSidebarBg)
 
 	titleText, _ := syscall.UTF16PtrFromString("设置")
@@ -1871,28 +2058,8 @@ func createSettingsWindow() uintptr {
 	if plugHelp != 0 {
 		settingsWidgets[plugHelp] = stIdExpPlugHelp
 		settingsPaneExp = append(settingsPaneExp, stIdExpPlugHelp)
-		// 原生现代简约提示：不用旧的泡泡气泡样式（ttsBalloon），用系统当前主题的圆角纯色提示
-		if settingsTipHwnd == 0 {
-			tipCls, _ := syscall.UTF16PtrFromString("tooltips_class32")
-			settingsTipHwnd, _, _ = pCreateWindowExW.Call(
-				0, uintptr(unsafe.Pointer(tipCls)), 0,
-				wsPopup|ttsAlwaysTip|ttsNoprefix,
-				0, 0, 0, 0, hwnd, 0, moduleHandle(), 0,
-			)
-		}
-		if settingsTipHwnd != 0 {
-			settingsPlugHelpTip, _ = syscall.UTF16PtrFromString("仅打包用户安装的插件")
-			var ti toolInfoW
-			ti.cbSize = uint32(unsafe.Sizeof(ti))
-			ti.uFlags = ttfSubclass
-			// TTF_SUBCLASS：tooltip 会子类化 hwnd（即问号按钮）并监听其鼠标消息，uId 为工具标识。
-			ti.hwnd = plugHelp
-			ti.uId = 1
-			ti.rect = rect{0, 0, 16, 16}
-			ti.lpszText = settingsPlugHelpTip
-			pSendMessageW.Call(settingsTipHwnd, ttmAddToolW, 0, uintptr(unsafe.Pointer(&ti)))
-			pSendMessageW.Call(settingsTipHwnd, ttmSetMaxTipWidthW, 0, 300)
-		}
+		// 子类化问号按钮：悬停显示半透明黑色胶囊提示（白色文字），移出隐藏
+		settingsTipAttach(plugHelp)
 	}
 	dirsEdit, _, _ := pCreateWindowExW.Call(
 		0, uintptr(unsafe.Pointer(editCls)), 0,
