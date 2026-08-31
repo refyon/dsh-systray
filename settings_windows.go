@@ -1060,7 +1060,7 @@ func settingsTipRenderDIB(text string, dw, dh int32) (hbmp uintptr, memDC uintpt
 	bmi := bmpInfoTip{
 		biSize:     uint32(unsafe.Sizeof(bmpInfoTip{})),
 		biWidth:    dw,
-		biHeight:   dh,
+		biHeight:   -dh,
 		biPlanes:   1,
 		biBitCount: 32,
 	}
@@ -1175,7 +1175,7 @@ func settingsTipPopupShow(text string, anchor uintptr) {
 	y := (arc.top+arc.bottom)/2 - dh/2
 	pos := point{x, y}
 	sizeV := sizeTip{dw, dh}
-	blend := blendFuncTip{flags: 1} // AC_SRC_ALPHA
+	blend := blendFuncTip{alphaOp: 255, flags: 1} // SourceConstantAlpha=255, AlphaFormat=AC_SRC_ALPHA
 	screenDC, _, _ := pGetDC.Call(0)
 	if screenDC != 0 {
 		src := point{0, 0}
