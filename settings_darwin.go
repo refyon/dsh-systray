@@ -84,6 +84,13 @@ func dshSettingsGoLogPath(which C.int) *C.char {
 	return C.CString(filepath.Join(logDir, name))
 }
 
+// 返回实际的历史会话目录（调用方 free），供导出页显示真实路径而非硬编码 ~/.dsh。
+//
+//export dshSettingsGoSessionsPath
+func dshSettingsGoSessionsPath() *C.char {
+	return C.CString(sessionsSourceDir())
+}
+
 //export dshSettingsGoClearLog
 func dshSettingsGoClearLog(which C.int) {
 	name := "app.log"
@@ -182,6 +189,12 @@ func dshSettingsGoRestore(kindC, zipPathC, destDirC *C.char, overwrite C.int) *C
 	restartPending := stopped && kind != "files" // 不自动重启：由设置窗口关闭时提示用户重启
 	if err != nil {
 		return dshResultCString(dshResult{OK: false, Error: err.Error()})
+	}
+	// 插件恢复后注册回 harness profile，使插件页识别为已安装
+	if kind == "plugins" {
+		if rerr := registerRestoredPlugins(C.GoString(zipPathC)); rerr != nil {
+			return dshResultCString(dshResult{OK: false, Error: "插件已恢复，但注册到 harness 失败：" + rerr.Error()})
+		}
 	}
 	msg := "恢复完成"
 	return dshResultCString(dshResult{OK: true, Message: msg, RestartPending: restartPending})

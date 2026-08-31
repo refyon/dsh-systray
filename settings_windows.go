@@ -1393,6 +1393,14 @@ func settingsRestoreRun(kind, filesDest string) {
 			runModernDialog(appName, "恢复失败：\n"+err.Error(), []string{"确定"}, 0)
 			return
 		}
+		// 插件恢复后注册回 harness profile，使插件页识别为已安装
+		if kind == "plugins" {
+			if rerr := registerRestoredPlugins(settingsImpPath); rerr != nil {
+				settingsSetText(stIdImpStatus, "插件已恢复，但注册到 harness 失败")
+				runModernDialog(appName, "插件文件已恢复，但注册到 harness profile 失败：\n"+rerr.Error(), []string{"确定"}, 0)
+				return
+			}
+		}
 		msg := "恢复完成。"
 		settingsSetText(stIdImpStatus, msg)
 		runModernDialog(appName, msg, []string{"确定"}, 0)
@@ -1863,12 +1871,12 @@ func createSettingsWindow() uintptr {
 	if plugHelp != 0 {
 		settingsWidgets[plugHelp] = stIdExpPlugHelp
 		settingsPaneExp = append(settingsPaneExp, stIdExpPlugHelp)
-		// 原生泡泡提示：悬停显示说明
+		// 原生现代简约提示：不用旧的泡泡气泡样式（ttsBalloon），用系统当前主题的圆角纯色提示
 		if settingsTipHwnd == 0 {
 			tipCls, _ := syscall.UTF16PtrFromString("tooltips_class32")
 			settingsTipHwnd, _, _ = pCreateWindowExW.Call(
 				0, uintptr(unsafe.Pointer(tipCls)), 0,
-				wsPopup|ttsAlwaysTip|ttsNoprefix|ttsBalloon,
+				wsPopup|ttsAlwaysTip|ttsNoprefix,
 				0, 0, 0, 0, hwnd, 0, moduleHandle(), 0,
 			)
 		}

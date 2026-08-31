@@ -457,7 +457,13 @@ func runHarnessUpdate(latest string) {
 	var err error
 	if isNpmHarnessReady() {
 		splash.Update("正在更新 DeepSeek Harness 依赖…", 0.3)
-		err = runHarnessCmd(pnpmCmd(), "add", "@deepseek-ai/dsh@latest", "--save-exact")
+		// 安装检查到的新版本而非 @latest：npm 的 prerelease（如 0.1.2-alpha.2）不会成为 latest 标签，
+		// 用 @latest 会装回旧版导致“更新后仍是旧版本”。
+		ver := latest
+		if ver == "" {
+			ver = "latest"
+		}
+		err = runHarnessCmd(pnpmCmd(), "add", "@deepseek-ai/dsh@"+ver, "--save-exact")
 	} else {
 		splash.Update("正在拉取 DeepSeek Harness 最新代码…", 0.2)
 		err = runHarnessCmd("git", "pull")

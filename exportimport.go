@@ -43,6 +43,15 @@ type exportManifest struct {
 	Platform   string           `json:"platform"`
 	CreatedAt  string           `json:"createdAt"`
 	Items      []exportItemInfo `json:"items"`
+	Plugins    exportPlugins    `json:"plugins,omitempty"` // 已安装插件清单（用于导入后注册回 harness profile）
+}
+
+// exportPlugins 导出时记录源 profile 的插件配置：dependencies + dsh.profile.bundles，
+// 供导入后合并写入目标机器 profile 的 package.json，使恢复的插件被 harness 识别为已安装。
+type exportPlugins struct {
+	Profile      string            `json:"profile,omitempty"`      // 源 profile 名（空 = 旧布局 profiles 根）
+	Dependencies map[string]string `json:"dependencies,omitempty"` // 插件名 → 版本规格
+	Bundles      []string          `json:"bundles,omitempty"`      // dsh.profile.bundles 插件清单
 }
 
 // importItem 解析出的可恢复项。
@@ -53,15 +62,32 @@ type importItem struct {
 	Size  int64  `json:"size"`  // 子包字节数
 }
 
-// dshHomeDir harness 数据主目录（$DSH_HOME，默认 ~/.dsh）。
+// dshHomeDir harness 数据主目录（$DSH_HOME，默认 ~/.dsh），与 harness 的 resolveDshHome 一致：
+// 非空（非纯空白）$DSH_HOME 优先，支持 ~ 前缀展开；sessions / profiles 均位于此根下。
 func dshHomeDir() string {
-	if h := os.Getenv("DSH_HOME"); h != "" {
-		return h
+	if h := os.Getenv("DSH_HOME"); h != "" && strings.TrimSpace(h) != "" {
+		return expandTildePath(h)
 	}
 	if home, err := os.UserHomeDir(); err == nil {
 		return filepath.Join(home, ".dsh")
 	}
 	return ""
+}
+
+// expandTildePath 展开路径开头的 ~ / ~/ / ~\ 为当前用户主目录；无前缀则原样返回。
+func expandTildePath(p string) string {
+	if p == "~" {
+		if h, err := os.UserHomeDir(); err == nil {
+			return h
+		}
+		return p
+	}
+	if strings.HasPrefix(p, "~/") || strings.HasPrefix(p, "~\\") {
+		if h, err := os.UserHomeDir(); err == nil {
+			return filepath.Join(h, p[2:])
+		}
+	}
+	return p
 }
 
 // sessionsSourceDir 历史会话数据目录（不存在返回空串）。
@@ -129,6 +155,39 @@ func profilePlugins() (profileDir string, deps []string, err error) {
 	}
 	sort.Strings(deps)
 	return dir, deps, nil
+}
+
+// profilePluginConfig 读取 profile 的 package.json，返回其插件配置（dependencies + dsh.profile.bundles + profile 名）。
+func profilePluginConfig(dir string) exportPlugins {
+	cfg := exportPlugins{}
+	data, err := os.ReadFile(filepath.Join(dir, "package.json"))
+	if err != nil {
+		return cfg
+	}
+	var m struct {
+		Dependencies map[string]string `json:"dependencies"`
+		Dsh          struct {
+			Profile struct {
+				Bundles []string `json:"bundles"`
+			} `json:"profile"`
+		} `json:"dsh"`
+	}
+	_ = json.Unmarshal(data, &m)
+	cfg.Dependencies = m.Dependencies
+	cfg.Bundles = m.Dsh.Profile.Bundles
+	if home := dshHomeDir(); home != "" {
+		if rel, err := filepath.Rel(home, dir); err == nil {
+			rel = filepath.ToSlash(rel)
+			if strings.HasPrefix(rel, "profiles/") {
+				rest := strings.TrimPrefix(rel, "profiles/")
+				if i := strings.IndexByte(rest, '/'); i >= 0 {
+					rest = rest[:i]
+				}
+				cfg.Profile = rest
+			}
+		}
+	}
+	return cfg
 }
 
 // pluginsRelPrefix 插件在导出 zip 内的路径前缀（相对 DSH_HOME，恢复侧同源），
@@ -265,13 +324,14 @@ func buildExportZip(includeSessions, includePlugins bool, dirs []string, destDir
 
 	progress(onStatus, "正在打包已安装的插件…", 0)
 	if includePlugins {
-		_, deps, err := profilePlugins()
+		dir, deps, err := profilePlugins()
 		if err != nil {
 			return "", err
 		}
 		if len(deps) == 0 {
 			return "", fmt.Errorf("没有通过 dsh add 安装的插件，无需导出")
 		}
+		manifest.Plugins = profilePluginConfig(dir)
 		root := filepath.Join(pluginsSourceDir())
 		if _, err := os.Stat(root); err != nil {
 			log.Printf("export: plugins dir missing %s: %v", root, err)
@@ -419,6 +479,98 @@ func parseExportZip(zipPath string) ([]importItem, error) {
 		return nil, fmt.Errorf("压缩包中没有可恢复的内容（未找到 manifest.json 或 sessions.zip / plugins.zip / files.zip）")
 	}
 	return items, nil
+}
+
+// registerRestoredPlugins 读取总 zip 的 manifest，将导出的插件配置（dependencies + dsh.profile.bundles）
+// 合并写入目标 profile 的 package.json，使恢复后的插件被 harness 识别为已安装。
+// 无 manifest（旧包）或未勾选插件时静默跳过。返回错误只对真正失败的情形。
+func registerRestoredPlugins(masterZipPath string) error {
+	data, err := zipReadFile(masterZipPath, "manifest.json")
+	if err != nil {
+		return nil
+	}
+	var m exportManifest
+	if err := json.Unmarshal(data, &m); err != nil || m.Plugins.Dependencies == nil {
+		return nil
+	}
+	home := dshHomeDir()
+	if home == "" {
+		return fmt.Errorf("无法确定 harness 数据目录（DSH_HOME）")
+	}
+	// 目标 profile 目录集合：恢复到的 profile（源名，插件文件所在）+ harness 当前激活 profile。
+	dirs := map[string]bool{}
+	if m.Plugins.Profile != "" {
+		dirs[filepath.Join(home, "profiles", m.Plugins.Profile)] = true
+	} else {
+		dirs[filepath.Join(home, "profiles")] = true
+	}
+	if dir, _, err := profilePlugins(); err == nil {
+		dirs[dir] = true
+	}
+	for dir := range dirs {
+		if err := mergePluginConfigIntoProfile(dir, m.Plugins); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// mergePluginConfigIntoProfile 把插件依赖与 bundles 合并进指定 profile 的 package.json（不存在则创建）。
+func mergePluginConfigIntoProfile(dir string, cfg exportPlugins) error {
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return err
+	}
+	pj := filepath.Join(dir, "package.json")
+	root := map[string]interface{}{}
+	if data, err := os.ReadFile(pj); err == nil {
+		_ = json.Unmarshal(data, &root)
+	}
+	if root == nil {
+		root = map[string]interface{}{}
+	}
+	// dependencies（插件名 → 版本规格），合并去重（保留已有项，新增缺失项）。
+	deps, _ := root["dependencies"].(map[string]interface{})
+	if deps == nil {
+		deps = map[string]interface{}{}
+	}
+	for k, v := range cfg.Dependencies {
+		if _, exists := deps[k]; exists {
+			continue
+		}
+		deps[k] = v
+	}
+	root["dependencies"] = deps
+	// dsh.profile.bundles：合并到已有序号末尾，避免破坏已激活 bundle 的顺序。
+	dsh, _ := root["dsh"].(map[string]interface{})
+	if dsh == nil {
+		dsh = map[string]interface{}{}
+	}
+	prof, _ := dsh["profile"].(map[string]interface{})
+	if prof == nil {
+		prof = map[string]interface{}{}
+	}
+	bundles, _ := prof["bundles"].([]interface{})
+	seen := map[string]bool{}
+	for _, b := range bundles {
+		if s, ok := b.(string); ok {
+			seen[s] = true
+		}
+	}
+	for _, b := range cfg.Bundles {
+		if !seen[b] {
+			bundles = append(bundles, b)
+			seen[b] = true
+		}
+	}
+	prof["bundles"] = bundles
+	dsh["profile"] = prof
+	root["dsh"] = dsh
+
+	b, err := json.MarshalIndent(root, "", "  ")
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(pj, append(b, '\n'), 0o644)
 }
 
 // restoreEntryPrefix 子包在总 zip 内的条目前缀（sessions/ 或插件前缀 profiles/…/node_modules/）。

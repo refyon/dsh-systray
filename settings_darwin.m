@@ -13,6 +13,8 @@ extern void dshSettingsGoCheckUpdate(void);
 char* dshSettingsGoLoadLog(int which);
 // 返回当前所选日志文件完整路径 C 字符串（调用方 free）
 char* dshSettingsGoLogPath(int which);
+// 返回实际历史会话目录 C 字符串（调用方 free）
+char* dshSettingsGoSessionsPath(void);
 // 清空日志文件（which=0 app.log / 1 server.log）
 void dshSettingsGoClearLog(int which);
 // 重启后台服务（异步执行）
@@ -620,7 +622,10 @@ static DSHSetController *g_ctrl = nil;
     self.expSessions.frame = NSMakeRect(0, 334, 280, 24);
     self.expSessions.font = [self uiFontOfSize:16 weight:NSFontWeightRegular];
     [self.exportPane addSubview:self.expSessions];
-    [self addLabel:@"sessions.zip · ~/.dsh/sessions" font:[self uiFontOfSize:12 weight:NSFontWeightRegular] color:[NSColor secondaryLabelColor] frame:NSMakeRect(22, 316, 400, 16) to:self.exportPane];
+    char *sessPathC = dshSettingsGoSessionsPath();
+    NSString *sessPath = sessPathC ? [NSString stringWithUTF8String:sessPathC] : @"";
+    free(sessPathC);
+    [self addLabel:[NSString stringWithFormat:@"sessions.zip · %@", sessPath] font:[self uiFontOfSize:12 weight:NSFontWeightRegular] color:[NSColor secondaryLabelColor] frame:NSMakeRect(22, 316, 400, 16) to:self.exportPane];
 
     self.expPlugins = [NSButton checkboxWithTitle:@"已安装的插件" target:nil action:nil];
     self.expPlugins.frame = NSMakeRect(0, 288, 280, 24);
