@@ -41,10 +41,10 @@ jobs:
           go-version-file: go.mod
           cache: true
 
-      - name: Install Wails CLI (pinned to go.mod)
+      - name: Install Wails CLI (pinned; v2.15.0 兼容 Go 1.27，v2.11.0 会报 "package fmt without types")
         shell: bash
         run: |
-          WAILS_VER="v2.11.0"
+          WAILS_VER="v2.15.0"
           go install github.com/wailsapp/wails/v2/cmd/wails@${WAILS_VER}
           echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
 
