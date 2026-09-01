@@ -33,9 +33,9 @@ var appCtx context.Context
 const (
 	appName     = "DeepSeek Harness"
 	defaultPort = 3080
-	// 设置窗口固定尺寸（900×600，1.5:1 等比例，紧凑且无滚动条）
-	winW = 900
-	winH = 600
+	// 设置窗口固定尺寸（840×560，1.5:1 等比例，紧凑且无滚动条）
+	winW = 840
+	winH = 560
 )
 
 var (
@@ -239,14 +239,6 @@ func main() {
 	webURL = fmt.Sprintf("http://127.0.0.1:%d/", port)
 	harnessDir = cfg.HarnessDir
 	startupTimeout = time.Duration(cfg.StartupTimeoutSec) * time.Second
-
-	// 截图模式（DSH_SYSTRAY_SHOT_PAGE）：开启 WebView2 CDP 调试端口（third_party/wails 补丁读取），
-	// 截图脚本经 Page.captureScreenshot 直出渲染像素（高保真，不经屏幕合成）。
-	if os.Getenv("DSH_SYSTRAY_SHOT_PAGE") != "" {
-		if os.Getenv("DSH_SYSTRAY_CDP_PORT") == "" {
-			os.Setenv("DSH_SYSTRAY_CDP_PORT", "9333")
-		}
-	}
 
 	// 自愈历史自启动项：旧版本注册的自启动条目未带 --autostart 参数，导致登录时被当作“手动双击”而弹提示。
 	if isAutostartEnabled() {

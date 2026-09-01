@@ -166,7 +166,7 @@ input { font-family: inherit; }
 }
 
 .sidebar {
-  width: 176px;
+  width: 172px;
   flex-shrink: 0;
   padding: var(--sp-5) var(--sp-4);
   background: var(--surface);
@@ -345,7 +345,7 @@ input { font-family: inherit; }
 .log-card { padding: var(--sp-2); margin-bottom: 0; }
 
 .log-view {
-  height: 280px;
+  height: 240px;
   overflow-y: auto;
   padding: var(--sp-3) var(--sp-4);
   font-family: var(--mono);
