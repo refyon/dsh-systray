@@ -33,9 +33,9 @@ var appCtx context.Context
 const (
 	appName     = "DeepSeek Harness"
 	defaultPort = 3080
-	// 设置窗口固定尺寸（与旧版 640×460 一致）
-	winW = 640
-	winH = 460
+	// 设置窗口固定尺寸（960×640：更宽更舒展，容纳更多留白）
+	winW = 960
+	winH = 640
 )
 
 var (
