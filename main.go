@@ -33,9 +33,9 @@ var appCtx context.Context
 const (
 	appName     = "DeepSeek Harness"
 	defaultPort = 3080
-	// 设置窗口固定尺寸（960×640：更宽更舒展，容纳更多留白）
-	winW = 960
-	winH = 640
+	// 设置窗口固定尺寸（900×600，1.5:1 等比例，紧凑且无滚动条）
+	winW = 900
+	winH = 600
 )
 
 var (
@@ -553,6 +553,13 @@ func onReady() {
 		keepServerRunning.Store(choice == 1)
 		if appCtx != nil {
 			wruntime.Quit(appCtx)
+		}
+	})
+
+	// 左键单击托盘图标也弹出菜单（Windows 默认仅右键弹菜单）
+	systray.SetOnClick(func(menu systray.IMenu) {
+		if menu != nil {
+			_ = menu.ShowMenu()
 		}
 	})
 }

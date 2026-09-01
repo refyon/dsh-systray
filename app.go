@@ -297,8 +297,14 @@ var (
 	importItems   []importItem
 )
 
+// ImportPickResult 选择压缩包后的结果（完整路径 + 可恢复项）。
+type ImportPickResult struct {
+	Path  string       `json:"path"`
+	Items []ImportItem `json:"items"`
+}
+
 // ImportPick 选择导入压缩包并解析（原生文件对话框）。
-func (a *App) ImportPick() ([]ImportItem, error) {
+func (a *App) ImportPick() (*ImportPickResult, error) {
 	p, err := wruntime.OpenFileDialog(appCtx, wruntime.OpenDialogOptions{
 		Title: "选择 dsh-systray 导出压缩包",
 		Filters: []wruntime.FileFilter{
@@ -320,7 +326,7 @@ func (a *App) ImportPick() ([]ImportItem, error) {
 	for _, it := range items {
 		out = append(out, ImportItem{Kind: it.Kind, Label: it.Label, Size: it.Size})
 	}
-	return out, nil
+	return &ImportPickResult{Path: p, Items: out}, nil
 }
 
 // GetImportItems 返回当前已解析的导入项。

@@ -1,0 +1,151 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>dsh-systray · 设置</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <!-- ======== 启动 / 更新进度视图 ======== -->
+  <div id="splash" class="splash hidden">
+    <div class="splash-card">
+      <div class="splash-title">DeepSeek Harness</div>
+      <div id="splash-status" class="splash-status">正在准备运行环境…</div>
+      <div class="splash-track" role="progressbar" aria-label="进度" aria-valuemin="0" aria-valuemax="100">
+        <div id="splash-fill" class="splash-fill"></div>
+      </div>
+      <button id="splash-cancel" class="btn btn-ghost splash-cancel hidden">取消更新</button>
+    </div>
+  </div>
+
+  <!-- ======== 设置主视图 ======== -->
+  <div id="settings" class="settings hidden">
+    <aside class="sidebar">
+      <nav class="nav" aria-label="设置分类">
+        <button class="nav-item active" data-page="general">常规</button>
+        <button class="nav-item" data-page="about">关于</button>
+        <button class="nav-item" data-page="logs">日志</button>
+        <button class="nav-item" data-page="export">导出</button>
+        <button class="nav-item" data-page="import">导入</button>
+      </nav>
+    </aside>
+
+    <main class="content">
+      <header class="page-head"><h1 id="page-title">常规</h1></header>
+
+      <!-- 常规 -->
+      <section id="page-general" class="page">
+        <div class="card">
+          <div class="card-row">
+            <div class="row-text">
+              <div class="row-title">开机自启动</div>
+              <div class="row-sub">登录后自动启动后台服务并常驻托盘</div>
+            </div>
+            <button id="sw-autostart" class="switch" role="switch" aria-checked="false" aria-label="开机自启动"></button>
+          </div>
+        </div>
+        <div class="card">
+          <div class="card-row">
+            <div class="row-text">
+              <div class="row-title">
+                <span id="svc-dot" class="dot dot-starting"></span>
+                <span id="svc-text">后台服务：启动中</span>
+              </div>
+              <div id="svc-sub" class="row-sub">服务就绪后可打开 Web UI</div>
+            </div>
+            <button id="btn-restart" class="btn btn-primary">重启后台服务</button>
+          </div>
+        </div>
+        <div class="card">
+          <div class="card-row">
+            <div class="row-text">
+              <div class="row-title">服务端口</div>
+              <div class="row-sub" id="cfg-port-sub">http://127.0.0.1:3080</div>
+            </div>
+            <input id="inp-port" class="input input-narrow" type="number" min="1" max="65535" inputmode="numeric">
+          </div>
+          <div class="card-row">
+            <div class="row-text">
+              <div class="row-title">Harness 目录</div>
+              <div class="row-sub row-sub-path" id="cfg-harness-dir">—</div>
+            </div>
+            <button id="btn-pick-harness" class="btn btn-ghost">选择…</button>
+          </div>
+        </div>
+      </section>
+
+      <!-- 关于 -->
+      <section id="page-about" class="page hidden">
+        <div class="card">
+          <div class="kv"><span>dsh-systray 版本号</span><strong id="ver-app">—</strong></div>
+          <div class="kv"><span>DeepSeek Harness 版本号</span><strong id="ver-harness">—</strong></div>
+        </div>
+        <div class="card">
+          <div class="card-row">
+            <div class="row-text">
+              <div class="row-title">开启预发布通道</div>
+              <div class="row-sub">alpha / beta / rc 预发布版</div>
+            </div>
+            <button id="sw-prerelease" class="switch" role="switch" aria-checked="false" aria-label="预发布通道"></button>
+          </div>
+        </div>
+        <div class="update-zone">
+          <button id="btn-check-update" class="btn btn-primary">检查更新</button>
+          <div id="update-hint" class="update-hint"></div>
+          <div id="update-progress" class="update-progress hidden">
+            <div class="splash-track"><div id="update-fill" class="splash-fill"></div></div>
+            <span id="update-text" class="row-sub"></span>
+          </div>
+        </div>
+      </section>
+
+      <!-- 日志 -->
+      <section id="page-logs" class="page hidden">
+        <div id="log-path" class="log-path">—</div>
+        <div class="log-tools">
+          <button class="btn btn-primary" id="btn-log-refresh">刷新</button>
+          <button class="btn btn-danger" id="btn-log-clear">清空</button>
+        </div>
+        <div class="card log-card">
+          <pre id="log-view" class="log-view" tabindex="0"></pre>
+        </div>
+      </section>
+
+      <!-- 导出 -->
+      <section id="page-export" class="page hidden">
+        <div id="exp-rows"></div>
+        <div class="export-foot">
+          <button id="btn-pick-dir" class="btn btn-ghost">选择目录…</button>
+          <button id="btn-export" class="btn btn-primary">导出…</button>
+        </div>
+        <div id="exp-hint" class="row-sub">已选 0 项，点击「导出…」打包为 zip</div>
+        <div id="exp-progress" class="op-progress hidden">
+          <div class="splash-track"><div id="exp-fill" class="splash-fill"></div></div>
+          <span id="exp-text" class="row-sub"></span>
+        </div>
+      </section>
+
+      <!-- 导入 -->
+      <section id="page-import" class="page hidden">
+        <div class="card imp-intro">
+          <div class="imp-intro-main">
+            <div class="row-title">导入 dsh-systray 导出包</div>
+            <div class="row-sub">选择 dsh-systray-export-*.zip 压缩包，可恢复历史会话、已安装插件或文件目录。</div>
+            <div id="imp-path" class="row-sub row-sub-path imp-path hidden"></div>
+          </div>
+          <button id="btn-import-pick" class="btn btn-primary btn-sm">添加压缩包…</button>
+        </div>
+        <div id="imp-rows"></div>
+        <div id="imp-hint" class="row-sub"></div>
+        <div id="imp-progress" class="op-progress hidden">
+          <div class="splash-track"><div id="imp-fill" class="splash-fill"></div></div>
+          <span id="imp-text" class="row-sub"></span>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <script src="main.js"></script>
+</body>
+</html>

@@ -1,4 +1,4 @@
-# dsh-systray 真实 UI 截图脚本（Windows）
+﻿# dsh-systray 真实 UI 截图脚本（Windows）
 # 用法: powershell -ExecutionPolicy Bypass -File capture_shots.ps1
 # 原理: 通过 DSH_SYSTRAY_SHOT_PAGE 让前端启动后直接显示指定页，逐页重启进程截图。
 # 前置: 已构建 build/bin/dsh-systray.exe
@@ -11,6 +11,7 @@ using System.Runtime.InteropServices;
 public class Cap {
   [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr h, out RECT r);
   [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr h);
+  [DllImport("user32.dll")] public static extern bool SetWindowPos(IntPtr h, IntPtr after, int x, int y, int cx, int cy, uint flags);
   [StructLayout(LayoutKind.Sequential)] public struct RECT { public int L, T, R, B; }
 }
 "@
@@ -33,8 +34,10 @@ function SnapProcess([string]$name, [string]$page, [int]$waitSec) {
   Start-Sleep -Seconds $waitSec
   $p.Refresh()
   if ($p.MainWindowHandle -eq [IntPtr]::Zero) { Write-Host "skip $name (no window)"; return }
+  # 置顶 + 前台：确保只截取窗口本身，不包含背后内容
+  [void][Cap]::SetWindowPos($p.MainWindowHandle, [IntPtr](-1), 0, 0, 0, 0, 0x0001 -bor 0x0002 -bor 0x0040)
   [void][Cap]::SetForegroundWindow($p.MainWindowHandle)
-  Start-Sleep -Milliseconds 900
+  Start-Sleep -Milliseconds 1200
   $r = [Cap+RECT]::new()
   [void][Cap]::GetWindowRect($p.MainWindowHandle, [ref]$r)
   $w = $r.R - $r.L; $ht = $r.B - $r.T
