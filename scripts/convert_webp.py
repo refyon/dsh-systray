@@ -1,19 +1,34 @@
 #!/usr/bin/env python3
-"""把 docs 截图转成 WebP（网站/README 用），删除原 PNG 源以减小仓库体积。
+"""把 docs 截图（全尺寸 PNG）转成网站用的 WebP：
+1. LANCZOS 高质量缩放到目标宽度（保留边缘细节）
+2. UnsharpMask 锐化（补偿缩小与压缩带来的柔化）
+3. 删除 PNG 源以减小仓库体积
 用法: python scripts/convert_webp.py
 """
 import os
+import shutil
 
-from PIL import Image
+from PIL import Image, ImageFilter
 
 root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 docs = os.path.join(root, "docs")
+
+TARGET_W = 640          # 输出宽度（px）
+SHARPEN = (2.0, 150, 2)  # UnsharpMask: radius, percent, threshold
 
 
 def _convert(png_path):
     webp_path = png_path[:-4] + ".webp"
     with Image.open(png_path) as im:
-        im.save(webp_path, "WEBP", quality=82, method=6)
+        # 1) 高质量缩放
+        w, h = im.size
+        if w > TARGET_W:
+            nh = max(1, round(h * TARGET_W / w))
+            im = im.resize((TARGET_W, nh), Image.LANCZOS)
+        # 2) 锐化（缩小后文字边缘更清晰）
+        im = im.filter(ImageFilter.UnsharpMask(radius=SHARPEN[0], percent=SHARPEN[1], threshold=SHARPEN[2]))
+        # 3) 存 WebP
+        im.save(webp_path, "WEBP", quality=88, method=6)
     src_size = os.path.getsize(png_path)
     os.remove(png_path)
     dst_size = os.path.getsize(webp_path)
@@ -27,3 +42,10 @@ for t in [os.path.join(docs, "shots"), os.path.join(docs, "screenshot.png")]:
                 _convert(os.path.join(t, f))
     elif os.path.isfile(t) and t.endswith(".png"):
         _convert(t)
+
+# README 主图 = 关于页截图
+src = os.path.join(docs, "shots", "about.webp")
+dst = os.path.join(docs, "screenshot.webp")
+if os.path.isfile(src):
+    shutil.copy2(src, dst)
+    print(f"screenshot.webp <- about.webp ({os.path.getsize(dst)} bytes)")

@@ -1,4 +1,4 @@
-# dsh-systray 真实 UI 截图脚本（Windows）
+﻿# dsh-systray 真实 UI 截图脚本（Windows）
 # 用法: powershell -ExecutionPolicy Bypass -File capture_shots.ps1
 # 原理: 通过 DSH_SYSTRAY_SHOT_PAGE 让前端启动后直接显示指定页，逐页重启进程截图。
 # 裁剪策略: 只捕获 client 内容区（跳过标题栏），四周再内缩 8px（覆盖 Win11 圆角露底），
@@ -23,8 +23,6 @@ public class Cap {
 
 # 圆角内缩量（px）：覆盖 Windows 11 默认窗口圆角半径，避免四角透出背景
 $crop = 8
-# 输出宽度（px）：网站/README 按原尺寸显示，避免大图被放大变模糊、下载变慢
-$targetW = 640
 
 $root = Split-Path -Parent $PSScriptRoot
 $exe = Join-Path $root 'build\bin\dsh-systray.exe'
@@ -63,21 +61,16 @@ function SnapProcess([string]$name, [string]$page, [int]$waitSec) {
   $g.CopyFromScreen($pt.X, $pt.Y, 0, 0, $full.Size)
   $g.Dispose()
 
-  # 四周内缩 $crop px，裁掉圆角透底
+  # 四周内缩 $crop px，裁掉圆角透底（输出全尺寸源图，缩放/锐化由 convert_webp.py 用 Pillow 高质量完成）
   $ow = $cw - 2 * $crop; $oh = $ch - 2 * $crop
-  # 按目标宽度等比例缩小输出（高分辨率源缩小后更清晰、文件更小）
-  $scale = $targetW / $ow
-  $tw = [math]::Max(1, [int][math]::Floor($ow * $scale))
-  $th = [math]::Max(1, [int][math]::Floor($oh * $scale))
-  $out = New-Object System.Drawing.Bitmap($tw, $th)
+  $out = New-Object System.Drawing.Bitmap($ow, $oh)
   $g2 = [System.Drawing.Graphics]::FromImage($out)
-  $g2.InterpolationMode = [System.Drawing.Drawing2D.InterpolationMode]::HighQualityBicubic
-  $g2.DrawImage($full, (New-Object System.Drawing.Rectangle(0, 0, $tw, $th)), `
+  $g2.DrawImage($full, (New-Object System.Drawing.Rectangle(0, 0, $ow, $oh)), `
     (New-Object System.Drawing.Rectangle($crop, $crop, $ow, $oh)), [System.Drawing.GraphicsUnit]::Pixel)
   $g2.Dispose()
   $out.Save((Join-Path $outDir "$name.png"), [System.Drawing.Imaging.ImageFormat]::Png)
   $full.Dispose(); $out.Dispose()
-  Write-Host ("saved {0}.png ({1}x{2})" -f $name, $tw, $th)
+  Write-Host ("saved {0}.png ({1}x{2})" -f $name, $ow, $oh)
 }
 
 SnapProcess 'general' 'general' 7
