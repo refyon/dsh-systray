@@ -3,8 +3,8 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>dsh-systray · 极简启动器</title>
-<meta name="description" content="dsh-systray — Windows / macOS 系统托盘应用：双击后台启动 DeepSeek Harness Web 本地服务，托盘常驻、开机自启、设置窗口、自动更新、主题自适应托盘图标。">
+<title>dsh-systray · 桌面托盘，静默启动</title>
+<meta name="description" content="dsh-systray — Windows / macOS 桌面托盘：双击后台启动 DeepSeek Harness 本地服务，托盘常驻、开机自启、自动更新、数据一键迁移。">
 <style>
 :root{
   --bg:#f8fafc; --surface:#ffffff; --surface-2:#f1f5f9; --text:#0f172a; --muted:#64748b;
@@ -109,9 +109,9 @@ footer .sep{margin:0 8px;color:var(--border)}
 <main class="wrap">
   <section class="hero">
     <img class="logo" src="icon.svg" alt="dsh-systray 图标" width="132" height="132">
-    <div class="eyebrow">Windows · macOS 桌面托盘</div>
+    <div class="eyebrow">Windows · macOS</div>
     <h1>dsh-systray</h1>
-    <p class="sub">极简启动器</p>
+    <p class="sub">双击即启。托盘常驻。服务就绪，一触即达。</p>
     <div class="actions">
       <a class="btn primary" href="https://github.com/refyon/dsh-systray/releases/latest/download/dsh-systray-windows-x64.zip"><svg class="ico" viewBox="0 0 24 24" fill="currentColor"><path d="M3 5.5l8.5-1.2v8.4H3V5.5zm9.5-1.3L21 3v9.7h-8.5V4.2zM3 13.7h8.5v8.4L3 20.9v-7.2zm9.5.8H21v6.9l-8.5 1.3v-8.2z"/></svg>下载 Windows 版</a>
       <a class="btn ghost" href="https://github.com/refyon/dsh-systray/releases/latest/download/dsh-systray-macos-universal.zip"><svg class="ico" viewBox="0 0 24 24" fill="currentColor"><path d="M16.9 12.9c0-2.1 1.7-3.1 1.8-3.2-1-1.4-2.5-1.6-3-1.7-1.3-.1-2.5.8-3.2.8-.6 0-1.6-.8-2.7-.7-1.4 0-2.7.8-3.4 2-1.4 2.5-.4 6.2 1 8.2.7 1 1.5 2.1 2.6 2 .9 0 1.3-.6 2.5-.6s1.5.6 2.5.6c1 0 1.7-1 2.4-2 .7-1.1 1-2.1 1-2.2 0 0-2-1-2-3.2zM15 6.3c.6-.7 1-1.7.9-2.7-.8 0-1.9.6-2.5 1.3-.5.6-1 1.6-.9 2.6.9.1 1.9-.5 2.5-1.2z"/></svg>下载 macOS 版</a>
@@ -123,7 +123,7 @@ footer .sep{margin:0 8px;color:var(--border)}
     <div class="car" data-reveal>
       <div class="shot-stack car-stage">
         <img class="shot" id="car-img" src="shots/general.webp" alt="dsh-systray 界面轮播" />
-        <div class="car-bubble" id="car-cap">常规 — 开机自启、后台服务状态与重启</div>
+        <div class="car-bubble" id="car-cap">常规 — 自启与服务状态，一眼掌握</div>
       </div>
       <button class="car-arrow prev" id="car-prev" type="button" aria-label="上一张"></button>
       <button class="car-arrow next" id="car-next" type="button" aria-label="下一张"></button>
@@ -131,7 +131,7 @@ footer .sep{margin:0 8px;color:var(--border)}
     </div>
     <div class="hub-copy" data-reveal>
       <h2>安静，但全能</h2>
-      <p>系统托盘里的 DeepSeek Harness —— 无窗口拉起本地服务、进度可视化。五页设置窗口覆盖开机自启、版本更新、日志跟踪与数据导入导出；托盘图标随系统深浅色自动适配。左右滑动下方轮播，快速浏览每个页面。</p>
+      <p>把 DeepSeek Harness 装进托盘——启动服务、管理更新、跟踪日志、打包数据，一个窗口全部搞定。深浅色随系统自动适配，左右滑动轮播，快速认识每个页面。</p>
     </div>
   </section>
 
@@ -139,48 +139,48 @@ footer .sep{margin:0 8px;color:var(--border)}
     <div class="head">
       <span class="eyebrow">WHY DSH-SYSTRAY</span>
       <h2>为桌面而生，安静地工作</h2>
-      <p>不弹窗、不占标签页，像系统原生的一部分。</p>
+      <p>不打扰，不繁琐。像系统原生的一部分。</p>
     </div>
     <div class="feat-groups">
       <div class="fgroup" data-reveal>
-        <h3>启动与托盘</h3>
+        <h3>启动，不打扰</h3>
         <ul>
           <li>
             <div class="ico"><svg viewBox="0 0 24 24"><path d="M6 3l14 9-14 9V3z"/></svg></div>
-            <div><b>双击启动</b><span>无窗口、后台拉起本地 Web 服务，无需记忆端口。</span></div>
+            <div><b>双击即启</b><span>服务在后台安静就绪，不用记端口，不用开终端。</span></div>
           </li>
           <li>
             <div class="ico"><svg viewBox="0 0 24 24"><path d="M12 2a10 10 0 1 0 0 20 10 10 0 0 0 0-20zm0 18a8 8 0 1 1 0-16 8 8 0 0 1 0 16zm4-8a4 4 0 1 1-8 0 4 4 0 0 1 8 0z"/></svg></div>
-            <div><b>托盘常驻</b><span>图标一望即知，深浅色自动适配，不占任务栏。</span></div>
+            <div><b>常驻托盘</b><span>一望即知服务状态，深浅色随系统自动切换。</span></div>
           </li>
           <li>
             <div class="ico"><svg viewBox="0 0 24 24"><path d="M12 22a10 10 0 0 1-10-10A10 10 0 0 1 12 2a10 10 0 0 1 8.4 4.6L17 10h5V5l-1.8 1.8A8 8 0 1 0 20 12h-2a6 6 0 1 1-8.2-5.8L11.4 5A8 8 0 0 0 4 12a8 8 0 0 0 8 8v2z"/></svg></div>
-            <div><b>启动 loading</b><span>服务启动期间进度可视化，就绪后弹窗提示。</span></div>
+            <div><b>启动看得见</b><span>每一步进度清晰呈现，就绪后贴心提醒。</span></div>
           </li>
           <li>
             <div class="ico"><svg viewBox="0 0 24 24"><path d="M12 2l9 5v5c0 5.5-3.8 9.4-9 10-5.2-.6-9-4.5-9-10V7l9-5zm0 2.2L5 8.6v3.5c0 4.3 2.9 7.5 7 8 4.1-.5 7-3.7 7-8V8.6l-7-4.4zM8.6 12.4l2.1 2.1 4.7-4.7 1.4 1.4-6.1 6.1-3.5-3.5 1.4-1.4z"/></svg></div>
-            <div><b>单实例</b><span>已在运行时再次双击会弹窗提示，不重复启动。</span></div>
+            <div><b>始终唯一</b><span>不会重复启动，托盘里永远只有一个它。</span></div>
           </li>
         </ul>
       </div>
       <div class="fgroup" data-reveal>
-        <h3>设置与管理</h3>
+        <h3>一切，尽在掌控</h3>
         <ul>
           <li>
             <div class="ico"><svg viewBox="0 0 24 24"><path d="M4 3h16a1 1 0 0 1 1 1v12a1 1 0 0 1-1 1H9l-4 4V4a1 1 0 0 1 1-1z"/></svg></div>
-            <div><b>设置窗口</b><span>五页分类：常规、关于、日志、导出、导入。</span></div>
+            <div><b>设置窗口</b><span>五个页面，把常用设置都收进一个窗口。</span></div>
           </li>
           <li>
             <div class="ico"><svg viewBox="0 0 24 24"><path d="M4 4h16a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2zm4 6l3 3-3 3m5 0h4"/></svg></div>
-            <div><b>实时日志</b><span>app.log / server.log 跟随最新写入，可复制、一键清空。</span></div>
+            <div><b>日志实时跟随</b><span>最新记录自动呈现，需要时一键清空。</span></div>
           </li>
           <li>
             <div class="ico"><svg viewBox="0 0 24 24"><path d="M7 7h10M13 3l4 4-4 4M17 17H7m-4 4l4-4-4-4"/></svg></div>
-            <div><b>数据导入导出</b><span>会话、插件、目录打包 zip，导入冲突询问、自动恢复。</span></div>
+            <div><b>数据随身带</b><span>会话与插件一键打包，换台机器也能无缝恢复。</span></div>
           </li>
           <li>
             <div class="ico"><svg viewBox="0 0 24 24"><path d="M12 20a8 8 0 1 1 8-8 6 6 0 0 1-8 8zm-2-3h4v2h-4z"/></svg></div>
-            <div><b>自动更新</b><span>后台检查新版本，进度窗口下载，完成自动重启。</span></div>
+            <div><b>更新静默而至</b><span>新版本在后台准备好，安装完成自动重启。</span></div>
           </li>
         </ul>
       </div>
@@ -188,7 +188,7 @@ footer .sep{margin:0 8px;color:var(--border)}
   </section>
 
   <section class="notes" data-reveal>
-    <h2>安装说明</h2>
+    <h2>开始使用</h2>
     <ol>
       <li>下载对应平台 zip 并解压到任意目录</li>
       <li><b>Windows</b>：双击 <code>dsh-systray.exe</code>（SmartScreen 提示时选「仍要运行」）</li>
@@ -229,11 +229,11 @@ footer .sep{margin:0 8px;color:var(--border)}
   // ---- 界面截图轮播：自动播放 + 箭头 + 圆点 + 悬停暂停 + 触摸滑动 ----
   // 图片为 WebP 且按需加载：仅轮播到对应页时才请求，已加载的缓存复用
   var shots = [
-    { src: 'shots/general.webp', cap: '常规 — 开机自启、后台服务状态与重启' },
-    { src: 'shots/about.webp',   cap: '关于 — dsh-systray 与 Harness 版本、检查更新' },
-    { src: 'shots/logs.webp',    cap: '日志 — 应用/服务日志实时跟踪、一键清空' },
-    { src: 'shots/export.webp',  cap: '导出 — 会话、插件、目录一键打包' },
-    { src: 'shots/import.webp',  cap: '导入 — 压缩包解析、冲突询问、逐项恢复' }
+    { src: 'shots/general.webp', cap: '常规 — 自启与服务状态，一眼掌握' },
+    { src: 'shots/about.webp',   cap: '关于 — 版本与更新，随时了然' },
+    { src: 'shots/logs.webp',    cap: '日志 — 实时跟随，随看随清' },
+    { src: 'shots/export.webp',  cap: '导出 — 会话插件，一键打包' },
+    { src: 'shots/import.webp',  cap: '导入 — 无缝迁移，逐项恢复' }
   ];
   var carImg = document.getElementById('car-img');
   var carCap = document.getElementById('car-cap');
