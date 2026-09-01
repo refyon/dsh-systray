@@ -6,7 +6,6 @@
 用法: python scripts/convert_webp.py
 """
 import os
-import shutil
 
 from PIL import Image
 
@@ -38,10 +37,3 @@ for t in [os.path.join(docs, "shots"), os.path.join(docs, "screenshot.png")]:
                 _convert(os.path.join(t, f))
     elif os.path.isfile(t) and t.endswith(".png"):
         _convert(t)
-
-# README 主图 = 关于页截图
-src = os.path.join(docs, "shots", "about.webp")
-dst = os.path.join(docs, "screenshot.webp")
-if os.path.isfile(src):
-    shutil.copy2(src, dst)
-    print(f"screenshot.webp <- about.webp ({os.path.getsize(dst)} bytes)")
