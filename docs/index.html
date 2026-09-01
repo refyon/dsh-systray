@@ -122,8 +122,8 @@ footer .sep{margin:0 8px;color:var(--border)}
   <section class="hub" id="screenshots">
     <div class="car" data-reveal>
       <div class="shot-stack car-stage">
-        <img class="shot" id="car-img" src="shots/splash.png" alt="dsh-systray 界面轮播" />
-        <div class="car-bubble" id="car-cap">自动部署运行环境 — 首次启动自动下载并安装依赖</div>
+        <img class="shot" id="car-img" src="shots/general.webp" alt="dsh-systray 界面轮播" />
+        <div class="car-bubble" id="car-cap">常规 — 开机自启、后台服务状态与重启</div>
       </div>
       <button class="car-arrow prev" id="car-prev" type="button" aria-label="上一张"></button>
       <button class="car-arrow next" id="car-next" type="button" aria-label="下一张"></button>
@@ -227,21 +227,31 @@ footer .sep{margin:0 8px;color:var(--border)}
   }
 
   // ---- 界面截图轮播：自动播放 + 箭头 + 圆点 + 悬停暂停 + 触摸滑动 ----
+  // 图片为 WebP 且按需加载：仅轮播到对应页时才请求，已加载的缓存复用
   var shots = [
-    { src: 'shots/general.png', cap: '常规 — 开机自启、后台服务状态与重启' },
-    { src: 'shots/about.png',   cap: '关于 — dsh-systray 与 Harness 版本、检查更新' },
-    { src: 'shots/logs.png',    cap: '日志 — 应用/服务日志实时跟踪、一键清空' },
-    { src: 'shots/export.png',  cap: '导出 — 会话、插件、目录一键打包' },
-    { src: 'shots/import.png',  cap: '导入 — 压缩包解析、冲突询问、逐项恢复' }
+    { src: 'shots/general.webp', cap: '常规 — 开机自启、后台服务状态与重启' },
+    { src: 'shots/about.webp',   cap: '关于 — dsh-systray 与 Harness 版本、检查更新' },
+    { src: 'shots/logs.webp',    cap: '日志 — 应用/服务日志实时跟踪、一键清空' },
+    { src: 'shots/export.webp',  cap: '导出 — 会话、插件、目录一键打包' },
+    { src: 'shots/import.webp',  cap: '导入 — 压缩包解析、冲突询问、逐项恢复' }
   ];
   var carImg = document.getElementById('car-img');
   var carCap = document.getElementById('car-cap');
   var carDots = document.getElementById('car-dots');
   var carBox = document.querySelector('.car');
   var cur = 0, seq = 0, playTimer = null;
+  var loaded = {};   // 已加载完成的图片缓存
+  var pending = {};  // 正在加载中的图片
 
-  // 预加载全部图片，切换时即时显示
-  shots.forEach(function(s){ var im = new Image(); im.src = s.src; });
+  function ensureImg(src, cb){
+    if (loaded[src]) { cb(); return; }
+    if (pending[src]) { return; } // 已在加载，切换时忽略（首次加载即显示）
+    pending[src] = true;
+    var im = new Image();
+    im.onload = function(){ loaded[src] = true; delete pending[src]; cb(); };
+    im.onerror = function(){ delete pending[src]; cb(); };
+    im.src = src;
+  }
 
   var dotEls = shots.map(function(_, i){
     var b = document.createElement('button');
@@ -257,15 +267,19 @@ footer .sep{margin:0 8px;color:var(--border)}
     cur = (i + shots.length) % shots.length;
     var s = shots[cur];
     var my = ++seq;
-    carImg.classList.add('fading');
-    setTimeout(function(){
-      if (my !== seq) return; // 快速连点时仅最后一次生效
-      carImg.src = s.src;
-      carImg.alt = s.cap;
-      carImg.classList.remove('fading');
-    }, 240);
     carCap.textContent = s.cap;
     dotEls.forEach(function(d, j){ d.classList.toggle('active', j === cur); });
+    // 按需加载：目标图就绪后切换；首次加载直接显示，已缓存则即时切换
+    if (loaded[s.src]) {
+      carImg.src = s.src;
+      carImg.alt = s.cap;
+      return;
+    }
+    ensureImg(s.src, function(){
+      if (my !== seq) return;
+      carImg.src = s.src;
+      carImg.alt = s.cap;
+    });
   }
   function next(){ show(cur + 1); }
   function prev(){ show(cur - 1); }

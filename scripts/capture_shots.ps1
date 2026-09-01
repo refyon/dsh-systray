@@ -1,4 +1,4 @@
-﻿# dsh-systray 真实 UI 截图脚本（Windows）
+# dsh-systray 真实 UI 截图脚本（Windows）
 # 用法: powershell -ExecutionPolicy Bypass -File capture_shots.ps1
 # 原理: 通过 DSH_SYSTRAY_SHOT_PAGE 让前端启动后直接显示指定页，逐页重启进程截图。
 # 裁剪策略: 只捕获 client 内容区（跳过标题栏），四周再内缩 8px（覆盖 Win11 圆角露底），
@@ -87,4 +87,11 @@ SnapProcess 'export'  'export'  5
 SnapProcess 'import'  'import'  5
 
 Get-Process dsh-systray -ErrorAction SilentlyContinue | Stop-Process -Force
+
+# 转 WebP（网站/README 用），删除 PNG 源
+$py = Get-Command python -ErrorAction SilentlyContinue
+if ($py) {
+  & python "$PSScriptRoot\convert_webp.py" 2>&1 | Out-Null
+  Write-Host 'webp converted'
+}
 Write-Host 'done'
