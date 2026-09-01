@@ -22,6 +22,7 @@ const state = {
   page: "general",
   cfg: null,
   svc: null,
+  logName: "app.log",
   logOffset: 0,
   logTimer: null,
   expDirs: [],          // 已选打包目录
@@ -135,6 +136,15 @@ async function refreshVersions() {
 function wireAbout() {
   $("sw-prerelease").addEventListener("click", async () => {
     const on = $("sw-prerelease").getAttribute("aria-checked") !== "true";
+    // 开启预发布通道前提示风险：可能导致服务启动失败
+    if (on) {
+      const ok = await confirmDialog(
+        "开启预发布通道？",
+        "开启后，harness 更新可能安装到不稳定的 alpha / beta / rc 预发布版，可能导致服务启动失败。确定开启吗？",
+        "确定开启"
+      );
+      if (!ok) return;
+    }
     await bindings().SetHarnessPrerelease(on);
     $("sw-prerelease").setAttribute("aria-checked", String(on));
   });
@@ -195,21 +205,43 @@ async function pollLog() {
   const a = bindings();
   if (!a || state.page !== "logs") return;
   try {
-    const tail = await a.ReadLogTail(state.logOffset);
+    const tail = await a.ReadLogTail(state.logName, state.logOffset);
     if (tail.lines && tail.lines.length) renderLog(tail.lines);
     state.logOffset = tail.nextOffset;
   } catch (e) { console.error("ReadLogTail", e); }
 }
 
-function startLogPolling() {
-  stopLogPolling();
-  (async () => {
-    const a = bindings();
-    if (a) $("log-path").textContent = await a.GetLogPath();
-  })();
+function setLogFile(name) {
+  state.logName = name;
+  document.querySelectorAll(".log-tab").forEach((b) => {
+    const on = b.dataset.log === name;
+    b.classList.toggle("active", on);
+    b.setAttribute("aria-selected", String(on));
+  });
   $("log-view").textContent = "";
   state.logOffset = 0;
+  (async () => {
+    const a = bindings();
+    if (a) $("log-path").textContent = await a.GetLogPath(name);
+  })();
   pollLog();
+}
+
+function startLogPolling() {
+  stopLogPolling();
+  const a = bindings();
+  if (!a) return;
+  // 初始化：更新文件选择器可用状态 + 当前路径
+  (async () => {
+    try {
+      const files = await a.GetLogFiles();
+      files.forEach((f) => {
+        const tab = document.querySelector('.log-tab[data-log="' + f.name + '"]');
+        if (tab) tab.disabled = !f.exists;
+      });
+    } catch (e) { /* ignore */ }
+    setLogFile(state.logName);
+  })();
   state.logTimer = setInterval(pollLog, 2000);
 }
 
@@ -218,9 +250,12 @@ function stopLogPolling() {
 }
 
 function wireLogs() {
+  document.querySelectorAll(".log-tab").forEach((b) => {
+    b.addEventListener("click", () => setLogFile(b.dataset.log));
+  });
   $("btn-log-refresh").addEventListener("click", () => { $("log-view").textContent = ""; state.logOffset = 0; pollLog(); });
   $("btn-log-clear").addEventListener("click", async () => {
-    await bindings().ClearLog();
+    await bindings().ClearLog(state.logName);
     $("log-view").textContent = "";
     state.logOffset = 0;
   });
@@ -434,6 +469,29 @@ function wireSplashCancel() {
   $("splash-cancel").addEventListener("click", () => {
     bindings().CancelUpdate();
     $("splash-cancel").classList.add("hidden");
+  });
+}
+
+// ==================== 确认弹层 ====================
+
+/** 显示确认弹层，返回 Promise<boolean>（确定 true / 取消 false）。 */
+function confirmDialog(title, msg, okLabel) {
+  return new Promise((resolve) => {
+    $("modal-title").textContent = title || "确认操作";
+    $("modal-msg").textContent = msg || "";
+    $("modal-ok").textContent = okLabel || "确定";
+    $("modal").classList.remove("hidden");
+    const done = (val) => {
+      $("modal").classList.add("hidden");
+      $("modal-cancel").removeEventListener("click", onCancel);
+      $("modal-ok").removeEventListener("click", onOk);
+      resolve(val);
+    };
+    const onCancel = () => done(false);
+    const onOk = () => done(true);
+    $("modal-cancel").addEventListener("click", onCancel);
+    $("modal-ok").addEventListener("click", onOk);
+    $("modal-cancel").focus();
   });
 }
 

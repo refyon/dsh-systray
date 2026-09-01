@@ -13,8 +13,8 @@ from PIL import Image
 root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 docs = os.path.join(root, "docs")
 
-TARGET_W = 640   # 输出宽度（px）
-WEBP_Q = 92      # WebP 质量
+TARGET_W = 900   # 不缩小（窗口截图 808px 宽，原尺寸输出保证文字清晰）
+WEBP_Q = 95      # WebP 质量（高保真）
 
 
 def _convert(png_path):

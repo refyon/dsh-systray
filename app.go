@@ -164,13 +164,45 @@ type LogTail struct {
 	NextOffset int64    `json:"nextOffset"`
 }
 
-func (a *App) GetLogPath() string {
-	return sanitizeShotPath(filepath.Join(logDir, "app.log"))
+// LogFile 日志文件选项。
+type LogFile struct {
+	Name    string `json:"name"`
+	Path    string `json:"path"`
+	Exists  bool   `json:"exists"`
+	Size    int64  `json:"size"`
 }
 
-// ReadLogTail 从 offset 起增量读取 app.log（前端定时轮询；offset 超出文件长度时重置为 0）。
-func (a *App) ReadLogTail(offset int64) LogTail {
-	p := filepath.Join(logDir, "app.log")
+// logFileName 规范化日志文件名（仅允许 app.log / server.log，防路径穿越）。
+func logFileName(name string) string {
+	if name == "server.log" {
+		return "server.log"
+	}
+	return "app.log"
+}
+
+// GetLogFiles 返回可查看的日志文件列表。
+func (a *App) GetLogFiles() []LogFile {
+	out := make([]LogFile, 0, 2)
+	for _, n := range []string{"app.log", "server.log"} {
+		p := filepath.Join(logDir, n)
+		fi, err := os.Stat(p)
+		lf := LogFile{Name: n, Path: sanitizeShotPath(p)}
+		if err == nil {
+			lf.Exists = true
+			lf.Size = fi.Size()
+		}
+		out = append(out, lf)
+	}
+	return out
+}
+
+func (a *App) GetLogPath(name string) string {
+	return sanitizeShotPath(filepath.Join(logDir, logFileName(name)))
+}
+
+// ReadLogTail 从 offset 起增量读取指定日志（前端定时轮询；offset 超出文件长度时重置为 0）。
+func (a *App) ReadLogTail(name string, offset int64) LogTail {
+	p := filepath.Join(logDir, logFileName(name))
 	f, err := os.Open(p)
 	if err != nil {
 		return LogTail{}
@@ -199,9 +231,9 @@ func (a *App) ReadLogTail(offset int64) LogTail {
 	return LogTail{Lines: lines, NextOffset: offset + int64(n)}
 }
 
-// ClearLog 清空 app.log。
-func (a *App) ClearLog() {
-	_ = os.WriteFile(filepath.Join(logDir, "app.log"), nil, 0o644)
+// ClearLog 清空指定日志。
+func (a *App) ClearLog(name string) {
+	_ = os.WriteFile(filepath.Join(logDir, logFileName(name)), nil, 0o644)
 }
 
 // ==================== 更新 ====================

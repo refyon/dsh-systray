@@ -102,7 +102,13 @@
 
       <!-- 日志 -->
       <section id="page-logs" class="page hidden">
-        <div id="log-path" class="log-path">—</div>
+        <div class="log-head">
+          <div class="log-selector" role="tablist" aria-label="日志文件">
+            <button class="log-tab active" data-log="app.log" role="tab" aria-selected="true">app.log</button>
+            <button class="log-tab" data-log="server.log" role="tab" aria-selected="false">server.log</button>
+          </div>
+          <div id="log-path" class="log-path">—</div>
+        </div>
         <div class="log-tools">
           <button class="btn btn-primary" id="btn-log-refresh">刷新</button>
           <button class="btn btn-danger" id="btn-log-clear">清空</button>
@@ -144,6 +150,19 @@
         </div>
       </section>
     </main>
+  </div>
+
+  <!-- ======== 确认弹层 ======== -->
+  <div id="modal" class="modal hidden">
+    <div class="modal-mask"></div>
+    <div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="modal-title">
+      <div class="modal-title" id="modal-title">确认操作</div>
+      <div class="modal-msg" id="modal-msg"></div>
+      <div class="modal-actions">
+        <button class="btn btn-ghost" id="modal-cancel">取消</button>
+        <button class="btn btn-danger" id="modal-ok">确定</button>
+      </div>
+    </div>
   </div>
 
   <script src="main.js"></script>

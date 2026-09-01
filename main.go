@@ -47,6 +47,8 @@ var (
 	quitting           atomic.Bool
 	keepServerRunning  atomic.Bool
 	harnessDirExplicit bool
+	// quitRequested 托盘「退出」流程标记：Wails OnBeforeClose 据此放行应用退出（区别于窗口 X 关闭）
+	quitRequested atomic.Bool
 	// singleInstanceRelease 单实例互斥体释放函数（更新重启前调用，避免新进程被误判重复运行）
 	singleInstanceRelease func()
 )
@@ -323,9 +325,13 @@ func onDomReady(ctx context.Context) {
 	}
 }
 
-// onBeforeClose 阻止窗口关闭（托盘常驻）；更新进行中询问是否取消更新。
-// 返回 true 阻止关闭；窗口随后隐藏。
+// onBeforeClose 窗口关闭回调（Wails 的 Quit 也经此拦截）：
+// - 托盘「退出」流程（quitRequested）：放行（返回 false），允许应用退出；
+// - 窗口 X：隐藏窗口并阻止关闭（托盘常驻）；更新进行中先询问是否取消更新。
 func onBeforeClose(ctx context.Context) bool {
+	if quitRequested.Load() {
+		return false // 托盘退出：允许关闭并退出应用
+	}
 	if updateFlowBusy() {
 		if fn := splashOnCloseFn(); fn != nil && fn() {
 			cancelActiveUpdate()
@@ -551,6 +557,7 @@ func onReady() {
 			return // 取消退出：托盘保持可用
 		}
 		keepServerRunning.Store(choice == 1)
+		quitRequested.Store(true)
 		if appCtx != nil {
 			wruntime.Quit(appCtx)
 		}
