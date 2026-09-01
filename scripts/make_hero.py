@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""合成 README 主图（docs/screenshot.png）：
+"""合成 README 主图（docs/screenshot-hero.png）：
 - 背景：设置页「常规」真实截图（docs/shots/general.webp）
 - 前景：正在更新 DeepSeek Harness 依赖的下载中窗口（合成绘制）
 - 两个窗口四边带柔和阴影
@@ -12,7 +12,7 @@ from PIL import Image, ImageDraw, ImageFilter, ImageFont
 root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 docs = os.path.join(root, "docs")
 general = os.path.join(docs, "shots", "general.webp")
-out = os.path.join(docs, "screenshot.png")
+out = os.path.join(docs, "screenshot-hero.png")
 
 FONT = r"C:\Windows\Fonts\msyh.ttc"
 FONT_BOLD = r"C:\Windows\Fonts\msyhbd.ttc"

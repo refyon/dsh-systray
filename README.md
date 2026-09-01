@@ -22,7 +22,7 @@
   <a href="https://github.com/refyon/dsh-systray/actions/workflows/release.yml"><img alt="Release build" src="https://github.com/refyon/dsh-systray/actions/workflows/release.yml/badge.svg" /></a>
 </p>
 
-<img src="docs/screenshot.webp" alt="dsh-systray 设置窗口（Wails 界面）" />
+<img src="docs/screenshot-hero.webp" alt="dsh-systray 设置窗口与依赖更新" />
 
 dsh-systray 是一个 Windows / macOS 系统托盘应用：双击即可后台拉起 DeepSeek Harness Web 本地服务，托盘一望即知，无需记忆端口。界面基于 [Wails v2](https://wails.io)（Go 后端 + WebView2 / WKWebView 前端）重构，设置窗口五页分类管理开机自启与后台服务、版本与更新、实时日志，支持会话/插件/目录的一键导出与恢复；整体配色支持浅色 / 深色自动跟随系统，托盘图标随系统深浅色自适应，内置自动更新。
 
