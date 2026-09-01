@@ -33,6 +33,16 @@ def shadow(w, h, radius, blur, alpha):
     return sh
 
 
+def rounded(img, radius):
+    """给图片四角做圆角（alpha 遮罩）。"""
+    mask = Image.new("L", img.size, 0)
+    d = ImageDraw.Draw(mask)
+    d.rounded_rectangle([0, 0, img.width - 1, img.height - 1], radius=radius, fill=255)
+    out = img.copy()
+    out.putalpha(mask)
+    return out
+
+
 def main():
     # ---------- 底图：常规页真实截图 ----------
     base = Image.open(general).convert("RGBA")
@@ -40,6 +50,7 @@ def main():
     W = 780
     H = round(base.height * W / base.width)
     base = base.resize((W, H), Image.LANCZOS)
+    base = rounded(base, 18)  # 常规页窗口圆角
 
     # ---------- 画布 ----------
     pad = 70
@@ -47,16 +58,16 @@ def main():
     canvas_h = H + pad * 2 + 30
     canvas = Image.new("RGBA", (canvas_w, canvas_h), (238, 242, 248, 255))
 
-    # ---------- 背景窗口：常规页（带阴影） ----------
-    bg_shadow = shadow(W, H, 18, 24, 90)
-    canvas.alpha_composite(bg_shadow, (pad - 20, pad - 12))
+    # ---------- 背景窗口：常规页（浅阴影） ----------
+    bg_shadow = shadow(W, H, 18, 14, 36)
+    canvas.alpha_composite(bg_shadow, (pad - 10, pad - 6))
     canvas.alpha_composite(base, (pad, pad))
 
-    # ---------- 前景窗口：正在更新 DeepSeek Harness 依赖（带阴影） ----------
+    # ---------- 前景窗口：正在更新 DeepSeek Harness 依赖（浅阴影） ----------
     fw, fh = 540, 200
     fx, fy = canvas_w - fw - pad + 10, pad + H - fh + 60
-    fg_shadow = shadow(fw, fh, 16, 22, 110)
-    canvas.alpha_composite(fg_shadow, (fx - 18, fy - 10))
+    fg_shadow = shadow(fw, fh, 16, 13, 48)
+    canvas.alpha_composite(fg_shadow, (fx - 10, fy - 6))
     fg = Image.new("RGBA", (fw, fh), (0, 0, 0, 0))
     fd = ImageDraw.Draw(fg)
     fd.rounded_rectangle([0, 0, fw - 1, fh - 1], radius=16, fill=(255, 255, 255, 255))
