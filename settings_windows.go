@@ -2294,11 +2294,11 @@ func createSettingsWindow() uintptr {
 			settingsWidgets[card] = uintptr(d.cardID)
 			settingsPaneExp = append(settingsPaneExp, uintptr(d.cardID))
 		}
-		// 勾选框（20x20，卡片内垂直居中）
+		// 勾选框（24x24：18px 框 + 4px 左内边距不越界；卡片内垂直居中）
 		cbx, _, _ := pCreateWindowExW.Call(
 			0, uintptr(unsafe.Pointer(btnCls)), 0,
 			wsChild|wsVisible|wsTabStop|bsOwnDraw,
-			uintptr(stContentX+20), uintptr(d.y+23), 20, 20,
+			uintptr(stContentX+20), uintptr(d.y+21), 24, 24,
 			hwnd, uintptr(d.cbID), moduleHandle(), 0,
 		)
 		if cbx != 0 {
@@ -2310,7 +2310,7 @@ func createSettingsWindow() uintptr {
 		lb, _, _ := pCreateWindowExW.Call(
 			0, uintptr(unsafe.Pointer(staticCls)), uintptr(unsafe.Pointer(lt)),
 			wsChild|wsVisible,
-			uintptr(stContentX+52), uintptr(d.y+12), 300, 24,
+			uintptr(stContentX+52), uintptr(d.y+10), 300, 24,
 			hwnd, uintptr(d.lblID), moduleHandle(), 0,
 		)
 		if lb != 0 {
@@ -2322,7 +2322,7 @@ func createSettingsWindow() uintptr {
 		sb2, _, _ := pCreateWindowExW.Call(
 			0, uintptr(unsafe.Pointer(staticCls)), uintptr(unsafe.Pointer(st)),
 			wsChild|wsVisible|ssEndEllipsis,
-			uintptr(stContentX+52), uintptr(d.y+36), 360, 18,
+			uintptr(stContentX+52), uintptr(d.y+34), 360, 18,
 			hwnd, uintptr(d.subID), moduleHandle(), 0,
 		)
 		if sb2 != 0 {
@@ -2425,7 +2425,7 @@ func createSettingsWindow() uintptr {
 	impPath, _, _ := pCreateWindowExW.Call(
 		0, uintptr(unsafe.Pointer(editCls)), uintptr(unsafe.Pointer(ip)),
 		wsChild|wsVisible|esMultiline|esReadOnly|esAutoVScroll,
-		uintptr(stContentX), 114, 424, 28,
+		uintptr(stContentX), 114, 424, 42,
 		hwnd, stIdImpPath, moduleHandle(), 0,
 	)
 	if impPath != 0 {
@@ -2452,7 +2452,7 @@ func createSettingsWindow() uintptr {
 		row, _, _ := pCreateWindowExW.Call(
 			0, uintptr(unsafe.Pointer(staticCls)), uintptr(unsafe.Pointer(rt)),
 			wsChild, // 初始隐藏，解析成功后显示
-			uintptr(stContentX+20), uintptr(r.y+2), 316, 26,
+			uintptr(stContentX+20), uintptr(r.y+11), 316, 26,
 			hwnd, uintptr(r.rowID), moduleHandle(), 0,
 		)
 		if row != 0 {
