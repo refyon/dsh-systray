@@ -5,6 +5,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"time"
 
@@ -17,13 +18,13 @@ var app = &App{}
 // App 暴露给前端的全部后端能力（Wails Bindings）。
 type App struct{}
 
-// ==================== 截图模式路径脱敏 ====================
+// ==================== 截图模式脱敏 ====================
 
 // shotMode 截图/演示模式：DSH_SYSTRAY_SHOT_PAGE 非空时启用，
-// 把真实用户路径替换为通用路径（如 C:\Users\demo），避免截图泄露用户名。
+// 避免截图泄露真实路径、用户名、版本构建信息（技术栈）。
 var shotMode = os.Getenv("DSH_SYSTRAY_SHOT_PAGE") != ""
 
-// sanitizeShotPath 脱敏单个路径。
+// sanitizeShotPath 脱敏单个路径（用户目录前缀 → C:\Users\demo）。
 func sanitizeShotPath(p string) string {
 	if !shotMode || p == "" {
 		return p
@@ -35,16 +36,35 @@ func sanitizeShotPath(p string) string {
 	return strings.ReplaceAll(p, home, filepath.Join("C:", "Users", "demo"))
 }
 
-// sanitizeShotLine 脱敏一行文本中的用户路径（用于日志行）。
+// sanitizeShotVersion 脱敏版本号：去掉 "-wails"/"-dev" 等构建后缀，避免透露技术栈。
+func sanitizeShotVersion(v string) string {
+	if !shotMode || v == "" {
+		return v
+	}
+	if i := strings.Index(v, "-"); i > 0 {
+		return v[:i]
+	}
+	return v
+}
+
+// sanitizeShotHarnessDir 常规页 Harness 目录：截图模式下显示通用示例路径（不暴露真实位置）。
+func sanitizeShotHarnessDir() string {
+	if runtime.GOOS == "darwin" {
+		return "/Users/demo/deepseek-harness"
+	}
+	return filepath.Join("D:", "deepseek-harness")
+}
+
+// sanitizeShotLine 脱敏一行文本：替换用户路径前缀，并移除版本构建后缀（如 -wails）。
 func sanitizeShotLine(s string) string {
 	if !shotMode || s == "" {
 		return s
 	}
-	home, err := os.UserHomeDir()
-	if err != nil || home == "" {
-		return s
+	s = strings.ReplaceAll(s, "-wails", "")
+	if home, err := os.UserHomeDir(); err == nil && home != "" {
+		s = strings.ReplaceAll(s, home, filepath.Join("C:", "Users", "demo"))
 	}
-	return strings.ReplaceAll(s, home, filepath.Join("C:", "Users", "demo"))
+	return s
 }
 
 // ==================== 配置 ====================
@@ -62,9 +82,13 @@ type ConfigInfo struct {
 }
 
 func (a *App) GetConfig() ConfigInfo {
+	hd := harnessDir
+	if shotMode {
+		hd = sanitizeShotHarnessDir() // 截图模式：不暴露真实目录
+	}
 	return ConfigInfo{
 		Port:              port,
-		HarnessDir:        sanitizeShotPath(harnessDir),
+		HarnessDir:        hd,
 		StartupTimeoutSec: int(startupTimeout / time.Second),
 		UpdateMirror:      updateMirrorOverride,
 		HarnessPrerelease: harnessPrereleaseOverride,
@@ -245,7 +269,10 @@ type Versions struct {
 }
 
 func (a *App) GetVersions() Versions {
-	return Versions{App: appVersion, Harness: installedHarnessVersion()}
+	return Versions{
+		App:     sanitizeShotVersion(appVersion),
+		Harness: sanitizeShotLine(installedHarnessVersion()),
+	}
 }
 
 // UpdateInfo 手动检查更新的结果。
