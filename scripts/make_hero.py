@@ -22,13 +22,11 @@ def font(path, size):
     return ImageFont.truetype(path, size)
 
 
-def shadow(w, h, radius, blur, alpha):
-    """生成柔和阴影图层（黑色圆角矩形 + 高斯模糊）。"""
-    sh = Image.new("RGBA", (w + blur * 4, h + blur * 4), (0, 0, 0, 0))
-    d = ImageDraw.Draw(sh)
-    d.rounded_rectangle(
-        [blur, blur, blur + w, blur + h], radius=radius, fill=(15, 23, 42, alpha)
-    )
+def window_shadow(img, blur, alpha):
+    """由窗口自身的 alpha 遮罩生成阴影——形状（含圆角）与窗口完全一致。"""
+    a = img.split()[3]
+    sh = Image.new("RGBA", img.size, (15, 23, 42, 0))
+    sh.putalpha(a.point(lambda v: int(v * alpha / 255)))
     sh = sh.filter(ImageFilter.GaussianBlur(blur))
     return sh
 
@@ -58,20 +56,20 @@ def main():
     canvas_h = H + pad * 2 + 30
     canvas = Image.new("RGBA", (canvas_w, canvas_h), (238, 242, 248, 255))
 
-    # ---------- 背景窗口：常规页（浅阴影） ----------
-    bg_shadow = shadow(W, H, 18, 14, 36)
-    canvas.alpha_composite(bg_shadow, (pad - 10, pad - 6))
+    # ---------- 背景窗口：常规页（浅阴影，圆角对齐） ----------
+    bg_shadow = window_shadow(base, 10, 26)
+    canvas.alpha_composite(bg_shadow, (pad - 8, pad - 5))
     canvas.alpha_composite(base, (pad, pad))
 
-    # ---------- 前景窗口：正在更新 DeepSeek Harness 依赖（浅阴影） ----------
+    # ---------- 前景窗口：正在更新 DeepSeek Harness 依赖（浅阴影，圆角对齐） ----------
     fw, fh = 540, 200
     fx, fy = canvas_w - fw - pad + 10, pad + H - fh + 60
-    fg_shadow = shadow(fw, fh, 16, 13, 48)
-    canvas.alpha_composite(fg_shadow, (fx - 10, fy - 6))
     fg = Image.new("RGBA", (fw, fh), (0, 0, 0, 0))
     fd = ImageDraw.Draw(fg)
     fd.rounded_rectangle([0, 0, fw - 1, fh - 1], radius=16, fill=(255, 255, 255, 255))
     fd.rounded_rectangle([0, 0, fw - 1, fh - 1], radius=16, outline=(226, 232, 240, 255), width=1)
+    fg_shadow = window_shadow(fg, 9, 34)
+    canvas.alpha_composite(fg_shadow, (fx - 7, fy - 4))
 
     # 标题栏文字
     fd.text((24, 18), "DeepSeek Harness", font=font(FONT_BOLD, 15), fill=(15, 23, 42, 255))
