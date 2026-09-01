@@ -18,7 +18,7 @@ import (
 	"time"
 	"unsafe"
 
-	"github.com/getlantern/systray"
+	"github.com/energye/systray"
 )
 
 //go:embed scripts/install-prereqs.ps1

@@ -16,3 +16,7 @@ Thumbs.db
 
 # 图标/站点预览产物（勿提交）
 preview*.png
+
+# Wails 构建产物（build/bin）与自动生成的绑定（frontend/wailsjs）
+build/bin/
+frontend/wailsjs/

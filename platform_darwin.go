@@ -13,7 +13,7 @@ import (
 	"strings"
 	"syscall"
 
-	"github.com/getlantern/systray"
+	"github.com/energye/systray"
 )
 
 //go:embed scripts/install-prereqs.sh

@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"embed"
 	"encoding/binary"
 	"encoding/json"
 	"fmt"
@@ -10,17 +11,31 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync/atomic"
 	"time"
 
-	"github.com/getlantern/systray"
+	"github.com/energye/systray"
+	"github.com/wailsapp/wails/v2"
+	"github.com/wailsapp/wails/v2/pkg/options"
+	"github.com/wailsapp/wails/v2/pkg/options/windows"
+	wruntime "github.com/wailsapp/wails/v2/pkg/runtime"
 )
+
+//go:embed all:frontend/dist
+var assets embed.FS
+
+// appCtx Wails 运行上下文（OnStartup 设置），供事件推送与窗口控制使用。
+var appCtx context.Context
 
 const (
 	appName     = "DeepSeek Harness"
 	defaultPort = 3080
+	// 设置窗口固定尺寸（与旧版 640×460 一致）
+	winW = 640
+	winH = 460
 )
 
 var (
@@ -41,8 +56,7 @@ type appConfig struct {
 	HarnessDir        string `json:"harnessDir"`
 	StartupTimeoutSec int    `json:"startupTimeoutSec"`
 	UpdateMirror      string `json:"updateMirror"`
-	// HarnessPrerelease 允许将 alpha/beta/rc 等预发布版视为 DeepSeek Harness 的可更新版本（默认关闭，
-	// 只更新稳定版，避免预发布与已装插件不兼容导致服务启动失败）。
+	// HarnessPrerelease 允许把 alpha/beta/rc 等预发布版视为 DeepSeek Harness 的可更新版本（默认关闭）。
 	HarnessPrerelease bool `json:"harnessPrerelease"`
 }
 
@@ -144,8 +158,7 @@ func saveConfig(cfg appConfig) {
 }
 
 // autostartLaunch 是否为开机自启动（登录时）启动。此时完全静默：不显示启动进度窗口，也不弹任何
-// 提示/询问（打开 Web UI、启动较慢、失败等）。通过自动启动项注入的 --autostart 参数识别；
-// 手动双击或更新后自启动均不带该参数（后者应正常显示提示）。
+// 提示/询问。通过自动启动项注入的 --autostart 参数识别。
 var autostartLaunch = func() bool {
 	for _, a := range os.Args {
 		if a == "--autostart" {
@@ -155,7 +168,7 @@ var autostartLaunch = func() bool {
 	return false
 }()
 
-// maybeStartSplash 启动阶段显示进度窗口；开机自启动场景下返回空实现（不开窗、完全静默）。
+// maybeStartSplash 启动阶段显示进度；开机自启动场景下返回空实现（不开窗、完全静默）。
 func maybeStartSplash(text string) *SplashState {
 	if autostartLaunch {
 		return &SplashState{Update: func(string, float64) {}, Close: func() {}}
@@ -164,8 +177,6 @@ func maybeStartSplash(text string) *SplashState {
 }
 
 // 后台服务状态（托盘菜单）：四态实时反映——运行中/已停止/启动失败/启动中。
-// serverReady=曾运行，serviceFailed=启动失败，serviceFailReason=失败原因。
-// 服务就绪 → 只显示「打开 Web UI」；未就绪 → 隐藏「打开 Web UI」，显示状态说明行。
 var (
 	serverReady       atomic.Bool
 	serviceFailed     atomic.Bool
@@ -230,7 +241,6 @@ func main() {
 	startupTimeout = time.Duration(cfg.StartupTimeoutSec) * time.Second
 
 	// 自愈历史自启动项：旧版本注册的自启动条目未带 --autostart 参数，导致登录时被当作“手动双击”而弹提示。
-	// 若检测到已开启自启，则重写注册表/launchd 条目使其带上该参数，下次登录即识别为自启动、完全静默。
 	if isAutostartEnabled() {
 		enableAutostart() // 幂等：确保条目含 --autostart
 		log.Printf("autostart entry refreshed with --autostart flag")
@@ -262,33 +272,111 @@ func main() {
 	cleanupStaleUpdateFiles()
 	startAutoUpdateCheck()
 
+	// Windows：托盘在独立 goroutine 自建窗口+消息循环，与 Wails 事件循环共存。
+	// macOS：托盘通过 RunWithExternalLoop 集成（见 onStartup），不接管 NSApplication。
+	if runtime.GOOS == "windows" {
+		go systray.Run(onReady, onExit)
+	}
+
+	err = wails.Run(&options.App{
+		Title:     "dsh-systray",
+		Width:     winW,
+		Height:    winH,
+		MinWidth:  winW,
+		MaxWidth:  winW,
+		MinHeight: winH,
+		MaxHeight: winH,
+		Assets:    assets,
+		Bind: []interface{}{
+			app,
+		},
+		OnStartup:       onStartup,
+		OnDomReady:      onDomReady,
+		OnShutdown:      onShutdown,
+		OnBeforeClose:   onBeforeClose,
+		StartHidden:     autostartLaunch,
+		Windows: &windows.Options{
+			WebviewIsTransparent: false,
+			WindowIsTranslucent:  false,
+			Theme:                windows.SystemDefault,
+		},
+	})
+	if err != nil {
+		log.Printf("wails run: %v", err)
+	}
+}
+
+// onStartup Wails 应用启动回调：建立上下文、启动 macOS 托盘、开始后台服务编排。
+func onStartup(ctx context.Context) {
+	appCtx = ctx
+	if runtime.GOOS == "darwin" {
+		start, _ := systray.RunWithExternalLoop(onReady, onExit)
+		start()
+	}
+	go bootstrapService()
+}
+
+// onDomReady 前端就绪：非自启动场景通知前端进入 splash 视图。
+func onDomReady(ctx context.Context) {
+	if !autostartLaunch {
+		wruntime.EventsEmit(ctx, "ui:show-splash", nil)
+	}
+}
+
+// onBeforeClose 阻止窗口关闭（托盘常驻）；更新进行中询问是否取消更新。
+// 返回 true 阻止关闭；窗口随后隐藏。
+func onBeforeClose(ctx context.Context) bool {
+	if updateFlowBusy() {
+		if fn := splashOnCloseFn(); fn != nil && fn() {
+			cancelActiveUpdate()
+			log.Printf("update cancelled on window close")
+		}
+	}
+	wruntime.WindowHide(ctx)
+	return true
+}
+
+// onShutdown 退出清理：终止进行中的更新、按 keepServerRunning 保留或停止后台服务。
+func onShutdown(ctx context.Context) {
+	quitting.Store(true)
+	cancelActiveUpdate()
+	if keepServerRunning.Load() {
+		keepPID := 0
+		if serverCmd != nil && serverCmd.Process != nil {
+			keepPID = serverCmd.Process.Pid
+		}
+		killChildProcesses(keepPID)
+		log.Printf("quit with backend server kept running")
+	} else {
+		killServer()
+		killChildProcesses(0)
+		log.Printf("quit with backend server stopped")
+	}
+}
+
+// bootstrapService 后台服务编排（原 main 中的启动流程，改为事件驱动进度）：
+// 运行环境 → harness 安装/构建 → 启动服务 → 就绪提示。
+func bootstrapService() {
 	// 显式配置的 harness 目录不可用时让用户重新选择；默认目录则静默自动部署
 	if _, err := os.Stat(filepath.Join(harnessDir, "package.json")); err != nil && harnessDirExplicit {
 		log.Printf("harness source not found at %s, prompting user to choose", harnessDir)
 		if chosen := pickHarnessDir("未找到 DeepSeek Harness 源码目录。\n请选择已有的 harness 源码目录，或选择即将自动安装到的文件夹：", harnessDir); chosen != "" {
 			harnessDir = chosen
-			cfg.HarnessDir = chosen
-			saveConfig(cfg)
+			saveConfig(appConfig{Port: port, HarnessDir: harnessDir, StartupTimeoutSec: int(startupTimeout / time.Second), UpdateMirror: updateMirrorOverride, HarnessPrerelease: harnessPrereleaseOverride})
 			log.Printf("harness dir set to %s", harnessDir)
 		}
 	}
 
-	// 未显式配置时：自动探测已存在的 harness 源码 checkout（如各盘符根目录下的 deepseek-harness），避免重复安装
+	// 未显式配置时：自动探测已存在的 harness 源码 checkout（如各盘符根目录下的 deepseek-harness）
 	if !harnessDirExplicit {
 		if found := findExistingHarnessDir(); found != "" {
 			harnessDir = found
-			cfg.HarnessDir = found
-			saveConfig(cfg)
+			saveConfig(appConfig{Port: port, HarnessDir: harnessDir, StartupTimeoutSec: int(startupTimeout / time.Second), UpdateMirror: updateMirrorOverride, HarnessPrerelease: harnessPrereleaseOverride})
 			log.Printf("detected existing harness at %s", found)
 		}
 	}
 
 	splash := maybeStartSplash("正在准备运行环境…")
-
-	// 0) UI 字体：检查系统是否已装 Noto Sans SC，未装则下载注册（失败回退系统默认字体）。
-	//    与下方运行环境检查同为启动流程的一步，进度窗口同步显示。
-	splash.Update("正在检查 UI 字体…", 0.02)
-	ensureNotoSansSC(func(t string, pct float64) { splash.Update(t, 0.02+0.05*pct) })
 
 	// 0.5) 解压工具：环境检查加入 7-Zip（优先下载使用，Windows/macOS 均可）；失败不阻塞启动（zip 有 Go 兜底）。
 	splash.Update("正在检查解压工具…", 0.07)
@@ -360,6 +448,7 @@ func main() {
 			serverReady.Store(true)
 			serviceFailed.Store(false)
 			refreshServiceMenu()
+			notifySplashDone()
 			if !autostartLaunch {
 				notifyReady()
 			} else {
@@ -379,7 +468,6 @@ func main() {
 			return
 		}
 		if autostartLaunch {
-			// 开机自启动：完全静默，只在日志记录，不弹任何提示
 			log.Printf("autostart: service not ready yet (%s), continuing silently in background", why)
 			return
 		}
@@ -397,8 +485,38 @@ func main() {
 			showMessageBox("DeepSeek Harness 服务最终未能就绪，请查看日志：\n"+filepath.Join(logDir, "server.log"), appName)
 		}
 	}()
+}
 
-	systray.Run(onReady, onExit)
+// showMainWindow 显示设置窗口（托盘“设置”点击）。
+func showMainWindow() {
+	if appCtx == nil {
+		return
+	}
+	wruntime.WindowShow(appCtx)
+	wruntime.EventsEmit(appCtx, "ui:show-settings", nil)
+}
+
+// hideMainWindow 隐藏设置窗口（splash 完成/窗口关闭时）。
+// 调试环境变量 DSH_SYSTRAY_SHOW_WINDOW=1 时不隐藏（用于截图/开发预览）。
+func hideMainWindow() {
+	if os.Getenv("DSH_SYSTRAY_SHOW_WINDOW") == "1" {
+		return
+	}
+	if appCtx == nil {
+		return
+	}
+	wruntime.WindowHide(appCtx)
+}
+
+// notifySplashDone 通知前端 splash 阶段完成（前端据此切换视图）。
+func notifySplashDone() {
+	if appCtx == nil {
+		return
+	}
+	if os.Getenv("DSH_SYSTRAY_SHOT_SPLASH") == "1" {
+		return // 截图模式：保持 splash 视图
+	}
+	wruntime.EventsEmit(appCtx, "splash:done", nil)
 }
 
 func onReady() {
@@ -410,7 +528,7 @@ func onReady() {
 
 	// 状态说明行：禁用样式（置灰、不可点击），仅作状态提示；「打开 Web UI」未就绪时隐藏、就绪时显示可点
 	menuStatus = systray.AddMenuItem("服务启动中…", "后台服务状态")
-	menuStatus.Disable() // 置灰不可点：点击不触发任何动作
+	menuStatus.Disable()
 	menuOpen = systray.AddMenuItem("打开 Web UI", "打开网页端界面")
 	refreshServiceMenu()
 	// 周期刷新，保证每次打开托盘菜单都反映服务实时状态
@@ -420,44 +538,26 @@ func onReady() {
 	systray.AddSeparator()
 	mQuit := systray.AddMenuItem("退出", "退出并关闭后台服务器")
 
-	go func() {
-		for {
-			select {
-			case <-menuOpen.ClickedCh:
-				if serverReady.Load() {
-					openBrowser(webURL)
-				}
-			case <-mSettings.ClickedCh:
-				openSettingsWindow()
-			case <-mQuit.ClickedCh:
-				// 退出前询问是否停止后台 Web 服务：0=停止并退出 1=保留服务 -1=取消退出
-				choice := askStopServer()
-				if choice < 0 {
-					continue // 取消退出：菜单事件循环继续，托盘保持可用
-				}
-				keepServerRunning.Store(choice == 1)
-				systray.Quit()
-				return
-			}
+	menuOpen.Click(func() {
+		if serverReady.Load() {
+			openBrowser(webURL)
 		}
-	}()
+	})
+	mSettings.Click(showMainWindow)
+	mQuit.Click(func() {
+		// 退出前询问是否停止后台 Web 服务：0=停止并退出 1=保留服务 -1=取消退出
+		choice := askStopServer()
+		if choice < 0 {
+			return // 取消退出：托盘保持可用
+		}
+		keepServerRunning.Store(choice == 1)
+		if appCtx != nil {
+			wruntime.Quit(appCtx)
+		}
+	})
 }
 
 func onExit() {
-	quitting.Store(true)
-	cancelActiveUpdate() // 终止进行中的更新下载/安装
-	if keepServerRunning.Load() {
-		// 保留后台服务：只保留该服务器进程，终止其余派生子进程
-		keepPID := 0
-		if serverCmd != nil && serverCmd.Process != nil {
-			keepPID = serverCmd.Process.Pid
-		}
-		killChildProcesses(keepPID)
-		log.Printf("quit with backend server kept running")
-	} else {
-		killServer()
-		killChildProcesses(0)
-	}
 	log.Printf("tray exiting")
 }
 
@@ -722,6 +822,9 @@ func serverResponding(url string) bool {
 }
 
 func notifyReady() {
+	if os.Getenv("DSH_SYSTRAY_SHOW_WINDOW") == "1" {
+		return // 截图/预览模式：不弹就绪提示
+	}
 	showReadyPrompt(webURL)
 }
 

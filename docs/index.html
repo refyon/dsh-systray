@@ -7,9 +7,18 @@
 <meta name="description" content="dsh-systray — Windows / macOS 系统托盘应用：双击后台启动 DeepSeek Harness Web 本地服务，托盘常驻、开机自启、设置窗口、自动更新、主题自适应托盘图标。">
 <style>
 :root{
-  --bg:#f5f7fa; --surface:#ffffff; --text:#101828; --muted:#667085;
-  --border:#e4e7ec; --primary:#1d4ed8; --primary-deep:#1e40af; --soft:#e0eaff;
-  --rad:16px; --shadow:0 8px 24px rgba(16,24,40,.06); --font:'Noto Sans SC',-apple-system,BlinkMacSystemFont,'Segoe UI','Microsoft YaHei UI','PingFang SC',sans-serif;
+  --bg:#f8fafc; --surface:#ffffff; --surface-2:#f1f5f9; --text:#0f172a; --muted:#64748b;
+  --border:#e2e8f0; --primary:#2563eb; --primary-deep:#1d4ed8; --soft:#dbeafe;
+  --rad:16px; --shadow:0 8px 24px rgba(15,23,42,.07); --font:'Noto Sans SC',-apple-system,BlinkMacSystemFont,'Segoe UI','Microsoft YaHei UI','PingFang SC',sans-serif;
+  color-scheme:light;
+}
+@media(prefers-color-scheme:dark){
+  :root{
+    --bg:#0b1220; --surface:#111a2e; --surface-2:#1a2540; --text:#e2e8f0; --muted:#94a3b8;
+    --border:#293548; --primary:#3b82f6; --primary-deep:#60a5fa; --soft:#1e3a5f;
+    --shadow:0 8px 24px rgba(2,6,23,.5);
+    color-scheme:dark;
+  }
 }
 *{box-sizing:border-box}
 html{scroll-behavior:smooth}
@@ -219,7 +228,6 @@ footer .sep{margin:0 8px;color:var(--border)}
 
   // ---- 界面截图轮播：自动播放 + 箭头 + 圆点 + 悬停暂停 + 触摸滑动 ----
   var shots = [
-    { src: 'shots/splash.png',  cap: '自动部署运行环境 — 首次启动自动下载并安装依赖' },
     { src: 'shots/general.png', cap: '常规 — 开机自启、后台服务状态与重启' },
     { src: 'shots/about.png',   cap: '关于 — dsh-systray 与 Harness 版本、检查更新' },
     { src: 'shots/logs.png',    cap: '日志 — 应用/服务日志实时跟踪、一键清空' },

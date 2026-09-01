@@ -1,0 +1,416 @@
+package main
+
+import (
+	"fmt"
+	"log"
+	"os"
+	"path/filepath"
+	"strings"
+	"time"
+
+	wruntime "github.com/wailsapp/wails/v2/pkg/runtime"
+)
+
+// app Wails 绑定实例（main.go 的 Bind 列表引用）。
+var app = &App{}
+
+// App 暴露给前端的全部后端能力（Wails Bindings）。
+type App struct{}
+
+// ==================== 配置 ====================
+
+// ConfigInfo 设置页「常规/关于」所需配置快照。
+type ConfigInfo struct {
+	Port              int    `json:"port"`
+	HarnessDir        string `json:"harnessDir"`
+	StartupTimeoutSec int    `json:"startupTimeoutSec"`
+	UpdateMirror      string `json:"updateMirror"`
+	HarnessPrerelease bool   `json:"harnessPrerelease"`
+	WebURL            string `json:"webURL"`
+	Autostart         bool   `json:"autostart"`
+	AutostartLaunch   bool   `json:"autostartLaunch"`
+}
+
+func (a *App) GetConfig() ConfigInfo {
+	return ConfigInfo{
+		Port:              port,
+		HarnessDir:        harnessDir,
+		StartupTimeoutSec: int(startupTimeout / time.Second),
+		UpdateMirror:      updateMirrorOverride,
+		HarnessPrerelease: harnessPrereleaseOverride,
+		WebURL:            webURL,
+		Autostart:         isAutostartEnabled(),
+		AutostartLaunch:   autostartLaunch,
+	}
+}
+
+// saveCurrentConfig 把当前全局配置写回 config.json。
+func saveCurrentConfig() {
+	saveConfig(appConfig{
+		Port:              port,
+		HarnessDir:        harnessDir,
+		StartupTimeoutSec: int(startupTimeout / time.Second),
+		UpdateMirror:      updateMirrorOverride,
+		HarnessPrerelease: harnessPrereleaseOverride,
+	})
+}
+
+func (a *App) SetAutostart(on bool) {
+	setAutostartOn(on)
+}
+
+func (a *App) SetHarnessPrerelease(on bool) {
+	harnessPrereleaseOverride = on
+	saveCurrentConfig()
+}
+
+func (a *App) SetHarnessDir(d string) {
+	d = strings.TrimSpace(d)
+	if d == "" {
+		return
+	}
+	harnessDir = d
+	harnessDirExplicit = true
+	saveCurrentConfig()
+}
+
+func (a *App) SetUpdateMirror(m string) {
+	updateMirrorOverride = strings.TrimSpace(m)
+	saveCurrentConfig()
+}
+
+func (a *App) SetPort(p int) {
+	if p <= 0 || p > 65535 {
+		return
+	}
+	port = p
+	webURL = fmt.Sprintf("http://127.0.0.1:%d/", p)
+	saveCurrentConfig()
+}
+
+func (a *App) SetStartupTimeoutSec(s int) {
+	if s <= 0 {
+		return
+	}
+	startupTimeout = time.Duration(s) * time.Second
+	saveCurrentConfig()
+}
+
+// ==================== 服务 ====================
+
+// ServiceState 服务四态：starting / running / stopped / failed。
+type ServiceState struct {
+	State  string `json:"state"`
+	Reason string `json:"reason"`
+	WebURL string `json:"webURL"`
+}
+
+func (a *App) GetServiceState() ServiceState {
+	if serverResponding(webURL) {
+		return ServiceState{State: "running", WebURL: webURL}
+	}
+	if serviceFailed.Load() {
+		s, _ := serviceFailReason.Load().(string)
+		return ServiceState{State: "failed", Reason: s, WebURL: webURL}
+	}
+	if serverReady.Load() {
+		return ServiceState{State: "stopped", WebURL: webURL}
+	}
+	return ServiceState{State: "starting", WebURL: webURL}
+}
+
+// RestartService 重启后台服务（含 harness 自愈）。
+func (a *App) RestartService() {
+	restartBackgroundService(func(stage string) {
+		wruntime.EventsEmit(appCtx, "service:restart", map[string]interface{}{"stage": stage})
+	})
+}
+
+// ==================== 日志 ====================
+
+// LogTail 日志增量读取：Lines 为新增行，NextOffset 为下一次读取的起点。
+type LogTail struct {
+	Lines      []string `json:"lines"`
+	NextOffset int64    `json:"nextOffset"`
+}
+
+func (a *App) GetLogPath() string {
+	return filepath.Join(logDir, "app.log")
+}
+
+// ReadLogTail 从 offset 起增量读取 app.log（前端定时轮询；offset 超出文件长度时重置为 0）。
+func (a *App) ReadLogTail(offset int64) LogTail {
+	p := filepath.Join(logDir, "app.log")
+	f, err := os.Open(p)
+	if err != nil {
+		return LogTail{}
+	}
+	defer f.Close()
+	st, err := f.Stat()
+	if err != nil {
+		return LogTail{}
+	}
+	if offset > st.Size() || offset < 0 {
+		offset = st.Size() // 文件被清空/截断：回到当前末尾
+	}
+	if _, err := f.Seek(offset, 0); err != nil {
+		return LogTail{}
+	}
+	buf := make([]byte, st.Size()-offset)
+	n, _ := f.Read(buf)
+	chunk := string(buf[:n])
+	var lines []string
+	for _, ln := range strings.Split(chunk, "\n") {
+		ln = strings.TrimRight(ln, "\r")
+		if ln != "" {
+			lines = append(lines, ln)
+		}
+	}
+	return LogTail{Lines: lines, NextOffset: offset + int64(n)}
+}
+
+// ClearLog 清空 app.log。
+func (a *App) ClearLog() {
+	_ = os.WriteFile(filepath.Join(logDir, "app.log"), nil, 0o644)
+}
+
+// ==================== 更新 ====================
+
+// Versions 关于页版本信息。
+type Versions struct {
+	App     string `json:"app"`
+	Harness string `json:"harness"`
+}
+
+func (a *App) GetVersions() Versions {
+	return Versions{App: appVersion, Harness: installedHarnessVersion()}
+}
+
+// UpdateInfo 手动检查更新的结果。
+type UpdateInfo struct {
+	HasUpdate bool   `json:"hasUpdate"`
+	Latest    string `json:"latest"`
+	Current   string `json:"current"`
+	Error     string `json:"error"`
+}
+
+// CheckUpdateManual 手动检查 dsh-systray 自身新版本（不弹原生对话框，结果交前端展示）。
+func (a *App) CheckUpdateManual() UpdateInfo {
+	rel, err := fetchLatestRelease()
+	if err != nil {
+		log.Printf("manual update check failed: %v", err)
+		return UpdateInfo{Error: err.Error()}
+	}
+	if isNewerVersion(rel.TagName, appVersion) {
+		return UpdateInfo{HasUpdate: true, Latest: rel.TagName, Current: appVersion}
+	}
+	return UpdateInfo{Current: appVersion}
+}
+
+// StartUpdate 开始下载并应用更新（进度走 splash 事件，窗口自动显示）。
+func (a *App) StartUpdate() {
+	rel, err := fetchLatestRelease()
+	if err != nil {
+		showMessageBox("检查更新失败：\n"+err.Error(), appName)
+		return
+	}
+	if !isNewerVersion(rel.TagName, appVersion) {
+		return
+	}
+	setSplashPhase("update")
+	if appCtx != nil {
+		wruntime.WindowShow(appCtx)
+	}
+	go startUpdateApply(rel)
+}
+
+// CancelUpdate 取消进行中的更新（前端 splash 视图「取消更新」按钮）。
+func (a *App) CancelUpdate() {
+	cancelActiveUpdate()
+}
+
+// ==================== 导出 ====================
+
+// ExportOption 导出页可选项状态。
+type ExportOption struct {
+	Kind     string `json:"kind"`
+	Label    string `json:"label"`
+	Sub      string `json:"sub"`
+	Selected bool   `json:"selected"`
+}
+
+// GetExportOptions 返回导出页三选项的默认状态（sessions 默认选中）。
+func (a *App) GetExportOptions() []ExportOption {
+	return []ExportOption{
+		{Kind: "sessions", Label: "所有历史会话", Sub: "sessions.zip · ~/.dsh/sessions", Selected: true},
+		{Kind: "plugins", Label: "已安装的插件", Sub: "plugins.zip · 通过 dsh add 安装的插件", Selected: false},
+		{Kind: "files", Label: "需要打包的文件目录", Sub: "files.zip · 恢复时选择解压位置", Selected: false},
+	}
+}
+
+// PickExportDir 让用户选择一个要打包的目录（添加到 files 列表）。
+func (a *App) PickExportDir() (string, error) {
+	p, err := wruntime.OpenDirectoryDialog(appCtx, wruntime.OpenDialogOptions{
+		Title: "选择要打包的目录",
+	})
+	if err != nil {
+		return "", err
+	}
+	return p, nil
+}
+
+// StartExport 开始导出：勾选项打包为 dsh-systray-export-*.zip 保存到 Downloads。
+// 进度与结果通过事件 export:progress / export:done 推送。
+func (a *App) StartExport(includeSessions, includePlugins, includeFiles bool, dirs []string) {
+	go func() {
+		dest := filepath.Join(homeDownloads())
+		if _, err := os.Stat(dest); err != nil {
+			dest = os.TempDir()
+		}
+		final, err := buildExportZip(includeSessions, includePlugins, includeFiles, dirs, dest, func(t string, pct float64) {
+			if appCtx != nil {
+				wruntime.EventsEmit(appCtx, "export:progress", map[string]interface{}{"text": t, "pct": pct})
+			}
+		})
+		if appCtx == nil {
+			return
+		}
+		if err != nil {
+			wruntime.EventsEmit(appCtx, "export:done", map[string]interface{}{"error": err.Error()})
+			return
+		}
+		wruntime.EventsEmit(appCtx, "export:done", map[string]interface{}{"path": final})
+	}()
+}
+
+// ==================== 导入 ====================
+
+// ImportItem 解析出的可恢复项。
+type ImportItem struct {
+	Kind  string `json:"kind"`
+	Label string `json:"label"`
+	Size  int64  `json:"size"`
+}
+
+var (
+	importZipPath string
+	importItems   []importItem
+)
+
+// ImportPick 选择导入压缩包并解析（原生文件对话框）。
+func (a *App) ImportPick() ([]ImportItem, error) {
+	p, err := wruntime.OpenFileDialog(appCtx, wruntime.OpenDialogOptions{
+		Title: "选择 dsh-systray 导出压缩包",
+		Filters: []wruntime.FileFilter{
+			{DisplayName: "dsh-systray 导出包 (*.zip)", Pattern: "*.zip"},
+			{DisplayName: "ZIP 压缩包 (*.zip)", Pattern: "*.zip"},
+			{DisplayName: "所有文件 (*.*)", Pattern: "*.*"},
+		},
+	})
+	if err != nil || p == "" {
+		return nil, err
+	}
+	items, err := parseExportZip(p)
+	if err != nil {
+		return nil, err
+	}
+	importZipPath = p
+	importItems = items
+	out := make([]ImportItem, 0, len(items))
+	for _, it := range items {
+		out = append(out, ImportItem{Kind: it.Kind, Label: it.Label, Size: it.Size})
+	}
+	return out, nil
+}
+
+// GetImportItems 返回当前已解析的导入项。
+func (a *App) GetImportItems() []ImportItem {
+	out := make([]ImportItem, 0, len(importItems))
+	for _, it := range importItems {
+		out = append(out, ImportItem{Kind: it.Kind, Label: it.Label, Size: it.Size})
+	}
+	return out
+}
+
+// StartImport 恢复单个导入项；files 类目先让用户选择解压位置。
+// 进度与结果通过事件 import:progress / import:done 推送。
+func (a *App) StartImport(kind string, overwrite bool) {
+	if importZipPath == "" {
+		return
+	}
+	var target *importItem
+	for i := range importItems {
+		if importItems[i].Kind == kind {
+			target = &importItems[i]
+			break
+		}
+	}
+	if target == nil {
+		return
+	}
+	filesDest := ""
+	if kind == "files" {
+		p, err := wruntime.OpenDirectoryDialog(appCtx, wruntime.OpenDialogOptions{Title: "选择解压位置"})
+		if err != nil || p == "" {
+			return
+		}
+		filesDest = p
+	}
+	go func() {
+		zipp := importZipPath
+		_, err := restoreItem(kind, zipp, filesDest, overwrite, func(t string, pct float64) {
+			if appCtx != nil {
+				wruntime.EventsEmit(appCtx, "import:progress", map[string]interface{}{"kind": kind, "text": t, "pct": pct})
+			}
+		})
+		if appCtx == nil {
+			return
+		}
+		if err != nil {
+			wruntime.EventsEmit(appCtx, "import:done", map[string]interface{}{"kind": kind, "error": err.Error()})
+			return
+		}
+		wruntime.EventsEmit(appCtx, "import:done", map[string]interface{}{"kind": kind, "ok": true})
+	}()
+}
+
+// ==================== 杂项 ====================
+
+// OpenWebUI 打开 harness Web 界面。
+func (a *App) OpenWebUI() {
+	if serverResponding(webURL) {
+		openBrowser(webURL)
+	}
+}
+
+// PickHarnessDir 让用户选择 harness 源码/安装目录。
+func (a *App) PickHarnessDir() string {
+	return pickHarnessDir("选择 DeepSeek Harness 目录", harnessDir)
+}
+
+// OpenLogDir 打开日志目录（资源管理器/Finder）。
+func (a *App) OpenLogDir() {
+	if logDir == "" {
+		return
+	}
+	openBrowser(logDir)
+}
+
+// HideWindow 前端请求隐藏窗口（如 splash 完成按钮）。
+func (a *App) HideWindow() {
+	hideMainWindow()
+}
+
+// GetShotPage 调试用：DSH_SYSTRAY_SHOT_PAGE 指定启动后直接显示的页面（截图/预览）。
+func (a *App) GetShotPage() string {
+	return os.Getenv("DSH_SYSTRAY_SHOT_PAGE")
+}
+
+// homeDownloads 返回系统下载目录。
+func homeDownloads() string {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return os.TempDir()
+	}
+	return filepath.Join(home, "Downloads")
+}
