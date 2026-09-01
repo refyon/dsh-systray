@@ -17,6 +17,36 @@ var app = &App{}
 // App 暴露给前端的全部后端能力（Wails Bindings）。
 type App struct{}
 
+// ==================== 截图模式路径脱敏 ====================
+
+// shotMode 截图/演示模式：DSH_SYSTRAY_SHOT_PAGE 非空时启用，
+// 把真实用户路径替换为通用路径（如 C:\Users\demo），避免截图泄露用户名。
+var shotMode = os.Getenv("DSH_SYSTRAY_SHOT_PAGE") != ""
+
+// sanitizeShotPath 脱敏单个路径。
+func sanitizeShotPath(p string) string {
+	if !shotMode || p == "" {
+		return p
+	}
+	home, err := os.UserHomeDir()
+	if err != nil || home == "" {
+		return p
+	}
+	return strings.ReplaceAll(p, home, filepath.Join("C:", "Users", "demo"))
+}
+
+// sanitizeShotLine 脱敏一行文本中的用户路径（用于日志行）。
+func sanitizeShotLine(s string) string {
+	if !shotMode || s == "" {
+		return s
+	}
+	home, err := os.UserHomeDir()
+	if err != nil || home == "" {
+		return s
+	}
+	return strings.ReplaceAll(s, home, filepath.Join("C:", "Users", "demo"))
+}
+
 // ==================== 配置 ====================
 
 // ConfigInfo 设置页「常规/关于」所需配置快照。
@@ -34,7 +64,7 @@ type ConfigInfo struct {
 func (a *App) GetConfig() ConfigInfo {
 	return ConfigInfo{
 		Port:              port,
-		HarnessDir:        harnessDir,
+		HarnessDir:        sanitizeShotPath(harnessDir),
 		StartupTimeoutSec: int(startupTimeout / time.Second),
 		UpdateMirror:      updateMirrorOverride,
 		HarnessPrerelease: harnessPrereleaseOverride,
@@ -135,7 +165,7 @@ type LogTail struct {
 }
 
 func (a *App) GetLogPath() string {
-	return filepath.Join(logDir, "app.log")
+	return sanitizeShotPath(filepath.Join(logDir, "app.log"))
 }
 
 // ReadLogTail 从 offset 起增量读取 app.log（前端定时轮询；offset 超出文件长度时重置为 0）。
@@ -163,7 +193,7 @@ func (a *App) ReadLogTail(offset int64) LogTail {
 	for _, ln := range strings.Split(chunk, "\n") {
 		ln = strings.TrimRight(ln, "\r")
 		if ln != "" {
-			lines = append(lines, ln)
+			lines = append(lines, sanitizeShotLine(ln))
 		}
 	}
 	return LogTail{Lines: lines, NextOffset: offset + int64(n)}
