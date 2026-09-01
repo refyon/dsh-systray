@@ -1678,27 +1678,33 @@ func settingsExportRun() {
 	}()
 }
 
-// settingsHideImportRows 隐藏导入页三个恢复行。
+// settingsHideImportRows 隐藏导入页三个恢复行（连同其分组卡片，避免出现空壳）。
 func settingsHideImportRows() {
 	for _, id := range []int{stIdImpSessRow, stIdImpSessBtn, stIdImpPlugRow, stIdImpPlugBtn, stIdImpFilesRow, stIdImpFilesBtn} {
 		if w := settingsWidgetKey(uintptr(id)); w != 0 {
 			pShowWindow.Call(w, swHide)
 		}
 	}
+	// 分组卡片与行内容绑定显隐：无可用内容时不显示空卡片。
+	for _, id := range []int{stIdImpCard1, stIdImpCard2, stIdImpCard3} {
+		if w := settingsWidgetKey(uintptr(id)); w != 0 {
+			pShowWindow.Call(w, swHide)
+		}
+	}
 }
 
-// settingsShowImportRows 按解析出的可恢复项显示对应行。
+// settingsShowImportRows 按解析出的可恢复项显示对应行（连同其分组卡片）。
 func settingsShowImportRows(items []importItem) {
 	settingsHideImportRows()
 	for _, it := range items {
-		var rowID, btnID int
+		var rowID, btnID, cardID int
 		switch it.Kind {
 		case "sessions":
-			rowID, btnID = stIdImpSessRow, stIdImpSessBtn
+			rowID, btnID, cardID = stIdImpSessRow, stIdImpSessBtn, stIdImpCard1
 		case "plugins":
-			rowID, btnID = stIdImpPlugRow, stIdImpPlugBtn
+			rowID, btnID, cardID = stIdImpPlugRow, stIdImpPlugBtn, stIdImpCard2
 		case "files":
-			rowID, btnID = stIdImpFilesRow, stIdImpFilesBtn
+			rowID, btnID, cardID = stIdImpFilesRow, stIdImpFilesBtn, stIdImpCard3
 		default:
 			continue
 		}
@@ -1707,6 +1713,9 @@ func settingsShowImportRows(items []importItem) {
 			label += fmt.Sprintf("（%.1f MB）", float64(it.Size)/(1024*1024))
 		}
 		settingsSetText(rowID, label)
+		if w := settingsWidgetKey(uintptr(cardID)); w != 0 {
+			pShowWindow.Call(w, swShow)
+		}
 		if w := settingsWidgetKey(uintptr(rowID)); w != 0 {
 			pShowWindow.Call(w, swShow)
 		}
@@ -2285,21 +2294,23 @@ func createSettingsWindow() uintptr {
 			settingsWidgets[card] = uintptr(d.cardID)
 			settingsPaneExp = append(settingsPaneExp, uintptr(d.cardID))
 		}
+		// 勾选框（20x20，卡片内垂直居中）
 		cbx, _, _ := pCreateWindowExW.Call(
 			0, uintptr(unsafe.Pointer(btnCls)), 0,
 			wsChild|wsVisible|wsTabStop|bsOwnDraw,
-			uintptr(stContentX+20), uintptr(d.y+24), 20, 20,
+			uintptr(stContentX+20), uintptr(d.y+23), 20, 20,
 			hwnd, uintptr(d.cbID), moduleHandle(), 0,
 		)
 		if cbx != 0 {
 			settingsWidgets[cbx] = uintptr(d.cbID)
 			settingsPaneExp = append(settingsPaneExp, uintptr(d.cbID))
 		}
+		// 标签 + 说明（卡片内垂直居中的两行块）
 		lt, _ := syscall.UTF16PtrFromString(d.lbl)
 		lb, _, _ := pCreateWindowExW.Call(
 			0, uintptr(unsafe.Pointer(staticCls)), uintptr(unsafe.Pointer(lt)),
 			wsChild|wsVisible,
-			uintptr(stContentX+52), uintptr(d.y+10), 280, 24,
+			uintptr(stContentX+52), uintptr(d.y+12), 300, 24,
 			hwnd, uintptr(d.lblID), moduleHandle(), 0,
 		)
 		if lb != 0 {
@@ -2311,7 +2322,7 @@ func createSettingsWindow() uintptr {
 		sb2, _, _ := pCreateWindowExW.Call(
 			0, uintptr(unsafe.Pointer(staticCls)), uintptr(unsafe.Pointer(st)),
 			wsChild|wsVisible|ssEndEllipsis,
-			uintptr(stContentX+52), uintptr(d.y+34), 360, 18,
+			uintptr(stContentX+52), uintptr(d.y+36), 360, 18,
 			hwnd, uintptr(d.subID), moduleHandle(), 0,
 		)
 		if sb2 != 0 {

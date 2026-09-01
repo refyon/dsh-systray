@@ -338,6 +338,7 @@ static DSHSetController *g_ctrl = nil;
     for (NSArray *pair in self.impRows.allValues) {
         [pair[0] setHidden:YES];
         [pair[1] setHidden:YES];
+        if (pair.count > 2) [pair[2] setHidden:YES];
     }
     [self.impSizes removeAllObjects];
 }
@@ -392,6 +393,7 @@ static DSHSetController *g_ctrl = nil;
         ((NSTextField *)pair[0]).stringValue = label;
         [pair[0] setHidden:NO];
         [pair[1] setHidden:NO];
+        if (pair.count > 2) [pair[2] setHidden:NO];
         if (size) self.impSizes[kind] = size;
     }
     self.impStatusLabel.stringValue = [NSString stringWithFormat:@"解析成功：共 %lu 个可恢复项，点击右侧「恢复」逐项恢复。", (unsigned long)items.count];
@@ -779,6 +781,7 @@ static DSHSetController *g_ctrl = nil;
     CGFloat y = 226;
     for (NSString *kind in kinds) {
         NSBox *rowCard = [self makeCard:NSMakeRect(16, y - 10, 408, 44)];
+        rowCard.hidden = YES;
         [self.importPane addSubview:rowCard];
         NSTextField *rowLabel = [NSTextField labelWithString:@""];
         rowLabel.font = [self uiFontOfSize:16 weight:NSFontWeightRegular];
@@ -796,7 +799,7 @@ static DSHSetController *g_ctrl = nil;
         restoreBtn.hidden = YES;
         [self.importPane addSubview:restoreBtn];
 
-        self.impRows[kind] = @[rowLabel, restoreBtn];
+        self.impRows[kind] = @[rowLabel, restoreBtn, rowCard];
         y -= 48;
     }
 
