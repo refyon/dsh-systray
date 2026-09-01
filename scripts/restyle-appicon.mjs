@@ -125,30 +125,46 @@ function restyle(src) {
 
   const out = Buffer.alloc(W * H * 4)
   const blue = [29, 78, 216] // #1d4ed8 品牌蓝（云隙蓝主题）
-  const inRound = (x, y) => {
-    if (x < 0 || x >= W || y < 0 || y >= H) return false
-    if (x >= R && x <= W - R) return true
-    if (y >= R && y <= H - R) return true
-    const cx = x < R ? R : W - R
-    const cy = y < R ? R : H - R
-    const dx = x - cx, dy = y - cy
-    return dx * dx + dy * dy <= R * R
+  // 圆角矩形有符号距离 → 边界 1px 渐变覆盖度（消除圆角硬边锯齿）
+  const roundCover = (x, y) => {
+    const cx = x + 0.5, cy = y + 0.5
+    const half = W / 2
+    const qx = Math.abs(cx - half) - (half - R)
+    const qy = Math.abs(cy - half) - (half - R)
+    const dx = Math.max(qx, 0), dy = Math.max(qy, 0)
+    const dist = Math.hypot(dx, dy) - R
+    const a = 0.5 - dist
+    return a < 0 ? 0 : a > 1 ? 1 : a
+  }
+  // 鲸鱼双线性 alpha（浮点源坐标）
+  const whaleAlpha = (fx, fy) => {
+    if (fx < 0 || fy < 0 || fx > srcW - 1 || fy > srcH - 1) return 0
+    const x0 = Math.floor(fx), y0 = Math.floor(fy)
+    const x1 = Math.min(x0 + 1, srcW - 1), y1 = Math.min(y0 + 1, srcH - 1)
+    const tx = fx - x0, ty = fy - y0
+    const a00 = whale.data[(y0 * srcW + x0) * 4 + 3] / 255
+    const a10 = whale.data[(y0 * srcW + x1) * 4 + 3] / 255
+    const a01 = whale.data[(y1 * srcW + x0) * 4 + 3] / 255
+    const a11 = whale.data[(y1 * srcW + x1) * 4 + 3] / 255
+    return (a00 * (1 - tx) + a10 * tx) * (1 - ty) + (a01 * (1 - tx) + a11 * tx) * ty
   }
   for (let y = 0; y < H; y++) {
     for (let x = 0; x < W; x++) {
       const i = (y * W + x) * 4
-      if (!inRound(x, y)) { out[i] = 0; out[i + 1] = 0; out[i + 2] = 0; out[i + 3] = 0; continue }
-      let white = false
-      if (x >= ox && x < ox + nw && y >= oy && y < oy + nh) {
-        const sx = Math.floor(xmin + (x - ox) / s)
-        const sy = Math.floor(ymin + (y - oy) / s)
-        if (sx >= 0 && sx < srcW && sy >= 0 && sy < srcH && whale.data[(sy * srcW + sx) * 4 + 3] > 0) white = true
-      }
-      if (white) { out[i] = 255; out[i + 1] = 255; out[i + 2] = 255; out[i + 3] = 255 }
-      else { out[i] = blue[0]; out[i + 1] = blue[1]; out[i + 2] = blue[2]; out[i + 3] = 255 }
+      const ra = roundCover(x, y)
+      if (ra <= 0) continue
+      // 鲸鱼覆盖度（双线性），蓝底与白鲸鱼按覆盖度混合 → 鲸鱼边缘平滑过渡
+      let wa = 0
+      const fx = xmin + (x + 0.5 - ox) / s - 0.5
+      const fy = ymin + (y + 0.5 - oy) / s - 0.5
+      if (fx >= 0 && fy >= 0 && fx < srcW && fy < srcH) wa = whaleAlpha(fx, fy)
+      out[i] = Math.round(blue[0] + (255 - blue[0]) * wa)
+      out[i + 1] = Math.round(blue[1] + (255 - blue[1]) * wa)
+      out[i + 2] = Math.round(blue[2] + (255 - blue[2]) * wa)
+      out[i + 3] = Math.round(ra * 255)
     }
   }
-  // 盒式下采样回源分辨率，边缘平滑抗锯齿
+  // 盒式下采样回源分辨率（alpha 加权，透明像素不污染边缘色），边缘平滑抗锯齿
   const small = downsample({ width: W, height: H, data: out }, SS)
   return encodePNG(small.width, small.height, small.data)
 }
@@ -160,10 +176,15 @@ function downsample(img, factor) {
       let r = 0, g = 0, b = 0, a = 0
       for (let dy = 0; dy < factor; dy++) for (let dx = 0; dx < factor; dx++) {
         const i = ((y * factor + dy) * img.width + (x * factor + dx)) * 4
-        r += img.data[i]; g += img.data[i + 1]; b += img.data[i + 2]; a += img.data[i + 3]
+        const pa = img.data[i + 3]
+        a += pa
+        r += img.data[i] * pa; g += img.data[i + 1] * pa; b += img.data[i + 2] * pa
       }
       const n = factor * factor; const o = (y * w + x) * 4
-      out[o] = Math.round(r / n); out[o + 1] = Math.round(g / n); out[o + 2] = Math.round(b / n); out[o + 3] = Math.round(a / n)
+      out[o + 3] = Math.round(a / n)
+      if (a > 0) {
+        out[o] = Math.round(r / a); out[o + 1] = Math.round(g / a); out[o + 2] = Math.round(b / a)
+      }
     }
   }
   return { width: w, height: h, data: out }
