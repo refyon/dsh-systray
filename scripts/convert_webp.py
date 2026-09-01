@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
-"""把 docs 截图（全尺寸 PNG）转成网站用的 WebP：
-1. LANCZOS 高质量缩放到目标宽度（保留边缘细节）
-2. UnsharpMask 锐化（补偿缩小与压缩带来的柔化）
-3. 删除 PNG 源以减小仓库体积
+"""把 docs 截图（全尺寸 PNG）转成网站用的 WebP（高保真）：
+1. LANCZOS 高质量缩放到目标宽度（保留边缘与色彩细节）
+2. 极轻 UnsharpMask（radius<=0.6 / percent<=60 / threshold>=4）：仅补偿缩放柔化，
+   不产生可见光晕（halo）与彩色失真（此前 2.0/150 参数过激导致颜色失真）
+3. WebP quality 92（近无损，截图总量小，下载仍快）
+4. 删除 PNG 源以减小仓库体积
 用法: python scripts/convert_webp.py
 """
 import os
@@ -13,8 +15,9 @@ from PIL import Image, ImageFilter
 root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 docs = os.path.join(root, "docs")
 
-TARGET_W = 640          # 输出宽度（px）
-SHARPEN = (2.0, 150, 2)  # UnsharpMask: radius, percent, threshold
+TARGET_W = 640            # 输出宽度（px）
+SHARPEN = (0.6, 55, 4)    # UnsharpMask: radius, percent, threshold（极轻，避免光晕/失真）
+WEBP_Q = 92               # WebP 质量（高保真）
 
 
 def _convert(png_path):
@@ -25,10 +28,10 @@ def _convert(png_path):
         if w > TARGET_W:
             nh = max(1, round(h * TARGET_W / w))
             im = im.resize((TARGET_W, nh), Image.LANCZOS)
-        # 2) 锐化（缩小后文字边缘更清晰）
+        # 2) 极轻锐化（仅补偿缩放柔化，阈值抑制平坦区噪声与色偏）
         im = im.filter(ImageFilter.UnsharpMask(radius=SHARPEN[0], percent=SHARPEN[1], threshold=SHARPEN[2]))
-        # 3) 存 WebP
-        im.save(webp_path, "WEBP", quality=88, method=6)
+        # 3) 高保真 WebP
+        im.save(webp_path, "WEBP", quality=WEBP_Q, method=6)
     src_size = os.path.getsize(png_path)
     os.remove(png_path)
     dst_size = os.path.getsize(webp_path)
