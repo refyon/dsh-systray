@@ -181,6 +181,17 @@ const (
 	stColorGray      = 0x00ECE7E4 // #E4E7EC 开关轨道灰
 	stColorText      = 0x00281810 // #101828
 	stColorSub       = 0x00857066 // #667085
+
+	// 卡片垫底子窗口：鼠标穿透 + z-order 置底
+	wmNcHitTest   = 0x0084
+	htTransparent = ^uintptr(0) // HTTRANSPARENT = -1：命中测试交给下层窗口
+	hwndBottom    = 1           // SetWindowPos 的 HWND_BOTTOM
+	swpNoSize     = 0x0001
+	swpNoMove     = 0x0002
+	swpNoActivate = 0x0010
+	// 卡片 ID 范围（stIdGenCard1 .. stIdImpCard3）：切换面板后统一置底用
+	stCardIdMin = 2910
+	stCardIdMax = 2919
 )
 
 var (
@@ -201,6 +212,7 @@ var (
 	pSetWindowLongPtrW          = modUser32.NewProc("SetWindowLongPtrW")
 	pCallWindowProcW            = modUser32.NewProc("CallWindowProcW")
 	pEnableWindow               = modUser32.NewProc("EnableWindow")
+	pSetWindowPos               = modUser32.NewProc("SetWindowPos")
 
 	settingsOpenFlag        atomic.Bool
 	settingsHwnd            uintptr
@@ -592,6 +604,8 @@ func settingsShowPane(hwnd uintptr) {
 			settingsShowImportRows(settingsImpItems)
 		}
 	}
+	// 卡片垫底子窗口置底：切换面板后 z-order 可能重排，防止卡片盖住交互控件
+	settingsSinkCardsToBottom()
 	if settingsTitleHwnd != 0 {
 		t, _ := syscall.UTF16PtrFromString(title)
 		pSendMessageW.Call(settingsTitleHwnd, wmSetText, 0, uintptr(unsafe.Pointer(t)))
@@ -1296,8 +1310,12 @@ const settingsCardCls = "DSH_Systray_SettingsCard"
 var settingsCardClsReg bool
 
 // settingsCardWndProc 自绘卡片：白底圆角 + 浅灰边框（复用弹窗/进度窗的 GDI+ 圆角原语）。
+// 卡片是纯装饰垫底：wmNcHitTest 返回 HTTRANSPARENT，所有鼠标事件穿透到下层控件（勾选框/按钮/问号气泡），
+// 从根本上避免卡片挡住交互。
 func settingsCardWndProc(hwnd, uMsg, wParam, lParam uintptr) uintptr {
 	switch uMsg {
+	case wmNcHitTest:
+		return htTransparent // 鼠标穿透
 	case wmEraseBkgnd:
 		return 1 // 自绘，避免背景闪烁
 	case wmPaint:
@@ -1319,6 +1337,7 @@ func settingsCardWndProc(hwnd, uMsg, wParam, lParam uintptr) uintptr {
 }
 
 // settingsAddGroupCard 在父窗口指定区域创建一个垫底分组卡片子窗口。
+// 创建后立即置底（HWND_BOTTOM），保证永远位于内容控件之下。
 func settingsAddGroupCard(parent uintptr, x, y, w, h int32) uintptr {
 	if !settingsCardClsReg {
 		cls, _ := syscall.UTF16PtrFromString(settingsCardCls)
@@ -1341,7 +1360,21 @@ func settingsAddGroupCard(parent uintptr, x, y, w, h int32) uintptr {
 		wsChild|wsVisible, uintptr(x), uintptr(y), uintptr(w), uintptr(h),
 		parent, 0, moduleHandle(), 0,
 	)
+	if hwnd != 0 {
+		// 置底 z-order：卡片永远垫在内容控件之下，避免显隐/切换面板后 z-order 重排导致盖住控件
+		pSetWindowPos.Call(hwnd, hwndBottom, 0, 0, 0, 0, swpNoSize|swpNoMove|swpNoActivate)
+	}
 	return hwnd
+}
+
+// settingsSinkCardsToBottom 把当前面板的所有垫底卡片沉到 z-order 底部（面板切换显隐后 z-order 可能重排，
+// 每次切面板后调用一次，保证卡片不会盖住勾选框/按钮等交互控件）。
+func settingsSinkCardsToBottom() {
+	for id := stCardIdMin; id <= stCardIdMax; id++ {
+		if w := settingsWidgetKey(uintptr(id)); w != 0 {
+			pSetWindowPos.Call(w, hwndBottom, 0, 0, 0, 0, swpNoSize|swpNoMove|swpNoActivate)
+		}
+	}
 }
 
 // settingsDrawCombo 绘制现代下拉选择器（圆角白底 + 边框 + 当前项文案 + 箭头）。
