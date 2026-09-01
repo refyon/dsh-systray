@@ -88,6 +88,12 @@ const (
 	stIdGenCard2 = 2911 // 常规页分组卡片2（后台服务）
 	stIdAboutCard1 = 2912 // 关于页分组卡片1（版本信息）
 	stIdAboutCard2 = 2913 // 关于页分组卡片2（预发布通道）
+	stIdExpCard1 = 2914   // 导出页分组卡片1（所有历史会话）
+	stIdExpCard2 = 2915   // 导出页分组卡片2（已安装的插件）
+	stIdExpCard3 = 2916   // 导出页分组卡片3（需要打包的文件目录）
+	stIdImpCard1 = 2917   // 导入页分组卡片1（所有历史会话）
+	stIdImpCard2 = 2918   // 导入页分组卡片2（已安装的插件）
+	stIdImpCard3 = 2919   // 导入页分组卡片3（需要打包的文件目录）
 
 	// EDIT / COMBOBOX / STATIC 样式
 	esMultiline           = 0x0004
@@ -513,7 +519,7 @@ func settingsWndProc(hwnd, uMsg, wParam, lParam uintptr) uintptr {
 		case stIdExpFiles:
 			settingsDrawCheck(dis, settingsExpFiles)
 		case stIdExpAddDir:
-			settingsDrawCapsule(dis, "选择目录…")
+			settingsDrawCapsuleT(dis, "选择目录…", false)
 		case stIdExpGo:
 			settingsDrawCapsule(dis, "导出…")
 		case stIdImpAdd:
@@ -938,17 +944,31 @@ func askRestartService() bool {
 
 // settingsDrawCapsule 绘制品牌蓝胶囊按钮（同弹窗主按钮风格）。
 func settingsDrawCapsule(dis drawItemStruct, label string) {
+	settingsDrawCapsuleT(dis, label, true)
+}
+
+// settingsDrawCapsuleT 绘制胶囊按钮；primary=true 品牌蓝底白字，false 灰底深字（次操作）。
+func settingsDrawCapsuleT(dis drawItemStruct, label string, primary bool) {
 	hdc := dis.hDC
 	pressed := dis.itemState&odsSelected != 0
 	fill := uintptr(stColorBlue)
+	textCol := uintptr(dialogColorWhite)
+	if !primary {
+		fill = dialogColorGray
+		textCol = dialogColorTxt
+	}
 	if pressed {
-		fill = dialogColorPrimSel
+		if primary {
+			fill = dialogColorPrimSel
+		} else {
+			fill = dialogColorGraySel
+		}
 	}
 	if wb, _, _ := pGetStockObject.Call(whiteBrush); wb != 0 {
 		pFillRect.Call(hdc, uintptr(unsafe.Pointer(&dis.rcItem)), wb)
 	}
 	fillRoundedRectAA(hdc, dis.rcItem, 16, colorRefToARGB(fill))
-	pSetTextColor.Call(hdc, dialogColorWhite)
+	pSetTextColor.Call(hdc, textCol)
 	pSetBkMode.Call(hdc, bkTransparent)
 	if settingsFontBtn != 0 {
 		pSelectObject.Call(hdc, settingsFontBtn)
@@ -2242,26 +2262,33 @@ func createSettingsWindow() uintptr {
 		settingsPaneLog = append(settingsPaneLog, stIdLogEdit)
 	}
 
-	// ---- 导出面板 ----
+	// ---- 导出面板（三卡片行 + 底部操作行），与网站截图一致 ----
 	expHome := dshHomeDir()
 	if expHome == "" {
 		expHome = "~/.dsh"
 	}
+	contentR = int32(stWinW - 16)
 	expDefs := []struct {
-		cbID, lblID, subID int
-		lbl, sub           string
-		y                  int32
-		checked            *bool
+		cardID, cbID, lblID, subID int
+		lbl, sub                   string
+		y                          int32
+		checked                    *bool
 	}{
-		{stIdExpSessions, stIdExpSessLbl, stIdExpSessSub, "所有历史会话", "sessions.zip · " + filepath.Join(expHome, "sessions"), 62, &settingsExpSessions},
-		{stIdExpPlugins, stIdExpPlugLbl, stIdExpPlugSub, "已安装的插件", "plugins.zip · 通过 dsh add 安装的插件", 112, &settingsExpPlugins},
-		{stIdExpFiles, stIdExpFilesLbl, stIdExpFilesSub, "需要打包的文件目录", "files.zip · 恢复时选择解压位置", 162, &settingsExpFiles},
+		{stIdExpCard1, stIdExpSessions, stIdExpSessLbl, stIdExpSessSub, "所有历史会话", "sessions.zip · " + filepath.Join(expHome, "sessions"), 66, &settingsExpSessions},
+		{stIdExpCard2, stIdExpPlugins, stIdExpPlugLbl, stIdExpPlugSub, "已安装的插件", "plugins.zip · 通过 dsh add 安装的插件", 132, &settingsExpPlugins},
+		{stIdExpCard3, stIdExpFiles, stIdExpFilesLbl, stIdExpFilesSub, "需要打包的文件目录", "files.zip · 恢复时选择解压位置", 198, &settingsExpFiles},
 	}
 	for _, d := range expDefs {
+		// 垫底分组卡片（后建控件在上，卡片仅勾勒分组）
+		card := settingsAddGroupCard(hwnd, stContentX, d.y, contentR-stContentX, 66)
+		if card != 0 {
+			settingsWidgets[card] = uintptr(d.cardID)
+			settingsPaneExp = append(settingsPaneExp, uintptr(d.cardID))
+		}
 		cbx, _, _ := pCreateWindowExW.Call(
 			0, uintptr(unsafe.Pointer(btnCls)), 0,
 			wsChild|wsVisible|wsTabStop|bsOwnDraw,
-			uintptr(stContentX), uintptr(d.y), 28, 28,
+			uintptr(stContentX+20), uintptr(d.y+24), 20, 20,
 			hwnd, uintptr(d.cbID), moduleHandle(), 0,
 		)
 		if cbx != 0 {
@@ -2272,7 +2299,7 @@ func createSettingsWindow() uintptr {
 		lb, _, _ := pCreateWindowExW.Call(
 			0, uintptr(unsafe.Pointer(staticCls)), uintptr(unsafe.Pointer(lt)),
 			wsChild|wsVisible,
-			uintptr(stContentX+32), uintptr(d.y+2), 280, 24,
+			uintptr(stContentX+52), uintptr(d.y+10), 280, 24,
 			hwnd, uintptr(d.lblID), moduleHandle(), 0,
 		)
 		if lb != 0 {
@@ -2284,7 +2311,7 @@ func createSettingsWindow() uintptr {
 		sb2, _, _ := pCreateWindowExW.Call(
 			0, uintptr(unsafe.Pointer(staticCls)), uintptr(unsafe.Pointer(st)),
 			wsChild|wsVisible|ssEndEllipsis,
-			uintptr(stContentX+32), uintptr(d.y+26), 390, 18,
+			uintptr(stContentX+52), uintptr(d.y+34), 360, 18,
 			hwnd, uintptr(d.subID), moduleHandle(), 0,
 		)
 		if sb2 != 0 {
@@ -2293,18 +2320,6 @@ func createSettingsWindow() uintptr {
 			settingsPaneExp = append(settingsPaneExp, uintptr(d.subID))
 		}
 	}
-	ad, _ := syscall.UTF16PtrFromString("选择目录…")
-	addDirBtn, _, _ := pCreateWindowExW.Call(
-		0, uintptr(unsafe.Pointer(btnCls)), uintptr(unsafe.Pointer(ad)),
-		wsChild|wsVisible|wsTabStop|bsOwnDraw,
-		uintptr(stContentX), 212, 110, 30,
-		hwnd, stIdExpAddDir, moduleHandle(), 0,
-	)
-	if addDirBtn != 0 {
-		settingsWidgets[addDirBtn] = stIdExpAddDir
-		settingsPaneExp = append(settingsPaneExp, stIdExpAddDir)
-	}
-
 	// 「已安装的插件」右侧问号图标（自绘）：紧贴文字放置，悬停弹出泡泡说明
 	hp, _ := syscall.UTF16PtrFromString("")
 	plugHelpX := int32(stContentX + 140)
@@ -2317,14 +2332,14 @@ func createSettingsWindow() uintptr {
 			pSelectObject.Call(dc, old)
 			pReleaseDC.Call(0, dc)
 			if w := mrc.right - mrc.left; w > 0 {
-				plugHelpX = stContentX + 32 + w + 4
+				plugHelpX = stContentX + 52 + w + 4
 			}
 		}
 	}
 	plugHelp, _, _ := pCreateWindowExW.Call(
 		0, uintptr(unsafe.Pointer(btnCls)), uintptr(unsafe.Pointer(hp)),
 		wsChild|wsVisible|bsOwnDraw,
-		uintptr(plugHelpX), 117, 18, 18,
+		uintptr(plugHelpX), 143, 18, 18,
 		hwnd, stIdExpPlugHelp, moduleHandle(), 0,
 	)
 	if plugHelp != 0 {
@@ -2333,10 +2348,11 @@ func createSettingsWindow() uintptr {
 		// 子类化问号按钮：悬停显示半透明黑色胶囊提示（白色文字），移出隐藏
 		settingsTipAttach(plugHelp)
 	}
+	// 文件目录列表（RO 多行）：显示已选目录
 	dirsEdit, _, _ := pCreateWindowExW.Call(
 		0, uintptr(unsafe.Pointer(editCls)), 0,
 		wsChild|wsVisible|esMultiline|esReadOnly|esAutoVScroll,
-		uintptr(stContentX), 250, 424, 76,
+		uintptr(stContentX), 272, 424, 60,
 		hwnd, stIdExpDirs, moduleHandle(), 0,
 	)
 	if dirsEdit != 0 {
@@ -2346,11 +2362,23 @@ func createSettingsWindow() uintptr {
 	}
 	settingsExpDirsUpdate()
 	settingsUpdateExpFilesState()
+	// 底部操作行：次操作「选择目录…」（仅文件目录需要） + 主操作「导出…」
+	ad, _ := syscall.UTF16PtrFromString("选择目录…")
+	addDirBtn, _, _ := pCreateWindowExW.Call(
+		0, uintptr(unsafe.Pointer(btnCls)), uintptr(unsafe.Pointer(ad)),
+		wsChild|wsVisible|wsTabStop|bsOwnDraw,
+		uintptr(stContentX), 340, 132, 34,
+		hwnd, stIdExpAddDir, moduleHandle(), 0,
+	)
+	if addDirBtn != 0 {
+		settingsWidgets[addDirBtn] = stIdExpAddDir
+		settingsPaneExp = append(settingsPaneExp, stIdExpAddDir)
+	}
 	eg, _ := syscall.UTF16PtrFromString("导出…")
 	expGoBtn, _, _ := pCreateWindowExW.Call(
 		0, uintptr(unsafe.Pointer(btnCls)), uintptr(unsafe.Pointer(eg)),
 		wsChild|wsVisible|wsTabStop|bsOwnDraw,
-		uintptr(stContentX), 336, 120, 34,
+		uintptr(stContentX+148), 340, 120, 34,
 		hwnd, stIdExpGo, moduleHandle(), 0,
 	)
 	if expGoBtn != 0 {
@@ -2361,7 +2389,7 @@ func createSettingsWindow() uintptr {
 	expStatus, _, _ := pCreateWindowExW.Call(
 		0, uintptr(unsafe.Pointer(staticCls)), uintptr(unsafe.Pointer(es2)),
 		wsChild|wsVisible|ssEndEllipsis,
-		uintptr(stContentX), 378, 424, 20,
+		uintptr(stContentX), 384, 424, 20,
 		hwnd, stIdExpStatus, moduleHandle(), 0,
 	)
 	if expStatus != 0 {
@@ -2370,12 +2398,12 @@ func createSettingsWindow() uintptr {
 		settingsPaneExp = append(settingsPaneExp, stIdExpStatus)
 	}
 
-	// ---- 导入面板 ----
+	// ---- 导入面板（与网站截图一致：顶部按钮 + 路径 + 三卡片行 + 状态） ----
 	ia, _ := syscall.UTF16PtrFromString("添加导入压缩包…")
 	impAddBtn, _, _ := pCreateWindowExW.Call(
 		0, uintptr(unsafe.Pointer(btnCls)), uintptr(unsafe.Pointer(ia)),
 		wsChild|wsVisible|wsTabStop|bsOwnDraw,
-		uintptr(stContentX), 62, 180, 30,
+		uintptr(stContentX), 70, 190, 34,
 		hwnd, stIdImpAdd, moduleHandle(), 0,
 	)
 	if impAddBtn != 0 {
@@ -2386,7 +2414,7 @@ func createSettingsWindow() uintptr {
 	impPath, _, _ := pCreateWindowExW.Call(
 		0, uintptr(unsafe.Pointer(editCls)), uintptr(unsafe.Pointer(ip)),
 		wsChild|wsVisible|esMultiline|esReadOnly|esAutoVScroll,
-		uintptr(stContentX), 100, 424, 42,
+		uintptr(stContentX), 114, 424, 28,
 		hwnd, stIdImpPath, moduleHandle(), 0,
 	)
 	if impPath != 0 {
@@ -2394,32 +2422,26 @@ func createSettingsWindow() uintptr {
 		pSendMessageW.Call(impPath, wmSetFont, settingsFontSmall, 1)
 		settingsPaneImp = append(settingsPaneImp, stIdImpPath)
 	}
-	is, _ := syscall.UTF16PtrFromString("点击上方按钮选择 dsh-systray-export 压缩包。")
-	impStatus, _, _ := pCreateWindowExW.Call(
-		0, uintptr(unsafe.Pointer(editCls)), uintptr(unsafe.Pointer(is)),
-		wsChild|wsVisible|esMultiline|esReadOnly|esAutoVScroll,
-		uintptr(stContentX), 150, 424, 56,
-		hwnd, stIdImpStatus, moduleHandle(), 0,
-	)
-	if impStatus != 0 {
-		settingsWidgets[impStatus] = stIdImpStatus
-		pSendMessageW.Call(impStatus, wmSetFont, settingsFontSmall, 1)
-		settingsPaneImp = append(settingsPaneImp, stIdImpStatus)
-	}
+	// 三个可恢复项卡片行（标签左 / 恢复按钮右）
 	impRows := []struct {
-		rowID, btnID int
-		y            int32
+		cardID, rowID, btnID int
+		y                    int32
 	}{
-		{stIdImpSessRow, stIdImpSessBtn, 216},
-		{stIdImpPlugRow, stIdImpPlugBtn, 258},
-		{stIdImpFilesRow, stIdImpFilesBtn, 300},
+		{stIdImpCard1, stIdImpSessRow, stIdImpSessBtn, 162},
+		{stIdImpCard2, stIdImpPlugRow, stIdImpPlugBtn, 210},
+		{stIdImpCard3, stIdImpFilesRow, stIdImpFilesBtn, 258},
 	}
 	for _, r := range impRows {
+		card := settingsAddGroupCard(hwnd, stContentX, r.y, contentR-stContentX, 48)
+		if card != 0 {
+			settingsWidgets[card] = uintptr(r.cardID)
+			settingsPaneImp = append(settingsPaneImp, uintptr(r.cardID))
+		}
 		rt, _ := syscall.UTF16PtrFromString("")
 		row, _, _ := pCreateWindowExW.Call(
 			0, uintptr(unsafe.Pointer(staticCls)), uintptr(unsafe.Pointer(rt)),
 			wsChild, // 初始隐藏，解析成功后显示
-			uintptr(stContentX), uintptr(r.y+2), 316, 26,
+			uintptr(stContentX+20), uintptr(r.y+2), 316, 26,
 			hwnd, uintptr(r.rowID), moduleHandle(), 0,
 		)
 		if row != 0 {
@@ -2431,13 +2453,25 @@ func createSettingsWindow() uintptr {
 		btn, _, _ := pCreateWindowExW.Call(
 			0, uintptr(unsafe.Pointer(btnCls)), uintptr(unsafe.Pointer(bt)),
 			wsChild|wsTabStop|bsOwnDraw, // 初始隐藏
-			uintptr(stContentX+326), uintptr(r.y), 96, 30,
+			uintptr(contentR-104), uintptr(r.y+9), 84, 30,
 			hwnd, uintptr(r.btnID), moduleHandle(), 0,
 		)
 		if btn != 0 {
 			settingsWidgets[btn] = uintptr(r.btnID)
 			settingsPaneImp = append(settingsPaneImp, uintptr(r.btnID))
 		}
+	}
+	is, _ := syscall.UTF16PtrFromString("点击上方按钮选择 dsh-systray-export 压缩包。")
+	impStatus, _, _ := pCreateWindowExW.Call(
+		0, uintptr(unsafe.Pointer(editCls)), uintptr(unsafe.Pointer(is)),
+		wsChild|wsVisible|esMultiline|esReadOnly|esAutoVScroll,
+		uintptr(stContentX), 318, 424, 44,
+		hwnd, stIdImpStatus, moduleHandle(), 0,
+	)
+	if impStatus != 0 {
+		settingsWidgets[impStatus] = stIdImpStatus
+		pSendMessageW.Call(impStatus, wmSetFont, settingsFontSmall, 1)
+		settingsPaneImp = append(settingsPaneImp, stIdImpStatus)
 	}
 
 	// 初始显示「常规」面板

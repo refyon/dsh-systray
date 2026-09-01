@@ -669,22 +669,27 @@ static DSHSetController *g_ctrl = nil;
     // 导出面板
     self.exportPane = [[NSView alloc] initWithFrame:NSMakeRect(160, 0, 440, 420)];
     [self addLabel:@"导出" font:[self uiFontOfSize:19 weight:NSFontWeightSemibold] color:nil frame:NSMakeRect(16, 372, 300, 24) to:self.exportPane];
-    // 卡片：三个导出选项
-    [self.exportPane addSubview:[self makeCard:NSMakeRect(16, 212, 408, 148)]];
+    // 三个独立卡片行（勾选框 + 标签 + 说明），与网站截图一致
+    // 卡片1：所有历史会话
+    NSBox *expCard1 = [self makeCard:NSMakeRect(16, 280, 408, 68)];
+    [self.exportPane addSubview:expCard1];
     self.expSessions = [NSButton checkboxWithTitle:@"所有历史会话" target:nil action:nil];
-    self.expSessions.frame = NSMakeRect(30, 328, 280, 24);
+    self.expSessions.frame = NSMakeRect(30, 320, 280, 24);
     self.expSessions.font = [self uiFontOfSize:15 weight:NSFontWeightRegular];
     [self.exportPane addSubview:self.expSessions];
     char *sessPathC = dshSettingsGoSessionsPath();
     NSString *sessPath = sessPathC ? [NSString stringWithUTF8String:sessPathC] : @"";
     free(sessPathC);
-    [self addLabel:[NSString stringWithFormat:@"sessions.zip · %@", sessPath] font:[self uiFontOfSize:12 weight:NSFontWeightRegular] color:[NSColor secondaryLabelColor] frame:NSMakeRect(50, 310, 360, 16) to:self.exportPane];
+    [self addLabel:[NSString stringWithFormat:@"sessions.zip · %@", sessPath] font:[self uiFontOfSize:12 weight:NSFontWeightRegular] color:[NSColor secondaryLabelColor] frame:NSMakeRect(50, 298, 360, 16) to:self.exportPane];
 
+    // 卡片2：已安装的插件
+    NSBox *expCard2 = [self makeCard:NSMakeRect(16, 206, 408, 68)];
+    [self.exportPane addSubview:expCard2];
     self.expPlugins = [NSButton checkboxWithTitle:@"已安装的插件" target:nil action:nil];
-    self.expPlugins.frame = NSMakeRect(30, 282, 280, 24);
+    self.expPlugins.frame = NSMakeRect(30, 246, 280, 24);
     self.expPlugins.font = [self uiFontOfSize:15 weight:NSFontWeightRegular];
     [self.exportPane addSubview:self.expPlugins];
-    [self addLabel:@"plugins.zip · 通过 dsh add 安装的插件" font:[self uiFontOfSize:12 weight:NSFontWeightRegular] color:[NSColor secondaryLabelColor] frame:NSMakeRect(50, 264, 360, 16) to:self.exportPane];
+    [self addLabel:@"plugins.zip · 通过 dsh add 安装的插件" font:[self uiFontOfSize:12 weight:NSFontWeightRegular] color:[NSColor secondaryLabelColor] frame:NSMakeRect(50, 224, 360, 16) to:self.exportPane];
 
     // 「已安装的插件」右侧问号图标：紧贴文字放置，悬停显示泡泡说明
     NSString *plugLabel = @"已安装的插件";
@@ -692,18 +697,21 @@ static DSHSetController *g_ctrl = nil;
     CGFloat plugTW = [plugLabel sizeWithAttributes:@{NSFontAttributeName: plugFont}].width;
     NSButton *plugHelp = [NSButton buttonWithTitle:@"" target:nil action:nil];
     plugHelp.bezelStyle = NSHelpButtonBezelStyle;
-    plugHelp.frame = NSMakeRect(34 + plugTW + 4, 281, 20, 20);
+    plugHelp.frame = NSMakeRect(34 + plugTW + 4, 245, 20, 20);
     plugHelp.toolTip = @"仅打包用户安装的插件";
     [self.exportPane addSubview:plugHelp];
 
+    // 卡片3：需要打包的文件目录
+    NSBox *expCard3 = [self makeCard:NSMakeRect(16, 132, 408, 68)];
+    [self.exportPane addSubview:expCard3];
     self.expFiles = [NSButton checkboxWithTitle:@"需要打包的文件目录" target:self action:@selector(expFilesToggled:)];
-    self.expFiles.frame = NSMakeRect(30, 236, 280, 24);
+    self.expFiles.frame = NSMakeRect(30, 172, 280, 24);
     self.expFiles.font = [self uiFontOfSize:15 weight:NSFontWeightRegular];
     [self.exportPane addSubview:self.expFiles];
-    [self addLabel:@"files.zip · 恢复时选择解压位置" font:[self uiFontOfSize:12 weight:NSFontWeightRegular] color:[NSColor secondaryLabelColor] frame:NSMakeRect(50, 218, 360, 16) to:self.exportPane];
+    [self addLabel:@"files.zip · 恢复时选择解压位置" font:[self uiFontOfSize:12 weight:NSFontWeightRegular] color:[NSColor secondaryLabelColor] frame:NSMakeRect(50, 150, 360, 16) to:self.exportPane];
 
     // 底部操作行：次操作「选择目录…」 + 主操作「导出…」
-    NSButton *addDirBtn = [[NSButton alloc] initWithFrame:NSMakeRect(16, 178, 110, 28)];
+    NSButton *addDirBtn = [[NSButton alloc] initWithFrame:NSMakeRect(16, 90, 110, 28)];
     addDirBtn.title = @"选择目录…";
     addDirBtn.bezelStyle = NSBezelStyleRounded;
     addDirBtn.font = [self uiFontOfSize:13 weight:NSFontWeightSemibold];
@@ -717,13 +725,13 @@ static DSHSetController *g_ctrl = nil;
     self.expDirsView = [[NSTextView alloc] initWithFrame:NSMakeRect(0, 0, 408, 40)];
     self.expDirsView.editable = NO;
     self.expDirsView.font = [self uiFontOfSize:12 weight:NSFontWeightRegular];
-    NSScrollView *dirsSV = [[NSScrollView alloc] initWithFrame:NSMakeRect(16, 70, 408, 42)];
+    NSScrollView *dirsSV = [[NSScrollView alloc] initWithFrame:NSMakeRect(16, 44, 408, 42)];
     dirsSV.documentView = self.expDirsView;
     dirsSV.hasVerticalScroller = YES;
     dirsSV.autohidesScrollers = YES;
     [self.exportPane addSubview:dirsSV];
 
-    self.expBtn = [[NSButton alloc] initWithFrame:NSMakeRect(16, 122, 120, 32)];
+    self.expBtn = [[NSButton alloc] initWithFrame:NSMakeRect(132, 90, 120, 32)];
     self.expBtn.title = @"导出…";
     self.expBtn.bezelStyle = NSBezelStyleRounded;
     self.expBtn.font = [self uiFontOfSize:14 weight:NSFontWeightSemibold];
@@ -734,7 +742,7 @@ static DSHSetController *g_ctrl = nil;
     self.expStatus = [NSTextField labelWithString:@""];
     self.expStatus.font = [self uiFontOfSize:12 weight:NSFontWeightRegular];
     self.expStatus.textColor = [NSColor secondaryLabelColor];
-    self.expStatus.frame = NSMakeRect(16, 36, 408, 18);
+    self.expStatus.frame = NSMakeRect(16, 20, 408, 18);
     [self.exportPane addSubview:self.expStatus];
 
     // 导入面板
@@ -759,21 +767,22 @@ static DSHSetController *g_ctrl = nil;
     self.impStatusLabel = [NSTextField labelWithString:@"点击上方按钮选择 dsh-systray-export 压缩包。"];
     self.impStatusLabel.font = [self uiFontOfSize:12 weight:NSFontWeightRegular];
     self.impStatusLabel.textColor = [NSColor secondaryLabelColor];
-    self.impStatusLabel.frame = NSMakeRect(16, 272, 408, 22);
+    self.impStatusLabel.frame = NSMakeRect(16, 40, 408, 22);
     self.impStatusLabel.lineBreakMode = NSLineBreakByTruncatingTail;
     [self.importPane addSubview:self.impStatusLabel];
 
-    // 卡片：三个可恢复项
-    [self.importPane addSubview:[self makeCard:NSMakeRect(16, 120, 408, 136)]];
+    // 三个独立卡片行（标签左 / 恢复按钮右），与网站截图一致
     self.impRows = [NSMutableDictionary dictionary];
     self.impSizes = [NSMutableDictionary dictionary];
     NSArray *kinds = @[@"sessions", @"plugins", @"files"];
     NSInteger tags = 1;
-    CGFloat y = 232;
+    CGFloat y = 226;
     for (NSString *kind in kinds) {
+        NSBox *rowCard = [self makeCard:NSMakeRect(16, y - 10, 408, 44)];
+        [self.importPane addSubview:rowCard];
         NSTextField *rowLabel = [NSTextField labelWithString:@""];
         rowLabel.font = [self uiFontOfSize:16 weight:NSFontWeightRegular];
-        rowLabel.frame = NSMakeRect(32, y + 3, 300, 24);
+        rowLabel.frame = NSMakeRect(32, y, 300, 24);
         rowLabel.hidden = YES;
         [self.importPane addSubview:rowLabel];
 
@@ -788,7 +797,7 @@ static DSHSetController *g_ctrl = nil;
         [self.importPane addSubview:restoreBtn];
 
         self.impRows[kind] = @[rowLabel, restoreBtn];
-        y -= 44;
+        y -= 48;
     }
 
     self.window.contentView = root;
