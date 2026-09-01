@@ -88,7 +88,6 @@ const (
 	stIdGenCard2 = 2911 // 常规页分组卡片2（后台服务）
 	stIdAboutCard1 = 2912 // 关于页分组卡片1（版本信息）
 	stIdAboutCard2 = 2913 // 关于页分组卡片2（预发布通道）
-	stIdLogCard = 2914     // 日志页分组卡片（内衬日志框）
 
 	// EDIT / COMBOBOX / STATIC 样式
 	esMultiline           = 0x0004
@@ -2226,20 +2225,15 @@ func createSettingsWindow() uintptr {
 		settingsPaneLog = append(settingsPaneLog, stIdLogRefresh)
 	}
 
-	// 日志卡片（垫底，白底圆角 + 浅灰边框，与常规/关于页分组一致）
-	logCard := settingsAddGroupCard(hwnd, stContentX-8, 144, stWinW-stContentX-4, 300)
-	if logCard != 0 {
-		settingsWidgets[logCard] = stIdLogCard
-		settingsPaneLog = append(settingsPaneLog, uintptr(stIdLogCard))
-	}
-	// 用 RICHEDIT50W（可靠的多行富文本：正确处理换行/大文本/滚动/复制）；无边框、浅灰底
+	// 日志内容：原先用父窗口 WM_PAINT 绘制卡片背景（避免子窗口卡片盖住 RICHEDIT50W 编辑框）。
+	// 这里保持编辑框自绘无边框、浅灰底，直接铺满内容区，不引入垫底卡片子窗口，避免遮蔽日志文本。
 	mdll, _ := syscall.UTF16PtrFromString("Msftedit.dll")
 	pLoadLibraryW.Call(uintptr(unsafe.Pointer(mdll)))
 	editCls, _ := syscall.UTF16PtrFromString("RICHEDIT50W")
 	logEdit, _, _ := pCreateWindowExW.Call(
 		0, uintptr(unsafe.Pointer(editCls)), 0,
 		wsChild|wsVisible|wsTabStop|esMultiline|esAutoVScroll|esReadOnly|wsVScroll,
-		uintptr(stContentX), 150, uintptr(stWinW-stContentX-16), 288, hwnd, stIdLogEdit, moduleHandle(), 0,
+		uintptr(stContentX-8), 144, uintptr(stWinW-stContentX-12), 292, hwnd, stIdLogEdit, moduleHandle(), 0,
 	)
 	if logEdit != 0 {
 		settingsWidgets[logEdit] = stIdLogEdit
