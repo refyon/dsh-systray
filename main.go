@@ -240,6 +240,14 @@ func main() {
 	harnessDir = cfg.HarnessDir
 	startupTimeout = time.Duration(cfg.StartupTimeoutSec) * time.Second
 
+	// 截图模式（DSH_SYSTRAY_SHOT_PAGE）：开启 WebView2 CDP 调试端口（third_party/wails 补丁读取），
+	// 截图脚本经 Page.captureScreenshot 直出渲染像素（高保真，不经屏幕合成）。
+	if os.Getenv("DSH_SYSTRAY_SHOT_PAGE") != "" {
+		if os.Getenv("DSH_SYSTRAY_CDP_PORT") == "" {
+			os.Setenv("DSH_SYSTRAY_CDP_PORT", "9333")
+		}
+	}
+
 	// 自愈历史自启动项：旧版本注册的自启动条目未带 --autostart 参数，导致登录时被当作“手动双击”而弹提示。
 	if isAutostartEnabled() {
 		enableAutostart() // 幂等：确保条目含 --autostart

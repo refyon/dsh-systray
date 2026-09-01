@@ -7,6 +7,9 @@ require (
 	github.com/wailsapp/wails/v2 v2.11.0
 )
 
+// 本地补丁：Windows 截图模式开启 WebView2 CDP 端口（见 third_party/wails 的 setupChromium 补丁）
+replace github.com/wailsapp/wails/v2 => ./third_party/wails
+
 require (
 	github.com/bep/debounce v1.2.1 // indirect
 	github.com/go-ole/go-ole v1.3.0 // indirect
