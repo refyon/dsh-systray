@@ -70,9 +70,13 @@
 - 动效 ≤ 200ms、统一缓动（`cubic-bezier(.2,0,0,1)`），尊重 `prefers-reduced-motion`。
 - 一屏一个主操作（如「导出…」「检查更新」）；图标与文案并置；渐进披露。
 - 暗色模式三处联动：前端 CSS、WebView 主题（`Theme=SystemDefault`）、托盘图标深浅自适应。
+- **任何弹窗 / 原生对话框 / 被显示的窗口都必须自动前台**：Windows 原生弹窗走 `forceForeground()`，
+  目录/文件选择对话框把 owner 设为 Wails 主窗口（`wailsMainHWND()`），托盘唤起设置页走
+  `ensureMainWindowForeground()`；macOS 弹窗前激活应用。新增弹窗代码必须遵守，违反视为缺陷。
 
 **Don't**
 - 不用魔法数字色值 / 间距；不叠卡片堆（一屏最多 3 张主卡片）。
 - 不用无意义阴影与渐变；不在浅色模式下用低于 4.5:1 的正文对比度。
 - 不在 UI 文案中出现技术术语（面向用户：说「重启后台服务」，不说「kill process」）。
 - 不写不可访问的交互（仅 hover 可见、无焦点态、触控目标 < 44px）。
+- 不用无 owner 的模态对话框（会导致弹窗落在后台、用户看不到）。

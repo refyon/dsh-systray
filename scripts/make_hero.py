@@ -66,28 +66,33 @@ def main():
     canvas.alpha_composite(bg_shadow, (pad - spad, pad - spad))
     canvas.alpha_composite(base, (pad, pad))
 
-    # ---------- 前景窗口：正在更新 DeepSeek Harness 依赖（四边浅阴影，圆角对齐） ----------
-    fw, fh = 540, 200
+    # ---------- 前景窗口：与真实 APP 更新窗口（splash 视图）一致的下载进度特写 ----------
+    # 真实结构：白卡 + 标题「DeepSeek Harness」+ 状态「正在下载 dsh-systray-windows-x64.zip（N%）…」
+    #          + 进度条 + 「取消更新」ghost 按钮；无额外底部小字。尺寸收紧，避免留白过多。
+    fw, fh = 500, 176
     fx, fy = canvas_w - fw - pad + 10, pad + H - fh + 60
     fg = Image.new("RGBA", (fw, fh), (0, 0, 0, 0))
     fd = ImageDraw.Draw(fg)
-    fd.rounded_rectangle([0, 0, fw - 1, fh - 1], radius=16, fill=(255, 255, 255, 255))
-    fd.rounded_rectangle([0, 0, fw - 1, fh - 1], radius=16, outline=(226, 232, 240, 255), width=1)
+    fd.rounded_rectangle([0, 0, fw - 1, fh - 1], radius=14, fill=(255, 255, 255, 255))
+    fd.rounded_rectangle([0, 0, fw - 1, fh - 1], radius=14, outline=(226, 232, 240, 255), width=1)
     fg_shadow, fspad = window_shadow(fg, 10, 26)
     canvas.alpha_composite(fg_shadow, (fx - fspad, fy - fspad))
 
-    # 标题栏文字
-    fd.text((24, 18), "DeepSeek Harness", font=font(FONT_BOLD, 15), fill=(15, 23, 42, 255))
-    # 状态文字
-    fd.text((24, 52), "正在更新 DeepSeek Harness 依赖（62%）…", font=font(FONT, 14), fill=(100, 116, 139, 255))
-    # 进度条（轨道 + 品牌蓝填充）
-    track_x, track_y, track_w, track_h = 24, 96, fw - 48, 10
-    fd.rounded_rectangle([track_x, track_y, track_x + track_w, track_y + track_h], radius=5, fill=(241, 245, 249, 255))
+    # 标题（居中，同 splash-card：bold 15）
+    fd.text((fw // 2, 30), "DeepSeek Harness", font=font(FONT_BOLD, 15), fill=(15, 23, 42, 255), anchor="mm")
+    # 状态文本（同真实下载文案：正在下载 <资产名>（N%）…，居中、灰）
+    fd.text((fw // 2, 58), "正在下载 dsh-systray-windows-x64.zip（62%）…",
+            font=font(FONT, 13), fill=(100, 116, 139, 255), anchor="mm")
+    # 进度条（轨道 + 品牌蓝填充，居中）
+    track_x, track_y, track_w, track_h = (fw - 320) // 2, 84, 320, 8
+    fd.rounded_rectangle([track_x, track_y, track_x + track_w, track_y + track_h], radius=4, fill=(241, 245, 249, 255))
     fill_w = int(track_w * 0.62)
-    fd.rounded_rectangle([track_x, track_y, track_x + fill_w, track_y + track_h], radius=5, fill=(37, 99, 235, 255))
-    # 底部小字
-    fd.text((24, 128), "请勿关闭此窗口，更新完成后将自动重启", font=font(FONT, 12), fill=(148, 163, 184, 255))
-    fd.text((fw - 24, 128), "取消更新", font=font(FONT, 12), fill=(37, 99, 235, 255), anchor="ra")
+    fd.rounded_rectangle([track_x, track_y, track_x + fill_w, track_y + track_h], radius=4, fill=(37, 99, 235, 255))
+    # 「取消更新」ghost 按钮（btn-ghost：浅灰圆角胶囊、常规文字色，居中）
+    btn_w, btn_h = 88, 28
+    btn_x, btn_y = (fw - btn_w) // 2, 114
+    fd.rounded_rectangle([btn_x, btn_y, btn_x + btn_w, btn_y + btn_h], radius=btn_h // 2, fill=(241, 245, 249, 255))
+    fd.text((fw // 2, btn_y + btn_h // 2), "取消更新", font=font(FONT, 12), fill=(15, 23, 42, 255), anchor="mm")
 
     canvas.alpha_composite(fg, (fx, fy))
 

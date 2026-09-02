@@ -39,13 +39,13 @@ func withV(ver string) string {
 }
 
 const (
-	updateRepoOwner      = "refyon"
-	updateRepoName       = "dsh-systray"
-	updateCheckDelay     = 30 * time.Second // 启动后 30 秒检查新版本
-	updateCheckInterval  = 24 * time.Hour   // 之后每 24 小时检查一次
-	updateAPITimeout     = 8 * time.Second  // 版本接口单候选超时（直连失败回退镜像）
-	updateDLTimeout      = 5 * time.Minute  // 单镜像单次下载上限
-	updateMaxBodySize    = 4 << 20          // 版本接口响应上限 4MB
+	updateRepoOwner     = "refyon"
+	updateRepoName      = "dsh-systray"
+	updateCheckDelay    = 30 * time.Second // 启动后 30 秒检查新版本
+	updateCheckInterval = 24 * time.Hour   // 之后每 24 小时检查一次
+	updateAPITimeout    = 8 * time.Second  // 版本接口单候选超时（直连失败回退镜像）
+	updateDLTimeout     = 5 * time.Minute  // 单镜像单次下载上限
+	updateMaxBodySize   = 4 << 20          // 版本接口响应上限 4MB
 )
 
 // updateMirrors 下载地址前缀：先直连 GitHub，失败再依次回退镜像（国内网络友好）。
@@ -196,6 +196,7 @@ type latestRelease struct {
 // startAutoUpdateCheck 启动后台定时检查：
 //  1. 启动后 30 秒检查一次新版本；
 //  2. 从启动时间起每 24 小时再检查一次。
+//
 // 每次检查若有新版本且当前没有正在使用的检查/更新窗口（updateFlowBusy），才提示用户。
 func startAutoUpdateCheck() {
 	// 规则1：启动后 30 秒检查一次
@@ -290,7 +291,8 @@ func checkForUpdatesManual() {
 // Windows/macOS 共用；startServer/killServer 由各平台实现，其余为主程序通用逻辑。
 // onState 可选：进程各阶段回调（"stopping" / "stopped" / "starting" / "running" / "error"），
 // 供设置页实时刷新服务状态（如停止后标红“已停止”）。
-func restartBackgroundService(onState func(stage string)) {
+// 重启成功后（非开机自启动场景，该场景不会走到此函数）弹窗询问是否立即打开 Web UI；返回是否成功。
+func restartBackgroundService(onState func(stage string)) bool {
 	splash := startSplash("正在重启后台服务…")
 	defer splash.Close()
 	splash.Update("正在停止后台服务…", 0.2)
@@ -312,7 +314,7 @@ func restartBackgroundService(onState func(stage string)) {
 			onState("error")
 		}
 		showMessageBox("重启失败：无法启动后台服务。", appName)
-		return
+		return false
 	}
 	splash.Update("正在等待服务就绪…", 0.85)
 	if ok, msg := waitForServerReady(webURL, exitCh, startupTimeout); !ok {
@@ -320,11 +322,17 @@ func restartBackgroundService(onState func(stage string)) {
 			onState("error")
 		}
 		showMessageBox("重启失败：\n"+msg, appName)
-		return
+		return false
 	}
 	if onState != nil {
 		onState("running")
 	}
+	// 需求：设置中重启服务成功后弹窗询问是否打开 Web UI；
+	// 保留开机自启动的静默逻辑（autostartLaunch 场景不询问；此函数也仅在设置页触发）。
+	if !autostartLaunch {
+		showReadyPrompt(webURL)
+	}
+	return true
 }
 
 // queryHarnessUpdate 查询 harness 是否有新版本：返回最新版、当前版、是否为新版。
@@ -348,9 +356,10 @@ const (
 	harnessRepoName  = "deepseek-harness"
 )
 
-// fetchLatestHarnessVersion 查询 DeepSeek Harness 在 GitHub 上的最新 Release 版本号（去掉 dsh- / v 前缀）。
-// 与 fetchLatestRelease 相同：直连失败依次回退镜像前缀；取返回 Release 中版本号最大者。
-func fetchLatestHarnessVersion() (string, error) {
+// fetchHarnessLatestTags 查询 DeepSeek Harness 在 GitHub 上的最新 Release 标签列表
+// （去掉 dsh- / v 前缀前的原始 tag，如 dsh-v0.1.2）。与 fetchLatestRelease 相同：
+// 直连失败依次回退镜像前缀。
+func fetchHarnessLatestTags() ([]string, error) {
 	direct := fmt.Sprintf("https://api.github.com/repos/%s/%s/releases?per_page=20", harnessRepoOwner, harnessRepoName)
 	var candidates []string
 	candidates = append(candidates, direct)
@@ -393,12 +402,39 @@ func fetchLatestHarnessVersion() (string, error) {
 		for _, r := range rels {
 			tags = append(tags, r.TagName)
 		}
-		if best := pickHarnessVersion(tags, harnessPrereleaseOverride); best != "" {
-			return best, nil
+		if len(tags) == 0 {
+			lastErr = fmt.Errorf("harness 仓库未发现可用 Release")
+			continue
 		}
-		lastErr = fmt.Errorf("harness 仓库未发现可用 Release")
+		return tags, nil
 	}
-	return "", lastErr
+	return nil, lastErr
+}
+
+// fetchLatestHarnessVersion 查询 DeepSeek Harness 最新可更新版本号（去掉 dsh- / v 前缀），
+// 预发布取舍按用户「预发布通道」开关（pickHarnessVersion）。
+func fetchLatestHarnessVersion() (string, error) {
+	tags, err := fetchHarnessLatestTags()
+	if err != nil {
+		return "", err
+	}
+	if best := pickHarnessVersion(tags, harnessPrereleaseOverride); best != "" {
+		return best, nil
+	}
+	return "", fmt.Errorf("harness 仓库未发现可用 Release")
+}
+
+// fetchLatestStableHarnessVersion 官方最后发布的稳定版本号（无视预发布通道开关）。
+// 「重置 DeepSeek Harness」回退目标必须用稳定版：预发布开关只影响常规更新，不影响重置。
+func fetchLatestStableHarnessVersion() (string, error) {
+	tags, err := fetchHarnessLatestTags()
+	if err != nil {
+		return "", err
+	}
+	if best := pickHarnessVersion(tags, false); best != "" {
+		return best, nil
+	}
+	return "", fmt.Errorf("harness 仓库未发现可用稳定 Release")
 }
 
 // isStableVersion 判断版本是否为稳定版（无 -alpha/-beta/-rc 等预发布后缀）。

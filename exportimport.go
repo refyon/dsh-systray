@@ -281,9 +281,10 @@ func packBaseName(dir string, used map[string]bool) string {
 
 // buildExportZip 构建导出总 zip 并放入 destDir，返回最终文件路径。
 // includeSessions/includePlugins/includeFiles 分别勾选会话/插件/文件目录；dirs 为要打包的目录列表（可空）。
+// destFile 非空时把压缩包保存到该完整路径（用户通过 SaveFileDialog 选择的位置），否则在 destDir 内自动命名。
 // 子包在总 zip 内布局：manifest.json + sessions.zip（sessions/…）+ plugins.zip（profiles/node_modules/…）
 // + files.zip（<目录名>/…，恢复时由用户选解压位置）。
-func buildExportZip(includeSessions, includePlugins, includeFiles bool, dirs []string, destDir string, onStatus func(text string, pct float64)) (string, error) {
+func buildExportZip(includeSessions, includePlugins, includeFiles bool, dirs []string, destDir string, onStatus func(text string, pct float64), destFile string) (string, error) {
 	home := dshHomeDir()
 	if home == "" {
 		return "", fmt.Errorf("无法确定 harness 数据目录（DSH_HOME）")
@@ -324,34 +325,36 @@ func buildExportZip(includeSessions, includePlugins, includeFiles bool, dirs []s
 
 	progress(onStatus, "正在打包已安装的插件…", 0)
 	if includePlugins {
-		dir, deps, err := profilePlugins()
-		if err != nil {
-			return "", err
-		}
-		if len(deps) == 0 {
-			return "", fmt.Errorf("没有通过 dsh add 安装的插件，无需导出")
-		}
-		manifest.Plugins = profilePluginConfig(dir)
-		root := filepath.Join(pluginsSourceDir())
-		if _, err := os.Stat(root); err != nil {
-			log.Printf("export: plugins dir missing %s: %v", root, err)
-		} else {
-			// 仅打包用户通过 dsh add 安装的插件及其非 harness 依赖闭包
-			closure := collectPluginClosure(root, deps)
-			prefix := pluginsRelPrefix()
-			entries := make(map[string]string, len(closure))
-			for name, real := range closure {
-				entries[filepath.ToSlash(filepath.Join(filepath.FromSlash(prefix), filepath.FromSlash(name)))] = real
-			}
-			zp := filepath.Join(tmp, exportZipPlugins)
-			if err := zipCreate(zp, entries, func(p float64) {
-				progress(onStatus, "正在打包已安装的插件…", p)
-			}); err != nil {
-				return "", fmt.Errorf("打包已安装的插件失败：%w", err)
-			}
-			if st, err := os.Stat(zp); err == nil {
-				manifest.Items = append(manifest.Items, exportItemInfo{Kind: "plugins", Label: fmt.Sprintf("已安装的插件（%d 个）", len(deps)), Zip: exportZipPlugins, Size: st.Size()})
-				staged[exportZipPlugins] = zp
+		dir, deps, perr := profilePlugins()
+		switch {
+		case perr != nil:
+			// 无插件清单（从未通过 dsh add 安装插件）：跳过，不中断其余内容的导出
+			log.Printf("export: no plugin profile found, skipping plugins: %v", perr)
+		case len(deps) == 0:
+			log.Printf("export: no plugins installed via dsh add, skipping plugins")
+		default:
+			manifest.Plugins = profilePluginConfig(dir)
+			root := filepath.Join(pluginsSourceDir())
+			if _, err := os.Stat(root); err != nil {
+				log.Printf("export: plugins dir missing %s: %v", root, err)
+			} else {
+				// 仅打包用户通过 dsh add 安装的插件及其非 harness 依赖闭包
+				closure := collectPluginClosure(root, deps)
+				prefix := pluginsRelPrefix()
+				entries := make(map[string]string, len(closure))
+				for name, real := range closure {
+					entries[filepath.ToSlash(filepath.Join(filepath.FromSlash(prefix), filepath.FromSlash(name)))] = real
+				}
+				zp := filepath.Join(tmp, exportZipPlugins)
+				if err := zipCreate(zp, entries, func(p float64) {
+					progress(onStatus, "正在打包已安装的插件…", p)
+				}); err != nil {
+					return "", fmt.Errorf("打包已安装的插件失败：%w", err)
+				}
+				if st, err := os.Stat(zp); err == nil {
+					manifest.Items = append(manifest.Items, exportItemInfo{Kind: "plugins", Label: fmt.Sprintf("已安装的插件（%d 个）", len(deps)), Zip: exportZipPlugins, Size: st.Size()})
+					staged[exportZipPlugins] = zp
+				}
 			}
 		}
 	}
@@ -405,7 +408,10 @@ func buildExportZip(includeSessions, includePlugins, includeFiles bool, dirs []s
 		return "", fmt.Errorf("生成导出包失败：%w", err)
 	}
 
-	final := filepath.Join(destDir, name)
+	final := destFile
+	if final == "" {
+		final = filepath.Join(destDir, name)
+	}
 	if err := moveFile(tmpMaster, final); err != nil {
 		return "", fmt.Errorf("保存导出包失败：%w", err)
 	}
@@ -573,21 +579,48 @@ func mergePluginConfigIntoProfile(dir string, cfg exportPlugins) error {
 	return os.WriteFile(pj, append(b, '\n'), 0o644)
 }
 
-// restoreEntryPrefix 子包在总 zip 内的条目前缀（sessions/ 或插件前缀 profiles/…/node_modules/）。
-func restoreEntryPrefix(kind string) string {
-	if kind == "plugins" {
-		return pluginsRelPrefix()
+// innerZipContentPrefix 从子包 zip 条目自身推导内容在 DSH_HOME 下的公共前缀（冲突检测/备份基准）：
+// sessions → "sessions/"；plugins → 扫描条目得出 "profiles/<profile>/node_modules/"
+// （兼容旧布局 "profiles/node_modules/"）。不依赖目标机器当前 profile 布局，避免源/目标
+// profile 名不一致时冲突检测错位（此前取目标机 pluginsRelPrefix，与 zip 内源机前缀不匹配，
+// 会导致冲突统计恒为 0、覆盖模式不备份）。
+// 无法推导（如 files 类目）返回 ""，调用方按"无冲突"处理。
+func innerZipContentPrefix(kind, zipPath string) string {
+	if kind == "sessions" {
+		return "sessions/"
 	}
-	return "sessions/"
+	names, err := zipListNames(zipPath)
+	if err != nil {
+		return ""
+	}
+	for _, n := range names {
+		if !strings.HasPrefix(n, "profiles/") {
+			continue
+		}
+		parts := strings.Split(n, "/")
+		if len(parts) >= 2 && parts[1] == "node_modules" {
+			return "profiles/node_modules/" // 旧布局：profiles 即 profile 根
+		}
+		for i := 2; i < len(parts); i++ {
+			if parts[i] == "node_modules" {
+				return strings.Join(parts[:i+1], "/") + "/"
+			}
+		}
+	}
+	return ""
 }
 
-// conflictTops 子包顶层条目名（sessions 的 scope 目录 / plugins 的包目录）。
+// conflictTops 子包顶层条目名（sessions 的 scope 目录 / plugins 的包目录），
+// 前缀以 zip 内容推导为准；files 类目（无公共前缀）返回空。
 func conflictTops(kind, zipPath string) ([]string, error) {
 	names, err := zipListNames(zipPath)
 	if err != nil {
 		return nil, err
 	}
-	prefix := restoreEntryPrefix(kind)
+	prefix := innerZipContentPrefix(kind, zipPath)
+	if prefix == "" {
+		return nil, nil
+	}
 	seen := map[string]bool{}
 	var tops []string
 	for _, n := range names {
@@ -617,18 +650,49 @@ func countRestoreConflicts(kind, zipPath string) (int, error) {
 	if err != nil {
 		return 0, err
 	}
+	prefix := innerZipContentPrefix(kind, zipPath)
+	if prefix == "" {
+		return 0, nil
+	}
 	home := dshHomeDir()
 	if home == "" {
 		return 0, fmt.Errorf("无法确定 harness 数据目录（DSH_HOME）")
 	}
 	n := 0
 	for _, top := range tops {
-		p := filepath.Join(home, filepath.FromSlash(restoreEntryPrefix(kind)), filepath.FromSlash(top))
+		p := filepath.Join(home, filepath.FromSlash(prefix), filepath.FromSlash(top))
 		if _, err := os.Stat(p); err == nil {
 			n++
 		}
 	}
 	return n, nil
+}
+
+// topDirConflicts 统计 zip 顶层目录（去掉第一级后的首个路径段）在 destDir 下已存在的项数。
+// 用于 files 类目：用户选定解压位置后，提示同名顶层目录会被覆盖。
+func topDirConflicts(zipPath, destDir string) (int, []string, error) {
+	names, err := zipListNames(zipPath)
+	if err != nil {
+		return 0, nil, err
+	}
+	seen := map[string]bool{}
+	var tops []string
+	for _, n := range names {
+		top := n
+		if i := strings.Index(n, "/"); i >= 0 {
+			top = n[:i]
+		}
+		if top == "" || seen[top] {
+			continue
+		}
+		seen[top] = true
+		p := filepath.Join(destDir, filepath.FromSlash(top))
+		if _, err := os.Stat(p); err == nil {
+			tops = append(tops, top)
+		}
+	}
+	sort.Strings(tops)
+	return len(tops), tops, nil
 }
 
 // restoreItem 恢复子包：
@@ -650,13 +714,14 @@ func restoreItem(kind, zipPath, filesDest string, overwrite bool, onStatus func(
 
 	dest := filesDest
 	backups := map[string]string{} // 原路径 → 备份路径
+	prefix := innerZipContentPrefix(kind, zipPath)
 	if kind != "files" {
 		home := dshHomeDir()
 		if home == "" {
 			return "", fmt.Errorf("无法确定 harness 数据目录（DSH_HOME）")
 		}
 		dest = home
-		if overwrite {
+		if overwrite && prefix != "" {
 			// 冲突顶层目录先改名备份（同卷瞬间完成），失败可回滚
 			tops, err := conflictTops(kind, zipPath)
 			if err != nil {
@@ -664,7 +729,7 @@ func restoreItem(kind, zipPath, filesDest string, overwrite bool, onStatus func(
 			}
 			ts := time.Now().Format("20060102-150405") + "-" + newExportUUID()[:4]
 			for _, top := range tops {
-				orig := filepath.Join(home, filepath.FromSlash(restoreEntryPrefix(kind)), filepath.FromSlash(top))
+				orig := filepath.Join(home, filepath.FromSlash(prefix), filepath.FromSlash(top))
 				if _, err := os.Stat(orig); err != nil {
 					continue
 				}
@@ -752,7 +817,8 @@ func pauseServiceForRestore() bool {
 	return !serverResponding(webURL)
 }
 
-// resumeServiceAfterRestore 恢复完成后重新拉起后台服务并等待就绪。
+// resumeServiceAfterRestore 恢复完成后重新拉起后台服务并等待就绪；
+// 成功后刷新服务状态与托盘菜单（serverReady/menuStatus）。
 func resumeServiceAfterRestore() {
 	if serverResponding(webURL) {
 		return
@@ -762,7 +828,12 @@ func resumeServiceAfterRestore() {
 		log.Printf("resume service failed: startServer returned false")
 		return
 	}
-	if ok, _ := waitForServerReady(webURL, exitCh, 2*time.Minute); !ok {
+	if ok, _ := waitForServerReady(webURL, exitCh, 2*time.Minute); ok {
+		serverReady.Store(true)
+		serviceFailed.Store(false)
+		refreshServiceMenu()
+		log.Printf("service resumed after restore")
+	} else {
 		log.Printf("service not ready within 2 minutes after restore")
 	}
 }

@@ -6,6 +6,7 @@ import (
 	"encoding/binary"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"os"
@@ -17,7 +18,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/energye/systray"
+	"dsh-systray/internal/systray"
 	"github.com/wailsapp/wails/v2"
 	"github.com/wailsapp/wails/v2/pkg/options"
 	"github.com/wailsapp/wails/v2/pkg/options/windows"
@@ -26,6 +27,16 @@ import (
 
 //go:embed all:frontend/dist
 var assets embed.FS
+
+// isWailsBindingsProcess 判断当前进程是否为 wails 绑定收集器（wailsbindings.exe）。
+// wails build / wails generate module 会编译并运行它收集绑定，本程序 main() 会被执行，
+// 但此时不允许任何真实副作用（见 main() 中 bindingsRun 分支）。
+func isWailsBindingsProcess() bool {
+	if exe, err := os.Executable(); err == nil {
+		return strings.Contains(strings.ToLower(filepath.Base(exe)), "wailsbindings")
+	}
+	return false
+}
 
 // appCtx Wails 运行上下文（OnStartup 设置），供事件推送与窗口控制使用。
 var appCtx context.Context
@@ -201,21 +212,29 @@ func serviceStatusText() string {
 }
 
 // refreshServiceMenu 按服务实际运行状态刷新托盘菜单（可跨线程、可周期调用）。
+// 菜单 Show/Hide/SetTitle/Enable 等操作投递到托盘消息循环线程串行执行
+// （vendored systray 定制：避免与正在弹出的 TrackPopupMenu 并发导致长时间后点击无响应）。
 func refreshServiceMenu() {
 	if menuOpen == nil || menuStatus == nil {
 		return
 	}
-	if serverResponding(webURL) {
-		// 就绪：隐藏状态行，显示并启用「打开 Web UI」
-		menuStatus.Hide()
-		menuOpen.Show()
-		menuOpen.Enable()
-		return
-	}
-	// 未就绪：隐藏「打开 Web UI」，显示状态原因行
-	menuOpen.Hide()
-	menuStatus.Show()
-	menuStatus.SetTitle(serviceStatusText())
+	ready := serverResponding(webURL)
+	systray.RunOnLoop(func() {
+		if menuOpen == nil || menuStatus == nil {
+			return
+		}
+		if ready {
+			// 就绪：隐藏状态行，显示并启用「打开 Web UI」
+			menuStatus.Hide()
+			menuOpen.Show()
+			menuOpen.Enable()
+			return
+		}
+		// 未就绪：隐藏「打开 Web UI」，显示状态原因行
+		menuOpen.Hide()
+		menuStatus.Show()
+		menuStatus.SetTitle(serviceStatusText())
+	})
 }
 
 // pollServiceMenu 周期性探测服务状态并刷新菜单，保证每次打开托盘菜单都反映实时状态。
@@ -233,7 +252,61 @@ func pollServiceMenu() {
 	}
 }
 
+// ==================== 托盘单击/双击判别 ====================
+// Windows：双击会先触发单击（WM_LBUTTONUP）再触发 WM_LBUTTONDBLCLK，
+// 因此单击延迟系统双击间隔后再弹菜单，双击的 DBLCLK 到达即取消菜单并打开 Web UI。
+// macOS：fork 内部自带双击判别（systray_on_click 对短间隔点击只触发 onDClick），无需延迟。
+
+var trayMenuTimer atomic.Pointer[time.Timer]
+
+func stopTrayMenuTimer() {
+	if t := trayMenuTimer.Swap(nil); t != nil {
+		t.Stop()
+	}
+}
+
+// trayOnClick 托盘左键单击（Windows 上可能是双击的第一次点击）：延迟后经消息循环线程弹菜单。
+func trayOnClick(menu systray.IMenu) {
+	if runtime.GOOS != "windows" {
+		systray.ShowMenuAsync() // macOS 已由 fork 判别双击
+		return
+	}
+	log.Printf("[tray] left click")
+	stopTrayMenuTimer()
+	delay := clickDiscriminateDelay()
+	trayMenuTimer.Store(time.AfterFunc(delay, func() {
+		stopTrayMenuTimer()
+		log.Printf("[tray] showing menu (delay %v)", delay)
+		systray.ShowMenuAsync()
+	}))
+}
+
+// trayOnDClick 托盘左键双击：打开 Web UI；服务未就绪时降级为打开设置窗口。
+func trayOnDClick(menu systray.IMenu) {
+	stopTrayMenuTimer()
+	log.Printf("[tray] double click")
+	if serverReady.Load() {
+		openBrowser(webURL)
+	} else {
+		showMainWindow()
+	}
+}
+
+// trayOnRClick 托盘右键单击：直接弹菜单（消息循环线程内，可靠）。
+func trayOnRClick(menu systray.IMenu) {
+	log.Printf("[tray] right click")
+	systray.ShowMenuAsync()
+}
+
 func main() {
+	// bindingsRun：wails build/generate 会编译并运行 wailsbindings.exe（-tags bindings）
+	// 来收集绑定；它执行本 main()，但不得有真实副作用（日志/注册表自愈/托盘/单实例弹窗），
+	// 否则 stderr 输出会让 CI/PowerShell 构建判定失败、或污染自启动注册表。
+	bindingsRun := isWailsBindingsProcess()
+	if bindingsRun {
+		log.SetOutput(io.Discard)
+	}
+
 	cfg := loadConfig()
 	updateMirrorOverride = cfg.UpdateMirror
 	harnessPrereleaseOverride = cfg.HarnessPrerelease
@@ -243,7 +316,8 @@ func main() {
 	startupTimeout = time.Duration(cfg.StartupTimeoutSec) * time.Second
 
 	// 自愈历史自启动项：旧版本注册的自启动条目未带 --autostart 参数，导致登录时被当作“手动双击”而弹提示。
-	if isAutostartEnabled() {
+	// 注意：bindings 生成进程（wailsbindings.exe，wails build/generate 运行）不执行任何真实副作用。
+	if !bindingsRun && isAutostartEnabled() {
 		enableAutostart() // 幂等：确保条目含 --autostart
 		log.Printf("autostart entry refreshed with --autostart flag")
 	}
@@ -253,10 +327,12 @@ func main() {
 		cfgDir = os.TempDir()
 	}
 	logDir = filepath.Join(cfgDir, "dsh-systray", "logs")
-	if err := os.MkdirAll(logDir, 0o755); err == nil {
-		if f, ferr := os.OpenFile(filepath.Join(logDir, "app.log"), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644); ferr == nil {
-			defer f.Close()
-			log.SetOutput(f)
+	if !bindingsRun {
+		if err := os.MkdirAll(logDir, 0o755); err == nil {
+			if f, ferr := os.OpenFile(filepath.Join(logDir, "app.log"), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644); ferr == nil {
+				defer f.Close()
+				log.SetOutput(f)
+			}
 		}
 	}
 	log.SetFlags(log.LstdFlags)
@@ -264,6 +340,9 @@ func main() {
 	release, acquired := acquireSingleInstance()
 	singleInstanceRelease = release
 	if !acquired {
+		if bindingsRun {
+			return // bindings 生成进程：直接退出，不弹窗
+		}
 		// 已在运行：弹窗提示后退出，不产生第二个托盘图标。
 		showMessageBox("DeepSeek Harness 已在运行中，请使用系统托盘图标操作。", appName)
 		return
@@ -271,12 +350,14 @@ func main() {
 	defer release()
 
 	// 清理上次更新遗留的旧程序文件；后台自动检查新版本并提示更新
-	cleanupStaleUpdateFiles()
-	startAutoUpdateCheck()
+	if !bindingsRun {
+		cleanupStaleUpdateFiles()
+		startAutoUpdateCheck()
+	}
 
 	// Windows：托盘在独立 goroutine 自建窗口+消息循环，与 Wails 事件循环共存。
 	// macOS：托盘通过 RunWithExternalLoop 集成（见 onStartup），不接管 NSApplication。
-	if runtime.GOOS == "windows" {
+	if runtime.GOOS == "windows" && !bindingsRun {
 		go systray.Run(onReady, onExit)
 	}
 
@@ -292,11 +373,11 @@ func main() {
 		Bind: []interface{}{
 			app,
 		},
-		OnStartup:       onStartup,
-		OnDomReady:      onDomReady,
-		OnShutdown:      onShutdown,
-		OnBeforeClose:   onBeforeClose,
-		StartHidden:     autostartLaunch,
+		OnStartup:     onStartup,
+		OnDomReady:    onDomReady,
+		OnShutdown:    onShutdown,
+		OnBeforeClose: onBeforeClose,
+		StartHidden:   autostartLaunch,
 		Windows: &windows.Options{
 			WebviewIsTransparent: false,
 			WindowIsTranslucent:  false,
@@ -499,6 +580,7 @@ func showMainWindow() {
 		return
 	}
 	wruntime.WindowShow(appCtx)
+	ensureMainWindowForeground() // 平台实现：把窗口真正置前（需求：所有弹窗/窗口自动前台）
 	wruntime.EventsEmit(appCtx, "ui:show-settings", nil)
 }
 
@@ -563,15 +645,15 @@ func onReady() {
 		}
 	})
 
-	// 左键单击托盘图标也弹出菜单（Windows 默认仅右键弹菜单）
-	systray.SetOnClick(func(menu systray.IMenu) {
-		if menu != nil {
-			_ = menu.ShowMenu()
-		}
-	})
+	// 单击弹菜单（Windows 需与双击判别：延迟后经消息循环线程显示）；
+	// 双击直接打开 Web UI；右键弹菜单（fork 默认行为，这里显式统一）。
+	systray.SetOnClick(trayOnClick)
+	systray.SetOnDClick(trayOnDClick)
+	systray.SetOnRClick(trayOnRClick)
 }
 
 func onExit() {
+	stopTrayMenuTimer()
 	log.Printf("tray exiting")
 }
 

@@ -18,7 +18,7 @@ import (
 	"time"
 	"unsafe"
 
-	"github.com/energye/systray"
+	"dsh-systray/internal/systray"
 )
 
 //go:embed scripts/install-prereqs.ps1
@@ -309,7 +309,53 @@ type browseInfoW struct {
 	iImage         int32
 }
 
-// pickHarnessDir 弹出目录选择对话框（经典 SHBrowseForFolder，无需 COM 初始化），返回用户选择的目录；取消返回 ""。
+// wailsMainHWND 定位 Wails 设置主窗口的 HWND：遍历顶层窗口取本进程的可见窗口。
+// 找不到（如主窗口隐藏、仅托盘常驻）返回 0，调用方不设 owner 维持旧行为。
+func wailsMainHWND() uintptr {
+	modUser32 := syscall.NewLazyDLL("user32.dll")
+	pEnumWindows := modUser32.NewProc("EnumWindows")
+	pIsWindowVisible := modUser32.NewProc("IsWindowVisible")
+	pid := uintptr(os.Getpid())
+	var found uintptr
+	cb := syscall.NewCallback(func(hwnd, _ uintptr) uintptr {
+		if found != 0 {
+			return 0 // 已找到：停止枚举
+		}
+		var procID uintptr
+		pGetWindowThreadProcessId.Call(hwnd, uintptr(unsafe.Pointer(&procID)))
+		if procID != pid {
+			return 1
+		}
+		vis, _, _ := pIsWindowVisible.Call(hwnd)
+		if vis != 0 {
+			found = hwnd
+			return 0
+		}
+		return 1
+	})
+	pEnumWindows.Call(cb, 0)
+	return found
+}
+
+// ensureMainWindowForeground 把 Wails 设置主窗口带到前台（托盘「设置」等场景，
+// 仅 WindowShow 可能不置前导致用户以为没反应）。规则：所有弹窗/置前场景必须调用。
+func ensureMainWindowForeground() {
+	forceForeground(wailsMainHWND())
+}
+
+// clickDiscriminateDelay 单击后等待双击的窗口期：取系统双击间隔（默认约 500ms），
+// 保证双击的第二击（WM_LBUTTONDBLCLK）先到达并取消菜单定时器，单击不打断双击。
+func clickDiscriminateDelay() time.Duration {
+	user32 := syscall.NewLazyDLL("user32.dll")
+	d, _, _ := user32.NewProc("GetDoubleClickTime").Call()
+	if d == 0 {
+		d = 500
+	}
+	return time.Duration(d) * time.Millisecond
+}
+
+// pickHarnessDir 弹出目录选择对话框（经典 SHBrowseForFolderW，无需 COM 初始化），返回用户选择的目录；取消返回 ""。
+// owner 设为 Wails 主窗口，使对话框模态于设置窗口之上并自动前台（需求：所有弹窗必须置前）。
 func pickHarnessDir(title, initial string) string {
 	modShell32 := syscall.NewLazyDLL("shell32.dll")
 	browse := modShell32.NewProc("SHBrowseForFolderW")
@@ -319,10 +365,10 @@ func pickHarnessDir(title, initial string) string {
 	titlePtr, _ := syscall.UTF16PtrFromString(title)
 	var display [260]uint16
 	bi := browseInfoW{
-		hwndOwner:      0,
+		hwndOwner:      wailsMainHWND(), // 模态于主窗口，保证自动前台
 		lpszTitle:      titlePtr,
 		pszDisplayName: &display[0],
-		ulFlags:        0x0001, // BIF_RETURNONLYFSDIRS：仅返回文件系统目录
+		ulFlags:        0x0001 | 0x0040, // BIF_RETURNONLYFSDIRS | BIF_NEWDIALOGSTYLE
 	}
 	pidl, _, _ := browse.Call(uintptr(unsafe.Pointer(&bi)))
 	if pidl == 0 {
@@ -530,6 +576,47 @@ func openBrowser(url string) {
 		return
 	}
 	trackChildProcess(cmd.Process)
+}
+
+// openDir 用资源管理器打开目录。rundll32 url.dll,FileProtocolHandler 对纯目录在部分环境下无反应，
+// 改用 explorer.exe 更可靠（打开日志/导出目录场景）。
+func openDir(dir string) {
+	cmd := exec.Command("explorer", dir)
+	cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
+	if err := cmd.Start(); err != nil {
+		log.Printf("open dir failed: %v", err)
+		return
+	}
+	trackChildProcess(cmd.Process)
+}
+
+// downloadsDir 通过 SHGetKnownFolderPath 获取 Windows 真实「下载」目录（FOLDERID_Downloads）。
+// 相比硬编码 <home>\Downloads，可正确处理 OneDrive / 盘符重定向 / 本地化目录名等场景；
+// 失败返回空串，由调用方回退。
+func downloadsDir() string {
+	const folderIDDownloads = "374DE290-123F-4565-9164-39C4925E467B"
+	var guid syscall.GUID
+	if _, err := fmt.Sscanf(folderIDDownloads, "%08x-%04x-%04x-%02x%02x-%02x%02x%02x%02x%02x%02x",
+		&guid.Data1, &guid.Data2, &guid.Data3,
+		&guid.Data4[0], &guid.Data4[1], &guid.Data4[2], &guid.Data4[3],
+		&guid.Data4[4], &guid.Data4[5], &guid.Data4[6], &guid.Data4[7]); err != nil {
+		return ""
+	}
+	modShell32 := syscall.NewLazyDLL("shell32.dll")
+	pSHGetKnownFolderPath := modShell32.NewProc("SHGetKnownFolderPath")
+	coTaskMemFree := syscall.NewLazyDLL("ole32.dll").NewProc("CoTaskMemFree")
+	var path *uint16
+	ret, _, _ := pSHGetKnownFolderPath.Call(
+		uintptr(unsafe.Pointer(&guid)),
+		0, // KF_FLAG_DEFAULT
+		0, // hToken
+		uintptr(unsafe.Pointer(&path)),
+	)
+	if ret != 0 || path == nil {
+		return ""
+	}
+	defer coTaskMemFree.Call(uintptr(unsafe.Pointer(path)))
+	return syscall.UTF16ToString((*[1 << 20]uint16)(unsafe.Pointer(path))[:])
 }
 
 func isAutostartEnabled() bool {

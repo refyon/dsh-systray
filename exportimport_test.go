@@ -46,7 +46,7 @@ func TestExportImportPipeline(t *testing.T) {
 	if err := os.MkdirAll(destDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	p, err := buildExportZip(true, true, true, []string{userDir}, destDir, nil)
+	p, err := buildExportZip(true, true, true, []string{userDir}, destDir, nil, "")
 	if err != nil {
 		t.Fatalf("buildExportZip: %v", err)
 	}
@@ -132,4 +132,41 @@ func mustInner(t *testing.T, master, name string) string {
 	}
 	t.Cleanup(cleanup)
 	return p
+}
+
+// TestExportSkipsMissingPlugins 回归：勾选「已安装的插件」但机器上没有通过 dsh add 安装任何插件时，
+// 导出不应中断（此前会硬报错并作废同时勾选的会话），而是跳过插件导出其余内容。
+func TestExportSkipsMissingPlugins(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("DSH_HOME", home)
+	if err := os.MkdirAll(filepath.Join(home, "sessions", "--S1--", "session-1"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(home, "sessions", "--S1--", "session-1", "session.jsonl.zstd"), []byte("data1"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	destDir := filepath.Join(home, "exports")
+	if err := os.MkdirAll(destDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	// sessions + plugins（但无插件）→ 应成功，只含会话
+	p, err := buildExportZip(true, true, false, nil, destDir, nil, "")
+	if err != nil {
+		t.Fatalf("export with missing plugins should not abort: %v", err)
+	}
+	items, err := parseExportZip(p)
+	if err != nil {
+		t.Fatalf("parseExportZip: %v", err)
+	}
+	if len(items) != 1 || items[0].Kind != "sessions" {
+		t.Fatalf("expected only sessions item, got %v", items)
+	}
+
+	// 只勾选插件（且无插件）→ 应报「没有可导出的内容」而非「没有通过 dsh add 安装的插件」
+	if _, err := buildExportZip(false, true, false, nil, destDir, nil, ""); err == nil {
+		t.Fatal("expected error when only empty plugins selected")
+	} else if strings.Contains(err.Error(), "没有通过 dsh add 安装的插件") {
+		t.Fatalf("should report nothing-to-export, got: %v", err)
+	}
 }

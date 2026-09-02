@@ -28,6 +28,7 @@ const state = {
   expDirs: [],          // 已选打包目录
   expSelected: { sessions: true, plugins: false, files: false },
   impItems: [],
+  impDone: {},          // kind → true：恢复完成标记（对应项显示 ✓ 已完成）
   updateProgress: null, // {text, pct} 更新进度
   splashMode: "startup", // startup | update
 };
@@ -108,9 +109,16 @@ function wireGeneral() {
     refreshConfig();
   });
   $("btn-pick-harness").addEventListener("click", async () => {
-    const dir = await bindings().PickHarnessDir();
-    if (dir) await bindings().SetHarnessDir(dir);
-    refreshConfig();
+    // 防重复弹窗：对话框打开期间禁用按钮，避免连点开出多个目录选择窗口
+    const btn = $("btn-pick-harness");
+    btn.disabled = true;
+    try {
+      const dir = await bindings().PickHarnessDir();
+      if (dir) await bindings().SetHarnessDir(dir);
+      refreshConfig();
+    } finally {
+      btn.disabled = false;
+    }
   });
   $("btn-restart").addEventListener("click", async () => {
     $("btn-restart").disabled = true;
@@ -118,6 +126,22 @@ function wireGeneral() {
     const ok = await bindings().RestartService();
     if (!ok) $("svc-sub").textContent = "重启失败，请查看日志";
     setTimeout(() => { $("btn-restart").disabled = false; refreshService(); }, 2000);
+  });
+  $("btn-reset-harness").addEventListener("click", async () => {
+    const btn = $("btn-reset-harness");
+    const ok = await confirmDialog(
+      "重置 DeepSeek Harness？",
+      "重置将删除所有已安装的插件（无法恢复），并把 DeepSeek Harness 回退到官方最后发布的稳定版本，用于排除插件导致的服务启动失败。\n\n确定继续吗？",
+      "确定重置"
+    );
+    if (!ok) return;
+    btn.disabled = true;
+    try {
+      showSplash("startup", "正在重置 DeepSeek Harness…");
+      await bindings().ResetHarness();
+    } finally {
+      setTimeout(() => { btn.disabled = false; }, 1500);
+    }
   });
 }
 
@@ -150,19 +174,40 @@ function wireAbout() {
   });
   $("btn-check-update").addEventListener("click", async () => {
     const btn = $("btn-check-update");
+    const hub = $("btn-harness-update");
     btn.disabled = true;
     $("update-hint").textContent = "正在检查更新…";
     const info = await bindings().CheckUpdateManual();
     btn.disabled = false;
     if (info.error) {
       $("update-hint").textContent = "检查更新失败：" + info.error;
-    } else if (info.hasUpdate) {
-      $("update-hint").textContent = "发现新版本 " + info.latest + "（当前 " + (info.current || "dev") + "）";
+      hub.classList.add("hidden");
+      return;
+    }
+    // 同时展示 harness（按预发布通道）与 dsh-systray 两个检查结果
+    const parts = [];
+    if (info.harnessHasUpdate) {
+      parts.push("Harness 有新版本 " + info.harnessLatest + "（当前 " + (info.harnessCurrent || "—") + "）");
+    }
+    if (info.hasUpdate) {
+      parts.push("dsh-systray 有新版本 " + info.latest + "（当前 " + (info.current || "dev") + "）");
+    }
+    if (!parts.length) {
+      parts.push("已是最新版本（systray " + (info.current || "dev") + " · harness " + (info.harnessCurrent || "未检测到") + "）");
+    }
+    $("update-hint").textContent = parts.join("；");
+    hub.classList.toggle("hidden", !info.harnessHasUpdate);
+    // harness 有新版时优先交由用户处理；否则保持原有自动更新 dsh-systray 的行为
+    if (info.hasUpdate && !info.harnessHasUpdate) {
       bindings().StartUpdate();
       showSplash("update", "正在准备更新…");
-    } else {
-      $("update-hint").textContent = "已是最新版本（" + (info.current || "dev") + "）";
     }
+  });
+  $("btn-harness-update").addEventListener("click", async () => {
+    const hub = $("btn-harness-update");
+    hub.disabled = true;
+    $("update-hint").textContent = "正在更新 DeepSeek Harness…";
+    await bindings().StartHarnessUpdate();
   });
 }
 
@@ -263,6 +308,13 @@ function wireLogs() {
 
 // ==================== 导出页 ====================
 
+/** 目录去重键：Windows 忽略大小写、去尾部分隔符，避免同一目录被重复添加。 */
+function normalizeDirKey(p) {
+  let s = p.replace(/[\\/]+$/, "");
+  if (/win/i.test(navigator.platform || navigator.userAgent)) s = s.toLowerCase();
+  return s;
+}
+
 function renderExportRows() {
   const a = bindings();
   const wrap = $("exp-rows");
@@ -285,22 +337,26 @@ function renderExportRows() {
       updateExportHint();
     });
     wrap.appendChild(div);
-  }
-  // 文件目录子列表
-  for (const d of state.expDirs) {
-    const div = document.createElement("div");
-    div.className = "exp-item selected";
-    div.innerHTML =
-      '<div class="check">✓</div><div style="flex:1;min-width:0"><div class="exp-label">' +
-      esc(d) + "</div><div class=\"exp-sub\">用户选择目录</div></div>" +
-      '<button class="btn btn-ghost" data-remove-dir="' + escAttr(d) + '">移除</button>';
-    div.querySelector("[data-remove-dir]").addEventListener("click", (e) => {
-      e.stopPropagation();
-      state.expDirs = state.expDirs.filter((x) => x !== d);
-      renderExportRows();
-      updateExportHint();
-    });
-    wrap.appendChild(div);
+    // 文件目录二级列表：依附在「需要打包的文件目录」选项下方，无勾选框、保留移除按钮
+    if (o.kind === "files") {
+      const sub = document.createElement("div");
+      sub.className = "exp-dirs" + (state.expSelected.files ? "" : " dim");
+      for (const d of state.expDirs) {
+        const row = document.createElement("div");
+        row.className = "exp-dir-item";
+        row.innerHTML =
+          '<div class="exp-dir-label" title="' + escAttr(d) + '">' + esc(d) + "</div>" +
+          '<button class="btn btn-ghost btn-sm" data-remove-dir="' + escAttr(d) + '">移除</button>';
+        row.querySelector("[data-remove-dir]").addEventListener("click", (e) => {
+          e.stopPropagation();
+          state.expDirs = state.expDirs.filter((x) => x !== d);
+          renderExportRows();
+          updateExportHint();
+        });
+        sub.appendChild(row);
+      }
+      wrap.appendChild(sub);
+    }
   }
   updateExportHint();
 }
@@ -312,29 +368,66 @@ function updateExportHint() {
     : "请至少勾选一项，或为「文件目录」添加目录";
 }
 
+/** 导出进度弹层（居中弹出；进度不随页面滚动隐藏）。 */
+let lastExportPath = "";
+
+function showExportModal(text, pct) {
+  $("exp-modal").classList.remove("hidden");
+  $("exp-modal-close").classList.add("hidden");
+  if (typeof text === "string") $("exp-modal-text").textContent = text;
+  if (typeof pct === "number") $("exp-modal-fill").style.width = Math.round(pct * 100) + "%";
+}
+
+function hideExportModal() {
+  $("exp-modal").classList.add("hidden");
+  $("exp-modal-close").classList.add("hidden");
+}
+
 function wireExport() {
   renderExportRows();
   $("btn-pick-dir").addEventListener("click", async () => {
-    const p = await bindings().PickExportDir();
-    if (p && !state.expDirs.includes(p)) {
-      state.expDirs.push(p);
-      state.expSelected.files = true;
-      renderExportRows();
+    const btn = $("btn-pick-dir");
+    btn.disabled = true;
+    try {
+      const p = await bindings().PickExportDir();
+      if (p) {
+        const key = normalizeDirKey(p);
+        if (!state.expDirs.some((x) => normalizeDirKey(x) === key)) {
+          state.expDirs.push(p);
+          state.expSelected.files = true;
+          renderExportRows();
+        } else {
+          $("exp-hint").textContent = "该目录已添加：" + p;
+        }
+      }
+    } finally {
+      btn.disabled = false;
     }
   });
   $("btn-export").addEventListener("click", async () => {
     const any = Object.values(state.expSelected).some(Boolean);
     if (!any) { $("exp-hint").textContent = "请至少勾选一项"; return; }
     $("btn-export").disabled = true;
-    $("exp-progress").classList.remove("hidden");
-    $("exp-text").textContent = "正在准备导出…";
+    $("exp-open").classList.add("hidden");
+    // 先让用户选择导出压缩包的保存位置（SaveFileDialog）
+    const savePath = await bindings().PickSavePath();
+    if (!savePath) {
+      $("btn-export").disabled = false;
+      return;
+    }
+    showExportModal("正在准备导出…", 0);
     await bindings().StartExport(
       state.expSelected.sessions,
       state.expSelected.plugins,
       state.expSelected.files,
-      state.expDirs
+      state.expDirs,
+      savePath
     );
   });
+  $("exp-open").addEventListener("click", () => {
+    if (lastExportPath) bindings().OpenExportDir(lastExportPath);
+  });
+  $("exp-modal-close").addEventListener("click", hideExportModal);
 }
 
 // ==================== 导入页 ====================
@@ -348,20 +441,48 @@ function renderImportRows() {
   }
   $("imp-hint").textContent = "解析成功：共 " + state.impItems.length + " 个可恢复项，点击右侧「恢复」逐项恢复。";
   for (const it of state.impItems) {
+    const done = !!state.impDone[it.kind];
     const div = document.createElement("div");
-    div.className = "imp-item";
+    div.className = "imp-item" + (done ? " imp-item-done" : "");
     div.innerHTML =
       "<div><div class=\"exp-label\">" + esc(it.label) + "</div>" +
       (it.size ? '<div class="exp-sub">' + fmtSize(it.size) + "</div>" : "") + "</div>" +
+      (done ? '<span class="imp-done" title="本项已恢复完成">✓ 已完成</span>' : "") +
       '<button class="btn btn-primary" data-restore="' + escAttr(it.kind) + '">恢复</button>';
     div.querySelector("[data-restore]").addEventListener("click", async () => {
       const btn = div.querySelector("button");
       btn.disabled = true;
-      $("imp-progress").classList.remove("hidden");
-      $("imp-text").textContent = "正在恢复…";
-      // files 类目需要先选解压位置，由后端弹目录选择器
-      await bindings().StartImport(it.kind, true);
-      setTimeout(() => { btn.disabled = false; }, 1500);
+      try {
+        // 1) 准备 + 冲突检测（files 类目此时由后端弹解压位置选择）
+        const preview = await bindings().PreviewRestore(it.kind);
+        if (!preview) return;
+        if (preview.error) { $("imp-hint").textContent = "无法恢复：" + preview.error; return; }
+        if (preview.canceled) return; // 用户取消了解压位置选择
+        // 2) 有冲突 → 弹窗询问是否覆盖
+        let overwrite = true;
+        if (preview.conflicts > 0) {
+          const detail = (preview.tops || []).slice(0, 3).join("、");
+          overwrite = await confirmDialog(
+            "检测到数据冲突",
+            "「" + it.label + "」与现有内容存在 " + preview.conflicts + " 项冲突" +
+              (detail ? "（" + detail + (preview.conflicts > 3 ? " 等" : "") + "）" : "") +
+              "。\n\n选择「覆盖」将备份并替换现有内容；选择「跳过」则保留现有文件、只补缺失项。",
+            "覆盖并恢复"
+          );
+          if (!overwrite) {
+            $("imp-hint").textContent = "已选择跳过 " + preview.conflicts + " 项冲突，现有内容将保留。";
+          }
+        }
+        // 3) 执行恢复
+        $("imp-progress").classList.remove("hidden");
+        $("imp-text").textContent = "正在恢复…";
+        $("imp-fill").style.width = "0%";
+        await bindings().ApplyRestore(it.kind, overwrite);
+      } catch (e) {
+        $("imp-hint").textContent = "恢复失败：" + (e && e.message ? e.message : e);
+      } finally {
+        setTimeout(() => { btn.disabled = false; }, 1200);
+      }
     });
     wrap.appendChild(div);
   }
@@ -423,19 +544,22 @@ function wireEvents() {
 
   EventsOn("export:progress", (d) => {
     if (!d) return;
-    $("exp-text").textContent = d.text || "";
-    $("exp-fill").style.width = Math.round((d.pct || 0) * 100) + "%";
+    showExportModal(d.text || "", d.pct);
   });
 
   EventsOn("export:done", (d) => {
     $("btn-export").disabled = false;
     if (d && d.error) {
       $("exp-hint").textContent = "导出失败：" + d.error;
+      showExportModal("导出失败：" + d.error, 0);
+      $("exp-modal-close").classList.remove("hidden");
     } else if (d && d.path) {
       $("exp-hint").textContent = "导出完成：" + d.path;
-      $("exp-fill").style.width = "100%";
+      lastExportPath = d.path;
+      $("exp-open").classList.remove("hidden");
+      showExportModal("导出完成 ✓", 1);
+      setTimeout(hideExportModal, 1600);
     }
-    setTimeout(() => { $("exp-progress").classList.add("hidden"); }, 6000);
   });
 
   EventsOn("import:progress", (d) => {
@@ -451,6 +575,7 @@ function wireEvents() {
     } else {
       $("imp-hint").textContent = "恢复完成 ✓";
       $("imp-fill").style.width = "100%";
+      if (d.kind) state.impDone[d.kind] = true; // 完成标记：对应项显示 ✓ 已完成
     }
     setTimeout(() => { $("imp-progress").classList.add("hidden"); }, 6000);
     renderImportRows();

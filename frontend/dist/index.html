@@ -73,6 +73,15 @@
             <button id="btn-pick-harness" class="btn btn-ghost">选择…</button>
           </div>
         </div>
+        <div class="card">
+          <div class="card-row">
+            <div class="row-text">
+              <div class="row-title">重置 DeepSeek Harness</div>
+              <div class="row-sub">删除全部已安装插件，并回退到官方最后发布的稳定版本（用于排除插件导致的服务启动失败）</div>
+            </div>
+            <button id="btn-reset-harness" class="btn btn-danger">重置…</button>
+          </div>
+        </div>
       </section>
 
       <!-- 关于 -->
@@ -92,6 +101,7 @@
         </div>
         <div class="update-zone">
           <button id="btn-check-update" class="btn btn-primary">检查更新</button>
+          <button id="btn-harness-update" class="btn btn-primary hidden">更新 Harness</button>
           <div id="update-hint" class="update-hint"></div>
           <div id="update-progress" class="update-progress hidden">
             <div class="splash-track"><div id="update-fill" class="splash-fill"></div></div>
@@ -122,13 +132,12 @@
       <section id="page-export" class="page hidden">
         <div id="exp-rows"></div>
         <div class="export-foot">
-          <button id="btn-pick-dir" class="btn btn-ghost">选择目录…</button>
+          <button id="btn-pick-dir" class="btn btn-ghost">添加打包目录…</button>
           <button id="btn-export" class="btn btn-primary">导出…</button>
         </div>
-        <div id="exp-hint" class="row-sub">已选 0 项，点击「导出…」打包为 zip</div>
-        <div id="exp-progress" class="op-progress hidden">
-          <div class="splash-track"><div id="exp-fill" class="splash-fill"></div></div>
-          <span id="exp-text" class="row-sub"></span>
+        <div class="exp-result">
+          <div id="exp-hint" class="row-sub">已选 0 项，点击「导出…」打包为 zip</div>
+          <button id="exp-open" class="btn btn-ghost hidden">打开导出目录</button>
         </div>
       </section>
 
@@ -161,6 +170,19 @@
       <div class="modal-actions">
         <button class="btn btn-ghost" id="modal-cancel">取消</button>
         <button class="btn btn-danger" id="modal-ok">确定</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ======== 导出进度弹层（进度居中弹出，不依赖页面滚动） ======== -->
+  <div id="exp-modal" class="modal hidden">
+    <div class="modal-mask"></div>
+    <div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="exp-modal-title">
+      <div class="modal-title" id="exp-modal-title">正在导出</div>
+      <div id="exp-modal-text" class="modal-msg">正在准备导出…</div>
+      <div class="splash-track"><div id="exp-modal-fill" class="splash-fill"></div></div>
+      <div class="modal-actions">
+        <button class="btn btn-primary" id="exp-modal-close">完成</button>
       </div>
     </div>
   </div>

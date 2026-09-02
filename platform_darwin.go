@@ -12,8 +12,9 @@ import (
 	"strconv"
 	"strings"
 	"syscall"
+	"time"
 
-	"github.com/energye/systray"
+	"dsh-systray/internal/systray"
 )
 
 //go:embed scripts/install-prereqs.sh
@@ -22,6 +23,19 @@ var installScript []byte
 const launchAgentLabel = "com.deepseek.dsh-systray"
 
 var serverCmd *exec.Cmd
+
+// ensureMainWindowForeground macOS：把应用激活到前台（macOS 无 Windows 式强制置顶，
+// Wails 的 WindowShow 已触发应用激活；此处兜底按 bundle id 再激活一次）。
+// 开发构建（裸二进制、非 .app 内运行）定位不到 bundle 时静默忽略。
+func ensureMainWindowForeground() {
+	_ = exec.Command("osascript", "-e", `tell application id "`+launchAgentLabel+`" to activate`).Run()
+}
+
+// clickDiscriminateDelay macOS 由 fork 内部双击判别（systray_on_click 对短间隔点击只触发
+// onDClick），单击回调无需延迟；此值仅为占位（不经 Windows 分支）。
+func clickDiscriminateDelay() time.Duration {
+	return 500 * time.Millisecond
+}
 
 // candidateHarnessDirs 探测候选：用户主目录 + 默认目录。
 func candidateHarnessDirs() []string {
@@ -166,6 +180,25 @@ func openBrowser(url string) {
 	cmd := exec.Command("open", url)
 	if err := cmd.Start(); err != nil {
 		log.Printf("open browser failed: %v", err)
+		return
+	}
+	trackChildProcess(cmd.Process)
+}
+
+// downloadsDir macOS：默认 ~/Downloads（无系统级重定向场景）。
+func downloadsDir() string {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return ""
+	}
+	return filepath.Join(home, "Downloads")
+}
+
+// openDir macOS：用 Finder 打开目录（open <dir>）。
+func openDir(dir string) {
+	cmd := exec.Command("open", dir)
+	if err := cmd.Start(); err != nil {
+		log.Printf("open dir failed: %v", err)
 		return
 	}
 	trackChildProcess(cmd.Process)

@@ -433,6 +433,50 @@ input { font-family: inherit; }
 .op-progress { margin-top: var(--sp-4); }
 .op-progress .row-sub { display: block; margin-top: var(--sp-2); }
 
+/* 文件目录二级列表（依附于「需要打包的文件目录」下方，无勾选框） */
+.exp-dirs {
+  margin: calc(-1 * var(--sp-2)) 0 var(--sp-4) var(--sp-6);
+  padding: var(--sp-2) var(--sp-3);
+  border-left: 2px solid var(--primary-soft);
+  border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
+  background: var(--surface-2);
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-1);
+  transition: opacity var(--dur) var(--ease);
+}
+.exp-dirs.dim { opacity: 0.55; }
+
+.exp-dir-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-3);
+  padding: var(--sp-2) var(--sp-3);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+}
+
+.exp-dir-label {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--fs-sm);
+  font-family: var(--mono);
+}
+
+.exp-result {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-4);
+  margin-top: var(--sp-2);
+}
+.exp-result .row-sub { margin-top: 0; }
+
 /* ---------- Import ---------- */
 .imp-intro {
   display: flex;
@@ -455,6 +499,18 @@ input { font-family: inherit; }
   border-radius: var(--radius);
   margin-bottom: var(--sp-3);
 }
+
+/* 恢复完成徽标（行内、绿色点缀，不喧宾夺主） */
+.imp-done {
+  flex-shrink: 0;
+  font-size: var(--fs-sm);
+  font-weight: 600;
+  color: #188038;            /* 语义绿（成功） */
+  background: rgba(24, 128, 56, 0.10);
+  padding: var(--sp-1) var(--sp-3);
+  border-radius: 999px;      /* 胶囊徽标 */
+}
+.imp-item-done { border-color: rgba(24, 128, 56, 0.35); }
 
 /* ---------- Modal ---------- */
 .modal {

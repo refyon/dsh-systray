@@ -28,37 +28,37 @@ const (
 	iconBig   = 1
 	iconSmall = 0
 
-	swShow          = 5
-	wsCaption       = 0x00C00000
-	wsSysMenu       = 0x00080000
-	wsClipChildren  = 0x02000000
-	wsChild         = 0x40000000
-	wsVisible       = 0x10000000
-	wsTabStop       = 0x00010000
-	ssCenter        = 0x00000001
-	csHRedraw       = 0x0002
-	csVRedraw       = 0x0001
-	idcArrow        = 32512
-	colorWin        = 6 // COLOR_WINDOW + 1（白色窗口背景）
-	smCX            = 0
-	smCY            = 1
-	bsOwnDraw       = 0x000B
-	odsSelected     = 0x0001
-	psSolid         = 0
-	dtCenter        = 0x0001
-	dtVCenter       = 0x0004
-	dtSingle        = 0x0020
-	dtSingleLine    = 0x0020
-	dtEndEllipsis   = 0x8000
-	dtWordBreak     = 0x0010
-	dtCalcRect      = 0x0400
-	srccopy         = 0x00CC0020
-	defaultCharset  = 1
-	cleartypeQual   = 5
-	antialiasQual   = 4 // 灰度抗锯齿（彩色底上避免 ClearType 彩边）
-	bkTransparent   = 1
-	bkOpaque        = 0
-	whiteBrush      = 0
+	swShow                     = 5
+	wsCaption                  = 0x00C00000
+	wsSysMenu                  = 0x00080000
+	wsClipChildren             = 0x02000000
+	wsChild                    = 0x40000000
+	wsVisible                  = 0x10000000
+	wsTabStop                  = 0x00010000
+	ssCenter                   = 0x00000001
+	csHRedraw                  = 0x0002
+	csVRedraw                  = 0x0001
+	idcArrow                   = 32512
+	colorWin                   = 6 // COLOR_WINDOW + 1（白色窗口背景）
+	smCX                       = 0
+	smCY                       = 1
+	bsOwnDraw                  = 0x000B
+	odsSelected                = 0x0001
+	psSolid                    = 0
+	dtCenter                   = 0x0001
+	dtVCenter                  = 0x0004
+	dtSingle                   = 0x0020
+	dtSingleLine               = 0x0020
+	dtEndEllipsis              = 0x8000
+	dtWordBreak                = 0x0010
+	dtCalcRect                 = 0x0400
+	srccopy                    = 0x00CC0020
+	defaultCharset             = 1
+	cleartypeQual              = 5
+	antialiasQual              = 4 // 灰度抗锯齿（彩色底上避免 ClearType 彩边）
+	bkTransparent              = 1
+	bkOpaque                   = 0
+	whiteBrush                 = 0
 	dwmcWindowCornerPreference = 33
 	dwmcRound                  = 2
 
@@ -121,33 +121,85 @@ var (
 	pAddFontResourceExW    = modGdi32.NewProc("AddFontResourceExW")
 	pDwmSetWindowAttribute = modDwmapi.NewProc("DwmSetWindowAttribute")
 	// GDI+（抗锯齿绘图）
-	modGdiplus    = syscall.NewLazyDLL("gdiplus.dll")
-	gpStartup     = modGdiplus.NewProc("GdiplusStartup")
-	gpShutdown    = modGdiplus.NewProc("GdiplusShutdown")
-	gpFromHDC     = modGdiplus.NewProc("GdipCreateFromHDC")
-	gpDelGraphics = modGdiplus.NewProc("GdipDeleteGraphics")
-	gpSmooth      = modGdiplus.NewProc("GdipSetSmoothingMode")
-	gpCreatePath  = modGdiplus.NewProc("GdipCreatePath")
-	gpDelPath     = modGdiplus.NewProc("GdipDeletePath")
-	gpAddArc      = modGdiplus.NewProc("GdipAddPathArc")
-	gpCloseFig    = modGdiplus.NewProc("GdipClosePathFigure")
-	gpCreateSolid = modGdiplus.NewProc("GdipCreateSolidFill")
-	gpDelBrush    = modGdiplus.NewProc("GdipDeleteBrush")
-	gpFillPath    = modGdiplus.NewProc("GdipFillPath")
-	pGetDC        = modUser32.NewProc("GetDC")
-	pReleaseDC    = modUser32.NewProc("ReleaseDC")
-	pExtractIconW = modShell32.NewProc("ExtractIconW")
-	pDrawTextW    = modUser32.NewProc("DrawTextW")
-	pGetTextFaceW = modGdi32.NewProc("GetTextFaceW")
-	pFillRect     = modUser32.NewProc("FillRect")
-	pCreateDIBSection = modGdi32.NewProc("CreateDIBSection")
-	pGdiFlush         = modGdi32.NewProc("GdiFlush")
-	pUpdateLayeredWindow = modUser32.NewProc("UpdateLayeredWindow")
-	pCreatePen    = modGdi32.NewProc("CreatePen")
-	pSelectObject = modGdi32.NewProc("SelectObject")
-	pRoundRect    = modGdi32.NewProc("RoundRect")
-	pSetForegroundWindow = modUser32.NewProc("SetForegroundWindow")
+	modGdiplus                = syscall.NewLazyDLL("gdiplus.dll")
+	gpStartup                 = modGdiplus.NewProc("GdiplusStartup")
+	gpShutdown                = modGdiplus.NewProc("GdiplusShutdown")
+	gpFromHDC                 = modGdiplus.NewProc("GdipCreateFromHDC")
+	gpDelGraphics             = modGdiplus.NewProc("GdipDeleteGraphics")
+	gpSmooth                  = modGdiplus.NewProc("GdipSetSmoothingMode")
+	gpCreatePath              = modGdiplus.NewProc("GdipCreatePath")
+	gpDelPath                 = modGdiplus.NewProc("GdipDeletePath")
+	gpAddArc                  = modGdiplus.NewProc("GdipAddPathArc")
+	gpCloseFig                = modGdiplus.NewProc("GdipClosePathFigure")
+	gpCreateSolid             = modGdiplus.NewProc("GdipCreateSolidFill")
+	gpDelBrush                = modGdiplus.NewProc("GdipDeleteBrush")
+	gpFillPath                = modGdiplus.NewProc("GdipFillPath")
+	pGetDC                    = modUser32.NewProc("GetDC")
+	pReleaseDC                = modUser32.NewProc("ReleaseDC")
+	pExtractIconW             = modShell32.NewProc("ExtractIconW")
+	pDrawTextW                = modUser32.NewProc("DrawTextW")
+	pGetTextFaceW             = modGdi32.NewProc("GetTextFaceW")
+	pFillRect                 = modUser32.NewProc("FillRect")
+	pCreateDIBSection         = modGdi32.NewProc("CreateDIBSection")
+	pGdiFlush                 = modGdi32.NewProc("GdiFlush")
+	pUpdateLayeredWindow      = modUser32.NewProc("UpdateLayeredWindow")
+	pCreatePen                = modGdi32.NewProc("CreatePen")
+	pSelectObject             = modGdi32.NewProc("SelectObject")
+	pRoundRect                = modGdi32.NewProc("RoundRect")
+	pSetForegroundWindow      = modUser32.NewProc("SetForegroundWindow")
+	pSetWindowPos             = modUser32.NewProc("SetWindowPos")
+	pBringWindowToTop         = modUser32.NewProc("BringWindowToTop")
+	pSetActiveWindow          = modUser32.NewProc("SetActiveWindow")
+	pGetForegroundWindow      = modUser32.NewProc("GetForegroundWindow")
+	pGetWindowThreadProcessId = modUser32.NewProc("GetWindowThreadProcessId")
+	pAttachThreadInput        = modUser32.NewProc("AttachThreadInput")
 )
+
+// ==================== 前台（自动置顶） ====================
+// 本文件全部自绘弹窗与平台层原生对话框（pickHarnessDir 等）都要求自动前台：
+// 任何新增弹窗必须经 forceForeground / 传入 hwndOwner，规则见 DESIGN.md 第 6 节。
+
+// forceForeground 把窗口可靠地带到前台：
+//  1. 置顶（HWND_TOPMOST）闪烁后撤销，确保 z 序跳到最前；
+//  2. SetForegroundWindow 失败时（前台被其它进程占用），把本窗口线程 AttachThreadInput
+//     挂到当前前台线程再抢一次（Windows 前台锁定常见兜底）。
+func forceForeground(hwnd uintptr) {
+	if hwnd == 0 {
+		return
+	}
+	const (
+		hwndTopmost   = ^uintptr(0)     // -1：置顶
+		hwndNotopmost = ^uintptr(0) - 1 // -2：取消置顶
+		swpNomove     = 0x0002
+		swpNosize     = 0x0001
+		swpNoactivate = 0x0010
+		swpShowWindow = 0x0040
+	)
+	pSetWindowPos.Call(hwnd, hwndTopmost, 0, 0, 0, 0, swpNomove|swpNosize|swpShowWindow)
+	pSetWindowPos.Call(hwnd, hwndNotopmost, 0, 0, 0, 0, swpNomove|swpNosize)
+	pBringWindowToTop.Call(hwnd)
+	pSetActiveWindow.Call(hwnd)
+	if r, _, _ := pSetForegroundWindow.Call(hwnd); r == 0 {
+		// 前台被其它进程占用：把本窗口线程临时挂到前台线程再抢一次
+		fore, _, _ := pGetForegroundWindow.Call()
+		if fore != 0 && fore != hwnd {
+			fThread, _ := getWindowThreadID(fore)
+			tThread, _ := getWindowThreadID(hwnd)
+			if fThread != 0 && tThread != 0 && fThread != tThread {
+				pAttachThreadInput.Call(uintptr(fThread), uintptr(tThread), 1)
+				pBringWindowToTop.Call(hwnd)
+				pSetForegroundWindow.Call(hwnd)
+				pAttachThreadInput.Call(uintptr(fThread), uintptr(tThread), 0)
+			}
+		}
+	}
+}
+
+// getWindowThreadID 返回窗口所属线程 id（GetWindowThreadProcessId 的返回值即线程 id）。
+func getWindowThreadID(hwnd uintptr) (uint32, bool) {
+	r, _, _ := pGetWindowThreadProcessId.Call(hwnd, 0)
+	return uint32(r), uint32(r) != 0
+}
 
 type wndClassExW struct {
 	cbSize        uint32
@@ -620,7 +672,7 @@ func createDialogWindow(caption, message string) uintptr {
 	pShowWindow.Call(hwnd, swShow)
 	pUpdateWindow.Call(hwnd)
 	setWindowIcon(hwnd)
-	pSetForegroundWindow.Call(hwnd)
+	forceForeground(hwnd) // 弹窗必须自动前台（见本文件头部规则）
 	return hwnd
 }
 
