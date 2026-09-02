@@ -17,6 +17,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"sync"
 	"sync/atomic"
@@ -1049,6 +1050,13 @@ func create32BitHBitmap(hDC uintptr, cx, cy int32) (uintptr, error) {
 }
 
 func registerSystray() {
+	// 关键：把当前 goroutine（systray.Run 所在 goroutine）钉在当前 OS 线程上。
+	// Windows 窗口绑定创建它的线程：若窗口创建（initInstance/CreateWindowEx）之后该
+	// goroutine 被 Go 调度器迁移到其它线程，nativeLoop 的 PeekMessage 将收不到本窗口的
+	// 托盘点击消息 → 表现为“运行一段时间后左/右键点击无响应”。
+	// 原版 systray 在 init() 锁的是 main goroutine；本应用在子 goroutine 调 Run，
+	// 必须在窗口创建前于此锁定（与 nativeLoop 同 goroutine 保证线程一致）。
+	runtime.LockOSThread()
 	if err := wt.initInstance(); err != nil {
 		log.Printf("systray error: unable to init instance: %s\n", err)
 		return

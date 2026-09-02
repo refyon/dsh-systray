@@ -181,27 +181,32 @@ func (a *App) SetStartupTimeoutSec(s int) {
 // ==================== 服务 ====================
 
 // ServiceState 服务四态：starting / running / stopped / failed。
+// RunningPort：服务当前实际运行端口（0 = 未在运行）；修改端口但未重启时，
+// 该值与 ConfigInfo.Port（设置端口）不一致，前端据此显示「重启后生效」提示。
 type ServiceState struct {
-	State  string `json:"state"`
-	Reason string `json:"reason"`
-	WebURL string `json:"webURL"`
+	State       string `json:"state"`
+	Reason      string `json:"reason"`
+	WebURL      string `json:"webURL"`
+	RunningPort int    `json:"runningPort"`
 }
 
 func (a *App) GetServiceState() ServiceState {
-	if serverResponding(webURL) {
-		return ServiceState{State: "running", WebURL: webURL}
+	// 实际端口优先：配置端口或本进程最后启动的端口（端口已改未重启场景）
+	if running, rp, live := resolveRunningService(); running {
+		return ServiceState{State: "running", WebURL: live, RunningPort: rp}
 	}
+	// 未运行：RunningPort 回传「最后运行端口」（0=从未启动过），供前端判断端口是否需重启生效
+	last := serverStartedPort
 	if serviceFailed.Load() {
 		s, _ := serviceFailReason.Load().(string)
-		return ServiceState{State: "failed", Reason: s, WebURL: webURL}
+		return ServiceState{State: "failed", Reason: s, WebURL: webURL, RunningPort: last}
 	}
 	if serverReady.Load() {
-		return ServiceState{State: "stopped", WebURL: webURL}
+		return ServiceState{State: "stopped", WebURL: webURL, RunningPort: last}
 	}
-	return ServiceState{State: "starting", WebURL: webURL}
+	return ServiceState{State: "starting", WebURL: webURL, RunningPort: last}
 }
 
-// RestartService 重启后台服务（含 harness 自愈）。
 // RestartService 重启后台服务（含 harness 自愈）。成功返回 true（服务就绪，
 // 且已按需求弹出「是否打开 Web UI」询问）；失败返回 false（已弹错误提示）。
 // 阻塞直到重启完成或失败，前端据此刷新按钮/状态。
@@ -393,15 +398,29 @@ func (a *App) CancelUpdate() {
 	cancelActiveUpdate()
 }
 
-// ResetHarness 重置 DeepSeek Harness（前端已弹过警告确认）：
-// 删除全部用户安装的插件并把 harness 回退到官方最后发布的稳定版本。
-// 异步执行：进度走 splash 事件，完成/失败以弹窗提示（见 harness_reset.go）。
-func (a *App) ResetHarness() {
-	logUI("重置 DeepSeek Harness", "")
+// ResetStats 重置弹窗展示的将清除内容数量（供用户勾选前参考）。
+type ResetStats struct {
+	SessionCount int `json:"sessionCount"` // 将清除的会话记录数
+	PluginCount  int `json:"pluginCount"`  // 将清除的已安装插件数
+}
+
+// GetResetStats 返回重置弹窗所需的统计：会话记录数量、已安装插件数量。
+func (a *App) GetResetStats() ResetStats {
+	return ResetStats{
+		SessionCount: countResetSessions(),
+		PluginCount:  countInstalledPlugins(),
+	}
+}
+
+// ResetHarness 重置 DeepSeek Harness（前端勾选弹窗确认后调用）：
+// harness 版本回退始终执行（必选项）；clearSessions / clearPlugins 按勾选物理删除
+// 对应数据（会话记录 / 已安装插件）。异步执行：进度走 splash 事件，完成/失败以弹窗提示。
+func (a *App) ResetHarness(clearSessions, clearPlugins bool) {
+	logUI("重置 DeepSeek Harness", fmt.Sprintf("clearSessions=%v clearPlugins=%v", clearSessions, clearPlugins))
 	if appCtx != nil {
 		wruntime.WindowShow(appCtx)
 	}
-	go runHarnessReset()
+	go runHarnessReset(clearSessions, clearPlugins)
 }
 
 // ==================== 导出 ====================
@@ -503,13 +522,14 @@ func (a *App) StartExport(includeSessions, includePlugins, includeFiles bool, di
 	}()
 }
 
-// OpenExportDir 打开导出包所在目录（需求：导出完成后便于核对落盘位置）。
+// OpenExportDir 打开导出包所在目录并在资源管理器中选中该文件
+// （需求：导出完成后便于核对落盘位置）。路径不存在时按目录尝试打开。
 func (a *App) OpenExportDir(path string) {
 	if path == "" {
 		return
 	}
 	logUI("打开导出目录", filepath.Dir(path))
-	openDir(filepath.Dir(path))
+	revealFile(path)
 }
 
 // ==================== 导入 ====================
@@ -723,10 +743,10 @@ func (a *App) ApplyRestore(kind string, overwrite bool) {
 
 // ==================== 杂项 ====================
 
-// OpenWebUI 打开 harness Web 界面。
+// OpenWebUI 打开 harness Web 界面（基于实际运行端口，兼容“修改端口未重启”窗口期）。
 func (a *App) OpenWebUI() {
-	if serverResponding(webURL) {
-		openBrowser(webURL)
+	if running, _, live := resolveRunningService(); running {
+		openBrowser(live)
 	}
 }
 

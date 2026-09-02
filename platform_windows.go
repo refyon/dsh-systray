@@ -343,17 +343,6 @@ func ensureMainWindowForeground() {
 	forceForeground(wailsMainHWND())
 }
 
-// clickDiscriminateDelay 单击后等待双击的窗口期：取系统双击间隔（默认约 500ms），
-// 保证双击的第二击（WM_LBUTTONDBLCLK）先到达并取消菜单定时器，单击不打断双击。
-func clickDiscriminateDelay() time.Duration {
-	user32 := syscall.NewLazyDLL("user32.dll")
-	d, _, _ := user32.NewProc("GetDoubleClickTime").Call()
-	if d == 0 {
-		d = 500
-	}
-	return time.Duration(d) * time.Millisecond
-}
-
 // pickHarnessDir 弹出目录选择对话框（经典 SHBrowseForFolderW，无需 COM 初始化），返回用户选择的目录；取消返回 ""。
 // owner 设为 Wails 主窗口，使对话框模态于设置窗口之上并自动前台（需求：所有弹窗必须置前）。
 func pickHarnessDir(title, initial string) string {
@@ -525,6 +514,7 @@ func startServer() (bool, <-chan error) {
 		return false, nil
 	}
 	serverCmd = cmd
+	serverStartedPort = port // 记录实际启动端口（端口修改提示与状态展示依据）
 	trackChildProcess(cmd.Process)
 	exitCh := make(chan error, 1)
 	go func() { exitCh <- cmd.Wait() }()
@@ -578,13 +568,29 @@ func openBrowser(url string) {
 	trackChildProcess(cmd.Process)
 }
 
-// openDir 用资源管理器打开目录。rundll32 url.dll,FileProtocolHandler 对纯目录在部分环境下无反应，
-// 改用 explorer.exe 更可靠（打开日志/导出目录场景）。
+// openDir 用资源管理器打开目录。此前 exec.Command("explorer", dir) 在部分环境下无反应
+// （explorer 命令行解析/已运行实例的参数行为差异），改用 ShellExecuteW("open", dir)，
+// 由 shell32 直接打开目录，最可靠且自动前台。
 func openDir(dir string) {
-	cmd := exec.Command("explorer", dir)
-	cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
+	modShell32 := syscall.NewLazyDLL("shell32.dll")
+	pShellExecuteW := modShell32.NewProc("ShellExecuteW")
+	op, _ := syscall.UTF16PtrFromString("open")
+	d, _ := syscall.UTF16PtrFromString(dir)
+	// ShellExecuteW 返回值 > 32 表示成功
+	r, _, _ := pShellExecuteW.Call(0, uintptr(unsafe.Pointer(op)), uintptr(unsafe.Pointer(d)), 0, 0, 1 /* SW_SHOWNORMAL */)
+	if uintptr(r) <= 32 {
+		log.Printf("open dir failed via ShellExecuteW: %v", r)
+	}
+}
+
+// revealFile 在资源管理器中打开文件所在目录并选中该文件（导出完成后便于核对落盘位置）。
+// explorer.exe /select,<path> 不经 cmd shell 传参；失败时回退 openDir 打开所在目录。
+func revealFile(path string) {
+	sel := "/select," + path
+	cmd := exec.Command("explorer", sel)
 	if err := cmd.Start(); err != nil {
-		log.Printf("open dir failed: %v", err)
+		log.Printf("reveal via explorer failed (%v), fallback openDir", err)
+		openDir(filepath.Dir(path))
 		return
 	}
 	trackChildProcess(cmd.Process)

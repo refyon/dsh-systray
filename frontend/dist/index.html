@@ -65,6 +65,7 @@
             </div>
             <input id="inp-port" class="input input-narrow" type="number" min="1" max="65535" inputmode="numeric">
           </div>
+          <div id="port-hint" class="row-warn port-hint hidden"></div>
           <div class="card-row">
             <div class="row-text">
               <div class="row-title">Harness 目录</div>
@@ -101,6 +102,7 @@
         </div>
         <div class="update-zone">
           <button id="btn-check-update" class="btn btn-primary">检查更新</button>
+          <button id="btn-systray-update" class="btn btn-primary hidden">更新 dsh-systray</button>
           <button id="btn-harness-update" class="btn btn-primary hidden">更新 Harness</button>
           <div id="update-hint" class="update-hint"></div>
           <div id="update-progress" class="update-progress hidden">
@@ -169,6 +171,7 @@
       <div class="modal-msg" id="modal-msg"></div>
       <div class="modal-actions">
         <button class="btn btn-ghost" id="modal-cancel">取消</button>
+        <button class="btn btn-ghost hidden" id="modal-skip">跳过</button>
         <button class="btn btn-danger" id="modal-ok">确定</button>
       </div>
     </div>
@@ -186,6 +189,43 @@
       </div>
     </div>
   </div>
+
+  <!-- ======== 重置 DeepSeek Harness：内容勾选弹层 ======== -->
+  <div id="reset-modal" class="modal hidden">
+    <div class="modal-mask"></div>
+    <div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="reset-title">
+      <div class="modal-title" id="reset-title">重置 DeepSeek Harness</div>
+      <div class="modal-msg">勾选需要清除的内容并确认。重置会把 DeepSeek Harness 回退到官方最后发布的稳定版本，用于排除插件/数据导致的服务启动失败；被清除的数据不可恢复。</div>
+      <div class="reset-opts">
+        <label class="reset-opt reset-opt-mandatory">
+          <input type="checkbox" id="reset-c-harness" checked disabled>
+          <span class="reset-opt-main">
+            <span class="reset-opt-title">Harness 服务 <em>（必选）</em></span>
+            <span class="row-sub">回退到官方最新稳定版本并重启服务</span>
+          </span>
+        </label>
+        <label class="reset-opt">
+          <input type="checkbox" id="reset-c-sessions">
+          <span class="reset-opt-main">
+            <span class="reset-opt-title">会话记录</span>
+            <span class="row-sub" id="reset-sessions-sub">将清除 0 条会话记录</span>
+          </span>
+        </label>
+        <label class="reset-opt">
+          <input type="checkbox" id="reset-c-plugins">
+          <span class="reset-opt-main">
+            <span class="reset-opt-title">已安装插件</span>
+            <span class="row-sub" id="reset-plugins-sub">将清除 0 个已安装插件</span>
+          </span>
+        </label>
+      </div>
+      <div class="modal-actions">
+        <button class="btn btn-ghost" id="reset-cancel">取消</button>
+        <button class="btn btn-danger" id="reset-confirm">开始重置</button>
+      </div>
+    </div>
+  </div>
+
 
   <script src="main.js"></script>
 </body>

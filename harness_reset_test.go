@@ -87,3 +87,44 @@ func TestRemoveInstalledPluginsEmptyHome(t *testing.T) {
 		t.Fatalf("empty home: n=%d err=%v", n, err)
 	}
 }
+
+// TestResetStats 重置弹窗数量统计：两级会话布局计数、插件数与非官方依赖口径一致。
+func TestResetStats(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("DSH_HOME", home)
+	mk := func(rel ...string) {
+		if err := os.MkdirAll(filepath.Join(append([]string{home}, rel...)...), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	mk("sessions", "--S1--", "session-a")
+	mk("sessions", "--S1--", "session-b")
+	mk("sessions", "--S2--", "session-c")
+	mk("sessions", "legacy-single") // 单级目录：视为 1 个会话
+	if n := countResetSessions(); n != 4 {
+		t.Fatalf("expected 4 sessions (3 scope + 1 legacy), got %d", n)
+	}
+	// 插件统计：web profile 两个用户插件 + 官方包
+	profDir := filepath.Join(home, "profiles", "web")
+	if err := os.MkdirAll(profDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(profDir, "package.json"),
+		[]byte(`{"dependencies":{"deepseek-idesign":"^0.2.2","restrict-discipline":"file:x","@deepseek-ai/dsh-base":"^1.0.0"}}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if n := countInstalledPlugins(); n != 2 {
+		t.Fatalf("expected 2 user plugins, got %d", n)
+	}
+	// removeSessions：删除整个 sessions 根
+	if err := removeSessions(); err != nil {
+		t.Fatalf("removeSessions: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(home, "sessions")); err == nil {
+		t.Fatal("sessions root should be removed")
+	}
+	// 再次统计归零
+	if n := countResetSessions(); n != 0 {
+		t.Fatalf("expected 0 sessions after removal, got %d", n)
+	}
+}

@@ -31,12 +31,6 @@ func ensureMainWindowForeground() {
 	_ = exec.Command("osascript", "-e", `tell application id "`+launchAgentLabel+`" to activate`).Run()
 }
 
-// clickDiscriminateDelay macOS 由 fork 内部双击判别（systray_on_click 对短间隔点击只触发
-// onDClick），单击回调无需延迟；此值仅为占位（不经 Windows 分支）。
-func clickDiscriminateDelay() time.Duration {
-	return 500 * time.Millisecond
-}
-
 // candidateHarnessDirs 探测候选：用户主目录 + 默认目录。
 func candidateHarnessDirs() []string {
 	var out []string
@@ -140,6 +134,7 @@ func startServer() (bool, <-chan error) {
 		return false, nil
 	}
 	serverCmd = cmd
+	serverStartedPort = port // 记录实际启动端口（端口修改提示与状态展示依据）
 	trackChildProcess(cmd.Process)
 	exitCh := make(chan error, 1)
 	go func() { exitCh <- cmd.Wait() }()
@@ -199,6 +194,17 @@ func openDir(dir string) {
 	cmd := exec.Command("open", dir)
 	if err := cmd.Start(); err != nil {
 		log.Printf("open dir failed: %v", err)
+		return
+	}
+	trackChildProcess(cmd.Process)
+}
+
+// revealFile macOS：Finder 中打开文件所在目录并选中该文件（open -R <path>）。
+func revealFile(path string) {
+	cmd := exec.Command("open", "-R", path)
+	if err := cmd.Start(); err != nil {
+		log.Printf("reveal failed: %v", err)
+		openDir(filepath.Dir(path))
 		return
 	}
 	trackChildProcess(cmd.Process)

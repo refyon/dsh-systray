@@ -138,9 +138,11 @@ func harnessGitTagForVersion(version string) (string, error) {
 	return "", fmt.Errorf("harness 仓库中未找到版本 %s 对应的 tag（dsh-v%s / dsh-%s）", version, version, version)
 }
 
-// runHarnessReset 重置 DeepSeek Harness：停服务 → 删插件 → 回退官方最新稳定版 → 重启校验。
+// runHarnessReset 重置 DeepSeek Harness：停服务 →（可选）清会话/清插件 →
+// 回退官方最新稳定版 → 重启校验。
+// clearSessions / clearPlugins 由前端勾选弹窗传入：harness 版本回退始终执行（必选项）。
 // 失败自动回退到重置前的可运行快照并弹窗报告。异步执行（按钮触发后 go 调用）。
-func runHarnessReset() {
+func runHarnessReset(clearSessions, clearPlugins bool) {
 	splash := startSplash("正在重置 DeepSeek Harness…")
 	defer splash.Close()
 
@@ -158,22 +160,28 @@ func runHarnessReset() {
 		return
 	}
 	cur := installedHarnessVersion()
-	log.Printf("reset: target stable version v%s (current %s)", latest, cur)
+	log.Printf("reset: target stable version v%s (current %s) clearSessions=%v clearPlugins=%v", latest, cur, clearSessions, clearPlugins)
 
-	// 2) 物理删除用户安装的插件（不可逆；弹窗已警告）
-	splash.Update("正在清除已安装的插件…", 0.35)
-	n, err := removeInstalledPlugins()
-	if err != nil {
-		// 插件清理失败：尝试恢复服务后报错
-		restartAndVerifyServer()
-		splash.Close()
-		showMessageBox("重置失败："+err.Error(), appName)
-		return
+	// 2) 可选清理（服务已停止，删除不冲突运行中进程；清理失败不阻断版本回退，仅记录并提示）
+	cleanupNotes := ""
+	if clearSessions {
+		splash.Update("正在清除会话记录…", 0.3)
+		if err := removeSessions(); err != nil {
+			log.Printf("reset: clear sessions failed: %v", err)
+			cleanupNotes += "\n· 会话记录清理失败：" + err.Error()
+		}
+	}
+	if clearPlugins {
+		splash.Update("正在清除已安装的插件…", 0.35)
+		if _, err := removeInstalledPlugins(); err != nil {
+			log.Printf("reset: clear plugins failed: %v", err)
+			cleanupNotes += "\n· 已安装插件清理失败：" + err.Error()
+		}
 	}
 
-	// 3) 版本回退（快照当前可运行版本，失败回滚）
+	// 3) 版本回退（快照当前可运行版本，失败回滚）——重置的必选核心
 	if cur == latest && isNpmHarnessReady() {
-		// 已是官方最新稳定版：无需重装，仅重启生效（插件已清）
+		// 已是官方最新稳定版：无需重装，仅重启生效（可选清理已完成）
 		log.Printf("reset: harness already at latest stable v%s", latest)
 	} else {
 		hadNM := snapshotHarness()
@@ -210,7 +218,7 @@ func runHarnessReset() {
 				rerr = runHarnessCmd(pnpmCmd(), "run", "build")
 			}
 		default:
-			rerr = fmt.Errorf("无法识别 harness 安装形态，跳过版本回退（插件已清除）")
+			rerr = fmt.Errorf("无法识别 harness 安装形态，跳过版本回退")
 		}
 		if rerr != nil {
 			// 回滚到快照版本并尝试重启
@@ -224,13 +232,114 @@ func runHarnessReset() {
 	splash.Update("正在重启服务…", 0.9)
 	if !restartAndVerifyServer() {
 		splash.Close()
-		showMessageBox("重置后服务未能正常启动，请查看日志：\n"+filepath.Join(logDir, "server.log"), appName)
+		showMessageBox("重置后服务未能正常启动，请查看日志：\n"+filepath.Join(logDir, "server.log")+cleanupNotes, appName)
 		return
 	}
 	splash.Close()
-	if cur == latest {
-		showMessageBox(fmt.Sprintf("重置完成：已清除 %d 个 profile 中的全部已安装插件。\n当前已是官方最新稳定版本 v%s，服务已重启。", n, latest), appName)
-	} else {
-		showMessageBox(fmt.Sprintf("重置完成：已清除 %d 个 profile 中的全部已安装插件，\nDeepSeek Harness 已回退到官方最新稳定版本 v%s，服务已重启。", n, latest), appName)
+	detail := "DeepSeek Harness 已重置：\n"
+	if clearSessions {
+		detail += "· 会话记录已清除\n"
 	}
+	if clearPlugins {
+		detail += "· 已安装插件已清除\n"
+	}
+	if cur == latest {
+		detail += "· 版本：官方最新稳定版 v" + latest + "（未变更）"
+	} else {
+		detail += "· 已回退到官方最新稳定版本 v" + latest
+	}
+	detail += "，服务已重启。" + cleanupNotes
+	showMessageBox(detail, appName)
+}
+
+// ==================== 重置内容统计（弹窗勾选前展示数量） ====================
+
+// countResetSessions 统计 ~/.dsh/sessions 下的会话数量。
+// 兼容两级布局（sessions/<scope>/<session>，计 scope 下的 session 目录数）与
+// 单级布局（sessions/<session>，计一级目录数）。与 removeSessions（删除整个 sessions 根）范围一致。
+func countResetSessions() int {
+	root := sessionsSourceDir()
+	if root == "" {
+		return 0
+	}
+	n := 0
+	entries, err := os.ReadDir(root)
+	if err != nil {
+		return 0
+	}
+	for _, e := range entries {
+		if !e.IsDir() {
+			continue
+		}
+		inner, err := os.ReadDir(filepath.Join(root, e.Name()))
+		if err != nil || len(inner) == 0 {
+			n++
+			continue
+		}
+		dirs := 0
+		for _, ie := range inner {
+			if ie.IsDir() {
+				dirs++
+			}
+		}
+		if dirs > 0 {
+			n += dirs
+		} else {
+			n++ // 单级布局：一级目录即一个会话
+		}
+	}
+	return n
+}
+
+// countInstalledPlugins 统计用户安装的插件数量（与 removeInstalledPlugins 清理口径一致：
+// 各 profile package.json dependencies 中非 @deepseek-ai 条目总数；旧布局 profiles 根同样统计）。
+func countInstalledPlugins() int {
+	home := dshHomeDir()
+	if home == "" {
+		return 0
+	}
+	profilesRoot := filepath.Join(home, "profiles")
+	dirs := []string{}
+	if entries, err := os.ReadDir(profilesRoot); err == nil {
+		for _, e := range entries {
+			if !e.IsDir() {
+				continue
+			}
+			if _, err := os.Stat(filepath.Join(profilesRoot, e.Name(), "package.json")); err == nil {
+				dirs = append(dirs, filepath.Join(profilesRoot, e.Name()))
+			}
+		}
+	}
+	if _, err := os.Stat(filepath.Join(profilesRoot, "package.json")); err == nil {
+		dirs = append(dirs, profilesRoot)
+	}
+	total := 0
+	for _, dir := range dirs {
+		if data, err := os.ReadFile(filepath.Join(dir, "package.json")); err == nil {
+			var root struct {
+				Dependencies map[string]string `json:"dependencies"`
+			}
+			if json.Unmarshal(data, &root) == nil {
+				for k := range root.Dependencies {
+					if !isOfficialHarnessPkg(k) {
+						total++
+					}
+				}
+			}
+		}
+	}
+	return total
+}
+
+// removeSessions 清除全部历史会话（删除 ~/.dsh/sessions 整个目录）。调用前须已 killServer。
+func removeSessions() error {
+	dir := sessionsSourceDir()
+	if dir == "" {
+		return nil
+	}
+	if _, err := os.Stat(dir); err != nil {
+		return nil // 无会话目录
+	}
+	log.Printf("reset: removing sessions root %s", dir)
+	return os.RemoveAll(dir)
 }

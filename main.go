@@ -58,11 +58,31 @@ var (
 	quitting           atomic.Bool
 	keepServerRunning  atomic.Bool
 	harnessDirExplicit bool
+	// serverStartedPort 本进程最近一次实际启动后台服务所用的端口（startServer 成功时写入，
+	// killServer 后保留为「最后运行端口」供状态展示；0 = 本进程从未启动过服务）。
+	// 用于“端口已修改、重启后生效”提示：配置端口 port ≠ 实际运行端口时前端持续提示。
+	serverStartedPort int
 	// quitRequested 托盘「退出」流程标记：Wails OnBeforeClose 据此放行应用退出（区别于窗口 X 关闭）
 	quitRequested atomic.Bool
 	// singleInstanceRelease 单实例互斥体释放函数（更新重启前调用，避免新进程被误判重复运行）
 	singleInstanceRelease func()
 )
+
+// resolveRunningService 解析后台服务当前实际运行状态：
+// 优先按配置端口（webURL）探测；不响应时若本进程曾以其它端口启动服务且该端口仍存活
+// （用户修改端口后尚未重启的场景）则返回该端口。返回 (是否在运行, 运行端口, 实际 URL)。
+func resolveRunningService() (bool, int, string) {
+	if serverResponding(webURL) {
+		return true, port, webURL
+	}
+	if serverStartedPort != 0 && serverStartedPort != port {
+		alt := fmt.Sprintf("http://127.0.0.1:%d/", serverStartedPort)
+		if serverResponding(alt) {
+			return true, serverStartedPort, alt
+		}
+	}
+	return false, 0, webURL
+}
 
 type appConfig struct {
 	Port              int    `json:"port"`
@@ -212,13 +232,13 @@ func serviceStatusText() string {
 }
 
 // refreshServiceMenu 按服务实际运行状态刷新托盘菜单（可跨线程、可周期调用）。
-// 菜单 Show/Hide/SetTitle/Enable 等操作投递到托盘消息循环线程串行执行
-// （vendored systray 定制：避免与正在弹出的 TrackPopupMenu 并发导致长时间后点击无响应）。
+// 就绪判定基于实际运行端口（配置端口或本进程最后启动端口），避免修改端口后、
+// 重启前「打开 Web UI」被错误禁用/指向不可达地址。
 func refreshServiceMenu() {
 	if menuOpen == nil || menuStatus == nil {
 		return
 	}
-	ready := serverResponding(webURL)
+	ready, _, _ := resolveRunningService()
 	systray.RunOnLoop(func() {
 		if menuOpen == nil || menuStatus == nil {
 			return
@@ -252,47 +272,26 @@ func pollServiceMenu() {
 	}
 }
 
-// ==================== 托盘单击/双击判别 ====================
-// Windows：双击会先触发单击（WM_LBUTTONUP）再触发 WM_LBUTTONDBLCLK，
-// 因此单击延迟系统双击间隔后再弹菜单，双击的 DBLCLK 到达即取消菜单并打开 Web UI。
-// macOS：fork 内部自带双击判别（systray_on_click 对短间隔点击只触发 onDClick），无需延迟。
+// ==================== 托盘单击/双击 ====================
+// 行为约定（v2 简化）：单击/双击/右键均即时弹出菜单，无延迟、无双击打开 Web UI。
+// 之前为区分“双击开 Web UI”而引入的系统双击间隔延迟（约 500ms）让单击弹菜单有明显延迟，
+// 且双击语义收益低；已按用户确认去掉，左/右键点击均直接弹菜单。
+// 所有菜单显示经 ShowMenuAsync 投递到托盘消息循环线程执行（跨线程 TrackPopupMenu 不可靠）。
 
-var trayMenuTimer atomic.Pointer[time.Timer]
-
-func stopTrayMenuTimer() {
-	if t := trayMenuTimer.Swap(nil); t != nil {
-		t.Stop()
-	}
-}
-
-// trayOnClick 托盘左键单击（Windows 上可能是双击的第一次点击）：延迟后经消息循环线程弹菜单。
+// trayOnClick 托盘左键单击：即时弹菜单。
 func trayOnClick(menu systray.IMenu) {
-	if runtime.GOOS != "windows" {
-		systray.ShowMenuAsync() // macOS 已由 fork 判别双击
-		return
-	}
 	log.Printf("[tray] left click")
-	stopTrayMenuTimer()
-	delay := clickDiscriminateDelay()
-	trayMenuTimer.Store(time.AfterFunc(delay, func() {
-		stopTrayMenuTimer()
-		log.Printf("[tray] showing menu (delay %v)", delay)
-		systray.ShowMenuAsync()
-	}))
+	systray.ShowMenuAsync()
 }
 
-// trayOnDClick 托盘左键双击：打开 Web UI；服务未就绪时降级为打开设置窗口。
+// trayOnDClick 托盘左键双击：双击不再打开 Web UI（用户确认去掉），等同弹菜单；
+// fork 的 DBLCLK 仅在菜单未打开时到达，此回调保持兜底弹菜单。
 func trayOnDClick(menu systray.IMenu) {
-	stopTrayMenuTimer()
 	log.Printf("[tray] double click")
-	if serverReady.Load() {
-		openBrowser(webURL)
-	} else {
-		showMainWindow()
-	}
+	systray.ShowMenuAsync()
 }
 
-// trayOnRClick 托盘右键单击：直接弹菜单（消息循环线程内，可靠）。
+// trayOnRClick 托盘右键单击：即时弹菜单。
 func trayOnRClick(menu systray.IMenu) {
 	log.Printf("[tray] right click")
 	systray.ShowMenuAsync()
@@ -627,8 +626,8 @@ func onReady() {
 	mQuit := systray.AddMenuItem("退出", "退出并关闭后台服务器")
 
 	menuOpen.Click(func() {
-		if serverReady.Load() {
-			openBrowser(webURL)
+		if running, _, live := resolveRunningService(); running {
+			openBrowser(live)
 		}
 	})
 	mSettings.Click(showMainWindow)
@@ -645,15 +644,13 @@ func onReady() {
 		}
 	})
 
-	// 单击弹菜单（Windows 需与双击判别：延迟后经消息循环线程显示）；
-	// 双击直接打开 Web UI；右键弹菜单（fork 默认行为，这里显式统一）。
+	// 单击/双击/右键均即时弹菜单（经消息循环线程），双击不再打开 Web UI（用户确认去掉）。
 	systray.SetOnClick(trayOnClick)
 	systray.SetOnDClick(trayOnDClick)
 	systray.SetOnRClick(trayOnRClick)
 }
 
 func onExit() {
-	stopTrayMenuTimer()
 	log.Printf("tray exiting")
 }
 

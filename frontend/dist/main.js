@@ -74,7 +74,23 @@ async function refreshConfig() {
     $("inp-port").value = state.cfg.port;
     $("cfg-harness-dir").textContent = state.cfg.harnessDir;
     $("sw-prerelease").setAttribute("aria-checked", String(state.cfg.harnessPrerelease));
+    updatePortHint();
   } catch (e) { console.error("GetConfig", e); }
+}
+
+/** 端口修改提示：设置端口 ≠ 服务实际运行端口（含服务停止、仅记录旧端口）时，
+ *  持续显示「重启后台服务后生效」，直到两者一致才隐藏。 */
+function updatePortHint() {
+  const hint = $("port-hint");
+  if (!hint) return;
+  const p = state.cfg && state.cfg.port;
+  const rp = state.svc && state.svc.runningPort;
+  if (p && rp !== undefined && rp !== 0 && rp !== p) {
+    hint.classList.remove("hidden");
+    hint.textContent = "端口已修改为 " + p + "，当前服务仍运行于 " + rp + "——重启后台服务后生效。";
+  } else {
+    hint.classList.add("hidden");
+  }
 }
 
 async function refreshService() {
@@ -94,6 +110,7 @@ async function refreshService() {
     $("svc-sub").textContent = state.svc.state === "failed"
       ? (state.svc.reason || "请查看日志")
       : (state.svc.state === "running" ? "服务就绪，可打开 Web UI" : "服务就绪后可打开 Web UI");
+    updatePortHint();
   } catch (e) { console.error("GetServiceState", e); }
 }
 
@@ -127,22 +144,36 @@ function wireGeneral() {
     if (!ok) $("svc-sub").textContent = "重启失败，请查看日志";
     setTimeout(() => { $("btn-restart").disabled = false; refreshService(); }, 2000);
   });
+  // 重置：打开勾选弹层（harness 必选；会话/插件按需勾选，展示将清除的数量）
   $("btn-reset-harness").addEventListener("click", async () => {
     const btn = $("btn-reset-harness");
-    const ok = await confirmDialog(
-      "重置 DeepSeek Harness？",
-      "重置将删除所有已安装的插件（无法恢复），并把 DeepSeek Harness 回退到官方最后发布的稳定版本，用于排除插件导致的服务启动失败。\n\n确定继续吗？",
-      "确定重置"
-    );
-    if (!ok) return;
     btn.disabled = true;
     try {
-      showSplash("startup", "正在重置 DeepSeek Harness…");
-      await bindings().ResetHarness();
+      const stats = await bindings().GetResetStats();
+      const sc = (stats && stats.sessionCount) || 0;
+      const pc = (stats && stats.pluginCount) || 0;
+      $("reset-sessions-sub").textContent = "将清除 " + sc + " 条会话记录";
+      $("reset-plugins-sub").textContent = "将清除 " + pc + " 个已安装插件";
+      // 默认勾选插件（重置的核心诉求：排除插件导致的服务启动失败）；会话默认不勾选（数据谨慎）
+      $("reset-c-sessions").checked = false;
+      $("reset-c-plugins").checked = pc > 0;
+      $("reset-modal").classList.remove("hidden");
+    } catch (e) {
+      $("svc-sub").textContent = "获取重置统计失败：" + (e && e.message ? e.message : e);
     } finally {
-      setTimeout(() => { btn.disabled = false; }, 1500);
+      setTimeout(() => { btn.disabled = false; }, 800);
     }
   });
+  $("reset-cancel").addEventListener("click", () => $("reset-modal").classList.add("hidden"));
+  $("reset-confirm").addEventListener("click", async () => {
+    $("reset-modal").classList.add("hidden");
+    const clearSessions = $("reset-c-sessions").checked;
+    const clearPlugins = $("reset-c-plugins").checked;
+    showSplash("startup", "正在重置 DeepSeek Harness…");
+    await bindings().ResetHarness(clearSessions, clearPlugins);
+  });
+  // 点遮罩等同取消
+  $("reset-modal").querySelector(".modal-mask").addEventListener("click", () => $("reset-modal").classList.add("hidden"));
 }
 
 // ==================== 关于页 ====================
@@ -175,16 +206,18 @@ function wireAbout() {
   $("btn-check-update").addEventListener("click", async () => {
     const btn = $("btn-check-update");
     const hub = $("btn-harness-update");
+    const sysBtn = $("btn-systray-update");
     btn.disabled = true;
     $("update-hint").textContent = "正在检查更新…";
+    sysBtn.classList.add("hidden");
+    hub.classList.add("hidden");
     const info = await bindings().CheckUpdateManual();
     btn.disabled = false;
     if (info.error) {
       $("update-hint").textContent = "检查更新失败：" + info.error;
-      hub.classList.add("hidden");
       return;
     }
-    // 同时展示 harness（按预发布通道）与 dsh-systray 两个检查结果
+    // 展示结果 + 条件显示更新按钮（都不自动下载，须用户点按钮并确认）
     const parts = [];
     if (info.harnessHasUpdate) {
       parts.push("Harness 有新版本 " + info.harnessLatest + "（当前 " + (info.harnessCurrent || "—") + "）");
@@ -196,15 +229,39 @@ function wireAbout() {
       parts.push("已是最新版本（systray " + (info.current || "dev") + " · harness " + (info.harnessCurrent || "未检测到") + "）");
     }
     $("update-hint").textContent = parts.join("；");
-    hub.classList.toggle("hidden", !info.harnessHasUpdate);
-    // harness 有新版时优先交由用户处理；否则保持原有自动更新 dsh-systray 的行为
-    if (info.hasUpdate && !info.harnessHasUpdate) {
-      bindings().StartUpdate();
-      showSplash("update", "正在准备更新…");
+    if (info.hasUpdate) {
+      sysBtn.textContent = "更新 dsh-systray v" + info.latest;
+      sysBtn.classList.remove("hidden");
+    }
+    if (info.harnessHasUpdate) {
+      hub.textContent = "更新 Harness v" + info.harnessLatest;
+      hub.classList.remove("hidden");
     }
   });
+  // dsh-systray 自身更新：确认后再下载
+  $("btn-systray-update").addEventListener("click", async () => {
+    const sysBtn = $("btn-systray-update");
+    const ok = await confirmDialog(
+      "更新 dsh-systray？",
+      "将下载并安装新版本并自动重启（当前为开发构建时无可用更新）。确认开始更新吗？",
+      "开始更新"
+    );
+    if (!ok) return;
+    sysBtn.disabled = true;
+    $("update-hint").textContent = "正在下载更新…";
+    bindings().StartUpdate();
+    showSplash("update", "正在准备更新…");
+  });
+  // Harness 更新：确认后再执行
   $("btn-harness-update").addEventListener("click", async () => {
     const hub = $("btn-harness-update");
+    const ver = (hub.textContent || "").replace("更新 Harness v", "");
+    const ok = await confirmDialog(
+      "更新 DeepSeek Harness？",
+      "将更新 DeepSeek Harness" + (ver ? " 到 v" + ver : "") + "，更新期间服务会短暂重启，失败会自动回退。确认开始更新吗？",
+      "开始更新"
+    );
+    if (!ok) return;
     hub.disabled = true;
     $("update-hint").textContent = "正在更新 DeepSeek Harness…";
     await bindings().StartHarnessUpdate();
@@ -458,17 +515,20 @@ function renderImportRows() {
         if (!preview) return;
         if (preview.error) { $("imp-hint").textContent = "无法恢复：" + preview.error; return; }
         if (preview.canceled) return; // 用户取消了解压位置选择
-        // 2) 有冲突 → 弹窗询问是否覆盖
+        // 2) 有冲突 → 弹窗询问：取消=不执行任何恢复；跳过=保留现有只补缺失；覆盖=备份并替换
         let overwrite = true;
         if (preview.conflicts > 0) {
           const detail = (preview.tops || []).slice(0, 3).join("、");
-          overwrite = await confirmDialog(
+          const choice = await confirmDialog3(
             "检测到数据冲突",
             "「" + it.label + "」与现有内容存在 " + preview.conflicts + " 项冲突" +
               (detail ? "（" + detail + (preview.conflicts > 3 ? " 等" : "") + "）" : "") +
-              "。\n\n选择「覆盖」将备份并替换现有内容；选择「跳过」则保留现有文件、只补缺失项。",
-            "覆盖并恢复"
+              "。\n\n「跳过」将保留现有文件、只补缺失项；「覆盖并恢复」会备份并替换现有内容。",
+            "覆盖并恢复",
+            "跳过（保留现有）"
           );
+          if (choice === "cancel") return; // 取消：不做任何恢复动作
+          overwrite = choice === "ok";
           if (!overwrite) {
             $("imp-hint").textContent = "已选择跳过 " + preview.conflicts + " 项冲突，现有内容将保留。";
           }
@@ -599,25 +659,41 @@ function wireSplashCancel() {
 
 // ==================== 确认弹层 ====================
 
-/** 显示确认弹层，返回 Promise<boolean>（确定 true / 取消 false）。 */
-function confirmDialog(title, msg, okLabel) {
+/**
+ * 三按钮确认弹层。返回 'ok' | 'skip' | 'cancel'：
+ *  - okLabel 提供时为绿色危险/主按钮「覆盖并恢复」；
+ *  - skipLabel 提供时显示中间按钮「跳过（保留现有）」；
+ *  - 点「取消」或遮罩外不会执行任何动作，返回 'cancel'（调用方必须直接 return）。
+ */
+function confirmDialog3(title, msg, okLabel, skipLabel) {
   return new Promise((resolve) => {
     $("modal-title").textContent = title || "确认操作";
     $("modal-msg").textContent = msg || "";
     $("modal-ok").textContent = okLabel || "确定";
+    const skipBtn = $("modal-skip");
+    skipBtn.classList.toggle("hidden", !skipLabel);
+    if (skipLabel) skipBtn.textContent = skipLabel;
     $("modal").classList.remove("hidden");
     const done = (val) => {
       $("modal").classList.add("hidden");
       $("modal-cancel").removeEventListener("click", onCancel);
+      $("modal-skip").removeEventListener("click", onSkip);
       $("modal-ok").removeEventListener("click", onOk);
       resolve(val);
     };
-    const onCancel = () => done(false);
-    const onOk = () => done(true);
+    const onCancel = () => done("cancel");
+    const onSkip = () => done("skip");
+    const onOk = () => done("ok");
     $("modal-cancel").addEventListener("click", onCancel);
+    $("modal-skip").addEventListener("click", onSkip);
     $("modal-ok").addEventListener("click", onOk);
     $("modal-cancel").focus();
   });
+}
+
+/** 显示双按钮确认弹层（兼容既有调用），返回 Promise<boolean>（确定 true / 取消 false）。 */
+function confirmDialog(title, msg, okLabel) {
+  return confirmDialog3(title, msg, okLabel, null).then((v) => v === "ok");
 }
 
 // ==================== 启动 ====================

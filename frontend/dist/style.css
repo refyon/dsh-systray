@@ -229,6 +229,20 @@ input { font-family: inherit; }
 .row-sub { color: var(--muted); font-size: var(--fs-xs); margin-top: var(--sp-1); line-height: 1.5; }
 .row-sub-path { max-width: 300px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; direction: rtl; text-align: left; }
 
+/* 警示提示行（端口修改重启生效等） */
+.row-warn {
+  font-size: var(--fs-xs);
+  line-height: 1.5;
+  color: var(--warn);
+  background: rgba(245, 158, 11, 0.08);
+  border: 1px solid rgba(245, 158, 11, 0.35);
+  border-radius: var(--radius-sm);
+  padding: var(--sp-2) var(--sp-3);
+  margin: 0 var(--sp-5) var(--sp-3);
+}
+.port-hint { display: block; }
+.port-hint.hidden { display: none; }
+
 /* ---------- Service dot ---------- */
 .dot {
   width: 9px;
@@ -252,10 +266,15 @@ input { font-family: inherit; }
   font-size: var(--fs-sm);
   font-weight: 600;
   letter-spacing: 0.2px;
+  white-space: nowrap;      /* 按钮文字禁止折行/省略，避免显示不完整 */
+  flex-shrink: 0;          /* 行布局中不被压缩 */
   transition: background var(--dur) var(--ease), box-shadow var(--dur) var(--ease), opacity var(--dur) var(--ease);
 }
 .btn:active { transform: translateY(1px); }
 .btn:disabled { opacity: 0.5; cursor: not-allowed; }
+
+/* 重置按钮：危险主操作，给足宽度防止文字截断 */
+#btn-reset-harness { min-width: 104px; }
 
 .btn-primary { background: var(--primary); color: #fff; box-shadow: var(--shadow-sm); }
 .btn-primary:hover { background: var(--primary-deep); }
@@ -556,6 +575,51 @@ input { font-family: inherit; }
   gap: var(--sp-3);
   margin-top: var(--sp-5);
 }
+
+/* ---------- 重置勾选弹层 ---------- */
+#reset-modal .modal-card { width: 420px; }
+
+.reset-opts {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+  margin-top: var(--sp-4);
+}
+
+.reset-opt {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--sp-3);
+  padding: var(--sp-3);
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  transition: border-color var(--dur) var(--ease);
+}
+.reset-opt:hover { border-color: var(--primary); }
+.reset-opt input[type="checkbox"] {
+  margin-top: 3px;
+  width: 16px;
+  height: 16px;
+  accent-color: var(--danger);
+}
+.reset-opt-main { flex: 1; min-width: 0; }
+.reset-opt-title { font-size: var(--fs-base); font-weight: 600; }
+.reset-opt-title em {
+  font-style: normal;
+  font-size: var(--fs-xs);
+  color: var(--danger);
+  font-weight: 500;
+  margin-left: var(--sp-1);
+}
+.reset-opt-mandatory {
+  background: rgba(239, 68, 68, 0.05);
+  border-color: rgba(239, 68, 68, 0.25);
+  cursor: default;
+}
+.reset-opt-mandatory input[type="checkbox"] { opacity: 0.55; }
+.reset-opt-mandatory:hover { border-color: rgba(239, 68, 68, 0.25); }
 
 /* ---------- Reduced motion ---------- */
 @media (prefers-reduced-motion: reduce) {
