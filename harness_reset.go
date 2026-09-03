@@ -235,6 +235,8 @@ func runHarnessReset(clearSessions, clearPlugins bool) {
 		showMessageBox("重置后服务未能正常启动，请查看日志：\n"+filepath.Join(logDir, "server.log")+cleanupNotes, appName)
 		return
 	}
+	// 重置成功：官方稳定版 + 清理后的插件即新的良好基线，旧 LKG 不应再用于回退
+	clearAllLkg()
 	splash.Close()
 	detail := "DeepSeek Harness 已重置：\n"
 	if clearSessions {

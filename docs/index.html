@@ -76,8 +76,8 @@ a{color:inherit;text-decoration:none}
 .features .head{text-align:center;margin-bottom:40px}
 .features .head h2{font-size:31px;margin:12px 0 8px;letter-spacing:-.02em}
 .features .head p{color:var(--muted);margin:0}
-.feat-groups{display:grid;grid-template-columns:1fr 1fr;gap:22px}
-@media(max-width:760px){.feat-groups{grid-template-columns:1fr}}
+.feat-groups{display:grid;grid-template-columns:repeat(3,1fr);gap:22px}
+@media(max-width:980px){.feat-groups{grid-template-columns:1fr}}
 .fgroup{background:var(--surface);border:1px solid var(--border);border-radius:var(--rad);box-shadow:var(--shadow);padding:28px 30px}
 .fgroup h3{margin:0 0 18px;font-size:18px;letter-spacing:-.01em}
 .fgroup ul{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:16px}
@@ -111,12 +111,12 @@ footer .sep{margin:0 8px;color:var(--border)}
     <img class="logo" src="icon.svg" alt="dsh-systray 图标" width="132" height="132">
     <div class="eyebrow">Windows · macOS</div>
     <h1>dsh-systray</h1>
-    <p class="sub">双击即启。托盘常驻。服务就绪，一触即达。</p>
+    <p class="sub">轻量 · 可靠 · 可迁移——双击即启，托盘常驻，服务就绪一触即达。</p>
     <div class="actions">
       <a class="btn primary" href="https://github.com/refyon/dsh-systray/releases/latest/download/dsh-systray-windows-x64.zip"><svg class="ico" viewBox="0 0 24 24" fill="currentColor"><path d="M3 5.5l8.5-1.2v8.4H3V5.5zm9.5-1.3L21 3v9.7h-8.5V4.2zM3 13.7h8.5v8.4L3 20.9v-7.2zm9.5.8H21v6.9l-8.5 1.3v-8.2z"/></svg>下载 Windows 版</a>
       <a class="btn ghost" href="https://github.com/refyon/dsh-systray/releases/latest/download/dsh-systray-macos-universal.zip"><svg class="ico" viewBox="0 0 24 24" fill="currentColor"><path d="M16.9 12.9c0-2.1 1.7-3.1 1.8-3.2-1-1.4-2.5-1.6-3-1.7-1.3-.1-2.5.8-3.2.8-.6 0-1.6-.8-2.7-.7-1.4 0-2.7.8-3.4 2-1.4 2.5-.4 6.2 1 8.2.7 1 1.5 2.1 2.6 2 .9 0 1.3-.6 2.5-.6s1.5.6 2.5.6c1 0 1.7-1 2.4-2 .7-1.1 1-2.1 1-2.2 0 0-2-1-2-3.2zM15 6.3c.6-.7 1-1.7.9-2.7-.8 0-1.9.6-2.5 1.3-.5.6-1 1.6-.9 2.6.9.1 1.9-.5 2.5-1.2z"/></svg>下载 macOS 版</a>
     </div>
-    <div class="ver-chip">当前版本 <b id="version">v0.4.4</b> · 由 CI 自动构建发布</div>
+    <div class="ver-chip">当前版本 <b id="version">v0.5.2</b> · 由 CI 自动构建发布</div>
   </section>
 
   <section class="hub" id="screenshots">
@@ -130,24 +130,28 @@ footer .sep{margin:0 8px;color:var(--border)}
       <div class="car-dots" id="car-dots"></div>
     </div>
     <div class="hub-copy" data-reveal>
-      <h2>安静，但全能</h2>
-      <p>把 DeepSeek Harness 装进托盘——启动服务、管理更新、跟踪日志、打包数据，一个窗口全部搞定。深浅色随系统自动适配，左右滑动轮播，快速认识每个页面。</p>
+      <h2>轻量、可靠、可迁移</h2>
+      <p>把 DeepSeek Harness 装进托盘——单文件免安装、低占用常驻；启动失败自动回退、更新失败自动回滚；会话与插件一键导出，换台机器无缝恢复。深浅色随系统自动适配，左右滑动轮播，快速认识每个页面。</p>
     </div>
   </section>
 
   <section class="features" id="features">
     <div class="head">
       <span class="eyebrow">WHY DSH-SYSTRAY</span>
-      <h2>为桌面而生，安静地工作</h2>
-      <p>不打扰，不繁琐。像系统原生的一部分。</p>
+      <h2>轻量、可靠、可迁移</h2>
+      <p>单文件、自愈、随身带。像系统原生的一部分。</p>
     </div>
     <div class="feat-groups">
       <div class="fgroup" data-reveal>
-        <h3>启动，不打扰</h3>
+        <h3>轻量 — 双击即用</h3>
         <ul>
           <li>
             <div class="ico"><svg viewBox="0 0 24 24"><path d="M6 3l14 9-14 9V3z"/></svg></div>
             <div><b>双击即启</b><span>服务在后台安静就绪，不用记端口，不用开终端。</span></div>
+          </li>
+          <li>
+            <div class="ico"><svg viewBox="0 0 24 24"><path d="M21 8l-9-5-9 5v8l9 5 9-5V8zM3.3 8.5L12 13.3l8.7-4.8M12 22V13.3"/></svg></div>
+            <div><b>单文件免安装</b><span>Windows 单 exe / macOS 单 app，免管理员权限，解压即用。</span></div>
           </li>
           <li>
             <div class="ico"><svg viewBox="0 0 24 24"><path d="M12 2a10 10 0 1 0 0 20 10 10 0 0 0 0-20zm0 18a8 8 0 1 1 0-16 8 8 0 0 1 0 16zm4-8a4 4 0 1 1-8 0 4 4 0 0 1 8 0z"/></svg></div>
@@ -155,32 +159,49 @@ footer .sep{margin:0 8px;color:var(--border)}
           </li>
           <li>
             <div class="ico"><svg viewBox="0 0 24 24"><path d="M12 22a10 10 0 0 1-10-10A10 10 0 0 1 12 2a10 10 0 0 1 8.4 4.6L17 10h5V5l-1.8 1.8A8 8 0 1 0 20 12h-2a6 6 0 1 1-8.2-5.8L11.4 5A8 8 0 0 0 4 12a8 8 0 0 0 8 8v2z"/></svg></div>
-            <div><b>启动看得见</b><span>每一步进度清晰呈现，就绪后贴心提醒。</span></div>
-          </li>
-          <li>
-            <div class="ico"><svg viewBox="0 0 24 24"><path d="M12 2l9 5v5c0 5.5-3.8 9.4-9 10-5.2-.6-9-4.5-9-10V7l9-5zm0 2.2L5 8.6v3.5c0 4.3 2.9 7.5 7 8 4.1-.5 7-3.7 7-8V8.6l-7-4.4zM8.6 12.4l2.1 2.1 4.7-4.7 1.4 1.4-6.1 6.1-3.5-3.5 1.4-1.4z"/></svg></div>
             <div><b>始终唯一</b><span>不会重复启动，托盘里永远只有一个它。</span></div>
           </li>
         </ul>
       </div>
       <div class="fgroup" data-reveal>
-        <h3>一切，尽在掌控</h3>
+        <h3>可靠 — 自动自愈</h3>
         <ul>
           <li>
-            <div class="ico"><svg viewBox="0 0 24 24"><path d="M4 3h16a1 1 0 0 1 1 1v12a1 1 0 0 1-1 1H9l-4 4V4a1 1 0 0 1 1-1z"/></svg></div>
-            <div><b>设置窗口</b><span>五个页面，把常用设置都收进一个窗口。</span></div>
+            <div class="ico"><svg viewBox="0 0 24 24"><path d="M12 2l9 5v5c0 5.5-3.8 9.4-9 10-5.2-.6-9-4.5-9-10V7l9-5zm0 2.2L5 8.6v3.5c0 4.3 2.9 7.5 7 8 4.1-.5 7-3.7 7-8V8.6l-7-4.4zM8.6 12.4l2.1 2.1 4.7-4.7 1.4 1.4-6.1 6.1-3.5-3.5 1.4-1.4z"/></svg></div>
+            <div><b>启动看得见</b><span>每一步进度清晰呈现，就绪后贴心提醒。</span></div>
+          </li>
+          <li>
+            <div class="ico"><svg viewBox="0 0 24 24"><path d="M12 22a10 10 0 0 1-10-10A10 10 0 0 1 12 2a10 10 0 0 1 8.4 4.6L17 10h5V5l-1.8 1.8A8 8 0 1 0 20 12h-2a6 6 0 1 1-8.2-5.8L11.4 5A8 8 0 0 0 4 12a8 8 0 0 0 8 8v2z"/></svg></div>
+            <div><b>启动失败自动回退</b><span>启动异常时自动回退到上次正常运行的 harness 与插件状态。</span></div>
+          </li>
+          <li>
+            <div class="ico"><svg viewBox="0 0 24 24"><path d="M12 2l9 5v5c0 5.5-3.8 9.4-9 10-5.2-.6-9-4.5-9-10V7l9-5zm0 2.2L5 8.6v3.5c0 4.3 2.9 7.5 7 8 4.1-.5 7-3.7 7-8V8.6l-7-4.4zM8.6 12.4l2.1 2.1 4.7-4.7 1.4 1.4-6.1 6.1-3.5-3.5 1.4-1.4z"/></svg></div>
+            <div><b>更新失败自动回滚</b><span>harness 与插件更新前自动快照，失败自动还原并重启校验。</span></div>
           </li>
           <li>
             <div class="ico"><svg viewBox="0 0 24 24"><path d="M4 4h16a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2zm4 6l3 3-3 3m5 0h4"/></svg></div>
             <div><b>日志实时跟随</b><span>最新记录自动呈现，需要时一键清空。</span></div>
           </li>
+        </ul>
+      </div>
+      <div class="fgroup" data-reveal>
+        <h3>可迁移 — 数据随身带</h3>
+        <ul>
           <li>
             <div class="ico"><svg viewBox="0 0 24 24"><path d="M7 7h10M13 3l4 4-4 4M17 17H7m-4 4l4-4-4-4"/></svg></div>
             <div><b>数据随身带</b><span>会话与插件一键打包，换台机器也能无缝恢复。</span></div>
           </li>
           <li>
-            <div class="ico"><svg viewBox="0 0 24 24"><path d="M12 20a8 8 0 1 1 8-8 6 6 0 0 1-8 8zm-2-3h4v2h-4z"/></svg></div>
-            <div><b>更新静默而至</b><span>新版本在后台准备好，安装完成自动重启。</span></div>
+            <div class="ico"><svg viewBox="0 0 24 24"><path d="M12 22a10 10 0 0 1-10-10A10 10 0 0 1 12 2a10 10 0 0 1 8.4 4.6L17 10h5V5l-1.8 1.8A8 8 0 1 0 20 12h-2a6 6 0 1 1-8.2-5.8L11.4 5A8 8 0 0 0 4 12a8 8 0 0 0 8 8v2z"/></svg></div>
+            <div><b>冲突智能处理</b><span>导入时逐项恢复、冲突询问，自动备份现有内容。</span></div>
+          </li>
+          <li>
+            <div class="ico"><svg viewBox="0 0 24 24"><path d="M4 21v-7M4 10V3M12 21v-9M12 8V3M20 21v-5M20 12V3M1 14h6M9 8h6M17 16h6"/></svg></div>
+            <div><b>配置即数据</b><span>配置与数据都在用户目录，随导出包完整迁移。</span></div>
+          </li>
+          <li>
+            <div class="ico"><svg viewBox="0 0 24 24"><path d="M12 22a10 10 0 1 0 0-20 10 10 0 0 0 0 20zM2 12h20M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg></div>
+            <div><b>跨平台一致</b><span>Windows / macOS 同一套界面、同一份数据格式。</span></div>
           </li>
         </ul>
       </div>
@@ -194,6 +215,7 @@ footer .sep{margin:0 8px;color:var(--border)}
       <li><b>Windows</b>：双击 <code>dsh-systray.exe</code>（SmartScreen 提示时选「仍要运行」）</li>
       <li><b>macOS</b>：首次<b>右键 → 打开</b> <code>dsh-systray</code>，绕过 Gatekeeper</li>
       <li>首次启动约需 2-5 分钟完成环境部署，随后自动打开服务；配置保存在用户目录的 <code>config.json</code></li>
+      <li>换机迁移：旧机器「导出」打包 zip，新机器「导入」逐项恢复会话、插件与文件目录</li>
     </ol>
   </section>
 </main>
@@ -230,7 +252,8 @@ footer .sep{margin:0 8px;color:var(--border)}
   // 图片为 WebP 且按需加载：仅轮播到对应页时才请求，已加载的缓存复用
   var shots = [
     { src: 'shots/general.webp', cap: '常规 — 自启与服务状态，一眼掌握' },
-    { src: 'shots/about.webp',   cap: '关于 — 版本与更新，随时了然' },
+    { src: 'shots/about-top.webp',     cap: '关于（上）— 版本与各模块检查更新' },
+    { src: 'shots/about-bottom.webp',  cap: '关于（下）— 已安装插件逐个管理' },
     { src: 'shots/logs.webp',    cap: '日志 — 实时跟随，随看随清' },
     { src: 'shots/export.webp',  cap: '导出 — 会话插件，一键打包' },
     { src: 'shots/import.webp',  cap: '导入 — 无缝迁移，逐项恢复' }

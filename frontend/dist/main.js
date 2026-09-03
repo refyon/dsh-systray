@@ -31,6 +31,8 @@ const state = {
   impDone: {},          // kind → true：恢复完成标记（对应项显示 ✓ 已完成）
   updateProgress: null, // {text, pct} 更新进度
   splashMode: "startup", // startup | update
+  shotPage: "",         // 截图模式当前页（GetShotPage 返回；空=正常模式）
+  shotScroll: "",       // 截图模式内容区滚动量（bottom/像素/空）
 };
 
 // ==================== 页面路由 ====================
@@ -45,6 +47,24 @@ function showPage(name) {
   $("page-" + name).classList.remove("hidden");
   if (name === "logs") startLogPolling();
   else stopLogPolling();
+  // 关于页每次进入刷新版本号与插件清单（更新/导入等操作后保持最新）
+  if (name === "about") {
+    refreshVersions();
+    loadPlugins();
+  }
+}
+
+/** 截图模式：把内容区滚动到 DSH_SYSTRAY_SHOT_SCROLL 指定位置（bottom=最底；数字=像素）。
+ *  用于同一页面按不同滚动位置各截一张（如关于页上/下区域）。 */
+function applyShotScroll() {
+  if (!state.shotScroll) return;
+  const c = document.querySelector(".content");
+  if (!c) return;
+  if (state.shotScroll === "bottom") c.scrollTop = c.scrollHeight;
+  else {
+    const n = parseInt(state.shotScroll, 10);
+    if (n > 0) c.scrollTop = n;
+  }
 }
 
 function showSplash(mode, statusText) {
@@ -111,6 +131,14 @@ async function refreshService() {
       ? (state.svc.reason || "请查看日志")
       : (state.svc.state === "running" ? "服务就绪，可打开 Web UI" : "服务就绪后可打开 Web UI");
     updatePortHint();
+    // 兜底（仅截图模式）：若 splash:done 在页面就绪前已发出（快速就绪 + 慢 WebView），
+    // 周期轮询发现服务 running 且 splash 未收起时自动切回设置页。
+    // 正常模式绝不在此处切页——窗口由 Go 在就绪后统一隐藏，避免启动瞬间闪现设置页。
+    if (state.shotPage && state.svc.state === "running" && !$("splash").classList.contains("hidden")) {
+      showSettings();
+      refreshVersions();
+      loadPlugins();
+    }
   } catch (e) { console.error("GetServiceState", e); }
 }
 
@@ -154,7 +182,7 @@ function wireGeneral() {
       const pc = (stats && stats.pluginCount) || 0;
       $("reset-sessions-sub").textContent = "将清除 " + sc + " 条会话记录";
       $("reset-plugins-sub").textContent = "将清除 " + pc + " 个已安装插件";
-      // 默认勾选插件（重置的核心诉求：排除插件导致的服务启动失败）；会话默认不勾选（数据谨慎）
+      // 默认勾选插件（重置将物理删除已装插件，谨慎起见默认勾选）；会话默认不勾选（数据谨慎）
       $("reset-c-sessions").checked = false;
       $("reset-c-plugins").checked = pc > 0;
       $("reset-modal").classList.remove("hidden");
@@ -176,7 +204,13 @@ function wireGeneral() {
   $("reset-modal").querySelector(".modal-mask").addEventListener("click", () => $("reset-modal").classList.add("hidden"));
 }
 
-// ==================== 关于页 ====================
+// ==================== 关于页（按模块单独检查更新 + 插件列表） ====================
+
+/** 版本号统一 v 前缀展示；dev/空原样。 */
+function vtag(x) {
+  x = String(x || "").replace(/^v/, "");
+  return x ? "v" + x : "";
+}
 
 async function refreshVersions() {
   const a = bindings();
@@ -184,8 +218,44 @@ async function refreshVersions() {
   try {
     const v = await a.GetVersions();
     $("ver-app").textContent = v.app || "dev";
-    $("ver-harness").textContent = v.harness || "—";
+    $("ver-harness").textContent = vtag(v.harness) || "—";
   } catch (e) { console.error("GetVersions", e); }
+}
+
+/**
+ * 单模块「检查更新」（dsh-systray / harness）。
+ * which: "systray" | "harness" —— 按钮/提示/更新按钮按此约定命名。
+ */
+async function runModuleCheck(which) {
+  const a = bindings();
+  if (!a) return;
+  const checkBtn = $("btn-check-" + which);
+  const hintEl = $("hint-" + which);
+  const upBtn = $(which === "systray" ? "btn-systray-update" : "btn-harness-update");
+  checkBtn.disabled = true;
+  hintEl.className = "update-note";
+  hintEl.textContent = "正在检查更新…";
+  upBtn.classList.add("hidden");
+  try {
+    const m = which === "systray" ? await a.CheckSystrayUpdate() : await a.CheckHarnessUpdate();
+    if (m.error) {
+      hintEl.classList.add("err");
+      hintEl.textContent = "检查失败：" + m.error;
+      return;
+    }
+    if (m.hasUpdate) {
+      hintEl.classList.add("ok");
+      hintEl.textContent = "发现新版本 " + vtag(m.latest) + "（当前 " + vtag(m.current) + "）";
+      upBtn.classList.remove("hidden");
+    } else {
+      hintEl.textContent = "已是最新版本（" + vtag(m.current || m.latest) + "）";
+    }
+  } catch (e) {
+    hintEl.classList.add("err");
+    hintEl.textContent = "检查失败：" + (e && e.message ? e.message : e);
+  } finally {
+    checkBtn.disabled = false;
+  }
 }
 
 function wireAbout() {
@@ -203,69 +273,177 @@ function wireAbout() {
     await bindings().SetHarnessPrerelease(on);
     $("sw-prerelease").setAttribute("aria-checked", String(on));
   });
-  $("btn-check-update").addEventListener("click", async () => {
-    const btn = $("btn-check-update");
-    const hub = $("btn-harness-update");
-    const sysBtn = $("btn-systray-update");
-    btn.disabled = true;
-    $("update-hint").textContent = "正在检查更新…";
-    sysBtn.classList.add("hidden");
-    hub.classList.add("hidden");
-    const info = await bindings().CheckUpdateManual();
-    btn.disabled = false;
-    if (info.error) {
-      $("update-hint").textContent = "检查更新失败：" + info.error;
-      return;
-    }
-    // 展示结果 + 条件显示更新按钮（都不自动下载，须用户点按钮并确认）
-    const parts = [];
-    if (info.harnessHasUpdate) {
-      parts.push("Harness 有新版本 " + info.harnessLatest + "（当前 " + (info.harnessCurrent || "—") + "）");
-    }
-    if (info.hasUpdate) {
-      parts.push("dsh-systray 有新版本 " + info.latest + "（当前 " + (info.current || "dev") + "）");
-    }
-    if (!parts.length) {
-      parts.push("已是最新版本（systray " + (info.current || "dev") + " · harness " + (info.harnessCurrent || "未检测到") + "）");
-    }
-    $("update-hint").textContent = parts.join("；");
-    if (info.hasUpdate) {
-      sysBtn.textContent = "更新 dsh-systray v" + info.latest;
-      sysBtn.classList.remove("hidden");
-    }
-    if (info.harnessHasUpdate) {
-      hub.textContent = "更新 Harness v" + info.harnessLatest;
-      hub.classList.remove("hidden");
-    }
-  });
-  // dsh-systray 自身更新：确认后再下载
+  // dsh-systray / Harness：各自的检查按钮
+  $("btn-check-systray").addEventListener("click", () => runModuleCheck("systray"));
+  $("btn-check-harness").addEventListener("click", () => runModuleCheck("harness"));
+  // dsh-systray 自身更新：确认后再下载（下载/安装/重启走 splash，窗口自动显示）
   $("btn-systray-update").addEventListener("click", async () => {
-    const sysBtn = $("btn-systray-update");
     const ok = await confirmDialog(
       "更新 dsh-systray？",
       "将下载并安装新版本并自动重启（当前为开发构建时无可用更新）。确认开始更新吗？",
       "开始更新"
     );
     if (!ok) return;
-    sysBtn.disabled = true;
-    $("update-hint").textContent = "正在下载更新…";
+    $("btn-systray-update").disabled = true;
     bindings().StartUpdate();
     showSplash("update", "正在准备更新…");
   });
-  // Harness 更新：确认后再执行
+  // Harness 更新：确认后执行（进度走 splash，失败自动回退）
   $("btn-harness-update").addEventListener("click", async () => {
-    const hub = $("btn-harness-update");
-    const ver = (hub.textContent || "").replace("更新 Harness v", "");
     const ok = await confirmDialog(
       "更新 DeepSeek Harness？",
-      "将更新 DeepSeek Harness" + (ver ? " 到 v" + ver : "") + "，更新期间服务会短暂重启，失败会自动回退。确认开始更新吗？",
+      "将更新 DeepSeek Harness 到最新版本，更新期间服务会短暂重启，失败会自动回退。确认开始更新吗？",
       "开始更新"
     );
     if (!ok) return;
-    hub.disabled = true;
-    $("update-hint").textContent = "正在更新 DeepSeek Harness…";
+    $("btn-harness-update").disabled = true;
     await bindings().StartHarnessUpdate();
   });
+}
+
+// ==================== 插件列表（每行单独检查 / 更新） ====================
+
+const PLUG_SRC_LABEL = { npm: "npm", github: "GitHub", file: "本地", tarball: "压缩包", unknown: "未知来源" };
+
+/** 行内小号状态文字：tone = ok | err | muted */
+function setNote(item, text, tone) {
+  const note = item.querySelector("[data-note]");
+  if (!note) return;
+  note.className = "plug-note" + (tone === "ok" || tone === "err" ? " " + tone : "");
+  note.textContent = text || "";
+}
+
+async function loadPlugins() {
+  const a = bindings();
+  if (!a) return;
+  const list = $("plug-list");
+  const empty = $("plug-empty");
+  const count = $("plug-count");
+  let rows = [];
+  try {
+    rows = (await a.GetInstalledPlugins()) || [];
+  } catch (e) {
+    console.error("GetInstalledPlugins", e);
+    empty.classList.remove("hidden");
+    empty.textContent = "插件列表加载失败：" + (e && e.message ? e.message : e);
+    count.textContent = "";
+    return;
+  }
+  empty.textContent = "未安装任何用户插件（在 Web UI 中通过 dsh add 安装）";
+  list.textContent = "";
+  if (!rows.length) {
+    empty.classList.remove("hidden");
+    count.textContent = "";
+    return;
+  }
+  empty.classList.add("hidden");
+  count.textContent = rows.length + " 个";
+  for (const p of rows) list.appendChild(renderPluginRow(p));
+}
+
+/** 组装一个插件行；p 为 Go 返回的 PluginRow。 */
+function renderPluginRow(p) {
+  const item = document.createElement("div");
+  item.className = "plug-item";
+
+  const name = document.createElement("div");
+  name.className = "plug-name";
+  name.textContent = p.name;
+  const badge = document.createElement("span");
+  badge.className = "plug-badge";
+  badge.textContent = PLUG_SRC_LABEL[p.source] || p.source || "未知";
+  name.appendChild(badge);
+
+  const sub = document.createElement("div");
+  sub.className = "plug-sub";
+  sub.textContent = "当前版本 " + (p.version ? vtag(p.version) : "未安装") +
+    (p.profile ? " · 环境 " + p.profile : "");
+
+  const note = document.createElement("div");
+  note.className = "plug-note";
+  note.dataset.note = "";
+
+  const main = document.createElement("div");
+  main.className = "plug-main";
+  main.append(name, sub, note);
+
+  const actions = document.createElement("div");
+  actions.className = "plug-actions";
+
+  // 远程来源：提供「检查更新」按钮（描边主色，比 ghost 醒目）；检查出新版本后启用「更新」
+  if (p.canUpdate) {
+    const checkBtn = document.createElement("button");
+    checkBtn.className = "btn btn-outline btn-sm";
+    checkBtn.textContent = "检查更新";
+    checkBtn.addEventListener("click", () => doPluginCheck(p, item, checkBtn));
+    actions.appendChild(checkBtn);
+  }
+  // 「更新」按钮：所有行同尺寸同文本，仅颜色区分——可用=主色（查出新版本后显示），不可用=灰
+  const upBtn = document.createElement("button");
+  upBtn.className = "btn btn-primary btn-sm";
+  upBtn.dataset.update = "";
+  upBtn.textContent = "更新";
+  if (p.canUpdate) {
+    upBtn.classList.add("hidden");
+  } else {
+    upBtn.classList.add("btn-muted"); // 与 btn-primary 相同版式，仅颜色表达不可用
+  }
+  upBtn.disabled = !p.canUpdate;
+  upBtn.addEventListener("click", () => doPluginUpdate(p, item, upBtn));
+  actions.appendChild(upBtn);
+
+  item.append(main, actions);
+  if (!p.canUpdate && p.reason) setNote(item, p.reason, "muted");
+  return item;
+}
+
+/** 单插件检查（行内按钮触发，仅影响该行）。 */
+async function doPluginCheck(p, item, btn) {
+  const a = bindings();
+  if (!a) return;
+  btn.disabled = true;
+  setNote(item, "正在检查更新…", "muted");
+  const upBtn = item.querySelector("button[data-update]");
+  try {
+    const r = await a.CheckPluginUpdate(p.name);
+    if (r.error) {
+      setNote(item, "无法检查更新：" + r.error, "err");
+      return;
+    }
+    if (r.hasUpdate) {
+      setNote(item, "有新版本 " + vtag(r.latest) + "，可更新", "ok");
+      if (upBtn) {
+        upBtn.dataset.latest = r.latest || "";
+        upBtn.disabled = false;
+        upBtn.classList.remove("hidden");
+      }
+    } else {
+      setNote(item, "已是最新版本（" + vtag(r.latest) + "）", "muted");
+      if (upBtn) {
+        upBtn.disabled = true;
+        upBtn.classList.add("hidden");
+      }
+    }
+  } catch (e) {
+    setNote(item, "检查失败：" + (e && e.message ? e.message : e), "err");
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+/** 单插件更新（确认后交给 Go 端执行，splash 进度，完成/失败弹窗）。 */
+async function doPluginUpdate(p, item, upBtn) {
+  const ver = upBtn.dataset.latest || "";
+  const ok = await confirmDialog(
+    "更新插件？",
+    "将把插件 " + p.name + " 更新到" + (ver ? " " + vtag(ver) : "最新版本") +
+      "。更新期间服务会短暂重启，失败会自动回退到更新前版本。确认开始更新吗？",
+    "开始更新"
+  );
+  if (!ok) return;
+  item.querySelectorAll("button").forEach((b) => { b.disabled = true; });
+  setNote(item, "正在更新插件…", "muted");
+  bindings().StartPluginUpdate(p.name); // 完成后 Go 端发 plugins:changed 刷新列表
 }
 
 // ==================== 日志页 ====================
@@ -587,20 +765,15 @@ function wireEvents() {
   });
 
   EventsOn("splash:done", () => {
-    // 启动完成：切换设置视图（窗口随后由 Go 侧隐藏）
+    // 启动完成：切换设置视图（窗口随后由 Go 侧隐藏）；截图模式在此后重放滚动位置
+    applyShotScroll();
     showSettings();
     refreshService();
   });
 
   EventsOn("ui:show-splash", () => showSplash("startup", "正在准备运行环境…"));
-  EventsOn("ui:show-settings", () => { showSettings(); refreshConfig(); refreshService(); });
-
-  EventsOn("update:progress", (d) => {
-    if (!d) return;
-    $("update-progress").classList.remove("hidden");
-    $("update-text").textContent = d.text || "";
-    $("update-fill").style.width = Math.round((d.pct || 0) * 100) + "%";
-  });
+  // 托盘每次重开设置窗口：刷新版本与插件清单（更新/重置等操作可能在窗口隐藏期间完成，必须强一致重取）
+  EventsOn("ui:show-settings", () => { showSettings(); refreshConfig(); refreshService(); refreshVersions(); loadPlugins(); });
 
   EventsOn("export:progress", (d) => {
     if (!d) return;
@@ -646,7 +819,18 @@ function wireEvents() {
   });
 
   // 更新完成事件（更新进度窗口关闭时前端回到设置视图）
-  EventsOn("update:done", () => showSettings());
+  EventsOn("update:done", () => {
+    showSettings();
+    // 恢复更新按钮可用并刷新模块版本（systray 更新会重启整个应用，此处主要覆盖 harness）
+    const hub = $("btn-harness-update");
+    if (hub) hub.disabled = false;
+    const sysBtn = $("btn-systray-update");
+    if (sysBtn) sysBtn.disabled = false;
+    refreshVersions();
+  });
+
+  // 插件更新完成：刷新插件列表（版本/来源状态可能变化）
+  EventsOn("plugins:changed", () => loadPlugins());
 }
 
 // 取消更新
@@ -714,10 +898,34 @@ async function init() {
   // 初始视图：等待 Go 侧 ui:show-splash 事件（非自启动时窗口显示 splash）
   showSplash("startup", "正在准备运行环境…");
 
-  // 截图/预览：DSH_SYSTRAY_SHOT_PAGE 指定后直接显示对应页面
+  // 截图/预览：DSH_SYSTRAY_SHOT_PAGE 指定后直接显示对应页面；SHOT_SCROLL 指定滚动位置
   try {
     const shot = await bindings().GetShotPage();
+    state.shotPage = shot || "";
     if (shot && PAGE_TITLES[shot]) showPage(shot);
+    try {
+      state.shotScroll = (await bindings().GetShotScroll()) || "";
+    } catch (e) { /* ignore */ }
+    if (state.shotScroll) {
+      applyShotScroll();
+      // splash 切换/内容渲染后再补几次，确保滚动位置稳定落定
+      setTimeout(applyShotScroll, 900);
+      setTimeout(applyShotScroll, 2500);
+    }
+    // 截图模式导入页：自动载入演示可恢复项（呈现「已加载、可逐项恢复」状态而非空态）
+    if (shot === "import") {
+      (async () => {
+        try {
+          const res = await bindings().ImportPick();
+          if (res && res.items && res.items.length) {
+            state.impItems = res.items;
+            $("imp-path").textContent = res.path || "";
+            $("imp-path").classList.remove("hidden");
+            renderImportRows();
+          }
+        } catch (e) { /* ignore */ }
+      })();
+    }
   } catch (e) { /* ignore */ }
 
   // 拉取初始数据（即使 splash 阶段也可填充）

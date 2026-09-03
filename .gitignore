@@ -10,6 +10,10 @@
 # 本地配置（端口 / 目录）
 config.json
 
+# 运行时/测试日志
+plugin-update.log
+*.log
+
 # 系统 / 编辑器
 Thumbs.db
 .DS_Store

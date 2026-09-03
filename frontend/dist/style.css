@@ -283,6 +283,23 @@ input { font-family: inherit; }
 .btn-ghost { background: var(--surface-2); color: var(--text); }
 .btn-ghost:hover { background: var(--border); }
 
+/* 次级主操作（检查更新）：描边主色，比 ghost 醒目、比 primary 克制 */
+.btn-outline {
+  background: transparent;
+  color: var(--primary);
+  border: 1px solid var(--primary);
+}
+.btn-outline:hover { background: var(--primary-soft); color: var(--primary); }
+.btn-outline:active { background: var(--primary-soft); }
+
+/* 不可用（无法更新的插件）：与可用更新按钮同尺寸同文本，仅颜色区分 */
+.btn-muted {
+  background: var(--surface-2);
+  color: var(--muted);
+}
+.btn-muted:hover { background: var(--surface-2); color: var(--muted); }
+.btn-muted:disabled { opacity: 1; cursor: not-allowed; }
+
 .btn-danger { background: var(--danger); color: #fff; box-shadow: var(--shadow-sm); }
 .btn-danger:hover { background: #b91c1c; }
 @media (prefers-color-scheme: dark) {
@@ -333,20 +350,83 @@ input { font-family: inherit; }
 .input:focus-visible { outline-color: var(--focus); }
 .input-narrow { width: 100px; }
 
-/* ---------- About ---------- */
-.kv {
+/* ---------- About（模块化检查更新 + 插件列表） ---------- */
+.ver-lg { color: var(--primary); font-size: var(--fs-lg); font-weight: 700; }
+
+/* 每个模块卡片底部：结果提示 + 「检查更新」 + 条件更新的「更新」按钮 */
+.update-line {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: var(--sp-3);
+  border-top: 1px solid var(--border);
+  margin-top: var(--sp-3);
+  padding-top: var(--sp-3);
+}
+.update-note {
+  flex: 1;
+  min-width: 0;
+  color: var(--muted);
+  font-size: var(--fs-xs);
+  line-height: 1.5;
+}
+.update-note.err { color: var(--danger); }
+.update-note.ok { color: var(--ok); }
+
+/* 插件列表：每行 = 名称/版本/来源徽标 + 行内状态说明 + 检查/更新按钮 */
+.plug-count { font-size: var(--fs-xs); color: var(--muted); flex-shrink: 0; }
+
+.plug-list { display: flex; flex-direction: column; gap: var(--sp-2); margin-top: var(--sp-3); }
+.plug-empty { margin: var(--sp-3) 0 var(--sp-1); }
+
+.plug-item {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: var(--sp-2) 0;
-  color: var(--muted);
+  gap: var(--sp-4);
+  padding: var(--sp-2) var(--sp-3);
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
 }
-.kv strong { color: var(--primary); font-size: var(--fs-lg); }
 
-.update-zone { margin-top: var(--sp-5); }
-.update-hint { margin-top: var(--sp-4); font-size: var(--fs-sm); color: var(--muted); min-height: 22px; }
-.update-progress { margin-top: var(--sp-4); }
-.update-progress .row-sub { display: block; margin-top: var(--sp-2); }
+.plug-main { flex: 1; min-width: 0; }
+
+.plug-name {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  flex-wrap: wrap;
+  font-size: var(--fs-sm);
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+.plug-badge {
+  flex-shrink: 0;
+  font-size: 11px;
+  font-weight: 500;
+  line-height: 1;
+  color: var(--muted);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 2px 8px;
+}
+
+.plug-sub { color: var(--muted); font-size: var(--fs-xs); margin-top: 3px; line-height: 1.5; }
+
+/* 行内小号说明：原因 / 检查结果 / 错误 */
+.plug-note { color: var(--muted); font-size: var(--fs-xs); margin-top: 3px; line-height: 1.5; overflow-wrap: anywhere; }
+.plug-note.err { color: var(--danger); }
+.plug-note.ok { color: var(--ok); }
+
+.plug-actions {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: var(--sp-1);
+  flex-shrink: 0;
+}
 
 /* ---------- Logs ---------- */
 .log-head {

@@ -78,9 +78,9 @@
           <div class="card-row">
             <div class="row-text">
               <div class="row-title">重置 DeepSeek Harness</div>
-              <div class="row-sub">删除全部已安装插件，并回退到官方最后发布的稳定版本（用于排除插件导致的服务启动失败）</div>
+              <div class="row-sub">删除全部已安装插件，并回退到官方最后发布的稳定版本</div>
             </div>
-            <button id="btn-reset-harness" class="btn btn-danger">重置…</button>
+            <button id="btn-reset-harness" class="btn btn-danger">重置服务</button>
           </div>
         </div>
       </section>
@@ -88,10 +88,28 @@
       <!-- 关于 -->
       <section id="page-about" class="page hidden">
         <div class="card">
-          <div class="kv"><span>dsh-systray 版本号</span><strong id="ver-app">—</strong></div>
-          <div class="kv"><span>DeepSeek Harness 版本号</span><strong id="ver-harness">—</strong></div>
+          <div class="card-row">
+            <div class="row-text">
+              <div class="row-title">dsh-systray 版本号</div>
+              <div class="row-sub">桌面托盘设置程序</div>
+            </div>
+            <strong class="ver-lg" id="ver-app">—</strong>
+          </div>
+          <div class="update-line">
+            <div id="hint-systray" class="update-note"></div>
+            <button id="btn-check-systray" class="btn btn-outline btn-sm">检查更新</button>
+            <button id="btn-systray-update" class="btn btn-primary btn-sm hidden">更新 dsh-systray</button>
+          </div>
         </div>
+
         <div class="card">
+          <div class="card-row">
+            <div class="row-text">
+              <div class="row-title">DeepSeek Harness 版本号</div>
+              <div class="row-sub">后台服务引擎</div>
+            </div>
+            <strong class="ver-lg" id="ver-harness">—</strong>
+          </div>
           <div class="card-row">
             <div class="row-text">
               <div class="row-title">开启预发布通道</div>
@@ -99,16 +117,23 @@
             </div>
             <button id="sw-prerelease" class="switch" role="switch" aria-checked="false" aria-label="预发布通道"></button>
           </div>
-        </div>
-        <div class="update-zone">
-          <button id="btn-check-update" class="btn btn-primary">检查更新</button>
-          <button id="btn-systray-update" class="btn btn-primary hidden">更新 dsh-systray</button>
-          <button id="btn-harness-update" class="btn btn-primary hidden">更新 Harness</button>
-          <div id="update-hint" class="update-hint"></div>
-          <div id="update-progress" class="update-progress hidden">
-            <div class="splash-track"><div id="update-fill" class="splash-fill"></div></div>
-            <span id="update-text" class="row-sub"></span>
+          <div class="update-line">
+            <div id="hint-harness" class="update-note"></div>
+            <button id="btn-check-harness" class="btn btn-outline btn-sm">检查更新</button>
+            <button id="btn-harness-update" class="btn btn-primary btn-sm hidden">更新 Harness</button>
           </div>
+        </div>
+
+        <div class="card">
+          <div class="card-row">
+            <div class="row-text">
+              <div class="row-title">已安装插件</div>
+              <div class="row-sub">通过 dsh add 安装 · 每行可单独检查更新</div>
+            </div>
+            <span id="plug-count" class="plug-count"></span>
+          </div>
+          <div id="plug-list" class="plug-list"></div>
+          <div id="plug-empty" class="plug-empty row-sub hidden">未安装任何用户插件（在 Web UI 中通过 dsh add 安装）</div>
         </div>
       </section>
 
@@ -195,7 +220,7 @@
     <div class="modal-mask"></div>
     <div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="reset-title">
       <div class="modal-title" id="reset-title">重置 DeepSeek Harness</div>
-      <div class="modal-msg">勾选需要清除的内容并确认。重置会把 DeepSeek Harness 回退到官方最后发布的稳定版本，用于排除插件/数据导致的服务启动失败；被清除的数据不可恢复。</div>
+      <div class="modal-msg">勾选需要清除的内容并确认。重置会把 DeepSeek Harness 回退到官方最后发布的稳定版本；被清除的数据不可恢复。</div>
       <div class="reset-opts">
         <label class="reset-opt reset-opt-mandatory">
           <input type="checkbox" id="reset-c-harness" checked disabled>

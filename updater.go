@@ -702,8 +702,8 @@ func runHarnessUpdate(latest string) {
 		return
 	}
 
-	// 4) 成功：清理快照
-	cleanupHarnessSnapshot()
+	// 4) 成功：快照提升为 LKG（保留到下次冷启动验证通过后再清理——启动失败时可自动回退到该状态）
+	promoteHarnessLkg(prev)
 	splash.Close()
 	showMessageBox(fmt.Sprintf("DeepSeek Harness 已更新到 v%s，服务已重启。", withV(latest)), appName)
 }

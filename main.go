@@ -49,6 +49,18 @@ const (
 	winH = 560
 )
 
+// shotWindowHeight 设置窗口高度：截图模式可用 DSH_SYSTRAY_SHOT_HEIGHT 加高
+// （关于页加入插件列表后内容变长，完整展示需要更高窗口）；未设置时默认 winH。
+func shotWindowHeight() int {
+	h := winH
+	if v := os.Getenv("DSH_SYSTRAY_SHOT_HEIGHT"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n >= winH {
+			h = n
+		}
+	}
+	return h
+}
+
 var (
 	logDir             string
 	webURL             string
@@ -363,11 +375,11 @@ func main() {
 	err = wails.Run(&options.App{
 		Title:     "dsh-systray",
 		Width:     winW,
-		Height:    winH,
+		Height:    shotWindowHeight(),
 		MinWidth:  winW,
 		MaxWidth:  winW,
-		MinHeight: winH,
-		MaxHeight: winH,
+		MinHeight: shotWindowHeight(),
+		MaxHeight: shotWindowHeight(),
 		Assets:    assets,
 		Bind: []interface{}{
 			app,
@@ -376,7 +388,7 @@ func main() {
 		OnDomReady:    onDomReady,
 		OnShutdown:    onShutdown,
 		OnBeforeClose: onBeforeClose,
-		StartHidden:   autostartLaunch,
+		StartHidden:   autostartLaunch || (!shotMode && startupEnvReady()),
 		Windows: &windows.Options{
 			WebviewIsTransparent: false,
 			WindowIsTranslucent:  false,
@@ -398,8 +410,20 @@ func onStartup(ctx context.Context) {
 	go bootstrapService()
 }
 
+// signalShotReady 截图/预览模式：设置页切换完成后写入标记文件，供截图脚本同步等待，
+// 避免脚本在 splash 阶段过早截屏（此前曾截到“近空白的启动视图”）。
+func signalShotReady() {
+	if p := os.Getenv("DSH_SYSTRAY_SHOT_READY_FILE"); p != "" {
+		_ = os.WriteFile(p, []byte("ready"), 0o644)
+	}
+}
+
 // onDomReady 前端就绪：非自启动场景通知前端进入 splash 视图。
 func onDomReady(ctx context.Context) {
+	// 截图/预览模式：窗口自身置顶，确保屏幕截取不被其它窗口遮挡
+	if os.Getenv("DSH_SYSTRAY_SHOW_WINDOW") == "1" {
+		wruntime.WindowSetAlwaysOnTop(ctx, true)
+	}
 	if !autostartLaunch {
 		wruntime.EventsEmit(ctx, "ui:show-splash", nil)
 	}
@@ -517,12 +541,15 @@ func bootstrapService() {
 	// 3) 启动服务
 	splash.Update("正在启动服务…", 0.9)
 	started := false
+	startedByUs := false
 	var serverExitCh <-chan error
+	serverLogBefore := serverLogSize() // 本次启动的健康校验只扫描此后的追加日志段
 	if serverResponding(webURL) {
 		log.Printf("server already running on %s, skipping spawn", webURL)
 		started = true
 	} else {
 		started, serverExitCh = startServer()
+		startedByUs = started
 	}
 	if !started {
 		splash.Close()
@@ -537,11 +564,24 @@ func bootstrapService() {
 		if quitting.Load() {
 			return
 		}
+		// 本进程拉起的服务就绪后再扫启动日志（就绪 ≠ 健康：版本混装/插件不兼容会报加载错误）
+		bootError := ""
+		if ready && startedByUs {
+			time.Sleep(2 * time.Second)
+			if serverLogHasBootErrors(serverLogBefore) {
+				ready = false
+				bootError = "启动日志存在加载错误（版本/插件不兼容）"
+			}
+		}
 		if ready {
+			if startedByUs {
+				clearAllLkg() // 冷启动验证通过：当前状态即新的「已知良好」，旧 LKG 不再需要
+			}
 			serverReady.Store(true)
 			serviceFailed.Store(false)
 			refreshServiceMenu()
 			notifySplashDone()
+			signalShotReady()
 			if !autostartLaunch {
 				notifyReady()
 			} else {
@@ -549,15 +589,25 @@ func bootstrapService() {
 			}
 			return
 		}
-		if why == "exited" {
-			serviceFailed.Store(true)
-			serviceFailReason.Store("服务启动失败（进程已退出）")
-			refreshServiceMenu()
-			if !autostartLaunch {
-				showMessageBox("DeepSeek Harness 服务启动失败（进程已退出），请查看日志：\n"+filepath.Join(logDir, "server.log"), appName)
-			} else {
-				log.Printf("autostart: service failed to start (%s), staying silent", why)
+		// 启动失败：特征指向环境本身时（进程异常退出 / 加载错误）自动尝试回退到上次正常状态
+		if bootError != "" || why == "exited" {
+			reason := bootError
+			if reason == "" {
+				reason = "服务进程异常退出"
 			}
+			rolled, prev := tryBootRollback(reason)
+			reportBootRollback(rolled, prev, reason)
+			if rolled {
+				notifySplashDone()
+				signalShotReady()
+				if !autostartLaunch {
+					notifyReady()
+				}
+				return
+			}
+			serviceFailed.Store(true)
+			serviceFailReason.Store("服务启动失败（" + reason + "）")
+			refreshServiceMenu()
 			return
 		}
 		if autostartLaunch {
@@ -764,6 +814,26 @@ func harnessMode() string {
 		return "source"
 	}
 	return "missing"
+}
+
+// startupEnvReady 运行环境是否已就绪（用于启动窗口策略）：
+//   - node/pnpm 运行时可用；
+//   - harness 已是可运行形态：npm 预构建产物就位，或源码 checkout 且依赖已装、前端已构建。
+//
+// 就绪 → 启动时窗口保持隐藏，服务在后台拉起，就绪后直接弹「是否打开 Web UI」；
+// 未就绪 → 需要下载/安装/构建，显示 splash 进度窗口（用户可见等待过程）。
+func startupEnvReady() bool {
+	if !runtimeOK() {
+		return false
+	}
+	switch harnessMode() {
+	case "npm":
+		return true
+	case "source":
+		return sourceDepsInstalled() && harnessBuiltOK()
+	default:
+		return false
+	}
 }
 
 // findExistingHarnessDir 在常见位置探测已存在的 harness 源码 checkout。

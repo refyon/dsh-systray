@@ -59,12 +59,12 @@ func sanitizeShotHarnessDir() string {
 
 // shotDemoLog 截图模式展示的中性演示日志（与真实环境完全隔离，避免泄露路径/主机名等信息）。
 var shotDemoLog = []string{
-	"2026-08-11 09:12:01 INFO  dsh-systray v0.5.0 启动完成",
+	"2026-08-11 09:12:01 INFO  dsh-systray v0.5.2 启动完成",
 	"2026-08-11 09:12:03 INFO  后台服务已就绪：http://127.0.0.1:3080/",
 	"2026-08-11 09:12:05 INFO  已检测到 3 个历史会话",
 	"2026-08-11 09:12:07 WARN  日志文件较大，已截断显示最近 4000 行",
 	"2026-08-11 09:12:10 INFO  导出完成：dsh-systray-export-20260811-091210-1a2b3c4d.zip",
-	"2026-08-11 09:12:12 INFO  已是最新版本（v0.5.0）",
+	"2026-08-11 09:12:12 INFO  已是最新版本（v0.5.2）",
 }
 
 // sanitizeShotLine 脱敏一行文本：替换用户路径前缀，并移除版本构建后缀（如 -wails）。
@@ -311,47 +311,65 @@ type Versions struct {
 }
 
 func (a *App) GetVersions() Versions {
+	hv := installedHarnessVersion()
+	if shotMode && hv == "" {
+		hv = "0.1.1" // 截图模式且本机无 harness 目录时给出中性演示版本
+	}
 	return Versions{
-		App:     sanitizeShotVersion(appVersion),
-		Harness: sanitizeShotLine(installedHarnessVersion()),
+		App:     sanitizeShotVersion(withV(appVersion)),
+		Harness: sanitizeShotLine(hv),
 	}
 }
 
-// UpdateInfo 手动检查更新的结果：同时包含 dsh-systray 自身与 DeepSeek Harness 两个检查结果
-// （harness 的版本选择已按「预发布通道」开关联动，见 pickHarnessVersion）。
-type UpdateInfo struct {
+// ModuleUpdate 单一模块（dsh-systray / DeepSeek Harness）手动检查更新的结果。
+type ModuleUpdate struct {
+	Current   string `json:"current"` // 当前已装版本（获取失败可能为空）
+	Latest    string `json:"latest"`  // 远端最新可用版本
 	HasUpdate bool   `json:"hasUpdate"`
-	Latest    string `json:"latest"`
-	Current   string `json:"current"`
-	Error     string `json:"error"`
-
-	HarnessHasUpdate bool   `json:"harnessHasUpdate"`
-	HarnessLatest    string `json:"harnessLatest"`
-	HarnessCurrent   string `json:"harnessCurrent"`
+	Error     string `json:"error"` // 检查失败原因（网络等）
 }
 
-// CheckUpdateManual 手动检查更新：dsh-systray 自身新版本 + DeepSeek Harness 最新版本（按预发布通道）。
-// 不弹原生对话框，结果交前端展示。
-func (a *App) CheckUpdateManual() UpdateInfo {
-	info := UpdateInfo{}
+// CheckSystrayUpdate 检查 dsh-systray 自身是否有新版本（GitHub Release latest）。不弹原生对话框。
+func (a *App) CheckSystrayUpdate() ModuleUpdate {
+	info := ModuleUpdate{Current: appVersion}
+	if appVersion == "" || appVersion == "dev" {
+		info.Error = "当前为开发版本（dev），未启用版本检查。"
+		return info
+	}
 	rel, err := fetchLatestRelease()
 	if err != nil {
 		info.Error = err.Error()
 	} else if isNewerVersion(rel.TagName, appVersion) {
 		info.HasUpdate = true
 		info.Latest = rel.TagName
-		info.Current = appVersion
 	} else {
-		info.Current = appVersion
+		info.Latest = withV(appVersion)
 	}
-	harnessLatest, harnessCur, harnessNewer := queryHarnessUpdate()
-	info.HarnessHasUpdate = harnessNewer
-	info.HarnessLatest = harnessLatest
-	info.HarnessCurrent = harnessCur
-	logUI("手动检查更新", fmt.Sprintf("systray: %s -> %s | harness: %s -> %s",
-		orDash(info.Current), orDash(map[bool]string{true: info.Latest, false: "最新"}[info.HasUpdate]),
-		orDash(info.HarnessCurrent), orDash(map[bool]string{true: info.HarnessLatest, false: "最新"}[info.HarnessHasUpdate])))
+	logUI("检查 dsh-systray 更新", fmt.Sprintf("当前 %s | %s", withV(info.Current), moduleUpdateLogText(&info)))
 	return info
+}
+
+// CheckHarnessUpdate 检查 DeepSeek Harness 是否有新版本（GitHub Release，按「预发布通道」开关联动）。
+func (a *App) CheckHarnessUpdate() ModuleUpdate {
+	latest, cur, newer := queryHarnessUpdate()
+	info := ModuleUpdate{Current: cur, Latest: latest, HasUpdate: newer}
+	if latest == "" {
+		info.Error = "无法获取 DeepSeek Harness 最新版本，请检查网络后重试。"
+	}
+	logUI("检查 Harness 更新", fmt.Sprintf("当前 %s | %s", orDash(cur), moduleUpdateLogText(&info)))
+	return info
+}
+
+// moduleUpdateLogText 检查结果的日志摘要文本。
+func moduleUpdateLogText(info *ModuleUpdate) string {
+	switch {
+	case info.Error != "":
+		return "失败：" + info.Error
+	case info.HasUpdate:
+		return "有新版本 " + withV(info.Latest)
+	default:
+		return "已是最新"
+	}
 }
 
 func orDash(s string) string {
@@ -398,6 +416,48 @@ func (a *App) CancelUpdate() {
 	cancelActiveUpdate()
 }
 
+// ==================== 插件检查 / 更新（关于页「插件」卡片，按插件单独操作） ====================
+
+// GetInstalledPlugins 罗列用户通过 dsh add / dsh web add 安装的插件：
+// 含当前已装版本、安装来源（npm/github/file/tarball）与可否更新。
+// 截图模式返回演示清单（不暴露真实路径/来源）。
+func (a *App) GetInstalledPlugins() []PluginRow {
+	if shotMode {
+		return shotPlugins()
+	}
+	return buildPluginRows()
+}
+
+// CheckPluginUpdate 检查单个插件是否有新版本（纯查询，结果交前端行内展示）：
+// npm registry 安装查 dist-tag latest；github 安装按默认分支 package.json 版本判定。
+func (a *App) CheckPluginUpdate(id string) PluginCheckResult {
+	if shotMode {
+		return shotPluginCheck(id)
+	}
+	row, ok := findPluginRowByID(id)
+	if !ok {
+		return PluginCheckResult{Name: id, Error: "未找到该插件，可能已被移除。"}
+	}
+	res := checkPluginUpdateByRow(row)
+	state := "已是最新"
+	if res.Error != "" {
+		state = "失败：" + res.Error
+	} else if res.HasUpdate {
+		state = fmt.Sprintf("有新版本 %s", withV(res.Latest))
+	}
+	logUI("检查插件更新", fmt.Sprintf("%s（当前 %s）| %s", res.Name, orDash(res.Current), state))
+	return res
+}
+
+// StartPluginUpdate 更新指定插件到最新版（splash 进度，完成/失败弹窗，失败自动回退）。
+func (a *App) StartPluginUpdate(id string) {
+	logUI("更新插件", id)
+	if appCtx != nil {
+		wruntime.WindowShow(appCtx)
+	}
+	go runPluginUpdate(id)
+}
+
 // ResetStats 重置弹窗展示的将清除内容数量（供用户勾选前参考）。
 type ResetStats struct {
 	SessionCount int `json:"sessionCount"` // 将清除的会话记录数
@@ -416,7 +476,7 @@ func (a *App) GetResetStats() ResetStats {
 // harness 版本回退始终执行（必选项）；clearSessions / clearPlugins 按勾选物理删除
 // 对应数据（会话记录 / 已安装插件）。异步执行：进度走 splash 事件，完成/失败以弹窗提示。
 func (a *App) ResetHarness(clearSessions, clearPlugins bool) {
-	logUI("重置 DeepSeek Harness", fmt.Sprintf("clearSessions=%v clearPlugins=%v", clearSessions, clearPlugins))
+	logUI("重置服务", fmt.Sprintf("clearSessions=%v clearPlugins=%v", clearSessions, clearPlugins))
 	if appCtx != nil {
 		wruntime.WindowShow(appCtx)
 	}
@@ -572,6 +632,17 @@ type ImportPickResult struct {
 
 // ImportPick 选择导入压缩包并解析（原生文件对话框）。
 func (a *App) ImportPick() (*ImportPickResult, error) {
+	if shotMode {
+		// 截图模式：直接返回演示可恢复项（不弹文件对话框、不暴露真实路径）
+		return &ImportPickResult{
+			Path: "dsh-systray-export-20260903-091210-1a2b3c4d.zip",
+			Items: []ImportItem{
+				{Kind: "sessions", Label: "历史会话记录", Size: 2482124},
+				{Kind: "plugins", Label: "已安装插件", Size: 1892356},
+				{Kind: "files", Label: "自选文件目录", Size: 128512000},
+			},
+		}, nil
+	}
 	p, err := wruntime.OpenFileDialog(appCtx, wruntime.OpenDialogOptions{
 		Title: "选择 dsh-systray 导出压缩包",
 		Filters: []wruntime.FileFilter{
@@ -780,6 +851,12 @@ func (a *App) HideWindow() {
 // GetShotPage 调试用：DSH_SYSTRAY_SHOT_PAGE 指定启动后直接显示的页面（截图/预览）。
 func (a *App) GetShotPage() string {
 	return os.Getenv("DSH_SYSTRAY_SHOT_PAGE")
+}
+
+// GetShotScroll 调试用：DSH_SYSTRAY_SHOT_SCROLL 指定截图时内容区的滚动量
+// （"bottom"=滚到底部；正整数=像素；空=不滚动）。
+func (a *App) GetShotScroll() string {
+	return os.Getenv("DSH_SYSTRAY_SHOT_SCROLL")
 }
 
 // homeDownloads 返回系统下载目录。
