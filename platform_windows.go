@@ -97,7 +97,8 @@ const (
 
 var serverCmd *exec.Cmd
 
-// candidateHarnessDirs 探测候选：所有盘符的 \deepseek-harness + 用户主目录 + 默认目录。
+// candidateHarnessDirs 探测候选：各盘符的 \deepseek-harness + 官方默认目录（用户主目录下）
+// + 旧版私有目录（%LOCALAPPDATA%\Programs\dsh-systray-harness，仅迁移接管已存在部署）。
 func candidateHarnessDirs() []string {
 	var out []string
 	for c := 'A'; c <= 'Z'; c++ {
@@ -107,14 +108,25 @@ func candidateHarnessDirs() []string {
 		}
 		out = append(out, filepath.Join(root, "deepseek-harness"))
 	}
-	if home, err := os.UserHomeDir(); err == nil {
-		out = append(out, filepath.Join(home, "deepseek-harness"))
-	}
 	out = append(out, defaultHarnessDir())
+	if legacy := legacyHarnessDir(); legacy != "" && !strings.EqualFold(legacy, defaultHarnessDir()) {
+		out = append(out, legacy)
+	}
 	return out
 }
 
+// defaultHarnessDir 默认 harness 部署目录：官方 deepseek-harness 惯例位置（用户主目录下，
+// 与 macOS 及官方 npx/源码部署语义一致）。旧版私有目录不再作为新部署默认。
 func defaultHarnessDir() string {
+	if home, err := os.UserHomeDir(); err == nil && home != "" {
+		return filepath.Join(home, "deepseek-harness")
+	}
+	return filepath.Join(os.TempDir(), "deepseek-harness")
+}
+
+// legacyHarnessDir 旧版本默认部署目录（%LOCALAPPDATA%\Programs\dsh-systray-harness）。
+// 仅用于探测并接管旧版已部署的环境，避免老用户升级后被误判未部署而重新安装。
+func legacyHarnessDir() string {
 	base := os.Getenv("LOCALAPPDATA")
 	if base == "" {
 		if home, err := os.UserHomeDir(); err == nil {
@@ -189,7 +201,14 @@ func hideCmdWindow(cmd *exec.Cmd) {
 }
 
 // refreshEnvPath 把便携运行时加入当前进程 PATH 并持久化到用户 PATH（无需管理员）。
+// 便携运行时不存在（系统已有 node/pnpm）时不做任何事。
+// nodeDir 与 runtimeDir 都持久化：只持久化 runtimeDir 时，npm 生成的 pnpm.cmd shim
+// 会在新终端因找不到 node（node.exe 位于 nodeDir 子目录、不在 PATH）而失败，
+// 用户终端也就无法直接运行 npx / pnpm 官方 dsh 命令（如安装插件）。
 func refreshEnvPath() {
+	if !fileExists(nodeExe()) {
+		return // 无便携运行时，无需持久化
+	}
 	dirs := []string{nodeDir(), runtimeDir()}
 	cur := os.Getenv("PATH")
 	lower := strings.ToLower(cur)
@@ -199,7 +218,11 @@ func refreshEnvPath() {
 		}
 	}
 	os.Setenv("PATH", cur)
-	ps := fmt.Sprintf("$p=[Environment]::GetEnvironmentVariable('Path','User'); if($p -notlike '*%s*'){ [Environment]::SetEnvironmentVariable('Path','%s;'+$p,'User') }", runtimeDir(), runtimeDir())
+	esc := strings.ReplaceAll
+	ps := fmt.Sprintf("$d=@('%s','%s');", esc(nodeDir(), "'", "''"), esc(runtimeDir(), "'", "''"))
+	ps += "$p=[Environment]::GetEnvironmentVariable('Path','User');if($null -eq $p){$p=''};"
+	ps += "foreach($x in $d){if($p.ToLower().IndexOf($x.ToLower()) -lt 0){$p=$x+';'+$p}};"
+	ps += "[Environment]::SetEnvironmentVariable('Path',$p,'User')"
 	runHidden("powershell", "-NoProfile", "-WindowStyle", "Hidden", "-Command", ps)
 }
 

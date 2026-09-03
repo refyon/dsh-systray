@@ -443,14 +443,14 @@ func onShutdown(ctx context.Context) {
 // bootstrapService 后台服务编排（原 main 中的启动流程，改为事件驱动进度）：
 // 运行环境 → harness 安装/构建 → 启动服务 → 就绪提示。
 func bootstrapService() {
-	// 显式配置的 harness 目录不可用时让用户重新选择；默认目录则静默自动部署
+	// 未部署（无 package.json）时不询问用户指定目录：显式配置的目录失效时回退到
+	// 官方默认目录（~ 下 deepseek-harness，与官方 npx/源码部署及 macOS 语义一致），
+	// 交由下方自动探测/部署流程静默处理。
 	if _, err := os.Stat(filepath.Join(harnessDir, "package.json")); err != nil && harnessDirExplicit {
-		log.Printf("harness source not found at %s, prompting user to choose", harnessDir)
-		if chosen := pickHarnessDir("未找到 DeepSeek Harness 源码目录。\n请选择已有的 harness 源码目录，或选择即将自动安装到的文件夹：", harnessDir); chosen != "" {
-			harnessDir = chosen
-			saveConfig(appConfig{Port: port, HarnessDir: harnessDir, StartupTimeoutSec: int(startupTimeout / time.Second), UpdateMirror: updateMirrorOverride, HarnessPrerelease: harnessPrereleaseOverride})
-			log.Printf("harness dir set to %s", harnessDir)
-		}
+		log.Printf("configured harness dir %s not found, falling back to default %s", harnessDir, defaultHarnessDir())
+		harnessDir = defaultHarnessDir()
+		harnessDirExplicit = false
+		saveConfig(appConfig{Port: port, HarnessDir: harnessDir, StartupTimeoutSec: int(startupTimeout / time.Second), UpdateMirror: updateMirrorOverride, HarnessPrerelease: harnessPrereleaseOverride})
 	}
 
 	// 未显式配置时：自动探测已存在的 harness 源码 checkout（如各盘符根目录下的 deepseek-harness）
@@ -476,7 +476,14 @@ func bootstrapService() {
 			showMessageBox("下载运行环境失败：\n"+err.Error()+"\n\n请检查网络后重试；日志："+filepath.Join(logDir, "app.log"), appName)
 			return
 		}
-		refreshEnvPath()
+	}
+	// 便携 node/pnpm 就位后（本次安装或历史安装）持久化到用户 PATH：用户新开终端即可
+	// 直接运行 npx / pnpm 官方 dsh 命令（如安装插件）；系统已有 node/pnpm 时为 no-op。
+	refreshEnvPath()
+	// git 检测：github: 形式的插件安装（dsh plugin add github:<owner>/<repo>）依赖系统 git。
+	// 缺失不阻塞启动，仅记录引导（日志页可见；README「安装插件」章节有说明）。
+	if _, err := exec.LookPath("git"); err != nil {
+		log.Printf("git not found on PATH: installing plugins via 'dsh plugin add github:<owner>/<repo>' requires git — install Git for Windows (https://git-scm.com/download/win) and open a new terminal")
 	}
 
 	// 2) DeepSeek Harness 本体：源码 checkout 走 pnpm 构建；全新机器走 npm 预构建产物（免 git / 免构建）
@@ -822,7 +829,7 @@ func ensureNpmHarness() error {
 	}
 	// package.json：声明需执行的构建脚本（原生依赖），避免 pnpm 默认忽略导致失败
 	pkgPath := filepath.Join(harnessDir, "package.json")
-	pkg := "{\n  \"name\": \"dsh-systray-harness\",\n  \"private\": true,\n  \"pnpm\": {\n    \"onlyBuiltDependencies\": [\n      \"@deepseek-ai/dsh-subprocess-local\",\n      \"@google/genai\",\n      \"koffi\",\n      \"node-pty\",\n      \"protobufjs\"\n    ]\n  }\n}\n"
+	pkg := "{\n  \"name\": \"deepseek-harness\",\n  \"private\": true,\n  \"pnpm\": {\n    \"onlyBuiltDependencies\": [\n      \"@deepseek-ai/dsh-subprocess-local\",\n      \"@google/genai\",\n      \"koffi\",\n      \"node-pty\",\n      \"protobufjs\"\n    ]\n  }\n}\n"
 	write := false
 	if data, err := os.ReadFile(pkgPath); err != nil {
 		write = true
