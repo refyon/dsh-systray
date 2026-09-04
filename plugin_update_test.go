@@ -270,3 +270,58 @@ func TestPluginUpdateArgs(t *testing.T) {
 		t.Error("file source args should error")
 	}
 }
+
+// TestProfileDeclaresPlugin 删除后校验：package.json 是否仍声明该依赖。
+func TestProfileDeclaresPlugin(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("DSH_HOME", home)
+	writeTestProfile(t, home, "web", map[string]string{
+		"npm-a": "^1.2.3",
+		"git-b": "github:user/repo-b",
+	}, map[string]string{
+		"npm-a": "1.2.3",
+		"git-b": "0.9.0",
+	})
+	dir := filepath.Join(home, "profiles", "web")
+
+	// 声明中的依赖应被识别
+	if !profileDeclaresPlugin(dir, "npm-a") || !profileDeclaresPlugin(dir, "git-b") {
+		t.Errorf("declared deps should be reported")
+	}
+	// 未声明/官方包不命中
+	if profileDeclaresPlugin(dir, "other") || profileDeclaresPlugin(dir, "@deepseek-ai/dsh-base") {
+		t.Errorf("undeclared dep should not be reported")
+	}
+	// 目录缺 package.json → false（不误判为“仍声明”）
+	if profileDeclaresPlugin(filepath.Join(home, "profiles", "missing"), "npm-a") {
+		t.Errorf("missing profile should report false")
+	}
+}
+
+// TestPluginProfileSnapshotRestoreRoundTrip 插件删除/更新用快照-回退（纯文件操作，离线可测）：
+// 快照会把 node_modules 改名备份并备份清单文件；回退后三者恢复一致。
+func TestPluginProfileSnapshotRestoreRoundTrip(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("DSH_HOME", home)
+	writeTestProfile(t, home, "web", map[string]string{"npm-a": "^1.2.3"}, map[string]string{"npm-a": "1.2.3"})
+	dir := filepath.Join(home, "profiles", "web")
+
+	if had := snapshotPluginProfile(dir); !had {
+		t.Fatal("snapshot should back up node_modules")
+	}
+	// 快照后：node_modules 已移走、package.json.dshbak 就位
+	if _, err := os.Stat(filepath.Join(dir, "node_modules")); err == nil {
+		t.Error("node_modules should be renamed away during snapshot")
+	}
+	if _, err := os.Stat(filepath.Join(dir, "package.json.dshbak")); err != nil {
+		t.Errorf("snapshot should create package.json.dshbak, err=%v", err)
+	}
+
+	restorePluginProfileSnapshot(dir, true)
+	if _, err := os.Stat(filepath.Join(dir, "node_modules", "npm-a")); err != nil {
+		t.Errorf("node_modules should be restored, err=%v", err)
+	}
+	if profileDeclaresPlugin(dir, "npm-a") != true {
+		t.Error("package.json should be restored with npm-a declared")
+	}
+}

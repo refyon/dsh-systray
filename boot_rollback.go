@@ -240,8 +240,8 @@ func tryBootRollback(why string) (bool, string) {
 		log.Printf("lkg: rollback restart failed: %s", msg)
 		return false, prev.HarnessVersion
 	}
-	time.Sleep(2 * time.Second)
-	if serverLogHasBootErrors(before) {
+	// 健康窗口校验（错误可能迟于就绪数秒出现；直接短窗口扫描会漏判并把回退当成功）
+	if !verifyServerBoot(before, exitCh) {
 		log.Printf("lkg: rollback restart has boot errors")
 		return false, prev.HarnessVersion
 	}

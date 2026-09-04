@@ -139,7 +139,7 @@ func harnessGitTagForVersion(version string) (string, error) {
 }
 
 // runHarnessReset 重置 DeepSeek Harness：停服务 →（可选）清会话/清插件 →
-// 回退官方最新稳定版 → 重启校验。
+// 回退「上一个正常运行的版本」（LKG，若存在）或官方最新可用版本 → 重启校验。
 // clearSessions / clearPlugins 由前端勾选弹窗传入：harness 版本回退始终执行（必选项）。
 // 失败自动回退到重置前的可运行快照并弹窗报告。异步执行（按钮触发后 go 调用）。
 func runHarnessReset(clearSessions, clearPlugins bool) {
@@ -151,16 +151,37 @@ func runHarnessReset(clearSessions, clearPlugins bool) {
 	killServer()
 	time.Sleep(1 * time.Second)
 
-	// 1) 解析官方最后发布的稳定版本（不跟随预发布通道开关）
-	splash.Update("正在查询官方最新稳定版本…", 0.2)
-	latest, err := fetchLatestStableHarnessVersion()
-	if err != nil {
-		splash.Close()
-		showMessageBox("重置失败：无法获取官方稳定版本。\n"+err.Error()+"\n\n请检查网络后重试。", appName)
-		return
-	}
+	// 1) 回退目标：优先「上一个正常运行的版本」（LKG 本地快照，秒级恢复、无需网络）；
+	//    无 LKG 时回退官方最新稳定版（仓库无稳定 Release 时回退最新发布，targetNote 说明）。
+	//    依据：更新/冷启动异常后，官方“最新版”往往就是出问题的那个版本——重置应回到更新前
+	//    经校验的 LKG 状态，而不是再装一次出问题的版本。
+	lkgOK := hasLkgInDir(harnessDir)
 	cur := installedHarnessVersion()
-	log.Printf("reset: target stable version v%s (current %s) clearSessions=%v clearPlugins=%v", latest, cur, clearSessions, clearPlugins)
+	targetLabel := ""
+	latest := ""
+	targetNote := ""
+	if lkgOK {
+		targetLabel = "上一个正常运行的版本"
+		if prev, ok := readLkgMarker(); ok && prev.HarnessVersion != "" {
+			latest = prev.HarnessVersion
+			targetNote = "（" + withV(latest) + "）"
+		}
+	} else {
+		splash.Update("正在查询官方最新版本…", 0.2)
+		var err error
+		latest, targetNote, err = fetchHarnessResetTarget()
+		if err != nil {
+			splash.Close()
+			showMessageBox("重置失败：无法获取官方可用版本。\n"+err.Error()+"\n\n请检查网络后重试。", appName)
+			return
+		}
+		targetLabel = "官方最新稳定版"
+		if targetNote != "" {
+			targetLabel = "仓库最新发布（预发布）"
+		}
+	}
+	log.Printf("reset: target %s %s (current %s, lkg=%v) clearSessions=%v clearPlugins=%v",
+		targetLabel, orDash(withV(latest)), orDash(cur), lkgOK, clearSessions, clearPlugins)
 
 	// 2) 可选清理（服务已停止，删除不冲突运行中进程；清理失败不阻断版本回退，仅记录并提示）
 	cleanupNotes := ""
@@ -180,28 +201,46 @@ func runHarnessReset(clearSessions, clearPlugins bool) {
 	}
 
 	// 3) 版本回退（快照当前可运行版本，失败回滚）——重置的必选核心
-	if cur == latest && isNpmHarnessReady() {
-		// 已是官方最新稳定版：无需重装，仅重启生效（可选清理已完成）
-		log.Printf("reset: harness already at latest stable v%s", latest)
-	} else {
+	//    形态判定必须发生在快照之前：快照会把 node_modules 改名，npm 形态判定（依赖
+	//    node_modules 存在性）若在快照后进行会误判为源码/未知形态（与更新流程同样的坑）。
+	npmResetMode := isNpmHarnessReady()
+	sourceResetMode := !npmResetMode && isSourceHarnessDir()
+	didRestoreLkg := false
+	var rerr error
+	switch {
+	case lkgOK:
+		// LKG 回退：本地直接恢复（含 node_modules 移回），无需网络/重装
+		splash.Update("正在回退到上一个正常运行的版本…", 0.5)
+		didRestoreLkg = restoreLkgInDir(harnessDir)
+		if !didRestoreLkg {
+			splash.Close()
+			showMessageBox("重置失败：LKG 备份不可用，无法回退到上一个正常运行的版本。\n\n请查看日志："+
+				filepath.Join(logDir, "server.log"), appName)
+			return
+		}
+	case cur == latest && npmResetMode:
+		// 已是最新可回退目标：无需重装，仅重启生效（可选清理已完成）
+		log.Printf("reset: harness already at %s %s", targetLabel, withV(latest))
+	default:
 		hadNM := snapshotHarness()
-		var rerr error
 		switch {
-		case isNpmHarnessReady():
-			// npm 预构建形态：重装稳定版（reconcile 依赖树避免新旧混装）
-			splash.Update(fmt.Sprintf("正在安装官方稳定版本 v%s…", latest), 0.5)
-			rerr = runHarnessCmd(pnpmCmd(), "add", "@deepseek-ai/dsh@"+latest, "--save-exact")
+		case npmResetMode:
+			// npm 预构建形态：整家族 overrides 钉到回退目标版本（reconcile 依赖树避免新旧混装）
+			splash.Update(fmt.Sprintf("正在安装%s %s…", targetLabel, withV(latest)), 0.5)
+			if rerr = setHarnessOverrides(harnessDir, latest); rerr == nil {
+				rerr = runHarnessCmd(pnpmCmd(), "add", "@deepseek-ai/dsh@"+latest, "--save-exact")
+			}
 			if rerr == nil {
 				splash.Update("正在安装依赖…", 0.6)
 				rerr = runHarnessCmd(pnpmCmd(), "install")
 			}
-		case isSourceHarnessDir():
-			// 源码形态：fetch tags 后切到稳定 tag
-			if _, err := os.Stat(filepath.Join(harnessDir, ".git")); err != nil {
+		case sourceResetMode:
+			// 源码形态：fetch tags 后切到目标 tag
+			if !isGitHarnessDir() {
 				rerr = fmt.Errorf("源码目录不是 git 仓库，无法自动回退版本，请手动处理")
 				break
 			}
-			splash.Update("正在拉取官方稳定版本代码…", 0.5)
+			splash.Update("正在拉取官方版本代码…", 0.5)
 			if rerr = runHarnessCmd("git", "fetch", "--tags", "--force"); rerr == nil {
 				var tag string
 				if tag, rerr = harnessGitTagForVersion(latest); rerr == nil {
@@ -235,7 +274,7 @@ func runHarnessReset(clearSessions, clearPlugins bool) {
 		showMessageBox("重置后服务未能正常启动，请查看日志：\n"+filepath.Join(logDir, "server.log")+cleanupNotes, appName)
 		return
 	}
-	// 重置成功：官方稳定版 + 清理后的插件即新的良好基线，旧 LKG 不应再用于回退
+	// 重置成功：回退后的状态即新的良好基线，旧 LKG 不应再用于回退
 	clearAllLkg()
 	splash.Close()
 	detail := "DeepSeek Harness 已重置：\n"
@@ -245,12 +284,19 @@ func runHarnessReset(clearSessions, clearPlugins bool) {
 	if clearPlugins {
 		detail += "· 已安装插件已清除\n"
 	}
-	if cur == latest {
-		detail += "· 版本：官方最新稳定版 v" + latest + "（未变更）"
-	} else {
-		detail += "· 已回退到官方最新稳定版本 v" + latest
+	switch {
+	case didRestoreLkg:
+		detail += "· 版本：已回退到" + targetLabel
+		if latest != "" {
+			detail += " " + withV(latest)
+		}
+		detail += "\n"
+	case cur == latest:
+		detail += "· 版本：" + targetLabel + " " + withV(latest) + "（未变更）\n"
+	default:
+		detail += "· 已回退到" + targetLabel + " " + withV(latest) + "\n"
 	}
-	detail += "，服务已重启。" + cleanupNotes
+	detail += "服务已重启。" + targetNote + cleanupNotes
 	showMessageBox(detail, appName)
 }
 

@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -233,18 +234,45 @@ type LogFile struct {
 	Size   int64  `json:"size"`
 }
 
-// logFileName 规范化日志文件名（仅允许 app.log / server.log，防路径穿越）。
-func logFileName(name string) string {
-	if name == "server.log" {
-		return "server.log"
+// logNameAllowed 校验日志文件名：仅允许 logDir 下单个 *.log 文件。
+// 拒绝空名、".." 与任何路径分隔符（防路径穿越）。动态枚举与外部 name 参数共用此校验。
+func logNameAllowed(name string) bool {
+	if name == "" || name == "." || name == ".." {
+		return false
 	}
-	return "app.log"
+	if strings.ContainsAny(name, `/\`) || strings.Contains(name, "..") {
+		return false
+	}
+	return strings.HasSuffix(strings.ToLower(name), ".log")
 }
 
-// GetLogFiles 返回可查看的日志文件列表。
+// logFilePath 返回 logDir 下校验通过的日志文件完整路径；name 非法时返回空串。
+func logFilePath(name string) string {
+	if !logNameAllowed(name) {
+		return ""
+	}
+	return filepath.Join(logDir, name)
+}
+
+// GetLogFiles 返回日志目录下可查看的日志文件列表：动态枚举全部 *.log 文件
+// （app/server/install/harness-update/plugin-update 等，随运行自动增减），按名称排序。
 func (a *App) GetLogFiles() []LogFile {
-	out := make([]LogFile, 0, 2)
-	for _, n := range []string{"app.log", "server.log"} {
+	out := make([]LogFile, 0, 4)
+	ents, err := os.ReadDir(logDir)
+	if err != nil {
+		return out
+	}
+	var names []string
+	for _, e := range ents {
+		if e.IsDir() {
+			continue
+		}
+		if logNameAllowed(e.Name()) {
+			names = append(names, e.Name())
+		}
+	}
+	sort.Strings(names)
+	for _, n := range names {
 		p := filepath.Join(logDir, n)
 		fi, err := os.Stat(p)
 		lf := LogFile{Name: n, Path: sanitizeShotPath(p)}
@@ -258,7 +286,11 @@ func (a *App) GetLogFiles() []LogFile {
 }
 
 func (a *App) GetLogPath(name string) string {
-	return sanitizeShotPath(filepath.Join(logDir, logFileName(name)))
+	p := logFilePath(name)
+	if p == "" {
+		return ""
+	}
+	return sanitizeShotPath(p)
 }
 
 // ReadLogTail 从 offset 起增量读取指定日志（前端定时轮询；offset 超出文件长度时重置为 0）。
@@ -267,7 +299,10 @@ func (a *App) ReadLogTail(name string, offset int64) LogTail {
 	if shotMode {
 		return LogTail{Lines: shotDemoLog, NextOffset: int64(len(strings.Join(shotDemoLog, "\n")) + 1)}
 	}
-	p := filepath.Join(logDir, logFileName(name))
+	p := logFilePath(name)
+	if p == "" {
+		return LogTail{}
+	}
 	f, err := os.Open(p)
 	if err != nil {
 		return LogTail{}
@@ -298,8 +333,11 @@ func (a *App) ReadLogTail(name string, offset int64) LogTail {
 
 // ClearLog 清空指定日志。
 func (a *App) ClearLog(name string) {
+	if !logNameAllowed(name) {
+		return
+	}
 	logUI("清空日志", name)
-	_ = os.WriteFile(filepath.Join(logDir, logFileName(name)), nil, 0o644)
+	_ = os.WriteFile(filepath.Join(logDir, name), nil, 0o644)
 }
 
 // ==================== 更新 ====================
@@ -326,6 +364,7 @@ type ModuleUpdate struct {
 	Current   string `json:"current"` // 当前已装版本（获取失败可能为空）
 	Latest    string `json:"latest"`  // 远端最新可用版本
 	HasUpdate bool   `json:"hasUpdate"`
+	Note      string `json:"note"`  // 非网络失败场景的说明（如“仓库仅有预发布而通道未开”）；空为无
 	Error     string `json:"error"` // 检查失败原因（网络等）
 }
 
@@ -350,10 +389,11 @@ func (a *App) CheckSystrayUpdate() ModuleUpdate {
 }
 
 // CheckHarnessUpdate 检查 DeepSeek Harness 是否有新版本（GitHub Release，按「预发布通道」开关联动）。
+// 仅网络等真实失败才返回 Error；仓库只有预发布而通道关闭时返回 Note 说明（不再误报“无法获取”）。
 func (a *App) CheckHarnessUpdate() ModuleUpdate {
-	latest, cur, newer := queryHarnessUpdate()
-	info := ModuleUpdate{Current: cur, Latest: latest, HasUpdate: newer}
-	if latest == "" {
+	latest, cur, newer, note := queryHarnessUpdate()
+	info := ModuleUpdate{Current: cur, Latest: latest, HasUpdate: newer, Note: note}
+	if latest == "" && note == "" {
 		info.Error = "无法获取 DeepSeek Harness 最新版本，请检查网络后重试。"
 	}
 	logUI("检查 Harness 更新", fmt.Sprintf("当前 %s | %s", orDash(cur), moduleUpdateLogText(&info)))
@@ -367,6 +407,8 @@ func moduleUpdateLogText(info *ModuleUpdate) string {
 		return "失败：" + info.Error
 	case info.HasUpdate:
 		return "有新版本 " + withV(info.Latest)
+	case info.Note != "":
+		return "已是最新（" + info.Note + "）"
 	default:
 		return "已是最新"
 	}
@@ -381,7 +423,7 @@ func orDash(s string) string {
 
 // StartHarnessUpdate 按最新版更新 DeepSeek Harness（快照/回滚/重启校验，进度走 splash）。
 func (a *App) StartHarnessUpdate() {
-	latest, _, newer := queryHarnessUpdate()
+	latest, _, newer, _ := queryHarnessUpdate()
 	if !newer || latest == "" {
 		return
 	}
@@ -456,6 +498,19 @@ func (a *App) StartPluginUpdate(id string) {
 		wruntime.WindowShow(appCtx)
 	}
 	go runPluginUpdate(id)
+}
+
+// RemovePlugin 删除指定插件（前端确认后调用）：物理移除依赖与文件，失败自动回退。
+// 覆盖该插件声明的全部环境/profile。截图模式不执行真实删除。
+func (a *App) RemovePlugin(id string) {
+	if shotMode {
+		return
+	}
+	logUI("删除插件", id)
+	if appCtx != nil {
+		wruntime.WindowShow(appCtx)
+	}
+	go runPluginRemove(id)
 }
 
 // ResetStats 重置弹窗展示的将清除内容数量（供用户勾选前参考）。

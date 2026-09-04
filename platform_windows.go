@@ -310,10 +310,16 @@ func ensureRuntime(splash *SplashState) error {
 		cmd := exec.Command(filepath.Join(nodeDir(), "npm.cmd"), "install", "-g", "pnpm@10.34.5", "--prefix", runtimeDir(), "--loglevel", "error")
 		hideCmdWindow(cmd)
 		if f != nil {
-			cmd.Stdout = f
-			cmd.Stderr = f
-		}
-		if err := cmd.Run(); err != nil {
+			defer f.Close()
+			w := newTimePrefixWriter(f)
+			cmd.Stdout = w
+			cmd.Stderr = w
+			if err := cmd.Run(); err != nil {
+				w.Flush()
+				return fmt.Errorf("安装 pnpm 失败：%w（日志：%s）", err, logPath)
+			}
+			w.Flush()
+		} else if err := cmd.Run(); err != nil {
 			return fmt.Errorf("安装 pnpm 失败：%w（日志：%s）", err, logPath)
 		}
 	}
@@ -527,8 +533,9 @@ func startServer() (bool, <-chan error) {
 	cmd.Dir = harnessDir
 	hideCmdWindow(cmd)
 	if f != nil {
-		cmd.Stdout = f
-		cmd.Stderr = f
+		w := newTimePrefixWriter(f)
+		cmd.Stdout = w
+		cmd.Stderr = w
 	}
 	cmd.Stdin = nil
 

@@ -140,10 +140,7 @@
       <!-- 日志 -->
       <section id="page-logs" class="page hidden">
         <div class="log-head">
-          <div class="log-selector" role="tablist" aria-label="日志文件">
-            <button class="log-tab active" data-log="app.log" role="tab" aria-selected="true">app.log</button>
-            <button class="log-tab" data-log="server.log" role="tab" aria-selected="false">server.log</button>
-          </div>
+          <select id="log-select" class="log-select" aria-label="选择日志文件"></select>
           <div id="log-path" class="log-path">—</div>
         </div>
         <div class="log-tools">
@@ -220,13 +217,13 @@
     <div class="modal-mask"></div>
     <div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="reset-title">
       <div class="modal-title" id="reset-title">重置 DeepSeek Harness</div>
-      <div class="modal-msg">勾选需要清除的内容并确认。重置会把 DeepSeek Harness 回退到官方最后发布的稳定版本；被清除的数据不可恢复。</div>
+      <div class="modal-msg">勾选需要清除的内容并确认。重置会把 DeepSeek Harness 回退到上一个正常运行的版本（存在备份时）；否则回退到官方最新稳定版（无稳定 Release 时回退到最新可用版本）。被清除的数据不可恢复。</div>
       <div class="reset-opts">
         <label class="reset-opt reset-opt-mandatory">
           <input type="checkbox" id="reset-c-harness" checked disabled>
           <span class="reset-opt-main">
             <span class="reset-opt-title">Harness 服务 <em>（必选）</em></span>
-            <span class="row-sub">回退到官方最新稳定版本并重启服务</span>
+            <span class="row-sub">回退到上一个正常运行的版本（或官方最新版）并重启服务</span>
           </span>
         </label>
         <label class="reset-opt">

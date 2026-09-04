@@ -1,6 +1,9 @@
 package main
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func TestCompareVersions(t *testing.T) {
 	cases := []struct {
@@ -78,5 +81,48 @@ func TestPickHarnessVersion(t *testing.T) {
 	}
 	if got := pickHarnessVersion(nil, true); got != "" {
 		t.Errorf("empty tags pick = %q, want empty", got)
+	}
+}
+
+// TestResolveHarnessLatest 预发布通道关闭时的“无法获取”修复：仓库只有预发布时，
+// 应返回说明文案而非空错误；通道开启或存在稳定版时无说明。
+func TestResolveHarnessLatest(t *testing.T) {
+	preOnly := []string{"dsh-v0.1.1-rc.2", "dsh-v0.1.2-alpha.2", "dsh-v0.1.2-rc.1"}
+	withStable := append(preOnly, "dsh-v0.1.1")
+
+	// 仓库全为预发布 + 通道关闭：无可更新版本，但给出面向用户说明（含最新预发布版号）
+	latest, newest, note := resolveHarnessLatest(preOnly, false)
+	if latest != "" {
+		t.Errorf("pre-only + channel off: latest = %q, want empty", latest)
+	}
+	if newest != "0.1.2-rc.1" {
+		t.Errorf("pre-only: newest = %q, want 0.1.2-rc.1", newest)
+	}
+	if note == "" || !strings.Contains(note, "v0.1.2-rc.1") {
+		t.Errorf("pre-only + channel off: note = %q, want guidance mentioning v0.1.2-rc.1", note)
+	}
+
+	// 通道开启：latest 即仓库最新（预发布），无说明
+	latest, newest, note = resolveHarnessLatest(preOnly, true)
+	if latest != "0.1.2-rc.1" || newest != "0.1.2-rc.1" {
+		t.Errorf("pre-only + channel on: latest/newest = %q/%q, want 0.1.2-rc.1", latest, newest)
+	}
+	if note != "" {
+		t.Errorf("pre-only + channel on: note = %q, want empty", note)
+	}
+
+	// 存在稳定版 + 通道关闭：取稳定版，无说明
+	latest, _, note = resolveHarnessLatest(withStable, false)
+	if latest != "0.1.1" {
+		t.Errorf("with stable + channel off: latest = %q, want 0.1.1", latest)
+	}
+	if note != "" {
+		t.Errorf("with stable + channel off: note = %q, want empty", note)
+	}
+
+	// 空标签集：无可更新、无说明
+	latest, _, note = resolveHarnessLatest(nil, false)
+	if latest != "" || note != "" {
+		t.Errorf("empty tags: latest/note = %q/%q, want empty", latest, note)
 	}
 }

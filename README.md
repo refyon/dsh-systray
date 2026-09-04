@@ -22,7 +22,7 @@
   <a href="https://github.com/refyon/dsh-systray/actions/workflows/release.yml"><img alt="Release build" src="https://github.com/refyon/dsh-systray/actions/workflows/release.yml/badge.svg" /></a>
 </p>
 
-<img src="docs/screenshot-hero.webp" alt="dsh-systray 设置窗口与依赖更新" />
+<img src="docs/screenshot-hero.webp" alt="dsh-systray 设置窗口与自动部署/安装 Harness 依赖" />
 
 dsh-systray 是一个 Windows / macOS 系统托盘应用，围绕三个核心特性设计：**轻量**（单文件免安装、免管理员权限、托盘常驻低占用）、**可靠**（环境自检自愈、启动失败自动回退、更新失败自动回滚）、**可迁移**（会话/插件/目录一键导出导入，换机无缝恢复）。双击即可后台拉起 DeepSeek Harness Web 本地服务，无需记忆端口。界面基于 [Wails v2](https://wails.io)（Go 后端 + WebView2 / WKWebView 前端）重构，设置窗口五页分类管理开机自启与后台服务、版本与更新（dsh-systray / Harness / 插件按模块独立检查）、实时日志，整体配色支持浅色 / 深色自动跟随系统，内置自动更新。
 
@@ -84,26 +84,6 @@ dsh-systray 是一个 Windows / macOS 系统托盘应用，围绕三个核心特
 - `updateMirror`：可选，GitHub 更新下载镜像前缀（国内网络友好，如 `https://ghproxy.net/`）
 - `harnessPrerelease`：是否把 alpha/beta/rc 视为 harness 可更新版本（默认关闭，仅更新稳定版）
 
-## 安装插件
-
-dsh-systray 后台启动的就是官方 `web` profile（插件与数据都在官方 `~/.dsh`，即 `$DSH_HOME`），
-因此安装插件**直接使用 DeepSeek Harness 官方命令即可**，与官方部署完全兼容：
-
-```bash
-npx '@deepseek-ai/dsh' plugin --profile web add github:refyon/restrict-discipline
-```
-
-前置要求（在任意终端执行）：
-
-- **node / npx**：本机已装 Node.js；或本机由 dsh-systray 内置了便携运行时（首次部署后
-  **新开一个终端**，内置 node / pnpm 已自动写入用户 PATH）
-- **git**：`github:` 形式的插件依赖 git 拉取（缺失时启动日志会有提示；安装 Git 后新开终端即可）
-
-> 插件安装在 `~/.dsh/profiles/web`，与 dsh-systray 后台服务共用同一数据根；装完后
-> **需重启后台服务才生效**：托盘 → 设置 → 常规 → 重启后台服务（或退出托盘重开）。
-> 带构建脚本（prepare）的插件若被 pnpm 拦截（`ERR_PNPM_IGNORED_BUILDS`），把提示的
-> 包名加入 `%USERPROFILE%\.dsh\profiles\web\pnpm-workspace.yaml` 的 `allowBuilds` 后重新执行安装命令。
-
 ## 架构
 
 ```
@@ -132,8 +112,8 @@ npx '@deepseek-ai/dsh' plugin --profile web add github:refyon/restrict-disciplin
 
 | 平台 | 构建命令 |
 | --- | --- |
-| Windows | `wails build -s -clean -platform windows/amd64 -ldflags "-X main.appVersion=v0.5.0"` |
-| macOS | `wails build -s -clean -platform darwin/universal -ldflags "-X main.appVersion=v0.5.0"` |
+| Windows | `wails build -s -clean -platform windows/amd64 -ldflags "-X main.appVersion=v0.6.0"` |
+| macOS | `wails build -s -clean -platform darwin/universal -ldflags "-X main.appVersion=v0.6.0"` |
 
 > - `-s`：跳过前端构建（直接内嵌 `frontend/dist`）；改动前端后无需其他步骤，直接重新 `wails build`
 > - `-X main.appVersion=` 注入当前版本号，供自动更新对比使用（GitHub Actions 打 tag 发布时自动注入；本地开发可省略，此时为 `dev`，跳过更新检查）

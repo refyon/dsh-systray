@@ -308,6 +308,25 @@ input { font-family: inherit; }
 
 .btn-sm { min-height: 32px; padding: 0 var(--sp-4); font-size: var(--fs-sm); }
 
+/* 紧凑按钮（插件行内等高频操作）：尽量把多个按钮放进一行，降低视觉重量 */
+.btn-xs {
+  min-height: 26px;
+  padding: 0 var(--sp-2);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+/* 行内「安静危险」（删除）：透明底 + 危险色描边文字，hover 才实底——比整块红底克制 */
+.btn-danger-ghost {
+  background: transparent;
+  color: var(--danger);
+  border: 1px solid var(--danger);
+}
+.btn-danger-ghost:hover { background: var(--danger); color: #fff; }
+@media (prefers-color-scheme: dark) {
+  .btn-danger-ghost:hover { background: var(--danger); }
+}
+
 .btn-block { width: 100%; min-height: 40px; }
 
 /* ---------- Switch ---------- */
@@ -420,11 +439,13 @@ input { font-family: inherit; }
 .plug-note.err { color: var(--danger); }
 .plug-note.ok { color: var(--ok); }
 
+/* 插件行操作按钮：单行排布（放不下时允许换行），按钮缩小后整行更紧凑 */
 .plug-actions {
   display: flex;
-  flex-direction: column;
-  align-items: flex-end;
-  gap: var(--sp-1);
+  align-items: center;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: var(--sp-2);
   flex-shrink: 0;
 }
 
@@ -432,38 +453,40 @@ input { font-family: inherit; }
 .log-head {
   display: flex;
   align-items: center;
-  gap: var(--sp-4);
+  flex-wrap: wrap;
+  gap: var(--sp-2) var(--sp-4);
   margin-bottom: var(--sp-3);
 }
 
-.log-selector {
-  display: inline-flex;
-  padding: 3px;
-  gap: 2px;
+/* 日志文件选择下拉：与页面其它控件同源的 tokens，原生 select 自带键盘可达 */
+.log-select {
+  min-height: 34px;
+  max-width: 280px;
+  padding: 0 var(--sp-3);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
   background: var(--surface-2);
-  border-radius: 999px;
-  flex-shrink: 0;
-}
-
-.log-tab {
-  padding: 4px 14px;
-  border-radius: 999px;
-  font-size: var(--fs-xs);
+  color: var(--text);
+  font-size: var(--fs-sm);
   font-weight: 600;
-  color: var(--muted);
-  transition: background var(--dur) var(--ease), color var(--dur) var(--ease);
+  flex-shrink: 0;
+  cursor: pointer;
 }
+.log-select option {
+  background: var(--surface);
+  color: var(--text);
+}
+.log-select:focus-visible { outline-color: var(--focus); }
 
-.log-tab:hover { color: var(--text); }
-.log-tab.active { background: var(--surface); color: var(--primary); box-shadow: var(--shadow-sm); }
-
+/* 日志文件完整路径：占满下一行并允许换行显示完整，不再省略截断 */
 .log-path {
+  flex: 1 1 100%;
   font-size: var(--fs-xs);
   color: var(--muted);
   font-family: var(--mono);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  word-break: break-all;
 }
 
 .log-tools { display: flex; gap: var(--sp-3); margin-bottom: var(--sp-3); }
@@ -483,7 +506,8 @@ input { font-family: inherit; }
   user-select: text;
 }
 
-/* 日志行级别着色 */
+/* 日志行时间戳（行头，弱化）+ 级别着色 */
+.log-line .log-ts { color: var(--muted); }
 .log-line .lvl-info { color: var(--primary); }
 .log-line .lvl-warn { color: var(--warn); }
 .log-line .lvl-error { color: var(--danger); }

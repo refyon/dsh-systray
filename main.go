@@ -564,11 +564,11 @@ func bootstrapService() {
 		if quitting.Load() {
 			return
 		}
-		// 本进程拉起的服务就绪后再扫启动日志（就绪 ≠ 健康：版本混装/插件不兼容会报加载错误）
+		// 本进程拉起的服务就绪后再做健康校验（就绪 ≠ 健康：版本混装/插件不兼容会报加载错误，
+		// 且错误常迟于就绪数秒刷出——必须用覆盖窗口的 verifyServerBoot，否则会把异常当成功并误清 LKG）
 		bootError := ""
 		if ready && startedByUs {
-			time.Sleep(2 * time.Second)
-			if serverLogHasBootErrors(serverLogBefore) {
+			if !verifyServerBoot(serverLogBefore, serverExitCh) {
 				ready = false
 				bootError = "启动日志存在加载错误（版本/插件不兼容）"
 			}
@@ -754,15 +754,12 @@ func harnessBuiltOK() bool {
 	return true
 }
 
-// runHarnessBuild 执行 pnpm run build（输出写入 build.log），超时 10 分钟。
+// runHarnessBuild 执行 pnpm run build（输出每行带时间戳前缀写入 build.log），超时 10 分钟。
 func runHarnessBuild() error {
 	buildLogPath := filepath.Join(logDir, "build.log")
 	f, err := os.OpenFile(buildLogPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
 	if err != nil {
 		f = nil // 无法写日志不阻塞构建
-	}
-	if f != nil {
-		defer f.Close()
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
@@ -776,8 +773,17 @@ func runHarnessBuild() error {
 	}
 	hideCmdWindow(cmd)
 	if f != nil {
-		cmd.Stdout = f
-		cmd.Stderr = f
+		defer f.Close()
+		w := newTimePrefixWriter(f)
+		cmd.Stdout = w
+		cmd.Stderr = w
+		if err := cmd.Run(); err != nil {
+			w.Flush()
+			return fmt.Errorf("pnpm run build failed: %w（构建日志：%s）", err, buildLogPath)
+		}
+		w.Flush()
+		log.Printf("harness build completed")
+		return nil
 	}
 	if err := cmd.Run(); err != nil {
 		return fmt.Errorf("pnpm run build failed: %w（构建日志：%s）", err, buildLogPath)
@@ -869,26 +875,31 @@ func pnpmTunedEnv() []string {
 	}
 }
 
-// runSourceDepsInstall 源码模式：pnpm install（输出写入 install.log）。
+// runSourceDepsInstall 源码模式：pnpm install（输出每行带时间戳前缀写入 install.log）。
 func runSourceDepsInstall() error {
 	logPath := filepath.Join(logDir, "install.log")
 	f, _ := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
-	if f != nil {
-		defer f.Close()
-	}
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Minute)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, pnpmCmd(), "install")
 	cmd.Dir = harnessDir
 	cmd.Env = append(os.Environ(), pnpmTunedEnv()...)
 	hideCmdWindow(cmd)
-	if f != nil {
-		cmd.Stdout = f
-		cmd.Stderr = f
+	if f == nil {
+		if err := cmd.Run(); err != nil {
+			return fmt.Errorf("pnpm install failed: %w（日志：%s）", err, logPath)
+		}
+		return nil
 	}
+	defer f.Close()
+	w := newTimePrefixWriter(f)
+	cmd.Stdout = w
+	cmd.Stderr = w
 	if err := cmd.Run(); err != nil {
+		w.Flush()
 		return fmt.Errorf("pnpm install failed: %w（日志：%s）", err, logPath)
 	}
+	w.Flush()
 	return nil
 }
 
@@ -927,9 +938,6 @@ func ensureNpmHarness() error {
 	}
 	logPath := filepath.Join(logDir, "install.log")
 	f, _ := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
-	if f != nil {
-		defer f.Close()
-	}
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Minute)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, pnpmCmd(), "add", "@deepseek-ai/dsh@0.1.1-rc.2", "--save-exact")
@@ -937,14 +945,22 @@ func ensureNpmHarness() error {
 	cmd.Env = append(os.Environ(), pnpmTunedEnv()...)
 	hideCmdWindow(cmd)
 	if f != nil {
-		cmd.Stdout = f
-		cmd.Stderr = f
-	}
-	if err := cmd.Run(); err != nil {
-		// 构建脚本已白名单；若 dsh 入口已就绪，则即便 pnpm 因个别原生构建失败也视为安装完成
-		if isNpmHarnessReady() {
-			log.Printf("npm harness installed (pnpm reported: %v)", err)
+		defer f.Close()
+		w := newTimePrefixWriter(f)
+		cmd.Stdout = w
+		cmd.Stderr = w
+		if err := cmd.Run(); err != nil {
+			w.Flush()
+			if isNpmHarnessReady() {
+				log.Printf("npm harness installed (pnpm reported: %v)", err)
+			} else {
+				return fmt.Errorf("安装 @deepseek-ai/dsh 失败：%w（日志：%s）", err, logPath)
+			}
 		} else {
+			w.Flush()
+		}
+	} else if err := cmd.Run(); err != nil {
+		if !isNpmHarnessReady() {
 			return fmt.Errorf("安装 @deepseek-ai/dsh 失败：%w（日志：%s）", err, logPath)
 		}
 	}

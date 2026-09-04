@@ -123,8 +123,9 @@ func startServer() (bool, <-chan error) {
 	}
 	cmd.Dir = harnessDir
 	if f != nil {
-		cmd.Stdout = f
-		cmd.Stderr = f
+		w := newTimePrefixWriter(f)
+		cmd.Stdout = w
+		cmd.Stderr = w
 	}
 	cmd.Stdin = nil
 

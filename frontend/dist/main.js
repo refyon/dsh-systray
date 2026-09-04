@@ -247,6 +247,11 @@ async function runModuleCheck(which) {
       hintEl.classList.add("ok");
       hintEl.textContent = "发现新版本 " + vtag(m.latest) + "（当前 " + vtag(m.current) + "）";
       upBtn.classList.remove("hidden");
+    } else if (m.note) {
+      // 非网络失败的说明（如：仓库仅预发布而通道未开）——不再误报“无法获取”
+      hintEl.textContent = m.current
+        ? "已是最新（当前 " + vtag(m.current) + "）。" + m.note
+        : m.note;
     } else {
       hintEl.textContent = "已是最新版本（" + vtag(m.current || m.latest) + "）";
     }
@@ -373,14 +378,14 @@ function renderPluginRow(p) {
   // 远程来源：提供「检查更新」按钮（描边主色，比 ghost 醒目）；检查出新版本后启用「更新」
   if (p.canUpdate) {
     const checkBtn = document.createElement("button");
-    checkBtn.className = "btn btn-outline btn-sm";
+    checkBtn.className = "btn btn-outline btn-xs";
     checkBtn.textContent = "检查更新";
     checkBtn.addEventListener("click", () => doPluginCheck(p, item, checkBtn));
     actions.appendChild(checkBtn);
   }
   // 「更新」按钮：所有行同尺寸同文本，仅颜色区分——可用=主色（查出新版本后显示），不可用=灰
   const upBtn = document.createElement("button");
-  upBtn.className = "btn btn-primary btn-sm";
+  upBtn.className = "btn btn-primary btn-xs";
   upBtn.dataset.update = "";
   upBtn.textContent = "更新";
   if (p.canUpdate) {
@@ -391,6 +396,15 @@ function renderPluginRow(p) {
   upBtn.disabled = !p.canUpdate;
   upBtn.addEventListener("click", () => doPluginUpdate(p, item, upBtn));
   actions.appendChild(upBtn);
+
+  // 「删除」：确认后物理移除该插件（其全部环境），失败自动回退；完成后 Go 端发 plugins:changed 刷新。
+  // 用“安静危险”样式（透明底 + 描边），避免整块红底在行内过于突兀。
+  const delBtn = document.createElement("button");
+  delBtn.className = "btn btn-danger-ghost btn-xs";
+  delBtn.dataset.del = "";
+  delBtn.textContent = "删除";
+  delBtn.addEventListener("click", () => doPluginRemove(p, item, delBtn));
+  actions.appendChild(delBtn);
 
   item.append(main, actions);
   if (!p.canUpdate && p.reason) setNote(item, p.reason, "muted");
@@ -446,26 +460,49 @@ async function doPluginUpdate(p, item, upBtn) {
   bindings().StartPluginUpdate(p.name); // 完成后 Go 端发 plugins:changed 刷新列表
 }
 
+/** 单插件删除（确认后交给 Go 端执行，splash 进度，失败自动回退）。 */
+async function doPluginRemove(p, item, delBtn) {
+  const ok = await confirmDialog(
+    "删除插件？",
+    "将物理删除插件 " + p.name +
+      (p.profile ? "（环境 " + p.profile + "）" : "") +
+      " 及其依赖，不可恢复。删除期间服务会短暂重启，失败会自动回退到删除前状态。确定删除吗？",
+    "删除"
+  );
+  if (!ok) return;
+  item.querySelectorAll("button").forEach((b) => { b.disabled = true; });
+  setNote(item, "正在删除插件…", "muted");
+  bindings().RemovePlugin(p.id); // 完成后 Go 端发 plugins:changed 刷新列表
+}
+
 // ==================== 日志页 ====================
 
-const LEVEL_RE = /^(\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2})\s+(INFO|WARN|ERROR|DEBUG)\s+(.*)$/;
+// 日志行时间戳/级别识别：时间戳统一显示为行头（muted），兼容斜杠（Go log / 子进程前缀
+// "2026/09/04 14:00:13"）与横杠+T 两种写法；级别词着色便于扫读。
+const LOG_TS_RE = /^\s*(\d{4}[-\/]\d{2}[-\/]\d{2}[ T]\d{2}:\d{2}:\d{2})\s+(.*)$/;
+const LOG_LVL_RE = /^\[?(INFO|WARN|ERROR|DEBUG)\]?\s+(.*)$/;
 
 function renderLog(lines) {
   const view = $("log-view");
   const atBottom = view.scrollHeight - view.scrollTop - view.clientHeight < 40;
   for (const ln of lines) {
-    const m = ln.match(LEVEL_RE);
     const div = document.createElement("div");
     div.className = "log-line";
-    if (m) {
-      const lvl = m[2].toLowerCase();
-      div.innerHTML =
-        '<span style="color:var(--muted)">' + esc(m[1]) + " </span>" +
-        '<span class="lvl-' + lvl + '">' + esc(m[2]) + "</span> " +
-        esc(m[3]);
-    } else {
-      div.textContent = ln;
+    let rest = ln;
+    let ts = "";
+    const mTs = ln.match(LOG_TS_RE);
+    if (mTs) {
+      ts = mTs[1];
+      rest = mTs[2];
     }
+    let html = ts ? '<span class="log-ts">' + esc(ts) + " </span>" : "";
+    const mLvl = rest.match(LOG_LVL_RE);
+    if (mLvl) {
+      html += '<span class="lvl-' + mLvl[1].toLowerCase() + '">' + esc(mLvl[1]) + "</span> " + esc(mLvl[2]);
+    } else {
+      html += esc(rest);
+    }
+    div.innerHTML = html;
     view.appendChild(div);
   }
   // 限制 DOM 行数，避免长期运行后卡顿（保留最近 4000 行）
@@ -483,7 +520,7 @@ function escAttr(s) { return esc(s).replace(/"/g, "&quot;"); }
 
 async function pollLog() {
   const a = bindings();
-  if (!a || state.page !== "logs") return;
+  if (!a || state.page !== "logs" || !state.logName) return;
   try {
     const tail = await a.ReadLogTail(state.logName, state.logOffset);
     if (tail.lines && tail.lines.length) renderLog(tail.lines);
@@ -491,18 +528,43 @@ async function pollLog() {
   } catch (e) { console.error("ReadLogTail", e); }
 }
 
+/** 动态渲染日志文件下拉选项（后端 GetLogFiles 枚举 logs 目录下全部 *.log）。
+ *  选中策略：保持当前选中；当前文件不存在/不可用 → 首个存在的文件；全部缺失 → 占位空值。 */
+function renderLogTabs(files) {
+  const sel = $("log-select");
+  sel.textContent = "";
+  const hasAny = files && files.some((x) => x.exists);
+  if (!hasAny) {
+    const o = document.createElement("option");
+    o.value = "";
+    o.textContent = files && files.length ? "（暂无可用日志文件）" : "（无日志文件）";
+    o.disabled = true;
+    sel.appendChild(o);
+    if (state.logName) setLogFile("");
+    return;
+  }
+  for (const f of files) {
+    const o = document.createElement("option");
+    o.value = f.name;
+    o.textContent = f.exists ? f.name : f.name + "（缺失）";
+    if (!f.exists) o.disabled = true;
+    sel.appendChild(o);
+  }
+  let pick = files.find((x) => x.name === state.logName && x.exists);
+  if (!pick) pick = files.find((x) => x.exists);
+  setLogFile(pick.name);
+}
+
 function setLogFile(name) {
-  state.logName = name;
-  document.querySelectorAll(".log-tab").forEach((b) => {
-    const on = b.dataset.log === name;
-    b.classList.toggle("active", on);
-    b.setAttribute("aria-selected", String(on));
-  });
+  state.logName = name || "";
+  const sel = $("log-select");
+  if (sel) sel.value = state.logName;
   $("log-view").textContent = "";
   state.logOffset = 0;
   (async () => {
     const a = bindings();
-    if (a) $("log-path").textContent = await a.GetLogPath(name);
+    if (a && state.logName) $("log-path").textContent = await a.GetLogPath(state.logName);
+    else $("log-path").textContent = "";
   })();
   pollLog();
 }
@@ -511,18 +573,21 @@ function startLogPolling() {
   stopLogPolling();
   const a = bindings();
   if (!a) return;
-  // 初始化：更新文件选择器可用状态 + 当前路径
   (async () => {
     try {
-      const files = await a.GetLogFiles();
-      files.forEach((f) => {
-        const tab = document.querySelector('.log-tab[data-log="' + f.name + '"]');
-        if (tab) tab.disabled = !f.exists;
-      });
+      renderLogTabs((await a.GetLogFiles()) || []);
     } catch (e) { /* ignore */ }
-    setLogFile(state.logName);
   })();
   state.logTimer = setInterval(pollLog, 2000);
+}
+
+/** 重新拉取日志文件清单并重渲染下拉（保留当前选中），供“刷新”按钮使用。 */
+async function refreshLogFiles() {
+  const a = bindings();
+  if (!a) return;
+  try {
+    renderLogTabs((await a.GetLogFiles()) || []);
+  } catch (e) { /* ignore */ }
 }
 
 function stopLogPolling() {
@@ -530,10 +595,10 @@ function stopLogPolling() {
 }
 
 function wireLogs() {
-  document.querySelectorAll(".log-tab").forEach((b) => {
-    b.addEventListener("click", () => setLogFile(b.dataset.log));
+  $("log-select").addEventListener("change", (e) => {
+    if (e.target.value) setLogFile(e.target.value);
   });
-  $("btn-log-refresh").addEventListener("click", () => { $("log-view").textContent = ""; state.logOffset = 0; pollLog(); });
+  $("btn-log-refresh").addEventListener("click", () => { $("log-view").textContent = ""; state.logOffset = 0; pollLog(); refreshLogFiles(); });
   $("btn-log-clear").addEventListener("click", async () => {
     await bindings().ClearLog(state.logName);
     $("log-view").textContent = "";

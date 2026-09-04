@@ -508,25 +508,28 @@ func cleanupPluginProfileSnapshot(dir string) {
 	_ = os.RemoveAll(filepath.Join(dir, "node_modules.dshbak"))
 }
 
-// runProfileCmd 在指定目录执行命令，输出追加到 logDir/plugin-update.log。
+// runProfileCmd 在指定目录执行命令，输出（每行带时间戳前缀）追加到 logDir/plugin-update.log。
 func runProfileCmd(dir, name string, args ...string) error {
 	logPath := filepath.Join(logDir, "plugin-update.log")
 	f, _ := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
-	if f != nil {
-		defer f.Close()
-	}
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, name, args...)
 	cmd.Dir = dir
 	cmd.Env = append(os.Environ(), pnpmTunedEnv()...)
 	hideCmdWindow(cmd)
-	if f != nil {
-		cmd.Stdout = f
-		cmd.Stderr = f
+	if f == nil {
+		log.Printf("profile cmd: %s %v (dir=%s)", name, args, dir)
+		return cmd.Run()
 	}
+	defer f.Close()
+	w := newTimePrefixWriter(f)
+	cmd.Stdout = w
+	cmd.Stderr = w
 	log.Printf("profile cmd: %s %v (dir=%s)", name, args, dir)
-	return cmd.Run()
+	err := cmd.Run()
+	w.Flush()
+	return err
 }
 
 // pluginUpdateArgs 根据来源生成 pnpm 安装参数：
@@ -722,4 +725,112 @@ func rollbackPluginUpdate(splash *SplashState, row PluginRow, hadNM []bool, reas
 	splash.Close()
 	logUI("更新插件失败", fmt.Sprintf("%s: %s", row.Name, reason))
 	showMessageBox("插件 "+row.Name+" 更新失败（"+reason+"），已回退到更新前版本。\n\n日志："+filepath.Join(logDir, "plugin-update.log"), appName)
+}
+
+// ==================== 插件删除 ====================
+
+// profileDeclaresPlugin profile 的 package.json 是否仍声明该依赖（pnpm remove 后校验用）。
+func profileDeclaresPlugin(dir, name string) bool {
+	data, err := os.ReadFile(filepath.Join(dir, "package.json"))
+	if err != nil {
+		return false
+	}
+	var m struct {
+		Dependencies map[string]string `json:"dependencies"`
+	}
+	if json.Unmarshal(data, &m) != nil {
+		return false
+	}
+	_, ok := m.Dependencies[name]
+	return ok
+}
+
+// runPluginRemove 删除单个插件（覆盖其声明的全部 profile/目录）：
+// 停服务 → 各目录快照 → pnpm remove（逐目录）→ 校验 package.json 已不再声明 →
+// 重启健康校验 → 成功清理快照与 profile LKG（删除后即新的良好基线，避免冷启动失败时
+// LKG 回退把已删插件“复活”）/ 失败逐目录回退并报告。异步执行（前端确认后 go 调用）。
+func runPluginRemove(id string) {
+	row, ok := findPluginRowByID(id)
+	if !ok {
+		showMessageBox("未找到该插件，可能已被移除。", appName)
+		return
+	}
+	logUI("开始删除插件", fmt.Sprintf("%s（v%s，%d 个环境）", row.Name, orDash(row.Version), len(row.Locs)))
+
+	splash := startSplash("正在删除插件 " + row.Name + "…")
+	// 全程计数：删除同样占用「检查/更新窗口」，自动更新提示不再重复弹窗
+	openUpdateCheckFlow()
+	defer closeUpdateCheckFlow()
+
+	// 0) 先停止服务（运行中的 node 占用 profile node_modules 文件，快照/移除会失败）
+	killServer()
+	time.Sleep(1 * time.Second)
+
+	// 1) 快照每个声明目录（失败可整体回退）
+	splash.Update("正在备份当前状态…", 0.12)
+	hadNM := make([]bool, len(row.Locs))
+	for i, dir := range row.Locs {
+		hadNM[i] = snapshotPluginProfile(dir)
+	}
+
+	// 2) pnpm remove（逐目录执行）
+	var perr error
+	for i, dir := range row.Locs {
+		splash.Update(fmt.Sprintf("正在移除 %s（%d/%d）…", row.Name, i+1, len(row.Locs)),
+			0.25+0.4*float64(i)/float64(len(row.Locs)))
+		if perr = runProfileCmd(dir, pnpmCmd(), "remove", row.Name); perr != nil {
+			break
+		}
+	}
+	if perr == nil {
+		// 3a) 移除后校验：任一目录的 package.json 仍声明该插件即视为失败
+		for _, dir := range row.Locs {
+			if profileDeclaresPlugin(dir, row.Name) {
+				perr = fmt.Errorf("删除后 %s 的 package.json 仍声明 %s", dir, row.Name)
+				break
+			}
+		}
+	}
+	if perr != nil {
+		rollbackPluginRemove(splash, row, hadNM, fmt.Sprintf("移除失败：%v", perr))
+		return
+	}
+
+	// 3b) 重启并健康校验
+	splash.Update("正在重启服务…", 0.85)
+	if !restartAndVerifyServer() {
+		rollbackPluginRemove(splash, row, hadNM, "删除后服务启动失败")
+		return
+	}
+
+	// 4) 成功：清理快照；并清理 profile LKG（删除后的状态即新的良好基线）
+	for _, dir := range row.Locs {
+		cleanupPluginProfileSnapshot(dir)
+		clearLkgInDir(dir)
+	}
+	splash.Close()
+	logUI("删除插件完成", row.Name)
+	showMessageBox(fmt.Sprintf("插件 %s 已删除，服务已重启。", row.Name), appName)
+	// 用户关闭完成弹窗后再通知前端刷新插件列表（与更新流程一致）
+	if appCtx != nil {
+		wruntime.EventsEmit(appCtx, "plugins:changed", nil)
+	}
+}
+
+// rollbackPluginRemove 插件删除失败：回退全部目录快照 → 重启校验 → 弹窗报告。
+func rollbackPluginRemove(splash *SplashState, row PluginRow, hadNM []bool, reason string) {
+	splash.Update("删除失败，正在回退…", 0.55)
+	killServer()
+	for i, dir := range row.Locs {
+		had := false
+		if i < len(hadNM) {
+			had = hadNM[i]
+		}
+		restorePluginProfileSnapshot(dir, had)
+	}
+	splash.Update("正在重启服务…", 0.85)
+	restartAndVerifyServer()
+	splash.Close()
+	logUI("删除插件失败", fmt.Sprintf("%s: %s", row.Name, reason))
+	showMessageBox("插件 "+row.Name+" 删除失败（"+reason+"），已回退到删除前状态。\n\n日志："+filepath.Join(logDir, "plugin-update.log"), appName)
 }
