@@ -18,8 +18,9 @@ import (
 // removeInstalledPlugins 物理删除用户安装的插件（profiles 下各 profile）：
 //  1. package.json：dependencies 与 dsh.profile.bundles 移除非 @deepseek-ai/* 的条目
 //     （保留 harness 官方 bundle，插件注册信息一并清除，使 harness 不再加载它们）；
-//  2. node_modules：删除其中所有非 @deepseek-ai 的包目录与 .pnpm 私有存储
-//     （用户插件与其依赖闭包被物理移除；@deepseek-ai 官方包目录保留）。
+//  2. node_modules：删除所有非 @deepseek-ai 的顶层目录；.pnpm 私有存储只删非官方条目
+//     （@deepseek-ai+* 官方包实体保留——官方顶层目录是指向它的符号链接，整删 .pnpm
+//     会让官方 client bundle 悬空、harness web 加载插件清单时报 failed to load）。
 //
 // 返回被清理的 profile 目录数。调用前须已 killServer()（避免运行中占用文件）。
 // 注意：本函数不可逆，符合「重置会丢失所有已安装插件」的警告语义。
@@ -98,7 +99,12 @@ func cleanProfilePlugins(dir string) error {
 			}
 		}
 	}
-	// 2) node_modules：删除非 @deepseek-ai 的顶层目录（用户插件/依赖闭包）与 .pnpm 私有存储
+	// 2) node_modules：删除非官方内容，但保持 @deepseek-ai 官方包实体完整：
+	//   - 顶层：删除非 @deepseek-ai 目录（用户插件与其依赖闭包）；
+	//   - .pnpm 私有存储：只删除非官方条目，保留 @deepseek-ai+*（官方包实体所在）。
+	//     旧实现整删 .pnpm，顶层 @deepseek-ai/* 符号链接指向已删实体 → 悬空，
+	//     harness web 拉官方 client bundle（如 dsh-client-ui-settings-plugin-inventory
+	//     的 client.js）即报 failed to load —— 保留官方实体可避免该损坏。
 	nm := filepath.Join(dir, "node_modules")
 	entries, err := os.ReadDir(nm)
 	if err != nil {
@@ -106,17 +112,41 @@ func cleanProfilePlugins(dir string) error {
 	}
 	for _, e := range entries {
 		name := e.Name()
-		// scoped 目录（@scope）整体按 scope 判断：@deepseek-ai 保留，其它 scope 全删
-		del := true
-		if strings.HasPrefix(name, "@deepseek-ai") {
-			del = false
+		if name == ".pnpm" {
+			if err := prunePnpmNonOfficial(filepath.Join(nm, name)); err != nil {
+				return err
+			}
+			continue
 		}
-		if del {
+		// scoped 目录（@scope）整体按 scope 判断：@deepseek-ai 保留，其它 scope 全删
+		if !strings.HasPrefix(name, "@deepseek-ai") {
 			target := filepath.Join(nm, name)
 			log.Printf("reset: removing plugin dir %s", target)
 			if err := os.RemoveAll(target); err != nil {
 				return fmt.Errorf("删除 %s 失败：%w", target, err)
 			}
+		}
+	}
+	return nil
+}
+
+// prunePnpmNonOfficial 删除 .pnpm 虚拟仓库中的非官方条目：保留 @deepseek-ai+*（官方包实体，
+// 顶层 @deepseek-ai/* 符号链接指向它们）与 . 开头的元数据文件；其余（用户插件与其依赖）
+// 物理删除。
+func prunePnpmNonOfficial(pnpmDir string) error {
+	entries, err := os.ReadDir(pnpmDir)
+	if err != nil {
+		return nil // .pnpm 不存在/已删，无需处理
+	}
+	for _, e := range entries {
+		name := e.Name()
+		if strings.HasPrefix(name, "@deepseek-ai+") || strings.HasPrefix(name, ".") {
+			continue // 官方包实体 / .modules.yaml 等元数据保留
+		}
+		target := filepath.Join(pnpmDir, name)
+		log.Printf("reset: removing pnpm store entry %s", target)
+		if err := os.RemoveAll(target); err != nil {
+			return fmt.Errorf("删除 %s 失败：%w", target, err)
 		}
 	}
 	return nil
@@ -151,8 +181,16 @@ func runHarnessReset(clearSessions, clearPlugins bool) {
 	killServer()
 	time.Sleep(1 * time.Second)
 
+	// 0.5) 安装形态判定必须发生在快照之前（快照会把 node_modules 改名，npm 形态判定若在
+	//     快照后进行会误判为源码/未知形态——与更新流程同样的坑）；且 npm 预构建形态的
+	//     回退目标必须来自 npm：安装走 npm，而 GitHub Release tag 常领先于 npm 发布，
+	//     直接采用 GitHub tag（如 0.1.3-alpha.1）会 pnpm add "No matching version" 使重置失败。
+	npmResetMode := isNpmHarnessReady()
+	sourceResetMode := !npmResetMode && isSourceHarnessDir()
+
 	// 1) 回退目标：优先「上一个正常运行的版本」（LKG 本地快照，秒级恢复、无需网络）；
-	//    无 LKG 时回退官方最新稳定版（仓库无稳定 Release 时回退最新发布，targetNote 说明）。
+	//    无 LKG 时回退官方可用版本（npm 形态按 npm 已发布版本、源码形态按 GitHub Release；
+	//    均先稳定版，只有预发布时回退最新发布并 targetNote 说明——目标是"装得上的可用版本"）。
 	//    依据：更新/冷启动异常后，官方“最新版”往往就是出问题的那个版本——重置应回到更新前
 	//    经校验的 LKG 状态，而不是再装一次出问题的版本。
 	lkgOK := hasLkgInDir(harnessDir)
@@ -167,51 +205,48 @@ func runHarnessReset(clearSessions, clearPlugins bool) {
 			targetNote = "（" + withV(latest) + "）"
 		}
 	} else {
-		splash.Update("正在查询官方最新版本…", 0.2)
+		splash.Update("正在查询官方可用版本…", 0.2)
 		var err error
-		latest, targetNote, err = fetchHarnessResetTarget()
+		if npmResetMode {
+			latest, targetNote, err = fetchNpmResetTarget()
+			if targetNote != "" {
+				targetLabel = "npm 最新发布（预发布）"
+			}
+		} else {
+			latest, targetNote, err = fetchHarnessResetTarget()
+			if targetNote != "" {
+				targetLabel = "仓库最新发布（预发布）"
+			}
+		}
 		if err != nil {
 			splash.Close()
 			showMessageBox("重置失败：无法获取官方可用版本。\n"+err.Error()+"\n\n请检查网络后重试。", appName)
 			return
 		}
-		targetLabel = "官方最新稳定版"
-		if targetNote != "" {
-			targetLabel = "仓库最新发布（预发布）"
+		if targetLabel == "" {
+			targetLabel = "官方最新稳定版"
 		}
 	}
-	log.Printf("reset: target %s %s (current %s, lkg=%v) clearSessions=%v clearPlugins=%v",
-		targetLabel, orDash(withV(latest)), orDash(cur), lkgOK, clearSessions, clearPlugins)
+	log.Printf("reset: target %s %s (current %s, lkg=%v, npmShape=%v) clearSessions=%v clearPlugins=%v",
+		targetLabel, orDash(withV(latest)), orDash(cur), lkgOK, npmResetMode, clearSessions, clearPlugins)
 
-	// 2) 可选清理（服务已停止，删除不冲突运行中进程；清理失败不阻断版本回退，仅记录并提示）
-	cleanupNotes := ""
-	if clearSessions {
-		splash.Update("正在清除会话记录…", 0.3)
-		if err := removeSessions(); err != nil {
-			log.Printf("reset: clear sessions failed: %v", err)
-			cleanupNotes += "\n· 会话记录清理失败：" + err.Error()
-		}
-	}
-	if clearPlugins {
-		splash.Update("正在清除已安装的插件…", 0.35)
-		if _, err := removeInstalledPlugins(); err != nil {
-			log.Printf("reset: clear plugins failed: %v", err)
-			cleanupNotes += "\n· 已安装插件清理失败：" + err.Error()
-		}
-	}
-
-	// 3) 版本回退（快照当前可运行版本，失败回滚）——重置的必选核心
-	//    形态判定必须发生在快照之前：快照会把 node_modules 改名，npm 形态判定（依赖
-	//    node_modules 存在性）若在快照后进行会误判为源码/未知形态（与更新流程同样的坑）。
-	npmResetMode := isNpmHarnessReady()
-	sourceResetMode := !npmResetMode && isSourceHarnessDir()
+	// 2) 版本回退（快照当前可运行版本，失败回滚）——重置的必选核心，
+	//    且必须在可选清理之前：先清会话/插件再回退失败会把不可逆破坏留在磁盘；
+	//    版本先回退（失败时快照/LKG 还能还原现场），成功后才做清理。
 	didRestoreLkg := false
 	var rerr error
 	switch {
 	case lkgOK:
-		// LKG 回退：本地直接恢复（含 node_modules 移回），无需网络/重装
+		// LKG 回退：本地直接恢复（含 node_modules 移回），无需网络/重装；
+		// 与启动回退（tryBootRollback）一致同时恢复各 profile 的 LKG，
+		// 避免 harness 根与插件版本错配导致重启校验失败。
 		splash.Update("正在回退到上一个正常运行的版本…", 0.5)
 		didRestoreLkg = restoreLkgInDir(harnessDir)
+		for _, pf := range enumeratePluginProfiles() {
+			if hasLkgInDir(pf.dir) && restoreLkgInDir(pf.dir) {
+				didRestoreLkg = true
+			}
+		}
 		if !didRestoreLkg {
 			splash.Close()
 			showMessageBox("重置失败：LKG 备份不可用，无法回退到上一个正常运行的版本。\n\n请查看日志："+
@@ -219,13 +254,15 @@ func runHarnessReset(clearSessions, clearPlugins bool) {
 			return
 		}
 	case cur == latest && npmResetMode:
-		// 已是最新可回退目标：无需重装，仅重启生效（可选清理已完成）
+		// 已是最新可回退目标：无需重装，仅重启生效
 		log.Printf("reset: harness already at %s %s", targetLabel, withV(latest))
 	default:
 		hadNM := snapshotHarness()
 		switch {
 		case npmResetMode:
-			// npm 预构建形态：整家族 overrides 钉到回退目标版本（reconcile 依赖树避免新旧混装）
+			// npm 预构建形态：整家族 overrides 钉到回退目标版本（reconcile 依赖树避免新旧混装）。
+			// pnpm ≥ v10 不再读取 package.json 的 pnpm.overrides——setHarnessOverrides 同步写
+			// pnpm-workspace.yaml，保证钉版在应用自带 pnpm（v11）下仍然生效。
 			splash.Update(fmt.Sprintf("正在安装%s %s…", targetLabel, withV(latest)), 0.5)
 			if rerr = setHarnessOverrides(harnessDir, latest); rerr == nil {
 				rerr = runHarnessCmd(pnpmCmd(), "add", "@deepseek-ai/dsh@"+latest, "--save-exact")
@@ -265,6 +302,23 @@ func runHarnessReset(clearSessions, clearPlugins bool) {
 			return
 		}
 		cleanupHarnessSnapshot()
+	}
+
+	// 3) 可选清理（版本已回退成功；清理失败不阻断重启，仅记录并提示）
+	cleanupNotes := ""
+	if clearSessions {
+		splash.Update("正在清除会话记录…", 0.6)
+		if err := removeSessions(); err != nil {
+			log.Printf("reset: clear sessions failed: %v", err)
+			cleanupNotes += "\n· 会话记录清理失败：" + err.Error()
+		}
+	}
+	if clearPlugins {
+		splash.Update("正在清除已安装的插件…", 0.65)
+		if _, err := removeInstalledPlugins(); err != nil {
+			log.Printf("reset: clear plugins failed: %v", err)
+			cleanupNotes += "\n· 已安装插件清理失败：" + err.Error()
+		}
 	}
 
 	// 4) 重启并健康校验（就绪 + 启动日志无加载报错）

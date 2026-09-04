@@ -445,10 +445,19 @@ func (a *App) StartUpdate() {
 		return
 	}
 	logUI("开始更新 dsh-systray", rel.TagName)
-	setSplashPhase("update")
+	startUpdateApplyWithUI(rel)
+}
+
+// startUpdateApplyWithUI 自动检查与手动路径共用的更新入口：显示主窗口并置前后，异步执行
+// 下载安装。设置窗口通常 StartHidden 启动——自动检查路径若只调 startUpdateApply，进度事件
+// 只发向隐藏的前端，用户点击「立即更新」后看不到任何 UI 变化（表现为"点击更新没有反应"）。
+func startUpdateApplyWithUI(rel *latestRelease) {
+	log.Printf("update apply confirmed, showing progress for %s", rel.TagName)
 	if appCtx != nil {
 		wruntime.WindowShow(appCtx)
+		ensureMainWindowForeground()
 	}
+	setSplashPhase("update")
 	go startUpdateApply(rel)
 }
 

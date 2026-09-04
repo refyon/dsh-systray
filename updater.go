@@ -236,11 +236,12 @@ func autoCheckUpdate() {
 		log.Printf("user declined update %s", rel.TagName)
 		return
 	}
-	startUpdateApply(rel)
+	startUpdateApplyWithUI(rel)
 }
 
-// startUpdateApply 应用更新：各平台实现。Windows 派生独立更新进程（退出主程序→进度窗口下载/安装→自动重启）；
-// macOS 进程内下载并用辅助脚本替换 .app 后重启。声明于此，由 platform_*.go 实现。
+// startUpdateApply 应用更新：各平台实现。进度走前端 splash 视图（进程内下载/校验/替换），
+// Windows 替换 exe 后自动重启，macOS 用辅助脚本替换 .app 后重启。声明于此，由 platform_*.go 实现。
+// 注意：调用前须已显示主窗口（用 startUpdateApplyWithUI），否则隐藏窗口下用户看不到进度。
 
 // checkForUpdatesManual 手动检查更新（设置页触发）：点击后立即弹出进度窗口，
 // 在窗口下完成 harness + dsh-systray 版本查询；harness 有新版则优先提示先更新 harness。
@@ -389,7 +390,7 @@ const (
 // （去掉 dsh- / v 前缀前的原始 tag，如 dsh-v0.1.2）。与 fetchLatestRelease 相同：
 // 直连失败依次回退镜像前缀。
 func fetchHarnessLatestTags() ([]string, error) {
-	direct := fmt.Sprintf("https://api.github.com/repos/%s/%s/releases?per_page=20", harnessRepoOwner, harnessRepoName)
+	direct := fmt.Sprintf("https://api.github.com/repos/%s/%s/releases?per_page=100", harnessRepoOwner, harnessRepoName)
 	var candidates []string
 	candidates = append(candidates, direct)
 	for _, m := range buildMirrors() {
@@ -547,10 +548,76 @@ func npmHarnessVersionAvailable(version string) bool {
 	return strings.TrimSpace(string(out)) != ""
 }
 
-// setHarnessOverrides 向 harness 目录的 package.json 注入
-// pnpm.overrides["@deepseek-ai/*"] = <ver>（合并保留既有字段），使 pnpm install 把
-// 全部 @deepseek-ai/* 家族强制到同一版本。修复“只 pnpm add @deepseek-ai/dsh 升级根包、
-// 其余 @deepseek-ai/* 停在锁文件旧版 → 新旧混装 ESM 加载失败”的根因（0.1.2-rc.1 曾因此炸）。
+// npmHarnessPublishedVersions 列出 npm registry 上 @deepseek-ai/dsh 的全部已发布版本号。
+// 供 npm 预构建形态的「重置回退目标」解析使用：npm 形态安装走 npm，目标必须是 npm 已发布
+// 版本——GitHub Release tag 常领先于 npm（如 0.1.3-alpha.1 有 tag 但未发 npm），直接采用
+// GitHub tag 会 pnpm add "No matching version found"（实测 ERR_PNPM_NO_MATCHING_VERSION）。
+// 解析容忍 pnpm 输出形态差异：优先 JSON 数组，失败按行剥离引号/括号兜底。
+func npmHarnessPublishedVersions() ([]string, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, pnpmCmd(), "view", "@deepseek-ai/dsh", "versions", "--json")
+	cmd.Dir = harnessDir
+	cmd.Env = append(os.Environ(), pnpmTunedEnv()...)
+	hideCmdWindow(cmd)
+	out, err := cmd.Output()
+	if err != nil {
+		return nil, fmt.Errorf("查询 npm 已发布版本失败：%w", err)
+	}
+	s := strings.TrimSpace(string(out))
+	if s == "" {
+		return nil, fmt.Errorf("npm registry 未返回 @deepseek-ai/dsh 的已发布版本")
+	}
+	var versions []string
+	if json.Unmarshal([]byte(s), &versions) == nil {
+		return versions, nil
+	}
+	// 兜底：非 JSON（如每行一个版本）时逐行清洗
+	seen := map[string]bool{}
+	var outV []string
+	for _, ln := range strings.Split(s, "\n") {
+		v := strings.Trim(strings.TrimSpace(ln), `"[], `)
+		v = strings.TrimPrefix(v, "dsh-")
+		v = strings.TrimPrefix(v, "v")
+		if v != "" && !seen[v] {
+			seen[v] = true
+			outV = append(outV, v)
+		}
+	}
+	if len(outV) == 0 {
+		return nil, fmt.Errorf("npm registry 返回的版本列表为空")
+	}
+	return outV, nil
+}
+
+// fetchNpmResetTarget 返回 npm 预构建形态的「重置回退目标」：npm registry 上按通道语义
+// 选最新版本——有稳定版取稳定版；仓库/npm 只有预发布时回退最新发布并给说明（与
+// fetchHarnessResetTarget 的 GitHub 版本同思路，但保证目标真实存在于 npm、装得上）。
+func fetchNpmResetTarget() (version, note string, err error) {
+	versions, err := npmHarnessPublishedVersions()
+	if err != nil {
+		return "", "", err
+	}
+	if best := pickHarnessVersion(versions, false); best != "" {
+		return best, "", nil
+	}
+	if best := pickHarnessVersion(versions, true); best != "" {
+		return best, "（npm 已发布版本均为预发布，回退目标为最新发布 " + withV(best) + "）", nil
+	}
+	return "", "", fmt.Errorf("npm registry 未发现可用的 @deepseek-ai/dsh 版本")
+}
+
+// setHarnessOverrides 向 harness 目录注入 pnpm.overrides["@deepseek-ai/*"] = <ver>，
+// 使 pnpm install 把全部 @deepseek-ai/* 家族强制到同一版本。修复“只 pnpm add
+// @deepseek-ai/dsh 升级根包、其余 @deepseek-ai/* 停在锁文件旧版 → 新旧混装 ESM 加载失败”
+// 的根因（0.1.2-rc.1 曾因此炸）。
+//
+// 两个写入通道：
+//  1. package.json 的 "pnpm.overrides"（旧版 pnpm 读取）；
+//  2. pnpm-workspace.yaml 顶层的 overrides（pnpm ≥ v10 起 settings/overrides 统一迁移到
+//     pnpm-workspace.yaml，package.json 的 pnpm.* 字段不再读取——2026-09 实测 v11.7.0：
+//     package.json 通道被忽略、workspace 通道生效）。
+//
 // ver 为空时移除该 override。返回写回是否成功。
 func setHarnessOverrides(dir, ver string) error {
 	p := filepath.Join(dir, "package.json")
@@ -581,7 +648,57 @@ func setHarnessOverrides(dir, ver string) error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(p, append(out, '\n'), 0o644)
+	if err := os.WriteFile(p, append(out, '\n'), 0o644); err != nil {
+		return err
+	}
+	return writeHarnessWorkspaceOverrides(dir, ver)
+}
+
+// writeHarnessWorkspaceOverrides 维护 harness 目录 pnpm-workspace.yaml 的 overrides 块：
+// 只增删 "@deepseek-ai/*" 一行（保留文件内其它既有设置/键）。ver 为空时移除该块，
+// 文件无其它内容则整体删除。pnpm ≥ v10 依赖该文件生效家族钉版（见 setHarnessOverrides）。
+func writeHarnessWorkspaceOverrides(dir, ver string) error {
+	p := filepath.Join(dir, "pnpm-workspace.yaml")
+	raw := ""
+	if data, err := os.ReadFile(p); err == nil {
+		raw = strings.ReplaceAll(string(data), "\r\n", "\n")
+	}
+	lines := strings.Split(raw, "\n")
+	var out []string
+	removed := false
+	for i := 0; i < len(lines); i++ {
+		trimmed := strings.TrimRight(lines[i], " \t")
+		if strings.TrimSpace(trimmed) == "" {
+			continue // 空行在写回时统一折叠
+		}
+		if trimmed == "overrides:" && !strings.HasPrefix(lines[i], " ") && !strings.HasPrefix(lines[i], "\t") {
+			// 移除旧的 overrides 块（含其缩进子行）
+			removed = true
+			i++
+			for i < len(lines) {
+				l := lines[i]
+				if l == "" || strings.HasPrefix(l, " ") || strings.HasPrefix(l, "\t") {
+					i++
+					continue
+				}
+				break
+			}
+			i--
+			continue
+		}
+		out = append(out, strings.TrimRight(lines[i], " \t"))
+	}
+	if ver != "" {
+		out = append(out, "overrides:", `  "@deepseek-ai/*": "`+ver+`"`)
+	}
+	body := strings.TrimRight(strings.Join(out, "\n"), "\n")
+	if strings.TrimSpace(body) == "" {
+		if removed || ver == "" {
+			_ = os.Remove(p)
+		}
+		return nil
+	}
+	return os.WriteFile(p, []byte(body+"\n"), 0o644)
 }
 
 // harnessBackupSuffix 更新前快照文件后缀（更新失败时用于回退到上一可运行版本）。

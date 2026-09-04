@@ -7,7 +7,8 @@ import (
 	"testing"
 )
 
-// TestRemoveInstalledPlugins 回归：重置时物理删除用户插件，但保留 @deepseek-ai 官方依赖与 bundle 注册。
+// TestRemoveInstalledPlugins 回归：重置时删除用户插件（顶层目录 + .pnpm 非官方条目），
+// 但保留 @deepseek-ai 官方依赖、bundle 注册与其 .pnpm 实体（防官方符号链接悬空 → client.js 加载失败）。
 func TestRemoveInstalledPlugins(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("DSH_HOME", home)
@@ -17,11 +18,16 @@ func TestRemoveInstalledPlugins(t *testing.T) {
 		filepath.Join(nm, "deepseek-idesign"),
 		filepath.Join(nm, "restrict-discipline"),
 		filepath.Join(nm, "@deepseek-ai", "dsh-base"),
-		filepath.Join(nm, ".pnpm", "virtual-store"),
+		filepath.Join(nm, ".pnpm", "@deepseek-ai+dsh-base@1.0.0", "node_modules", "@deepseek-ai", "dsh-base"),
+		filepath.Join(nm, ".pnpm", "deepseek-idesign@0.2.2"),
+		filepath.Join(nm, ".pnpm", "restrict-discipline@1.0.0"),
 	} {
 		if err := os.MkdirAll(dir, 0o755); err != nil {
 			t.Fatal(err)
 		}
+	}
+	if err := os.WriteFile(filepath.Join(nm, ".pnpm", ".modules.yaml"), []byte("modules"), 0o644); err != nil {
+		t.Fatal(err)
 	}
 	pj := filepath.Join(profDir, "package.json")
 	initial := `{
@@ -45,15 +51,24 @@ func TestRemoveInstalledPlugins(t *testing.T) {
 	if n != 1 {
 		t.Fatalf("expected 1 profile cleaned, got %d", n)
 	}
-	// 官方 @deepseek-ai 目录保留；用户插件与 .pnpm 删除
-	for _, keep := range []string{filepath.Join("@deepseek-ai", "dsh-base")} {
+	// 官方 @deepseek-ai 顶层目录与 .pnpm 官方实体保留；用户插件与 .pnpm 非官方条目删除
+	for _, keep := range []string{
+		filepath.Join("@deepseek-ai", "dsh-base"),
+		filepath.Join(".pnpm", "@deepseek-ai+dsh-base@1.0.0"),
+		filepath.Join(".pnpm", ".modules.yaml"),
+	} {
 		if _, err := os.Stat(filepath.Join(nm, filepath.FromSlash(keep))); err != nil {
-			t.Fatalf("official pkg should be kept: %v", err)
+			t.Fatalf("official pkg should be kept: %s (%v)", keep, err)
 		}
 	}
-	for _, gone := range []string{"deepseek-idesign", "restrict-discipline", ".pnpm"} {
+	for _, gone := range []string{
+		"deepseek-idesign",
+		"restrict-discipline",
+		filepath.Join(".pnpm", "deepseek-idesign@0.2.2"),
+		filepath.Join(".pnpm", "restrict-discipline@1.0.0"),
+	} {
 		if _, err := os.Stat(filepath.Join(nm, gone)); err == nil {
-			t.Fatalf("user plugin dir should be removed: %s", gone)
+			t.Fatalf("user plugin should be removed: %s", gone)
 		}
 	}
 	// package.json：依赖只留官方；bundles 只留官方
