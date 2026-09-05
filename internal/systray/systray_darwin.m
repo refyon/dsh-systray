@@ -1,4 +1,5 @@
 #import <Cocoa/Cocoa.h>
+#import <dispatch/dispatch.h>
 #include "systray.h"
 
 #if __MAC_OS_X_VERSION_MIN_REQUIRED < 101400
@@ -279,12 +280,22 @@ int nativeLoop(void) {
 }
 
 void nativeStart(void) {
-  owner = [[SystrayAppDelegate alloc] init];
-  NSNotification *launched = [NSNotification
+  // AppKit 的 NSStatusItem / NSWindow 初始化只允许在主线程执行；Wails 集成时
+  // onStartup 运行在其工作 goroutine（非主线程）→ 直接同步创建会抛
+  // "NSWindow drag regions should only be invalidated on the Main Thread" 崩溃。
+  // 统一派发到主队列：由 NSApplication 主运行循环线程执行初始化与系统回调。
+  dispatch_async(dispatch_get_main_queue(), ^{
+    owner = [[SystrayAppDelegate alloc] init];
+    if (internalLoop) {
+      // 仅自管 NSApplication 时才接管 delegate；外部循环（wails）下保留其自身
+      // delegate（避免丢失 URL/文件打开等生命周期处理）。
+      [[NSApplication sharedApplication] setDelegate:owner];
+    }
+    NSNotification *launched = [NSNotification
                                   notificationWithName: NSApplicationDidFinishLaunchingNotification
                                                 object: [NSApplication sharedApplication]];
-  [[NSApplication sharedApplication] setDelegate:owner];
-  [owner applicationDidFinishLaunching:launched];
+    [owner applicationDidFinishLaunching:launched];
+  });
 }
 
 void runInMainThread(SEL method, id object) {
