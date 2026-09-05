@@ -662,9 +662,13 @@ input { font-family: inherit; }
 .modal-card {
   position: relative;
   width: 360px;
-  max-height: calc(100% - 2 * var(--sp-5)); /* 长内容不把按钮推出窗口：卡片限高 + 内容区滚动 */
+  max-width: calc(100% - 2 * var(--sp-4));
+  /* 长内容不把按钮推出窗口：用 vh（相对视口）限高，避免 percentage 在低高度窗口失效；
+     内容区（.modal-msg）内部滚动，按钮行恒定可见 */
+  max-height: calc(100vh - 2 * var(--sp-5));
   display: flex;
   flex-direction: column;
+  overflow: hidden; /* 防子项逃逸卡片：msg 内部滚动吸收超出部分 */
   padding: var(--sp-5) var(--sp-6);
   background: var(--surface);
   border: 1px solid var(--border);
@@ -683,7 +687,8 @@ input { font-family: inherit; }
   color: var(--muted);
   font-size: var(--fs-sm);
   line-height: 1.7;
-  overflow-y: auto;      /* 长说明内部滚动，按钮行保持可见 */
+  flex: 1 1 auto;        /* 占满卡片剩余空间：内容多时内部滚动，按钮行不被挤出 */
+  overflow-y: auto;
   min-height: 0;
   overscroll-behavior: contain;
 }
@@ -691,9 +696,10 @@ input { font-family: inherit; }
 .modal-actions {
   display: flex;
   justify-content: flex-end;
+  flex-wrap: wrap;          /* 三按钮+文案较长时允许换行，不横向溢出卡片/窗口 */
   gap: var(--sp-3);
   margin-top: var(--sp-5);
-  flex-shrink: 0;        /* 不被压缩挤出视口 */
+  flex-shrink: 0;           /* 不被压缩挤出视口 */
 }
 
 /* 重置勾选弹层（勾选区同样参与弹性布局，避免同患“按钮被挤出”问题） */
