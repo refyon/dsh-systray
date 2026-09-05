@@ -6,7 +6,6 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
-	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -58,14 +57,15 @@ func sanitizeShotHarnessDir() string {
 	return `C:\Users\demo\.dsh`
 }
 
-// shotDemoLog 截图模式展示的中性演示日志（与真实环境完全隔离，避免泄露路径/主机名等信息）。
+// shotDemoLog 截图模式展示的中性演示日志（与真实环境完全隔离，避免泄露路径/主机名等信息；
+// 行格式与统一日志一致：时间戳 [LEVEL] [module] message）。
 var shotDemoLog = []string{
-	"2026-08-11 09:12:01 INFO  dsh-systray v0.5.2 启动完成",
-	"2026-08-11 09:12:03 INFO  后台服务已就绪：http://127.0.0.1:3080/",
-	"2026-08-11 09:12:05 INFO  已检测到 3 个历史会话",
-	"2026-08-11 09:12:07 WARN  日志文件较大，已截断显示最近 4000 行",
-	"2026-08-11 09:12:10 INFO  导出完成：dsh-systray-export-20260811-091210-1a2b3c4d.zip",
-	"2026-08-11 09:12:12 INFO  已是最新版本（v0.5.2）",
+	"2026-08-11 09:12:01 [INFO] [app] dsh-systray v0.5.2 启动完成",
+	"2026-08-11 09:12:03 [INFO] [app] 后台服务已就绪：http://127.0.0.1:3080/",
+	"2026-08-11 09:12:05 [INFO] [app] 已检测到 3 个历史会话",
+	"2026-08-11 09:12:07 [WARN] [app] 日志文件较大，已截断显示最近 4000 行",
+	"2026-08-11 09:12:10 [INFO] [app] 导出完成：dsh-systray-export-20260811-091210-1a2b3c4d.zip",
+	"2026-08-11 09:12:12 [INFO] [app] 已是最新版本（v0.5.2）",
 }
 
 // sanitizeShotLine 脱敏一行文本：替换用户路径前缀，并移除版本构建后缀（如 -wails）。
@@ -82,7 +82,7 @@ func sanitizeShotLine(s string) string {
 
 // ==================== 配置 ====================
 
-// logUI 把设置页用户操作写入 app.log（统一前缀，便于检索与追溯）。
+// logUI 把设置页用户操作写入统一日志（模块 ui，等级按内容判定；便于检索与追溯）。
 func logUI(action, detail string) {
 	if detail == "" {
 		log.Printf("[UI] %s", action)
@@ -254,35 +254,16 @@ func logFilePath(name string) string {
 	return filepath.Join(logDir, name)
 }
 
-// GetLogFiles 返回日志目录下可查看的日志文件列表：动态枚举全部 *.log 文件
-// （app/server/install/harness-update/plugin-update 等，随运行自动增减），按名称排序。
+// GetLogFiles 返回日志页可查看的日志文件列表：统一日志后仅 dsh-systray.log 一项
+// （所有行为与子进程输出合并写入该文件；行内带时间戳/等级/模块，前端按等级着色）。
 func (a *App) GetLogFiles() []LogFile {
-	out := make([]LogFile, 0, 4)
-	ents, err := os.ReadDir(logDir)
-	if err != nil {
-		return out
+	p := unifiedLogPath()
+	lf := LogFile{Name: unifiedLogName, Path: sanitizeShotPath(p), Exists: false}
+	if fi, err := os.Stat(p); err == nil {
+		lf.Exists = true
+		lf.Size = fi.Size()
 	}
-	var names []string
-	for _, e := range ents {
-		if e.IsDir() {
-			continue
-		}
-		if logNameAllowed(e.Name()) {
-			names = append(names, e.Name())
-		}
-	}
-	sort.Strings(names)
-	for _, n := range names {
-		p := filepath.Join(logDir, n)
-		fi, err := os.Stat(p)
-		lf := LogFile{Name: n, Path: sanitizeShotPath(p)}
-		if err == nil {
-			lf.Exists = true
-			lf.Size = fi.Size()
-		}
-		out = append(out, lf)
-	}
-	return out
+	return []LogFile{lf}
 }
 
 func (a *App) GetLogPath(name string) string {

@@ -103,15 +103,6 @@ func startServer() (bool, <-chan error) {
 		}
 	}
 
-	serverLogPath := filepath.Join(logDir, "server.log")
-	f, err := os.OpenFile(serverLogPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
-	if err != nil {
-		log.Printf("cannot open server log: %v", err)
-	}
-	if f != nil {
-		defer f.Close()
-	}
-
 	var cmd *exec.Cmd
 	if isNpmHarnessReady() {
 		// npm 预构建产物：直接用 node 启动 @deepseek-ai/dsh 入口
@@ -122,11 +113,10 @@ func startServer() (bool, <-chan error) {
 		cmd = exec.Command("sh", "-c", fmt.Sprintf("%s dsh web --port %d --no-open", pnpmCmd(), port))
 	}
 	cmd.Dir = harnessDir
-	if f != nil {
-		w := newTimePrefixWriter(f)
-		cmd.Stdout = w
-		cmd.Stderr = w
-	}
+	// 输出经统一日志句柄落盘（勿提前 Close，见 platform_windows startServer 注释）
+	w := newModuleLogWriter("server")
+	cmd.Stdout = w
+	cmd.Stderr = w
 	cmd.Stdin = nil
 
 	if err := cmd.Start(); err != nil {
@@ -137,7 +127,11 @@ func startServer() (bool, <-chan error) {
 	serverStartedPort = port // 记录实际启动端口（端口修改提示与状态展示依据）
 	trackChildProcess(cmd.Process)
 	exitCh := make(chan error, 1)
-	go func() { exitCh <- cmd.Wait() }()
+	go func() {
+		err := cmd.Wait()
+		w.Flush() // 进程退出后补出崩溃末行（无换行残留）
+		exitCh <- err
+	}()
 	log.Printf("server started, pid=%d", cmd.Process.Pid)
 	return true, exitCh
 }

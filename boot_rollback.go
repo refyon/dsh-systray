@@ -264,14 +264,14 @@ func reportBootRollback(rolled bool, prevVersion, why string) {
 		msg := "DeepSeek Harness 启动失败（" + why + "），已自动回退到上次正常运行的版本与插件状态" + detail + "，服务已重新启动。\n\n若问题持续，请查看日志："
 		log.Printf("[UI] 启动失败自动回退成功 | %s", why)
 		if !autostartLaunch {
-			showMessageBox(msg+filepath.Join(logDir, "server.log"), appName)
+			showMessageBox(msg+unifiedLogPath(), appName)
 		}
 		return
 	}
 	msg := "DeepSeek Harness 启动失败（" + why + "），且自动回退到上次正常状态后仍未能启动。请查看日志："
 	log.Printf("[UI] 启动失败自动回退也失败 | %s", why)
 	if !autostartLaunch {
-		showMessageBox(msg+filepath.Join(logDir, "server.log"), appName)
+		showMessageBox(msg+unifiedLogPath(), appName)
 	}
 }
 

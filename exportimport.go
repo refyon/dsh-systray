@@ -987,7 +987,7 @@ func finishPluginImport(dirs []string, hadNM []bool) error {
 	time.Sleep(1 * time.Second)
 	rollbackImportProfiles(dirs, hadNM)
 	if !restartAndVerifyServer() {
-		return fmt.Errorf("导入的插件导致服务启动失败（%s）。已回退导入内容，但回退后的服务仍未能就绪，请查看日志：%s", reason, filepath.Join(logDir, "server.log"))
+		return fmt.Errorf("导入的插件导致服务启动失败（%s）。已回退导入内容，但回退后的服务仍未能就绪，请查看日志：%s", reason, unifiedLogPath())
 	}
 	markServiceResumed()
 	return fmt.Errorf("导入的插件导致服务启动失败（%s）。已自动回退到导入前状态，服务已恢复正常，本次导入未生效。", reason)

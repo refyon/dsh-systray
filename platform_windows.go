@@ -305,23 +305,16 @@ func ensureRuntime(splash *SplashState) error {
 	}
 	if !pnpmAvailable() {
 		splash.Update("正在安装 pnpm 包管理器…", 0.26)
-		logPath := filepath.Join(logDir, "install.log")
-		f, _ := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
 		cmd := exec.Command(filepath.Join(nodeDir(), "npm.cmd"), "install", "-g", "pnpm@10.34.5", "--prefix", runtimeDir(), "--loglevel", "error")
 		hideCmdWindow(cmd)
-		if f != nil {
-			defer f.Close()
-			w := newTimePrefixWriter(f)
-			cmd.Stdout = w
-			cmd.Stderr = w
-			if err := cmd.Run(); err != nil {
-				w.Flush()
-				return fmt.Errorf("安装 pnpm 失败：%w（日志：%s）", err, logPath)
-			}
+		w := newModuleLogWriter("install")
+		cmd.Stdout = w
+		cmd.Stderr = w
+		if err := cmd.Run(); err != nil {
 			w.Flush()
-		} else if err := cmd.Run(); err != nil {
-			return fmt.Errorf("安装 pnpm 失败：%w（日志：%s）", err, logPath)
+			return fmt.Errorf("安装 pnpm 失败：%w（日志：%s）", err, unifiedLogPath())
 		}
+		w.Flush()
 	}
 	splash.Update("运行环境就绪", 0.30)
 	return nil
@@ -512,15 +505,6 @@ func startServer() (bool, <-chan error) {
 		}
 	}
 
-	serverLogPath := filepath.Join(logDir, "server.log")
-	f, err := os.OpenFile(serverLogPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
-	if err != nil {
-		log.Printf("cannot open server log: %v", err)
-	}
-	if f != nil {
-		defer f.Close()
-	}
-
 	var cmd *exec.Cmd
 	if isNpmHarnessReady() {
 		// npm 预构建产物：直接用 node 启动 @deepseek-ai/dsh 入口
@@ -532,11 +516,11 @@ func startServer() (bool, <-chan error) {
 	}
 	cmd.Dir = harnessDir
 	hideCmdWindow(cmd)
-	if f != nil {
-		w := newTimePrefixWriter(f)
-		cmd.Stdout = w
-		cmd.Stderr = w
-	}
+	// 输出经统一日志句柄落盘（进程级单例，勿在 startServer 返回时关闭——dsh web 的
+	// 启动输出在其启动 1-3 秒后才写出，提前 Close 会全部丢失：server.log 恒空的根因）
+	w := newModuleLogWriter("server")
+	cmd.Stdout = w
+	cmd.Stderr = w
 	cmd.Stdin = nil
 
 	if err := cmd.Start(); err != nil {
@@ -547,7 +531,11 @@ func startServer() (bool, <-chan error) {
 	serverStartedPort = port // 记录实际启动端口（端口修改提示与状态展示依据）
 	trackChildProcess(cmd.Process)
 	exitCh := make(chan error, 1)
-	go func() { exitCh <- cmd.Wait() }()
+	go func() {
+		err := cmd.Wait()
+		w.Flush() // 进程退出后补出崩溃末行（无换行残留）
+		exitCh <- err
+	}()
 	log.Printf("server started, pid=%d", cmd.Process.Pid)
 	return true, exitCh
 }
@@ -555,6 +543,7 @@ func startServer() (bool, <-chan error) {
 func killServer() {
 	// 终止本应用启动的服务器进程树
 	if serverCmd != nil && serverCmd.Process != nil {
+		log.Printf("killing server process tree pid=%d", serverCmd.Process.Pid)
 		cmd := exec.Command("taskkill", "/PID", strconv.Itoa(serverCmd.Process.Pid), "/T", "/F")
 		hideCmdWindow(cmd)
 		_ = cmd.Run()

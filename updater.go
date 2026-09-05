@@ -344,7 +344,8 @@ func restartBackgroundService(onState func(stage string)) bool {
 			detail += "\n\n疑似导致启动失败的插件：" + strings.Join(suspects, "、") +
 				"\n可到「插件管理」中移除可疑插件后重试；或再次点击「重启」让程序自动修复。"
 		}
-		showMessageBox("重启失败：\n"+detail+"\n\n日志："+filepath.Join(logDir, "server.log"), appName)
+		logError("app", "重启后台服务失败：%s", strings.ReplaceAll(detail, "\n", " "))
+		showMessageBox("重启失败：\n"+detail+"\n\n日志："+unifiedLogPath(), appName)
 		return false
 	}
 	if onState != nil {
@@ -525,19 +526,13 @@ func installedHarnessVersion() string {
 	return ""
 }
 
-// runHarnessCmd 在 harness 目录执行命令，输出写到日志文件（每行带时间戳前缀）。
+// runHarnessCmd 在 harness 目录执行命令，输出按行改写进统一日志（模块 harness）。
 // 每次执行前写入一条命令分隔头，便于日后从日志直接归因失败命令。
 func runHarnessCmd(name string, args ...string) error {
-	logPath := filepath.Join(logDir, "harness-update.log")
-	f, _ := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
 	cmd := exec.Command(name, args...)
 	cmd.Dir = harnessDir
 	hideCmdWindow(cmd)
-	if f == nil {
-		return cmd.Run()
-	}
-	defer f.Close()
-	w := newTimePrefixWriter(f)
+	w := newModuleLogWriter("harness")
 	_, _ = fmt.Fprintf(w, "\n===== %s %s =====\n", name, strings.Join(args, " "))
 	cmd.Stdout = w
 	cmd.Stderr = w
@@ -795,32 +790,20 @@ var harnessBootErrorMarkers = []string{
 	"ERR_REQUIRE_ESM",
 }
 
-// serverLogSize 当前 server.log 字节数（健康校验按追加段扫描，避免把历史日志的报错误判进来）。
-func serverLogSize() int64 {
-	fi, err := os.Stat(filepath.Join(logDir, "server.log"))
+// unifiedLogSize 当前统一日志字节数（健康校验按追加段扫描，避免把历史日志的报错误判进来）。
+func unifiedLogSize() int64 {
+	fi, err := os.Stat(unifiedLogPath())
 	if err != nil {
 		return 0
 	}
 	return fi.Size()
 }
 
-// serverLogHasBootErrors 扫描 server.log 从 offset 起的追加段，判断本次启动是否出现加载报错。
+// serverLogHasBootErrors 扫描统一日志从 offset 起的追加段（仅 [server] 模块行），
+// 判断本次服务启动是否出现加载报错——只扫 server 行避免把 pnpm 输出（ERR_PNPM_* 等）
+// 误判为服务启动失败。
 func serverLogHasBootErrors(offset int64) bool {
-	f, err := os.Open(filepath.Join(logDir, "server.log"))
-	if err != nil {
-		return false
-	}
-	defer f.Close()
-	if offset > 0 {
-		if _, err := f.Seek(offset, io.SeekStart); err != nil {
-			offset = 0
-		}
-	}
-	data, err := io.ReadAll(f)
-	if err != nil {
-		return false
-	}
-	s := string(data)
+	s := serverLogLines(offset)
 	for _, m := range harnessBootErrorMarkers {
 		if strings.Contains(s, m) {
 			return true
@@ -892,7 +875,7 @@ func rollbackUpdate(splash *SplashState, prev string, hadNMBackup bool, reason s
 	} else {
 		msg += "上一可用版本。"
 	}
-	msg += "\n\n日志：" + filepath.Join(logDir, "harness-update.log")
+	msg += "\n\n日志：" + unifiedLogPath()
 	showMessageBox(msg, appName)
 }
 
@@ -919,7 +902,7 @@ func runHarnessUpdate(latest string) {
 			splash.Close()
 			showMessageBox("无法更新 DeepSeek Harness：\n\nnpm registry 上未找到 @deepseek-ai/dsh@"+ver+
 				"（该版本 GitHub 已发布但可能尚未同步到 npm，或 registry/网络异常）。\n未对当前版本做任何改动。\n\n"+
-				"日志："+filepath.Join(logDir, "harness-update.log"), appName)
+				"日志："+unifiedLogPath(), appName)
 			return
 		}
 	case sourceMode:

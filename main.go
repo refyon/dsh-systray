@@ -339,12 +339,10 @@ func main() {
 	}
 	logDir = filepath.Join(cfgDir, "dsh-systray", "logs")
 	if !bindingsRun {
-		if err := os.MkdirAll(logDir, 0o755); err == nil {
-			if f, ferr := os.OpenFile(filepath.Join(logDir, "app.log"), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644); ferr == nil {
-				defer f.Close()
-				log.SetOutput(f)
-			}
-		}
+		// 统一日志：所有行为（自身/UI/托盘/子进程）写入 logDir/dsh-systray.log
+		// （进程级单例句柄，行格式 ts [LEVEL] [module] message；见 logsetup.go）
+		initUnifiedLog()
+		log.SetOutput(appLogWriter{})
 	}
 	log.SetFlags(log.LstdFlags)
 
@@ -497,7 +495,7 @@ func bootstrapService() {
 		splash.Update("正在下载 Node.js / pnpm 运行时（首次约 1-3 分钟）…", 0.08)
 		if err := ensureRuntime(splash); err != nil {
 			splash.Close()
-			showMessageBox("下载运行环境失败：\n"+err.Error()+"\n\n请检查网络后重试；日志："+filepath.Join(logDir, "app.log"), appName)
+			showMessageBox("下载运行环境失败：\n"+err.Error()+"\n\n请检查网络后重试；日志："+unifiedLogPath(), appName)
 			return
 		}
 	}
@@ -517,7 +515,7 @@ func bootstrapService() {
 			splash.Update("正在安装 harness 依赖（首次约 2-5 分钟）…", 0.35)
 			if err := runSourceDepsInstall(); err != nil {
 				splash.Close()
-				showMessageBox("安装 harness 依赖失败：\n"+err.Error()+"\n\n日志："+filepath.Join(logDir, "install.log"), appName)
+				showMessageBox("安装 harness 依赖失败：\n"+err.Error()+"\n\n日志："+unifiedLogPath(), appName)
 				return
 			}
 		}
@@ -525,7 +523,7 @@ func bootstrapService() {
 			splash.Update("正在构建 harness 前端产物（首次约 1-3 分钟）…", 0.55)
 			if err := runHarnessBuild(); err != nil {
 				splash.Close()
-				showMessageBox("harness 构建失败：\n"+err.Error()+"\n\n日志："+filepath.Join(logDir, "build.log"), appName)
+				showMessageBox("harness 构建失败：\n"+err.Error()+"\n\n日志："+unifiedLogPath(), appName)
 				return
 			}
 		}
@@ -533,7 +531,7 @@ func bootstrapService() {
 		splash.Update("正在安装 DeepSeek Harness（首次约 2-5 分钟）…", 0.35)
 		if err := ensureNpmHarness(); err != nil {
 			splash.Close()
-			showMessageBox("安装 DeepSeek Harness 失败：\n"+err.Error()+"\n\n日志："+filepath.Join(logDir, "install.log"), appName)
+			showMessageBox("安装 DeepSeek Harness 失败：\n"+err.Error()+"\n\n日志："+unifiedLogPath(), appName)
 			return
 		}
 	}
@@ -555,7 +553,7 @@ func bootstrapService() {
 	}
 	if !started {
 		splash.Close()
-		showMessageBox("启动 DeepSeek Harness 服务失败，请查看日志：\n"+filepath.Join(logDir, "app.log"), appName)
+		showMessageBox("启动 DeepSeek Harness 服务失败，请查看日志：\n"+unifiedLogPath(), appName)
 		return
 	}
 	closeSplash := splash.Close
@@ -617,7 +615,7 @@ func bootstrapService() {
 			return
 		}
 		// 超时但服务进程仍在运行：慢机器/首次启动常见，继续后台等待，就绪后再次提示
-		showMessageBox("DeepSeek Harness 服务启动较慢（首次启动或机器性能较低时属正常现象），已继续在后台启动，就绪后会再次提示。\n日志："+filepath.Join(logDir, "server.log"), appName)
+		showMessageBox("DeepSeek Harness 服务启动较慢（首次启动或机器性能较低时属正常现象），已继续在后台启动，就绪后会再次提示。\n日志："+unifiedLogPath(), appName)
 		if ready2, _ := waitForServerReady(webURL, serverExitCh, 15*time.Minute); ready2 && !quitting.Load() {
 			serverReady.Store(true)
 			serviceFailed.Store(false)
@@ -627,7 +625,7 @@ func bootstrapService() {
 			serviceFailed.Store(true)
 			serviceFailReason.Store("服务启动失败（超时）")
 			refreshServiceMenu()
-			showMessageBox("DeepSeek Harness 服务最终未能就绪，请查看日志：\n"+filepath.Join(logDir, "server.log"), appName)
+			showMessageBox("DeepSeek Harness 服务最终未能就绪，请查看日志：\n"+unifiedLogPath(), appName)
 		}
 	}()
 }
@@ -756,14 +754,8 @@ func harnessBuiltOK() bool {
 	return true
 }
 
-// runHarnessBuild 执行 pnpm run build（输出每行带时间戳前缀写入 build.log），超时 10 分钟。
+// runHarnessBuild 执行 pnpm run build（输出按行改写进统一日志，模块 build），超时 10 分钟。
 func runHarnessBuild() error {
-	buildLogPath := filepath.Join(logDir, "build.log")
-	f, err := os.OpenFile(buildLogPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
-	if err != nil {
-		f = nil // 无法写日志不阻塞构建
-	}
-
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, pnpmCmd(), "run", "build")
@@ -774,22 +766,14 @@ func runHarnessBuild() error {
 		cmd.Env = append(cmd.Env, "DSH_CLIENT_COMMIT_HASH=0000000")
 	}
 	hideCmdWindow(cmd)
-	if f != nil {
-		defer f.Close()
-		w := newTimePrefixWriter(f)
-		cmd.Stdout = w
-		cmd.Stderr = w
-		if err := cmd.Run(); err != nil {
-			w.Flush()
-			return fmt.Errorf("pnpm run build failed: %w（构建日志：%s）", err, buildLogPath)
-		}
-		w.Flush()
-		log.Printf("harness build completed")
-		return nil
-	}
+	w := newModuleLogWriter("build")
+	cmd.Stdout = w
+	cmd.Stderr = w
 	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("pnpm run build failed: %w（构建日志：%s）", err, buildLogPath)
+		w.Flush()
+		return fmt.Errorf("pnpm run build failed: %w（日志：%s）", err, unifiedLogPath())
 	}
+	w.Flush()
 	log.Printf("harness build completed")
 	return nil
 }
@@ -877,29 +861,20 @@ func pnpmTunedEnv() []string {
 	}
 }
 
-// runSourceDepsInstall 源码模式：pnpm install（输出每行带时间戳前缀写入 install.log）。
+// runSourceDepsInstall 源码模式：pnpm install（输出改写进统一日志，模块 install）。
 func runSourceDepsInstall() error {
-	logPath := filepath.Join(logDir, "install.log")
-	f, _ := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Minute)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, pnpmCmd(), "install")
 	cmd.Dir = harnessDir
 	cmd.Env = append(os.Environ(), pnpmTunedEnv()...)
 	hideCmdWindow(cmd)
-	if f == nil {
-		if err := cmd.Run(); err != nil {
-			return fmt.Errorf("pnpm install failed: %w（日志：%s）", err, logPath)
-		}
-		return nil
-	}
-	defer f.Close()
-	w := newTimePrefixWriter(f)
+	w := newModuleLogWriter("install")
 	cmd.Stdout = w
 	cmd.Stderr = w
 	if err := cmd.Run(); err != nil {
 		w.Flush()
-		return fmt.Errorf("pnpm install failed: %w（日志：%s）", err, logPath)
+		return fmt.Errorf("pnpm install failed: %w（日志：%s）", err, unifiedLogPath())
 	}
 	w.Flush()
 	return nil
@@ -938,33 +913,24 @@ func ensureNpmHarness() error {
 			return err
 		}
 	}
-	logPath := filepath.Join(logDir, "install.log")
-	f, _ := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Minute)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, pnpmCmd(), "add", "@deepseek-ai/dsh@0.1.1-rc.2", "--save-exact")
 	cmd.Dir = harnessDir
 	cmd.Env = append(os.Environ(), pnpmTunedEnv()...)
 	hideCmdWindow(cmd)
-	if f != nil {
-		defer f.Close()
-		w := newTimePrefixWriter(f)
-		cmd.Stdout = w
-		cmd.Stderr = w
-		if err := cmd.Run(); err != nil {
-			w.Flush()
-			if isNpmHarnessReady() {
-				log.Printf("npm harness installed (pnpm reported: %v)", err)
-			} else {
-				return fmt.Errorf("安装 @deepseek-ai/dsh 失败：%w（日志：%s）", err, logPath)
-			}
+	w := newModuleLogWriter("install")
+	cmd.Stdout = w
+	cmd.Stderr = w
+	if err := cmd.Run(); err != nil {
+		w.Flush()
+		if isNpmHarnessReady() {
+			log.Printf("npm harness installed (pnpm reported: %v)", err)
 		} else {
-			w.Flush()
+			return fmt.Errorf("安装 @deepseek-ai/dsh 失败：%w（日志：%s）", err, unifiedLogPath())
 		}
-	} else if err := cmd.Run(); err != nil {
-		if !isNpmHarnessReady() {
-			return fmt.Errorf("安装 @deepseek-ai/dsh 失败：%w（日志：%s）", err, logPath)
-		}
+	} else {
+		w.Flush()
 	}
 	if !isNpmHarnessReady() {
 		return fmt.Errorf("安装后未找到 dsh 入口：%s", filepath.Join(harnessDir, "node_modules", "@deepseek-ai", "dsh", "lib", "bin.js"))

@@ -458,25 +458,13 @@ input { font-family: inherit; }
   margin-bottom: var(--sp-3);
 }
 
-/* 日志文件选择下拉：与页面其它控件同源的 tokens，原生 select 自带键盘可达 */
-.log-select {
-  min-height: 34px;
-  max-width: 280px;
-  padding: 0 var(--sp-3);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
-  background: var(--surface-2);
-  color: var(--text);
+/* 统一日志标题：日志页左侧说明（下拉切换已移除——所有日志合并为单一文件） */
+.log-title {
   font-size: var(--fs-sm);
   font-weight: 600;
-  flex-shrink: 0;
-  cursor: pointer;
-}
-.log-select option {
-  background: var(--surface);
   color: var(--text);
+  flex-shrink: 0;
 }
-.log-select:focus-visible { outline-color: var(--focus); }
 
 /* 日志文件完整路径：占满下一行并允许换行显示完整，不再省略截断 */
 .log-path {

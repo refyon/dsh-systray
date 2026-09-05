@@ -2,44 +2,88 @@ package main
 
 // ==================== 服务启动守护（插件导入 / 常规页重启的自愈与定位） ====================
 // 覆盖「插件导入后 / 常规页重启后服务无法启动」的容错：
-//  1. server.log 轮转留档：每次真正拉起服务前把上一份归档为 .1/.2/.3，启动现场不再灭失
-//     （此前 server.log 被清空后无法回溯失败原因，是排障的最大障碍）；
+//  1. 统一日志轮转留档：每次真正拉起服务前把上一份 dsh-systray.log 归档为 .1/.2/.3，
+//     启动现场不再灭失（此前 server.log 恒空——句柄过早关闭——现场全丢，排障失明）；
 //  2. 启动健康校验失败（版本混装 / 插件不兼容等加载错误）时，自动对受影响 profile 执行
 //     一次 pnpm install 对齐（等价用户手动 `dsh plugin … remove/add` 触发的全树 reconcile），
 //     再重试一次启动；
-//  3. 仍失败时从 server.log 提取疑似导致启动失败的插件名，给用户可行动的提示。
+//  3. 仍失败时从统一日志中 [server] 模块行提取疑似导致启动失败的插件名，给用户可行动提示。
 
 import (
 	"fmt"
 	"io"
 	"log"
 	"os"
-	"path/filepath"
 	"regexp"
 	"sort"
 	"strings"
 )
 
-// rotateServerLog 把当前 server.log 轮转归档（保留最近 3 份 .1/.2/.3）并返回本次启动的
+// logLineModuleRe 统一日志行的模块段："ts [LEVEL] [module] message" 中的 module。
+// 前两段是时间戳（日期/时间），随后依次为等级与模块两个中括号。
+var logLineModuleRe = regexp.MustCompile(`^[^ ]+ [^ ]+ \[[A-Za-z]+\] \[([A-Za-z]+)\] `)
+
+// logLineBodyRe 提取统一日志行的内容体（去掉时间戳/等级/模块前缀），
+// 供启动健康校验与可疑插件定位在纯内容上匹配（与旧 server.log 语义一致）。
+var logLineBodyRe = regexp.MustCompile(`^[^ ]+ [^ ]+ \[[A-Za-z]+\] \[([A-Za-z]+)\] (.*)$`)
+
+// logLineModule 提取统一日志行（ts [LEVEL] [module] msg）的模块名；不匹配返回空。
+func logLineModule(line string) string {
+	m := logLineModuleRe.FindStringSubmatch(line)
+	if len(m) > 1 {
+		return m[1]
+	}
+	return ""
+}
+
+// serverLogLines 读取统一日志 offset 追加段中 [server] 模块行的内容体（拼接为一个文本，
+// 供启动健康校验与可疑插件定位——避免把 pnpm 输出（ERR_PNPM_*）误判为服务启动错误，
+// 也避免统一行前缀干扰按行匹配的正则）。
+func serverLogLines(offset int64) string {
+	f, err := os.Open(unifiedLogPath())
+	if err != nil {
+		return ""
+	}
+	defer f.Close()
+	if offset > 0 {
+		if _, err := f.Seek(offset, io.SeekStart); err != nil {
+			offset = 0
+		}
+	}
+	data, err := io.ReadAll(f)
+	if err != nil {
+		return ""
+	}
+	var sb strings.Builder
+	for _, ln := range strings.Split(string(data), "\n") {
+		if m := logLineBodyRe.FindStringSubmatch(ln); len(m) == 3 && m[1] == "server" {
+			sb.WriteString(m[2])
+			sb.WriteString("\n")
+		}
+	}
+	return sb.String()
+}
+
+// rotateServerLog 把当前统一日志轮转归档（保留最近 3 份 .1/.2/.3）并返回本次启动的
 // 日志扫描基线偏移。文件不存在或为空时不轮转，直接返回 0；轮转失败（如文件被其它进程
 // 占用）时保留原文件并返回其当前大小，健康校验仍按追加段语义工作。
 // 调用方应在 killServer 之后、startServer 之前调用，使本次启动独占新文件、旧现场完整归档。
 func rotateServerLog() int64 {
-	p := filepath.Join(logDir, "server.log")
+	p := unifiedLogPath()
 	fi, err := os.Stat(p)
 	if err != nil || fi.Size() == 0 {
 		return 0
 	}
-	// 级联轮转：.2→.3、.1→.2、server.log→.1（.3 旧内容直接丢弃）。
+	// 级联轮转：.2→.3、.1→.2、dsh-systray.log→.1（.3 旧内容直接丢弃）。
 	// 中间缺失时 Rename 报错可忽略：只要最后一步成功即可。
 	_ = os.Remove(p + ".3")
 	_ = os.Rename(p+".2", p+".3")
 	_ = os.Rename(p+".1", p+".2")
 	if os.Rename(p, p+".1") != nil {
-		log.Printf("server log rotate failed (file may be locked), keeping in place")
-		return serverLogSize()
+		log.Printf("log rotate failed (file may be locked), keeping in place")
+		return unifiedLogSize()
 	}
-	log.Printf("server log rotated to %s.1 (archived %d bytes)", p, fi.Size())
+	log.Printf("log rotated to %s.1 (archived %d bytes)", p, fi.Size())
 	return 0
 }
 
@@ -65,24 +109,13 @@ func splitPluginNames(s string) []string {
 	return out
 }
 
-// parseBootLogSuspects 从 server.log 的 offset 追加段提取疑似导致启动失败的插件包名，
-// 按首次出现顺序去重。读取失败返回 nil（调用方降级为通用提示）。
+// parseBootLogSuspects 从统一日志的 offset 追加段（仅 [server] 模块行）提取疑似导致
+// 启动失败的插件包名，按首次出现顺序去重。读取失败返回 nil（调用方降级为通用提示）。
 func parseBootLogSuspects(offset int64) []string {
-	f, err := os.Open(filepath.Join(logDir, "server.log"))
-	if err != nil {
+	s := serverLogLines(offset)
+	if s == "" {
 		return nil
 	}
-	defer f.Close()
-	if offset > 0 {
-		if _, err := f.Seek(offset, io.SeekStart); err != nil {
-			offset = 0
-		}
-	}
-	data, err := io.ReadAll(f)
-	if err != nil {
-		return nil
-	}
-	s := string(data)
 	seen := map[string]bool{}
 	add := func(name string) {
 		name = strings.Trim(strings.TrimSpace(name), `"'`)

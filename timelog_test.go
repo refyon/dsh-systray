@@ -1,7 +1,6 @@
 package main
 
 import (
-	"bytes"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -9,45 +8,97 @@ import (
 	"testing"
 )
 
-// TestTimePrefixWriter 每行都要带时间戳前缀：普通多行与无换行结尾的残留（Flush 补上）。
-func TestTimePrefixWriter(t *testing.T) {
-	re := regexp.MustCompile(`^\d{4}/\d{2}/\d{2} \d{2}:\d{2}:\d{2} `)
-	var buf bytes.Buffer
-	w := newTimePrefixWriter(&buf)
+// TestModuleLogWriterFormat 每行都要带统一前缀（时间戳 + 等级 + 模块）：
+// 多行逐行落盘、无换行结尾的残留由 Flush 补出。
+func TestModuleLogWriterFormat(t *testing.T) {
+	dir := t.TempDir()
+	f := mustOpenFile(t, filepath.Join(dir, unifiedLogName))
+	unifiedMu.Lock()
+	prev := unifiedFile
+	unifiedFile = f
+	unifiedMu.Unlock()
+	t.Cleanup(func() {
+		unifiedMu.Lock()
+		unifiedFile = prev
+		unifiedMu.Unlock()
+		f.Close() // 先释放测试句柄，TempDir 才能清理文件
+	})
 
+	re := regexp.MustCompile(`^\d{4}/\d{2}/\d{2} \d{2}:\d{2}:\d{2} \[(INFO|WARN|ERROR)\] \[server\] `)
+	w := newModuleLogWriter("server")
 	if _, err := w.Write([]byte("line one\nline two\n")); err != nil {
 		t.Fatalf("write: %v", err)
 	}
 	if _, err := w.Write([]byte("line three")); err != nil {
 		t.Fatalf("write partial: %v", err)
 	}
-	w.Flush() // 残留半行也要带上时间戳写出
+	w.Flush() // 残留半行也要带上前缀写出
 
-	out := buf.String()
-	lines := strings.Split(strings.TrimRight(out, "\n"), "\n")
+	data := mustReadFile(t, filepath.Join(dir, unifiedLogName))
+	lines := strings.Split(strings.TrimRight(string(data), "\n"), "\n")
 	if len(lines) != 3 {
-		t.Fatalf("expected 3 lines, got %d: %q", len(lines), out)
+		t.Fatalf("expected 3 lines, got %d: %q", len(lines), data)
 	}
 	for _, ln := range lines {
 		if !re.MatchString(ln) {
-			t.Errorf("line missing timestamp prefix: %q", ln)
+			t.Errorf("line missing unified prefix: %q", ln)
 		}
 	}
 }
 
-// TestTimePrefixWriterContent 内容保留（前缀只是加到行头，不吞内容）。
-func TestTimePrefixWriterContent(t *testing.T) {
-	var buf bytes.Buffer
-	w := newTimePrefixWriter(&buf)
-	if _, err := w.Write([]byte("alpha\nbeta")); err != nil {
+// TestModuleLogWriterLevelAndContent 内容保留且等级按内容启发判定（failed→ERROR）。
+func TestModuleLogWriterLevelAndContent(t *testing.T) {
+	dir := t.TempDir()
+	f := mustOpenFile(t, filepath.Join(dir, unifiedLogName))
+	unifiedMu.Lock()
+	prev := unifiedFile
+	unifiedFile = f
+	unifiedMu.Unlock()
+	t.Cleanup(func() {
+		unifiedMu.Lock()
+		unifiedFile = prev
+		unifiedMu.Unlock()
+		f.Close() // 先释放测试句柄，TempDir 才能清理文件
+	})
+
+	w := newModuleLogWriter("profile")
+	if _, err := w.Write([]byte("alpha\nERR_PNPM_NO_MATCHING_VERSION beta")); err != nil {
 		t.Fatalf("write: %v", err)
 	}
 	w.Flush()
-	for _, want := range []string{"alpha", "beta"} {
-		if !strings.Contains(buf.String(), want) {
-			t.Errorf("content %q lost: %q", want, buf.String())
+	out := string(mustReadFile(t, filepath.Join(dir, unifiedLogName)))
+	for _, want := range []string{"alpha", "beta", "ERR_PNPM_NO_MATCHING_VERSION"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("content %q lost: %q", want, out)
 		}
 	}
+	// 无换行尾行的等级也要按内容判定（pnpm 报错 → ERROR）
+	for _, ln := range strings.Split(strings.TrimRight(out, "\n"), "\n") {
+		if strings.Contains(ln, "alpha") && !strings.Contains(ln, "[INFO]") {
+			t.Errorf("info line level wrong: %q", ln)
+		}
+		if strings.Contains(ln, "ERR_PNPM") && !strings.Contains(ln, "[ERROR]") {
+			t.Errorf("error line level wrong: %q", ln)
+		}
+	}
+}
+
+func mustOpenFile(t *testing.T, p string) *os.File {
+	t.Helper()
+	f, err := os.OpenFile(p, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return f
+}
+
+func mustReadFile(t *testing.T, p string) []byte {
+	t.Helper()
+	data, err := os.ReadFile(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return data
 }
 
 // TestSetHarnessOverrides 注入/移除 pnpm.overrides["@deepseek-ai/*"]（package.json + 保留既有字段），

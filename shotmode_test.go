@@ -23,7 +23,7 @@ func TestShotModeSanitization(t *testing.T) {
 		t.Fatalf("shot mode harness dir = %q, want %q", cfg.HarnessDir, want)
 	}
 
-	tail := app.ReadLogTail("app.log", 0)
+	tail := app.ReadLogTail(unifiedLogName, 0)
 	if len(tail.Lines) == 0 {
 		t.Fatal("shot mode log should not be empty")
 	}

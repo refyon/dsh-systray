@@ -508,25 +508,18 @@ func cleanupPluginProfileSnapshot(dir string) {
 	_ = os.RemoveAll(filepath.Join(dir, "node_modules.dshbak"))
 }
 
-// runProfileCmd 在指定目录执行命令，输出（每行带时间戳前缀）追加到 logDir/plugin-update.log。
+// runProfileCmd 在指定目录执行命令，输出按行改写进统一日志（模块 profile）。
 func runProfileCmd(dir, name string, args ...string) error {
-	logPath := filepath.Join(logDir, "plugin-update.log")
-	f, _ := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, name, args...)
 	cmd.Dir = dir
 	cmd.Env = append(os.Environ(), pnpmTunedEnv()...)
 	hideCmdWindow(cmd)
-	if f == nil {
-		log.Printf("profile cmd: %s %v (dir=%s)", name, args, dir)
-		return cmd.Run()
-	}
-	defer f.Close()
-	w := newTimePrefixWriter(f)
+	w := newModuleLogWriter("profile")
+	log.Printf("profile cmd: %s %v (dir=%s)", name, args, dir)
 	cmd.Stdout = w
 	cmd.Stderr = w
-	log.Printf("profile cmd: %s %v (dir=%s)", name, args, dir)
 	err := cmd.Run()
 	w.Flush()
 	return err
@@ -724,7 +717,7 @@ func rollbackPluginUpdate(splash *SplashState, row PluginRow, hadNM []bool, reas
 	restartAndVerifyServer()
 	splash.Close()
 	logUI("更新插件失败", fmt.Sprintf("%s: %s", row.Name, reason))
-	showMessageBox("插件 "+row.Name+" 更新失败（"+reason+"），已回退到更新前版本。\n\n日志："+filepath.Join(logDir, "plugin-update.log"), appName)
+	showMessageBox("插件 "+row.Name+" 更新失败（"+reason+"），已回退到更新前版本。\n\n日志："+unifiedLogPath(), appName)
 }
 
 // ==================== 插件删除 ====================
@@ -832,5 +825,5 @@ func rollbackPluginRemove(splash *SplashState, row PluginRow, hadNM []bool, reas
 	restartAndVerifyServer()
 	splash.Close()
 	logUI("删除插件失败", fmt.Sprintf("%s: %s", row.Name, reason))
-	showMessageBox("插件 "+row.Name+" 删除失败（"+reason+"），已回退到删除前状态。\n\n日志："+filepath.Join(logDir, "plugin-update.log"), appName)
+	showMessageBox("插件 "+row.Name+" 删除失败（"+reason+"），已回退到删除前状态。\n\n日志："+unifiedLogPath(), appName)
 }

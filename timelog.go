@@ -2,66 +2,66 @@ package main
 
 import (
 	"bytes"
-	"io"
-	"sync"
+	"strings"
 	"time"
 )
 
-// 需求：日志页要保证每个行头都有时间戳。app.log 由 Go log 输出自带时间戳；
-// 但子进程输出（server/install/build/harness-update/plugin-update）只有原始内容——
-// 用 timePrefixWriter 包一层，把每行输出前加上与 Go log 同格式的时间戳前缀
-// （"2006/01/02 15:04:05 "），跨文件对时与排查都更直观。
+// ==================== 子进程输出行改写器（统一日志格式） ====================
+// moduleLogWriter 把子进程（dsh web / pnpm / git 等）的原始输出按行改写为统一格式
+// 写入 dsh-systray.log：每行 ts [LEVEL] [module] content，LEVEL 由内容启发判定
+// （detectLevel），module 标明输出来源。未遇换行的半行暂存缓冲；命令/进程结束后
+// 必须调用 Flush 补出残留半行（崩溃进程的末行往往无换行——此前半行随进程消失，
+// 是 server.log 空档的帮凶之一）。
 
-// timePrefixWriter 为写入的每一行添加时间戳前缀。跨行缓冲保证每个换行符后的整行
-// 作为前缀边界；同一包装器同时挂 cmd.Stdout/Stderr，互斥保证行不交错。
-type timePrefixWriter struct {
-	mu  sync.Mutex
-	w   io.Writer
-	buf []byte // 尚未遇到换行的半行
+// moduleLogWriter 每行前加时间戳/等级/模块前缀。
+type moduleLogWriter struct {
+	module string
+	buf    []byte // 尚未遇到换行的半行
 }
 
-func newTimePrefixWriter(w io.Writer) *timePrefixWriter {
-	return &timePrefixWriter{w: w}
+func newModuleLogWriter(module string) *moduleLogWriter {
+	return &moduleLogWriter{module: module}
 }
 
-// Write 返回原输入长度（语义与文件直写一致），错误时已写部分照常计数。
-func (t *timePrefixWriter) Write(p []byte) (int, error) {
-	t.mu.Lock()
-	defer t.mu.Unlock()
+// Write 处理输入：完整行立即落盘；半行暂存。返回原输入长度。
+// exec 包保证同一 writer 挂 stdout/stderr 时同一时刻只有一个 goroutine 调 Write。
+func (w *moduleLogWriter) Write(p []byte) (int, error) {
 	orig := len(p)
-	ts := time.Now().Format("2006/01/02 15:04:05") // 每个新行取一次时间
-	for len(p) > 0 {
-		i := bytes.IndexByte(p, '\n')
-		if i < 0 {
-			t.buf = append(t.buf, p...)
-			return orig, nil
-		}
-		if _, err := io.WriteString(t.w, ts+" "); err != nil {
-			return orig, err
-		}
-		if _, err := t.w.Write(append(t.buf, p[:i]...)); err != nil {
-			return orig, err
-		}
-		t.buf = t.buf[:0]
-		if _, err := io.WriteString(t.w, "\n"); err != nil {
-			return orig, err
-		}
-		p = p[i+1:]
-		ts = time.Now().Format("2006/01/02 15:04:05")
-	}
+	writeUnifiedRaw(w.format(p))
 	return orig, nil
 }
 
-// Flush 把残留的半行（无换行结尾）也加上时间戳写出。同步子进程命令（install/build 等）
-// 结束后调用一次，避免结尾内容丢失；长驻进程（server）正常退出前由其日志闭环覆盖。
-func (t *timePrefixWriter) Flush() {
-	t.mu.Lock()
-	defer t.mu.Unlock()
-	if len(t.buf) == 0 {
+func (w *moduleLogWriter) format(p []byte) []byte {
+	var out []byte
+	for len(p) > 0 {
+		i := bytes.IndexByte(p, '\n')
+		if i < 0 {
+			w.buf = append(w.buf, p...)
+			break
+		}
+		line := strings.TrimRight(string(append(w.buf, p[:i]...)), "\r")
+		w.buf = w.buf[:0]
+		p = p[i+1:]
+		if line == "" {
+			continue
+		}
+		ts := time.Now().Format("2006/01/02 15:04:05")
+		out = append(out, []byte(ts+" ["+detectLevel(line)+"] ["+w.module+"] "+line+"\n")...)
+	}
+	return out
+}
+
+// Flush 把残留半行（无换行结尾）补上前缀写出。同步命令在 Run 后调用；
+// 长驻服务在 cmd.Wait 后调用（进程退出后，崩溃末行也能留痕）。
+func (w *moduleLogWriter) Flush() {
+	if len(w.buf) == 0 {
+		return
+	}
+	line := strings.TrimRight(string(w.buf), "\r")
+	w.buf = w.buf[:0]
+	if line == "" {
 		return
 	}
 	ts := time.Now().Format("2006/01/02 15:04:05")
-	_, _ = io.WriteString(t.w, ts+" ")
-	_, _ = t.w.Write(t.buf)
-	t.buf = t.buf[:0]
+	writeUnifiedRaw([]byte(ts + " [" + detectLevel(line) + "] [" + w.module + "] " + line + "\n"))
 }

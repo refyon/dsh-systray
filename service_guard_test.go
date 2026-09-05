@@ -18,7 +18,7 @@ func useTempLogDir(t *testing.T) string {
 
 func TestRotateServerLog(t *testing.T) {
 	dir := useTempLogDir(t)
-	p := filepath.Join(dir, "server.log")
+	p := filepath.Join(dir, unifiedLogName)
 
 	// 文件不存在 / 为空：不轮转，基线 0
 	if got := rotateServerLog(); got != 0 {
@@ -43,7 +43,7 @@ func TestRotateServerLog(t *testing.T) {
 		t.Fatalf(".1 content = %q", data)
 	}
 	if _, err := os.Stat(p); !os.IsNotExist(err) {
-		t.Fatalf("server.log should be moved away after rotate, err=%v", err)
+		t.Fatalf("log should be moved away after rotate, err=%v", err)
 	}
 
 	// 再写一轮并轮转：级联 .1→.2，新内容进 .1
@@ -60,16 +60,17 @@ func TestRotateServerLog(t *testing.T) {
 }
 
 func TestParseBootLogSuspects(t *testing.T) {
-	useTempLogDir(t)
-	fixture := `dsh: host preparation failed ...
-cannot resolve profile bundle "dsh-plugin-codegraph" from the dsh installation or C:\...\profiles\web; run 'dsh plugin --profile web install'
-Error: plugin(s) failed to load: @scope/design-a, dsh-plugin-broken; Cordis startup failed because these plugin(s) could not be resolved (see the error(s) logged above)
-profile bundle "restrict-discipline" declares no dsh.bundle in its package.json
-dsh-plugin-activate-x: Error: boom at bootstrap
-  at file:///.../loader.js:1:1
-dsh: 2 plugins did not activate
+	dir := useTempLogDir(t)
+	// 统一日志 fixture：只有 [server] 模块行参与定位；harness 模块的 ERR_PNPM 行必须被忽略
+	fixture := `2026/09/05 09:00:00 [INFO] [app] something normal
+2026/09/05 09:00:01 [ERROR] [harness] ERR_PNPM_NO_MATCHING_VERSION @deepseek-ai/dsh@0.1.3-alpha.1
+2026/09/05 09:00:02 [ERROR] [server] cannot resolve profile bundle "dsh-plugin-codegraph" from the dsh installation or C:\...\profiles\web; run 'dsh plugin --profile web install'
+2026/09/05 09:00:03 [ERROR] [server] Error: plugin(s) failed to load: @scope/design-a, dsh-plugin-broken; Cordis startup failed because these plugin(s) could not be resolved (see the error(s) logged above)
+2026/09/05 09:00:04 [ERROR] [server] profile bundle "restrict-discipline" declares no dsh.bundle in its package.json
+2026/09/05 09:00:05 [ERROR] [server] dsh-plugin-activate-x: Error: boom at bootstrap
+2026/09/05 09:00:06 [INFO] [app] service resumed after restore
 `
-	p := filepath.Join(logDir, "server.log")
+	p := filepath.Join(dir, unifiedLogName)
 	if err := os.WriteFile(p, []byte(fixture), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -80,12 +81,17 @@ dsh: 2 plugins did not activate
 	}
 
 	// offset 语义：只扫追加段
-	if err := os.WriteFile(p, []byte("cannot resolve profile bundle \"later-plugin\" from ...\n"), 0o644); err != nil {
+	appendLine := "2026/09/05 09:00:07 [ERROR] [server] cannot resolve profile bundle \"later-plugin\" from ...\n"
+	f2, err := os.OpenFile(p, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+	if err != nil {
 		t.Fatal(err)
 	}
-	// 覆盖式写入后 offset=0 扫到的是后者（文件被覆盖，前面内容已无）
+	if _, err := f2.WriteString(appendLine); err != nil {
+		t.Fatal(err)
+	}
+	f2.Close()
 	got = parseBootLogSuspects(0)
-	want = []string{"later-plugin"}
+	want = []string{"@scope/design-a", "dsh-plugin-activate-x", "dsh-plugin-broken", "dsh-plugin-codegraph", "later-plugin", "restrict-discipline"}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("offset-scan suspects = %v, want %v", got, want)
 	}
@@ -94,5 +100,14 @@ dsh: 2 plugins did not activate
 	logDir = t.TempDir()
 	if got := parseBootLogSuspects(0); got != nil {
 		t.Fatalf("missing file suspects = %v, want nil", got)
+	}
+}
+
+func TestLogLineModule(t *testing.T) {
+	if got := logLineModule("2026/09/05 09:00:00 [INFO] [server] boot"); got != "server" {
+		t.Fatalf("module = %q, want server", got)
+	}
+	if got := logLineModule("plain line without prefix"); got != "" {
+		t.Fatalf("module = %q, want empty", got)
 	}
 }

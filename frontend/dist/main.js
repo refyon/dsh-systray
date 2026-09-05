@@ -22,7 +22,7 @@ const state = {
   page: "general",
   cfg: null,
   svc: null,
-  logName: "app.log",
+  logName: "dsh-systray.log", // 统一日志：所有行为与子进程输出合并到单文件（路径见日志页 log-path）
   logOffset: 0,
   logTimer: null,
   expDirs: [],          // 已选打包目录
@@ -528,37 +528,9 @@ async function pollLog() {
   } catch (e) { console.error("ReadLogTail", e); }
 }
 
-/** 动态渲染日志文件下拉选项（后端 GetLogFiles 枚举 logs 目录下全部 *.log）。
- *  选中策略：保持当前选中；当前文件不存在/不可用 → 首个存在的文件；全部缺失 → 占位空值。 */
-function renderLogTabs(files) {
-  const sel = $("log-select");
-  sel.textContent = "";
-  const hasAny = files && files.some((x) => x.exists);
-  if (!hasAny) {
-    const o = document.createElement("option");
-    o.value = "";
-    o.textContent = files && files.length ? "（暂无可用日志文件）" : "（无日志文件）";
-    o.disabled = true;
-    sel.appendChild(o);
-    if (state.logName) setLogFile("");
-    return;
-  }
-  for (const f of files) {
-    const o = document.createElement("option");
-    o.value = f.name;
-    o.textContent = f.exists ? f.name : f.name + "（缺失）";
-    if (!f.exists) o.disabled = true;
-    sel.appendChild(o);
-  }
-  let pick = files.find((x) => x.name === state.logName && x.exists);
-  if (!pick) pick = files.find((x) => x.exists);
-  setLogFile(pick.name);
-}
-
+/** 日志页固定查看统一日志文件（下拉切换已移除：所有日志合并为 dsh-systray.log）。 */
 function setLogFile(name) {
   state.logName = name || "";
-  const sel = $("log-select");
-  if (sel) sel.value = state.logName;
   $("log-view").textContent = "";
   state.logOffset = 0;
   (async () => {
@@ -573,21 +545,8 @@ function startLogPolling() {
   stopLogPolling();
   const a = bindings();
   if (!a) return;
-  (async () => {
-    try {
-      renderLogTabs((await a.GetLogFiles()) || []);
-    } catch (e) { /* ignore */ }
-  })();
+  setLogFile(state.logName);
   state.logTimer = setInterval(pollLog, 2000);
-}
-
-/** 重新拉取日志文件清单并重渲染下拉（保留当前选中），供“刷新”按钮使用。 */
-async function refreshLogFiles() {
-  const a = bindings();
-  if (!a) return;
-  try {
-    renderLogTabs((await a.GetLogFiles()) || []);
-  } catch (e) { /* ignore */ }
 }
 
 function stopLogPolling() {
@@ -595,10 +554,7 @@ function stopLogPolling() {
 }
 
 function wireLogs() {
-  $("log-select").addEventListener("change", (e) => {
-    if (e.target.value) setLogFile(e.target.value);
-  });
-  $("btn-log-refresh").addEventListener("click", () => { $("log-view").textContent = ""; state.logOffset = 0; pollLog(); refreshLogFiles(); });
+  $("btn-log-refresh").addEventListener("click", () => { $("log-view").textContent = ""; state.logOffset = 0; pollLog(); });
   $("btn-log-clear").addEventListener("click", async () => {
     await bindings().ClearLog(state.logName);
     $("log-view").textContent = "";

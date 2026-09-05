@@ -250,7 +250,7 @@ func runHarnessReset(clearSessions, clearPlugins bool) {
 		if !didRestoreLkg {
 			splash.Close()
 			showMessageBox("重置失败：LKG 备份不可用，无法回退到上一个正常运行的版本。\n\n请查看日志："+
-				filepath.Join(logDir, "server.log"), appName)
+				unifiedLogPath(), appName)
 			return
 		}
 	case cur == latest && npmResetMode:
@@ -325,7 +325,7 @@ func runHarnessReset(clearSessions, clearPlugins bool) {
 	splash.Update("正在重启服务…", 0.9)
 	if !restartAndVerifyServer() {
 		splash.Close()
-		showMessageBox("重置后服务未能正常启动，请查看日志：\n"+filepath.Join(logDir, "server.log")+cleanupNotes, appName)
+		showMessageBox("重置后服务未能正常启动，请查看日志：\n"+unifiedLogPath()+cleanupNotes, appName)
 		return
 	}
 	// 重置成功：回退后的状态即新的良好基线，旧 LKG 不应再用于回退
