@@ -695,11 +695,18 @@ input { font-family: inherit; }
 
 .modal-actions {
   display: flex;
-  justify-content: flex-end;
-  flex-wrap: wrap;          /* 三按钮+文案较长时允许换行，不横向溢出卡片/窗口 */
-  gap: var(--sp-3);
+  justify-content: flex-end; /* 主操作（危险）最右，取消最左：符合“破坏性操作置右”的惯例 */
+  flex-wrap: nowrap;         /* 一排三按钮：紧凑小号 + 精简文案后一行放得下，避免两行错落 */
+  gap: var(--sp-2);
   margin-top: var(--sp-5);
-  flex-shrink: 0;           /* 不被压缩挤出视口 */
+  flex-shrink: 0;            /* 不被压缩挤出视口 */
+}
+
+/* 弹窗内按钮统一紧凑规格：与页面 btn-sm 对齐但更聚焦（32px 高、内边距收敛），层次靠颜色表达 */
+.modal-actions .btn {
+  min-height: 32px;
+  padding: 0 var(--sp-3);
+  font-size: var(--fs-sm);
 }
 
 /* 重置勾选弹层（勾选区同样参与弹性布局，避免同患“按钮被挤出”问题） */

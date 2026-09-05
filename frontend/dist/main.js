@@ -794,7 +794,7 @@ function renderImportRows() {
               (detail ? "（" + detail + (preview.conflicts > 3 ? " 等" : "") + "）" : "") +
               "。\n\n「跳过」将保留现有文件、只补缺失项；「覆盖并恢复」会备份并替换现有内容。",
             "覆盖并恢复",
-            "跳过（保留现有）"
+            "跳过"
           );
           if (choice === "cancel") return; // 取消：不做任何恢复动作
           overwrite = choice === "ok";
