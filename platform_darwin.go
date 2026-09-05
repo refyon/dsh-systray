@@ -165,6 +165,17 @@ func findListenerPID(port int) (int, error) {
 	return pid, nil
 }
 
+// killProcessTreePID macOS 尽力终止指定 PID 及其子进程（pkill -P 终止直接子进程 + SIGTERM
+// 自身；与 Windows 的 taskkill /T 对应，深度进程树按尽力而为）。
+func killProcessTreePID(pid int) {
+	if pid <= 0 {
+		return
+	}
+	log.Printf("killing process tree pid=%d", pid)
+	_ = exec.Command("pkill", "-TERM", "-P", strconv.Itoa(pid)).Run()
+	_ = syscall.Kill(pid, syscall.SIGTERM)
+}
+
 func openBrowser(url string) {
 	cmd := exec.Command("open", url)
 	if err := cmd.Start(); err != nil {

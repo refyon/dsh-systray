@@ -113,7 +113,42 @@ jobs:
           cd artifacts
           sha256sum * > SHA256SUMS.txt
 
-      - name: Create GitHub Release
+      # Release 正文来源：docs/RELEASE_NOTES.md 中「## vX.Y.Z」区块（发版前维护的相对上一版
+      # 功能摘要：新增/变更/移除）。找不到对应区块时回退为 GitHub 自动生成（提交列表）。
+      - name: Extract curated release notes
+        id: notes
+        shell: bash
+        run: |
+          python3 - "${GITHUB_REF_NAME}" <<'PY'
+          import sys, pathlib
+          tag = sys.argv[1]
+          txt = pathlib.Path("docs/RELEASE_NOTES.md").read_text(encoding="utf-8")
+          out, on = [], False
+          for ln in txt.splitlines():
+              if ln.startswith("## "):
+                  if on:
+                      break
+                  on = (ln.strip() == "## " + tag)
+              elif on:
+                  out.append(ln)
+          if out:
+              pathlib.Path("release_body.md").write_text(
+                  "\n".join(out).strip() + "\n", encoding="utf-8")
+              print("curated notes found for " + tag)
+          else:
+              print("no curated notes for " + tag)
+          PY
+          if [ -s release_body.md ]; then echo "HAS_NOTES=1" >> "$GITHUB_OUTPUT"; else echo "HAS_NOTES=0" >> "$GITHUB_OUTPUT"; fi
+
+      - name: Create GitHub Release (curated notes)
+        if: steps.notes.outputs.HAS_NOTES == '1'
+        uses: softprops/action-gh-release@v2
+        with:
+          files: artifacts/*
+          body_path: release_body.md
+
+      - name: Create GitHub Release (auto notes fallback)
+        if: steps.notes.outputs.HAS_NOTES != '1'
         uses: softprops/action-gh-release@v2
         with:
           files: artifacts/*

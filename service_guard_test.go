@@ -68,6 +68,7 @@ func TestParseBootLogSuspects(t *testing.T) {
 2026/09/05 09:00:03 [ERROR] [server] Error: plugin(s) failed to load: @scope/design-a, dsh-plugin-broken; Cordis startup failed because these plugin(s) could not be resolved (see the error(s) logged above)
 2026/09/05 09:00:04 [ERROR] [server] profile bundle "restrict-discipline" declares no dsh.bundle in its package.json
 2026/09/05 09:00:05 [ERROR] [server] dsh-plugin-activate-x: Error: boom at bootstrap
+2026/09/05 09:00:05 [ERROR] [server] Error: failed to import loader entry new-format-plugin (new-format-plugin): The requested module 'x' does not provide an export named 'y'
 2026/09/05 09:00:06 [INFO] [app] service resumed after restore
 `
 	p := filepath.Join(dir, unifiedLogName)
@@ -75,7 +76,7 @@ func TestParseBootLogSuspects(t *testing.T) {
 		t.Fatal(err)
 	}
 	got := parseBootLogSuspects(0)
-	want := []string{"@scope/design-a", "dsh-plugin-activate-x", "dsh-plugin-broken", "dsh-plugin-codegraph", "restrict-discipline"}
+	want := []string{"@scope/design-a", "dsh-plugin-activate-x", "dsh-plugin-broken", "dsh-plugin-codegraph", "new-format-plugin", "restrict-discipline"}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("suspects = %v, want %v", got, want)
 	}
@@ -91,7 +92,7 @@ func TestParseBootLogSuspects(t *testing.T) {
 	}
 	f2.Close()
 	got = parseBootLogSuspects(0)
-	want = []string{"@scope/design-a", "dsh-plugin-activate-x", "dsh-plugin-broken", "dsh-plugin-codegraph", "later-plugin", "restrict-discipline"}
+	want = []string{"@scope/design-a", "dsh-plugin-activate-x", "dsh-plugin-broken", "dsh-plugin-codegraph", "later-plugin", "new-format-plugin", "restrict-discipline"}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("offset-scan suspects = %v, want %v", got, want)
 	}

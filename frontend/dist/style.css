@@ -563,6 +563,35 @@ input { font-family: inherit; }
 
 .op-progress { margin-top: var(--sp-4); }
 .op-progress .row-sub { display: block; margin-top: var(--sp-2); }
+/* 恢复进度下的「取消恢复」操作行（与进度条同高节奏，按钮居中） */
+.imp-cancel-row {
+  display: flex;
+  justify-content: center;
+  margin-top: var(--sp-2);
+  min-height: 32px;
+}
+
+/* 按钮组：常规页等服务操作两键并排（4pt 间距、同高，避免 flex 挤压左侧文案） */
+.btn-group {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  flex-shrink: 0;
+}
+
+/* 导入/导出提示的错误语气（恢复失败等） */
+#imp-hint.err, #exp-hint.err { color: var(--danger); }
+
+/* 已禁用插件徽标（危险色克制描边，不喧宾夺主） */
+.plug-badge-dis {
+  color: var(--danger);
+  border: 1px solid var(--danger);
+  border-radius: var(--radius-sm);
+  padding: 0 5px;
+  font-size: 11px;
+  font-weight: 600;
+  margin-left: var(--sp-1);
+}
 
 /* 文件目录二级列表（依附于「需要打包的文件目录」下方，无勾选框） */
 .exp-dirs {
@@ -642,6 +671,28 @@ input { font-family: inherit; }
   border-radius: 999px;      /* 胶囊徽标 */
 }
 .imp-item-done { border-color: rgba(24, 128, 56, 0.35); }
+
+/* 逐项恢复：头部行 + 行内进度/状态（每项独立） */
+.imp-item { flex-direction: column; align-items: stretch; gap: 0; }
+.imp-head { display: flex; align-items: center; justify-content: space-between; gap: var(--sp-4); }
+.imp-actions { display: flex; align-items: center; gap: var(--sp-2); flex-shrink: 0; }
+.imp-progress-row { margin-top: var(--sp-3); }
+.imp-track {
+  height: 4px;
+  background: var(--border);
+  border-radius: 2px;
+  overflow: hidden;
+}
+.imp-fill {
+  height: 100%;
+  width: 0;
+  background: var(--primary);
+  border-radius: 2px;
+  transition: width 0.2s var(--ease);
+}
+.imp-ptext { margin-top: var(--sp-1); font-size: var(--fs-xs); line-height: 1.5; }
+.imp-ptext.err { color: var(--danger); }
+.imp-ptext.ok { color: var(--ok); }
 
 /* ---------- Modal ---------- */
 .modal {
@@ -755,6 +806,37 @@ input { font-family: inherit; }
 }
 .reset-opt-mandatory input[type="checkbox"] { opacity: 0.55; }
 .reset-opt-mandatory:hover { border-color: rgba(239, 68, 68, 0.25); }
+
+/* 重置目标版本选择（弹窗下拉；仅早于当前版本的官方版本，预发布以警示色标注） */
+.reset-target {
+  margin-top: var(--sp-4);
+  flex-shrink: 0; /* 不被弹层压缩挤出（超长内容由 modal-msg 内部滚动吸收） */
+}
+.reset-target-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--sp-3);
+  margin-bottom: var(--sp-2);
+}
+.reset-target-label { font-size: var(--fs-sm); font-weight: 600; flex-shrink: 0; }
+.reset-target-select {
+  width: 100%;
+  min-height: 36px;
+  padding: 0 var(--sp-3);
+  background: var(--surface);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  font-family: var(--font);
+  font-size: var(--fs-base);
+  transition: border-color var(--dur) var(--ease);
+}
+.reset-target-select:hover:not(:disabled) { border-color: var(--primary); }
+.reset-target-select:focus-visible { outline: 2px solid var(--focus); outline-offset: 1px; }
+.reset-target-select:disabled { opacity: 0.6; cursor: wait; }
+#reset-target option.opt-pre { color: var(--warn); } /* 展开列表内预发布候选着色（闭合态以文本“（预发布）”兜底） */
+#reset-target-note { margin: var(--sp-2) 0 0; display: block; }
 
 /* ---------- Reduced motion ---------- */
 @media (prefers-reduced-motion: reduce) {

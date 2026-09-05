@@ -46,12 +46,14 @@ type exportManifest struct {
 	Plugins    exportPlugins    `json:"plugins,omitempty"` // 已安装插件清单（用于导入后注册回 harness profile）
 }
 
-// exportPlugins 导出时记录源 profile 的插件配置：dependencies + dsh.profile.bundles，
-// 供导入后合并写入目标机器 profile 的 package.json，使恢复的插件被 harness 识别为已安装。
+// exportPlugins 导出时记录源 profile 的插件配置：dependencies + dsh.profile.bundles + 禁用记录，
+// 供导入后合并写入目标机器 profile 的 package.json，使恢复的插件被 harness 识别为已安装
+// （禁用插件保持禁用——bundles 不含它，Disabled 记录其禁用原因，供恢复侧展示/维持状态）。
 type exportPlugins struct {
 	Profile      string            `json:"profile,omitempty"`      // 源 profile 名（空 = 旧布局 profiles 根）
 	Dependencies map[string]string `json:"dependencies,omitempty"` // 插件名 → 版本规格
 	Bundles      []string          `json:"bundles,omitempty"`      // dsh.profile.bundles 插件清单
+	Disabled     map[string]string `json:"disabled,omitempty"`     // dsh.profile.disabledPlugins（禁用原因）
 }
 
 // importItem 解析出的可恢复项。
@@ -157,7 +159,8 @@ func profilePlugins() (profileDir string, deps []string, err error) {
 	return dir, deps, nil
 }
 
-// profilePluginConfig 读取 profile 的 package.json，返回其插件配置（dependencies + dsh.profile.bundles + profile 名）。
+// profilePluginConfig 读取 profile 的 package.json，返回其插件配置
+// （dependencies + dsh.profile.bundles + disabledPlugins + profile 名）。
 func profilePluginConfig(dir string) exportPlugins {
 	cfg := exportPlugins{}
 	data, err := os.ReadFile(filepath.Join(dir, "package.json"))
@@ -168,13 +171,15 @@ func profilePluginConfig(dir string) exportPlugins {
 		Dependencies map[string]string `json:"dependencies"`
 		Dsh          struct {
 			Profile struct {
-				Bundles []string `json:"bundles"`
+				Bundles  []string          `json:"bundles"`
+				Disabled map[string]string `json:"disabledPlugins"`
 			} `json:"profile"`
 		} `json:"dsh"`
 	}
 	_ = json.Unmarshal(data, &m)
 	cfg.Dependencies = m.Dependencies
 	cfg.Bundles = m.Dsh.Profile.Bundles
+	cfg.Disabled = m.Dsh.Profile.Disabled
 	if home := dshHomeDir(); home != "" {
 		if rel, err := filepath.Rel(home, dir); err == nil {
 			rel = filepath.ToSlash(rel)
@@ -546,7 +551,13 @@ func mergePluginConfigIntoProfile(dir string, cfg exportPlugins) error {
 		deps[k] = v
 	}
 	root["dependencies"] = deps
-	// dsh.profile.bundles：合并到已有序号末尾，避免破坏已激活 bundle 的顺序。
+	// dsh.profile.bundles：恢复的插件**先无条件激活**（用户确认范围：只激活 cfg.Bundles 覆盖的
+	// 名字；cfg.Dependencies 里源机从未激活过的依赖不自动激活）。启动时若某插件与当前核心不兼容，
+	// 由 finishPluginImport 自愈链路自动禁用并写入当前环境的原因——因此合并阶段：
+	//  1) 不合并源机的 disabledPlugins（源机原因未必适用于目标环境，避免恢复后一直禁用）；
+	//  2) 不跳过任何 bundles 名（含目标机上曾禁用的）——全部追加，交给启动校验裁决；
+	//  3) 对被激活名字清除目标 profile 的旧禁用记录（记录与激活必须一致，否则关于页显示
+	//     「已禁用」徽标但插件实际已激活，造成误导）。
 	dsh, _ := root["dsh"].(map[string]interface{})
 	if dsh == nil {
 		dsh = map[string]interface{}{}
@@ -555,6 +566,12 @@ func mergePluginConfigIntoProfile(dir string, cfg exportPlugins) error {
 	if prof == nil {
 		prof = map[string]interface{}{}
 	}
+	bundleBase := func(s string) string {
+		if i := strings.IndexByte(s, '@'); i > 0 {
+			return s[:i]
+		}
+		return s
+	}
 	bundles, _ := prof["bundles"].([]interface{})
 	seen := map[string]bool{}
 	for _, b := range bundles {
@@ -562,13 +579,36 @@ func mergePluginConfigIntoProfile(dir string, cfg exportPlugins) error {
 			seen[s] = true
 		}
 	}
+	activated := 0
 	for _, b := range cfg.Bundles {
-		if !seen[b] {
-			bundles = append(bundles, b)
-			seen[b] = true
+		if b == "" || seen[b] {
+			continue
+		}
+		bundles = append(bundles, b)
+		seen[b] = true
+		activated++
+	}
+	if activated > 0 {
+		prof["bundles"] = bundles
+	}
+	// 清除被激活名字的目标禁用记录（同时清理因 bundleBase 变体造成的孤儿记录）
+	if disabled, ok := prof["disabledPlugins"].(map[string]interface{}); ok && len(disabled) > 0 {
+		cleared := false
+		for _, b := range cfg.Bundles {
+			base := bundleBase(b)
+			if _, exists := disabled[base]; exists {
+				delete(disabled, base)
+				cleared = true
+			}
+		}
+		if cleared {
+			if len(disabled) == 0 {
+				delete(prof, "disabledPlugins")
+			} else {
+				prof["disabledPlugins"] = disabled
+			}
 		}
 	}
-	prof["bundles"] = bundles
 	dsh["profile"] = prof
 	root["dsh"] = dsh
 
@@ -579,7 +619,164 @@ func mergePluginConfigIntoProfile(dir string, cfg exportPlugins) error {
 	return os.WriteFile(pj, append(b, '\n'), 0o644)
 }
 
-// innerZipContentPrefix 从子包 zip 条目自身推导内容在 DSH_HOME 下的公共前缀（冲突检测/备份基准）：
+// ==================== 本地链接依赖跨机恢复：待重指定挂起 ====================
+// 背景：源机以 link:/file:/workspace:（或相对/绝对路径）安装的开发态插件，spec 记录的是
+// 源机绝对路径。跨机恢复时该路径在本机不存在，pnpm install 直接
+// ERR_PNPM_LINKED_PKG_DIR_NOT_FOUND 硬失败（new_device.log 实证 dsh-ui-taste），
+// 且此前 reconcile 失败只记日志、不修复，导致恢复必然回退。
+// 早期消毒把这类依赖改写为 npm:name@version（registry 版本可能与目标机 harness 核心不兼容，
+// new_device.log 实证 dsh-ui-taste 因 @deepseek-ai/dsh-settings 缺 settingsNamespace 导出、
+// codegraph 插件因 @deepseek-ai/dsh-llm 缺 assertNever 导出而启动失败）或直接删除（插件从
+// 列表消失、无法再指回本地目录）。
+// sanitizeProfileLocalDeps 在合并写回 profile package.json 之后、pnpm 对齐之前执行：
+//   - 目标路径在本机存在 → 保持原样（同机恢复的开发态链接不受影响）；
+//   - 目标路径缺失 → 移出 dependencies、记录为「待重指定」（dsh.profile.pendingLocalPlugins，
+//     含原 spec 与是否曾激活），并清理 bundle / 禁用记录。插件列表仍显示该本地插件行，
+//     用户点「更新…」重新选择本地目录后由更新事务落回 link: spec 并恢复激活。
+// 返回面向用户的说明行；package.json 改写仅在真正变化时落盘（回退路径由 .importbak 快照兜底）。
+
+// localSpecPath 从依赖 spec 提取本地目录路径（link:/file:/workspace: 或相对/绝对目录形态）。
+// 非本地 spec 返回 ("", false)。
+func localSpecPath(spec string) (string, bool) {
+	s := strings.TrimSpace(spec)
+	low := strings.ToLower(s)
+	var p string
+	switch {
+	case strings.HasPrefix(low, "link:"):
+		p = strings.TrimSpace(s[len("link:"):])
+	case strings.HasPrefix(low, "file:"):
+		p = strings.TrimSpace(s[len("file:"):])
+	case strings.HasPrefix(low, "workspace:"):
+		p = strings.TrimSpace(s[len("workspace:"):])
+	case strings.HasPrefix(s, "./"), strings.HasPrefix(s, "../"),
+		strings.HasPrefix(s, "/"), strings.HasPrefix(s, `\`):
+		p = s
+	case isDriveAbsPath(s):
+		p = s
+	default:
+		return "", false
+	}
+	if p == "" {
+		return "", false
+	}
+	return p, true
+}
+
+// isDriveAbsPath 是否为 Windows 盘符绝对路径（C:\… / C:/…）。
+func isDriveAbsPath(s string) bool {
+	if len(s) < 3 {
+		return false
+	}
+	c := s[0]
+	if !(c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z') || s[1] != ':' {
+		return false
+	}
+	return s[2] == '\\' || s[2] == '/'
+}
+
+// sanitizeProfileLocalDeps 改写 profile package.json 中目标路径缺失的本地依赖（见上），
+// 返回用户可见说明（无改动返回 nil）。
+func sanitizeProfileLocalDeps(dir string) []string {
+	pj := filepath.Join(dir, "package.json")
+	data, err := os.ReadFile(pj)
+	if err != nil {
+		return nil
+	}
+	root := map[string]interface{}{}
+	if err := json.Unmarshal(data, &root); err != nil {
+		return nil
+	}
+	deps, _ := root["dependencies"].(map[string]interface{})
+	if deps == nil {
+		return nil
+	}
+	var notes []string
+	changed := false
+	names := make([]string, 0, len(deps))
+	for n := range deps {
+		names = append(names, n)
+	}
+	sort.Strings(names)
+	for _, name := range names {
+		spec, _ := deps[name].(string)
+		raw, ok := localSpecPath(spec)
+		if !ok {
+			continue
+		}
+		target := raw
+		if !filepath.IsAbs(target) {
+			// 相对/盘符路径按 profile 目录解析
+			target = filepath.Join(dir, filepath.FromSlash(target))
+		}
+		target = filepath.Clean(target)
+		if _, err := os.Stat(target); err == nil {
+			continue // 本机路径存在：同机开发态恢复，保留原 spec
+		}
+		// 目标路径缺失：见本函数头部注释——不改为 npm、不删除，转「待重指定」挂起。
+		bundled := bundleEntryExists(root, name)
+		stripBundleEntry(root, name)
+		if dm := profileDisabledMap(root); dm != nil {
+			if _, had := dm[name]; had {
+				delete(dm, name)
+				_, prof := profileSection(root)
+				if len(dm) == 0 {
+					delete(prof, "disabledPlugins")
+				} else {
+					prof["disabledPlugins"] = dm
+				}
+			}
+		}
+		delete(deps, name)
+		setPendingLocalEntry(root, name, spec, bundled)
+		changed = true
+		notes = append(notes, fmt.Sprintf(
+			"本地插件 %s 的原依赖路径在本机不可用（隐私起见不显示），已保留为待重指定状态——请点「更新…」重新选择本地目录", name))
+	}
+	if !changed {
+		return nil
+	}
+	b, err := json.MarshalIndent(root, "", "  ")
+	if err != nil {
+		return nil
+	}
+	if err := os.WriteFile(pj, append(b, '\n'), 0o644); err != nil {
+		log.Printf("sanitize local deps: write package.json failed (%s): %v", pj, err)
+	}
+	return notes
+}
+
+// stripBundleEntry 从 package.json 的 dsh.profile.bundles 中移除 name（含 name@… 变体）。
+// 依赖被移除时若 bundle 仍声明该插件，服务启动会因「无法解析 bundle」失败——必须一并清理。
+func stripBundleEntry(root map[string]interface{}, name string) {
+	dsh, _ := root["dsh"].(map[string]interface{})
+	if dsh == nil {
+		return
+	}
+	prof, _ := dsh["profile"].(map[string]interface{})
+	if prof == nil {
+		return
+	}
+	bundles, _ := prof["bundles"].([]interface{})
+	out := make([]interface{}, 0, len(bundles))
+	for _, b := range bundles {
+		s, ok := b.(string)
+		if !ok {
+			continue
+		}
+		base := s
+		if i := strings.IndexByte(base, '@'); i > 0 {
+			base = base[:i]
+		}
+		if base == name {
+			continue
+		}
+		out = append(out, b)
+	}
+	if len(out) != len(bundles) {
+		prof["bundles"] = out
+	}
+}
+
 // sessions → "sessions/"；plugins → 扫描条目得出 "profiles/<profile>/node_modules/"
 // （兼容旧布局 "profiles/node_modules/"）。不依赖目标机器当前 profile 布局，避免源/目标
 // profile 名不一致时冲突检测错位（此前取目标机 pluginsRelPrefix，与 zip 内源机前缀不匹配，
@@ -700,7 +897,11 @@ func topDirConflicts(zipPath, destDir string) (int, []string, error) {
 // kind=files → 解压到 filesDest（条目 <目录名>/…）。
 // overwrite=true 覆盖已有（冲突顶层目录先改名备份，失败回滚，成功后删除备份）；false 跳过已有。
 // 返回备份目录信息文本（无备份时为空）。
-func restoreItem(kind, zipPath, filesDest string, overwrite bool, onStatus func(text string, pct float64)) (string, error) {
+func restoreItem(kind, zipPath, filesDest string, overwrite bool, onStatus func(text string, pct float64), stop ...func() bool) (string, error) {
+	var stopFn func() bool
+	if len(stop) > 0 {
+		stopFn = stop[0]
+	}
 	if err := validateZipSafe(zipPath); err != nil {
 		return "", err
 	}
@@ -745,8 +946,14 @@ func restoreItem(kind, zipPath, filesDest string, overwrite bool, onStatus func(
 			}
 		}
 	}
+	if stopFn != nil && stopFn() {
+		for o, b := range backups {
+			_ = os.Rename(b, o) // 取消时先还原已改名备份
+		}
+		return "", errRestoreCanceled
+	}
 
-	err := zipExtract(zipPath, dest, overwrite)
+	err := zipExtractStop(zipPath, dest, overwrite, stopFn)
 	if err != nil {
 		for o, b := range backups {
 			_ = os.Rename(b, o) // 回滚备份
@@ -853,6 +1060,72 @@ func resumeServiceAfterRestore() {
 // importBakSuffix 插件导入事务快照后缀（区别于更新流程进行中的 .dshbak 与 LKG .lkgbak）。
 const importBakSuffix = ".importbak"
 
+// ==================== 导入事务日志（重启自愈） ====================
+// importJournal 导入事务阶段日志：进程在恢复任务中途被杀/窗口被关时，重启据此决定
+// 回退（importing：解压/对齐阶段中断，改动可安全回退）或续跑收尾自愈（healing：
+// 已进入自愈、必须续到确定结果）——见 main.go recoverInterruptedImport。
+type importJournal struct {
+	Stage string   `json:"stage"` // importing | healing
+	Kind  string   `json:"kind"`
+	Dirs  []string `json:"dirs"`
+	HadNM []bool   `json:"hadNM"`
+}
+
+// importJournalDirOverride 测试注入：替代 config 目录（单测自包含，不触碰真实用户配置目录）。
+var importJournalDirOverride string
+
+// importJournalPath 事务日志文件（与 config.json 同目录；测试可注入覆盖）。
+func importJournalPath() string {
+	if importJournalDirOverride != "" {
+		return filepath.Join(importJournalDirOverride, "import-journal.json")
+	}
+	if p := configFilePath(); p != "" {
+		return filepath.Join(filepath.Dir(p), "import-journal.json")
+	}
+	return ""
+}
+
+// writeImportJournal 原子写入事务日志（临时文件 + rename）。
+func writeImportJournal(j importJournal) error {
+	p := importJournalPath()
+	if p == "" {
+		return fmt.Errorf("no config dir for import journal")
+	}
+	b, err := json.Marshal(j)
+	if err != nil {
+		return err
+	}
+	tmp := p + ".tmp"
+	if err := os.WriteFile(tmp, b, 0o644); err != nil {
+		return err
+	}
+	return os.Rename(tmp, p)
+}
+
+// readImportJournal 读取事务日志（不存在/损坏返回错误，调用方按无日志处理）。
+func readImportJournal() (*importJournal, error) {
+	p := importJournalPath()
+	if p == "" {
+		return nil, fmt.Errorf("no config dir for import journal")
+	}
+	data, err := os.ReadFile(p)
+	if err != nil {
+		return nil, err
+	}
+	var j importJournal
+	if err := json.Unmarshal(data, &j); err != nil {
+		return nil, err
+	}
+	return &j, nil
+}
+
+// clearImportJournal 删除事务日志（恢复任务各终局路径收尾时调用）。
+func clearImportJournal() {
+	if p := importJournalPath(); p != "" {
+		_ = os.Remove(p)
+	}
+}
+
 // restoredPluginProfileDirs 插件导入将影响的 profile 目录集合（manifest 源 profile +
 // 当前激活 profile 的并集，去重排序）——与 registerRestoredPlugins 的写入目标一致，
 // 供快照 / 回退使用。manifest 缺失或未含插件配置时返回空。
@@ -916,12 +1189,15 @@ func snapshotImportProfiles(dirs []string) []bool {
 
 // rollbackImportProfiles 回退插件导入：还原 package.json / pnpm-lock.yaml，并把暂存的
 // node_modules 移回（离线可用）。had[i] 指示该目录是否暂存了 node_modules。
+// 还原完成后删除快照副本（package.json/pnpm-lock 的 .importbak）：若残留，重启自愈扫描
+// （recoverInterruptedImport）会把已回退完成的目录误判为「中断的导入」。
 func rollbackImportProfiles(dirs []string, had []bool) {
 	for i, dir := range dirs {
 		for _, name := range []string{"package.json", "pnpm-lock.yaml"} {
 			bak := filepath.Join(dir, name+importBakSuffix)
 			if data, err := os.ReadFile(bak); err == nil {
 				_ = os.WriteFile(filepath.Join(dir, name), data, 0o644)
+				_ = os.Remove(bak)
 			}
 		}
 		nm := filepath.Join(dir, "node_modules")
@@ -967,30 +1243,47 @@ func promoteImportProfilesToLkg(dirs []string) {
 }
 
 // finishPluginImport 插件导入收尾：拉起服务并健康校验（restartAndVerifyHealing，
-// 失败自动 pnpm 对齐重试一次）；仍失败则回退导入前快照并恢复服务。
-// 成功返回 nil；失败返回面向用户的说明文案（含可疑插件与回退结果）。
-func finishPluginImport(dirs []string, hadNM []bool) error {
+// 失败自动 pnpm 对齐重试一次）；仍失败且启动日志点名用户插件时，自动禁用这些插件换取
+// 「导入保留 + 服务可启动」（不兼容自愈，而非整体回退导入）；禁用后仍失败才回退导入前快照。
+// 本阶段为不可中断的启动自愈（CancelRestore 忽略请求）：取消只对之前的解压/对齐有效。
+// 返回 (note, error)：note 为成功路径的附加说明（如被自动禁用的插件），error 失败时
+// 为面向用户的说明文案（含可疑插件与回退结果）。
+func finishPluginImport(dirs []string, hadNM []bool) (string, error) {
 	healthy, suspects := restartAndVerifyHealing(dirs)
 	if healthy {
 		promoteImportProfilesToLkg(dirs)
 		cleanupImportProfiles(dirs)
 		markServiceResumed()
 		log.Printf("import: plugins restored and service verified healthy")
-		return nil
+		return "", nil
 	}
 	reason := "启动日志存在加载错误（版本/插件不兼容）"
 	if len(suspects) > 0 {
 		reason += "（疑似插件：" + strings.Join(suspects, "、") + "）"
+	}
+	// 不兼容自愈：禁用点名用户插件后重启，健康则保留本次导入（这些插件记为禁用、可后续更新/启用）
+	disabled, ok := disableBootSuspects(dirs)
+	if ok {
+		promoteImportProfilesToLkg(dirs)
+		cleanupImportProfiles(dirs)
+		markServiceResumed()
+		names := make([]string, 0, len(disabled))
+		for _, d := range disabled {
+			names = append(names, d.Name)
+		}
+		log.Printf("import: plugins restored with incompatible ones disabled: %s", strings.Join(names, "、"))
+		return "已恢复导入，但以下插件与当前版本不兼容，已自动禁用（可在关于页检查更新，或确认修复后点击「启用」重试）：" +
+			strings.Join(names, "、"), nil
 	}
 	log.Printf("import: service not healthy after restore heal (%s), rolling back", reason)
 	killServer()
 	time.Sleep(1 * time.Second)
 	rollbackImportProfiles(dirs, hadNM)
 	if !restartAndVerifyServer() {
-		return fmt.Errorf("导入的插件导致服务启动失败（%s）。已回退导入内容，但回退后的服务仍未能就绪，请查看日志：%s", reason, unifiedLogPath())
+		return "", fmt.Errorf("导入的插件导致服务启动失败（%s）。已回退导入内容，但回退后的服务仍未能就绪，请查看日志：%s", reason, unifiedLogPath())
 	}
 	markServiceResumed()
-	return fmt.Errorf("导入的插件导致服务启动失败（%s）。已自动回退到导入前状态，服务已恢复正常，本次导入未生效。", reason)
+	return "", fmt.Errorf("导入的插件导致服务启动失败（%s）。已自动回退到导入前状态，服务已恢复正常，本次导入未生效。", reason)
 }
 
 // markServiceResumed 服务已就绪并刷新托盘菜单（与 resumeServiceAfterRestore 的状态口径一致）。

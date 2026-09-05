@@ -28,7 +28,9 @@ const state = {
   expDirs: [],          // 已选打包目录
   expSelected: { sessions: true, plugins: false, files: false },
   impItems: [],
-  impDone: {},          // kind → true：恢复完成标记（对应项显示 ✓ 已完成）
+  impDone: {},          // kind → true：该项已恢复完成（显示 ✓ 徽标）
+  imp: {},              // kind → {busy,text,pct,pending,watch}：逐项恢复运行态
+  impHealAll: false,    // 共享自愈进行中：所有「恢复」按钮暂时禁用（不可打断）
   plugRows: [],         // 全量插件（Go PluginRow），供过滤渲染与事件委托按索引取用
   plugFilter: "",       // 插件过滤关键字（输入防抖后）
   plugState: {},        // name → {note,noteTone,upLatest,upShow}：滚动/过滤重渲染后恢复行内状态
@@ -134,6 +136,9 @@ async function refreshService() {
     $("svc-sub").textContent = state.svc.state === "failed"
       ? (state.svc.reason || "请查看日志")
       : (state.svc.state === "running" ? "服务就绪，可打开 Web UI" : "服务就绪后可打开 Web UI");
+    // 「打开 Web UI」仅在服务运行时可点（运行端口以实际状态为准）
+    const owb = $("btn-open-webui");
+    if (owb) owb.disabled = state.svc.state !== "running";
     updatePortHint();
     // 兜底（仅截图模式）：若 splash:done 在页面就绪前已发出（快速就绪 + 慢 WebView），
     // 周期轮询发现服务 running 且 splash 未收起时自动切回设置页。
@@ -176,7 +181,10 @@ function wireGeneral() {
     if (!ok) $("svc-sub").textContent = "重启失败，请查看日志";
     setTimeout(() => { $("btn-restart").disabled = false; refreshService(); }, 2000);
   });
-  // 重置：打开勾选弹层（harness 必选；会话/插件按需勾选，展示将清除的数量）
+  // 打开 Web UI：基于服务实际运行端口（修改端口未重启的窗口期也指向真实地址）
+  $("btn-open-webui").addEventListener("click", () => bindings().OpenWebUI());
+  // 重置：打开勾选弹层（harness 必选；会话/插件按需勾选，展示将清除的数量；
+  // 目标版本下拉异步填充——仅早于当前运行版本的官方版本）
   $("btn-reset-harness").addEventListener("click", async () => {
     const btn = $("btn-reset-harness");
     btn.disabled = true;
@@ -189,6 +197,7 @@ function wireGeneral() {
       // 默认勾选插件（重置将物理删除已装插件，谨慎起见默认勾选）；会话默认不勾选（数据谨慎）
       $("reset-c-sessions").checked = false;
       $("reset-c-plugins").checked = pc > 0;
+      loadResetVersions(); // 异步填充目标版本（不阻塞弹窗打开：下拉先显示 loading 态）
       $("reset-modal").classList.remove("hidden");
     } catch (e) {
       $("svc-sub").textContent = "获取重置统计失败：" + (e && e.message ? e.message : e);
@@ -201,11 +210,89 @@ function wireGeneral() {
     $("reset-modal").classList.add("hidden");
     const clearSessions = $("reset-c-sessions").checked;
     const clearPlugins = $("reset-c-plugins").checked;
-    showSplash("startup", "正在重置 DeepSeek Harness…");
-    await bindings().ResetHarness(clearSessions, clearPlugins);
+    const target = $("reset-target").value || "";
+    showSplash("startup", target ? "正在重置 DeepSeek Harness 到 " + vtag(target) + "…" : "正在重置 DeepSeek Harness…");
+    await bindings().ResetHarness(clearSessions, clearPlugins, target);
   });
+  $("reset-target").addEventListener("change", updateResetTargetWarn);
   // 点遮罩等同取消
   $("reset-modal").querySelector(".modal-mask").addEventListener("click", () => $("reset-modal").classList.add("hidden"));
+}
+
+/**
+ * 填充「重置目标版本」下拉。候选来自 GetResetVersions（仅早于当前运行版本的官方版本，
+ * 预发布带“（预发布）”文本标记 + 警示色 class）。边界降级语义：
+ *  - 查询失败 → 说明原因并保持「开始重置」禁用（无法确定目标，勿盲目重置）；
+ *  - 源码形态 / 无可更早版本 → 说明并放行（空 target = 官方默认目标，Go 侧按旧语义执行）。
+ */
+async function loadResetVersions() {
+  const tok = (state.resetVersionToken = (state.resetVersionToken || 0) + 1); // 防连点/快速重开时的过期响应覆盖
+  const sel = $("reset-target");
+  const note = $("reset-target-note");
+  const curEl = $("reset-target-cur");
+  const confirm = $("reset-confirm");
+  sel.disabled = true;
+  confirm.disabled = true;
+  note.textContent = "";
+  note.classList.add("hidden");
+  curEl.textContent = "";
+  sel.innerHTML = '<option value="">正在查询可用版本…</option>';
+  try {
+    const info = await bindings().GetResetVersions();
+    if (tok !== state.resetVersionToken) return; // 已有更新的查询在跑，丢弃本次结果
+    if (info && info.current) curEl.textContent = "当前版本 " + vtag(info.current);
+    if (info && info.form === "source") {
+      // 源码形态：Go 侧会拦截重置执行，直接禁用并说明
+      sel.innerHTML = "";
+      showResetTargetNote((info && info.note) || "当前为源码 checkout 形态，不支持自动重置。");
+      return;
+    }
+    if (info && info.note) showResetTargetNote(info.note);
+    const opts = (info && info.options) || [];
+    if (!opts.length) {
+      // 无可更早版本 / 当前版本识别失败且列表为空 → 降级放行：空 target = 官方默认目标
+      sel.innerHTML = '<option value="">官方默认目标（最新稳定版）</option>';
+      sel.disabled = false;
+      confirm.disabled = false;
+      updateResetTargetWarn();
+      return;
+    }
+    let html = "";
+    let defIdx = 0;
+    opts.forEach((o, i) => {
+      if (o.version === (info && info.default)) defIdx = i;
+      const label = vtag(o.version) + (o.prerelease ? "（预发布）" : "");
+      html += '<option value="' + o.version + '" data-pre="' + (o.prerelease ? "1" : "0") + '"' +
+        (o.prerelease ? ' class="opt-pre"' : "") + ">" + label + "</option>";
+    });
+    sel.innerHTML = html;
+    sel.selectedIndex = defIdx;
+    sel.disabled = false;
+    confirm.disabled = false;
+    updateResetTargetWarn();
+  } catch (e) {
+    if (tok !== state.resetVersionToken) return; // 过期响应的失败同样丢弃
+    sel.innerHTML = "";
+    showResetTargetNote("查询可用版本失败：" + (e && e.message ? e.message : e) + "，请检查网络后重试。");
+  }
+}
+
+/** 弹窗内说明行（警示色；空文本隐藏）。loadResetVersions 专用。 */
+function showResetTargetNote(text) {
+  const note = $("reset-target-note");
+  note.textContent = text || "";
+  note.classList.toggle("hidden", !note.textContent);
+}
+
+/** 所选目标为预发布时提示兼容性风险（下拉 change / 填充完成后调用；非预发布不改动既有说明）。 */
+function updateResetTargetWarn() {
+  const sel = $("reset-target");
+  const opt = sel && sel.options[sel.selectedIndex];
+  const isPre = opt && opt.dataset && opt.dataset.pre === "1";
+  if (!isPre) return; // 保留 loadResetVersions 写入的边界/降级说明
+  const note = $("reset-target-note");
+  note.textContent = "注意：所选为预发布版本，可能与已安装插件不兼容；若重置后服务无法启动，请查看日志。";
+  note.classList.remove("hidden");
 }
 
 // ==================== 关于页（按模块单独检查更新 + 插件列表） ====================
@@ -334,6 +421,8 @@ function wireAbout() {
       const p = state.plugRows[Number(item.dataset.idx)];
       if (!p) return;
       if (btn.dataset.check !== undefined) doPluginCheck(p, item, btn);
+      else if (btn.dataset.localupdate !== undefined) doLocalPluginUpdate(p, item, btn);
+      else if (btn.dataset.enable !== undefined) doPluginEnable(p, item, btn);
       else if (btn.dataset.update !== undefined) doPluginUpdate(p, item, btn);
       else if (btn.dataset.del !== undefined) doPluginRemove(p, item, btn);
     });
@@ -411,11 +500,22 @@ function renderPluginRow(p, idx) {
   badge.className = "plug-badge";
   badge.textContent = PLUG_SRC_LABEL[p.source] || p.source || "未知";
   name.appendChild(badge);
+  if (p.disabled) {
+    const disBadge = document.createElement("span");
+    disBadge.className = "plug-badge-dis";
+    disBadge.textContent = "已禁用";
+    name.appendChild(disBadge);
+  }
 
   const sub = document.createElement("div");
   sub.className = "plug-sub";
   sub.textContent = "当前版本 " + (p.version ? vtag(p.version) : "未安装") +
     (p.profile ? " · 环境 " + p.profile : "");
+  // 本地插件：仅当存在「用户已重指定/生效」的本地路径时才展示（原路径不出现，保护隐私）
+  if (p.localDir) {
+    sub.textContent += " · 本地路径：" + p.localDir;
+    sub.title = p.localDir;
+  }
 
   const note = document.createElement("div");
   note.className = "plug-note";
@@ -436,18 +536,39 @@ function renderPluginRow(p, idx) {
     checkBtn.dataset.check = "";
     actions.appendChild(checkBtn);
   }
-  // 「更新」按钮：所有行同尺寸同文本，仅颜色区分——可用=主色（查出新版本后显示），不可用=灰
+  // 「更新」按钮（所有行同尺寸同文本位置，仅颜色/行为区分）：
+  //  - 远程来源（canUpdate）：初始隐藏，检查出新版本后显示可用（primary）；
+  //  - 本地来源（file/link/workspace：本地目录安装）：直接可用——点击弹目录选择框，
+  //    比较所选与当前版本后提示覆盖更新或已是最新；
+  //  - 其余不可更新来源（tarball 等）：灰置表达不可用。
   const upBtn = document.createElement("button");
   upBtn.className = "btn btn-primary btn-xs";
-  upBtn.dataset.update = "";
   upBtn.textContent = "更新";
-  if (p.canUpdate) {
-    upBtn.classList.add("hidden");
+  if (p.source === "file") {
+    upBtn.className = "btn btn-outline btn-xs";
+    upBtn.textContent = "更新…";
+    upBtn.dataset.localupdate = "";
   } else {
-    upBtn.classList.add("btn-muted"); // 与 btn-primary 相同版式，仅颜色表达不可用
+    upBtn.dataset.update = "";
+    if (p.canUpdate) {
+      upBtn.classList.add("hidden");
+    } else {
+      upBtn.classList.add("btn-muted"); // 与 btn-primary 相同版式，仅颜色表达不可用
+    }
   }
-  upBtn.disabled = !p.canUpdate;
+  upBtn.disabled = !(p.canUpdate || p.source === "file");
   actions.appendChild(upBtn);
+
+  // 「启用」：仅禁用（不兼容自愈）行出现——尝试加回启用清单并重启；
+  // 若仍与当前版本不兼容，后端自动重新禁用并重启服务（保证服务可启动）。
+  // 无依赖声明的「已自动禁用」行（ghostDisabled）不可直接启用，只提供删除。
+  if (p.disabled && !p.ghostDisabled) {
+    const enBtn = document.createElement("button");
+    enBtn.className = "btn btn-outline btn-xs";
+    enBtn.textContent = "启用";
+    enBtn.dataset.enable = "";
+    actions.appendChild(enBtn);
+  }
 
   // 「删除」：确认后物理移除该插件（其全部环境），失败自动回退；完成后 Go 端发 plugins:changed 刷新。
   // 用“安静危险”样式（透明底 + 描边），避免整块红底在行内过于突兀。
@@ -458,10 +579,16 @@ function renderPluginRow(p, idx) {
   actions.appendChild(delBtn);
 
   item.append(main, actions);
-  if (!p.canUpdate && p.reason) setNote(item, p.reason, "muted");
+  // 不可更新行的小号原因：本地来源已有「更新…」选目录入口，不再显示旧的“无远程来源”说明；
+  // 但「待重指定」的本地行（pendingLocal，原依赖路径不存在）需显示重新指定指引
+  if (!p.canUpdate && p.reason && (p.source !== "file" || p.pendingLocal)) setNote(item, p.reason, "muted");
   // 重渲染后恢复行内状态（检查结果 / 更新可用性），避免过滤/刷新丢失
   const st = state.plugState[p.name];
   if (st) applyPlugState(item, st);
+  // 禁用行默认原因行（无动态检查状态时显示）
+  if (p.disabled && !(st && st.note)) {
+    setNote(item, "已禁用（" + (p.disabledReason || "与当前版本不兼容") + "）", "err");
+  }
   return item;
 }
 
@@ -518,10 +645,16 @@ async function doPluginCheck(p, item, btn) {
 /** 单插件更新（确认后交给 Go 端执行，splash 进度，完成/失败弹窗）。 */
 async function doPluginUpdate(p, item, upBtn) {
   const ver = (state.plugState[p.name] || {}).upLatest || "";
+  let msg = "将把插件 " + p.name + " 更新到" + (ver ? " " + vtag(ver) : "最新版本") +
+    "。更新期间服务会短暂重启，失败会自动回退到更新前版本。确认开始更新吗？";
+  if (p.disabled) {
+    msg = "插件 " + p.name + " 当前为禁用状态（与当前版本不兼容）。\n\n将把它更新到" +
+      (ver ? " " + vtag(ver) : "最新版本") +
+      "。更新成功且兼容后将自动重新启用；若仍不兼容则继续保持禁用。确认开始更新吗？";
+  }
   const ok = await confirmDialog(
-    "更新插件？",
-    "将把插件 " + p.name + " 更新到" + (ver ? " " + vtag(ver) : "最新版本") +
-      "。更新期间服务会短暂重启，失败会自动回退到更新前版本。确认开始更新吗？",
+    p.disabled ? "更新并启用插件？" : "更新插件？",
+    msg,
     "开始更新"
   );
   if (!ok) return;
@@ -530,14 +663,62 @@ async function doPluginUpdate(p, item, upBtn) {
   bindings().StartPluginUpdate(p.name); // 完成后 Go 端发 plugins:changed 刷新列表
 }
 
+/** 手动启用被禁用的插件（尝试 → 失败自动重新禁用并重启，由 Go 弹窗提示结果）。 */
+async function doPluginEnable(p, item, enBtn) {
+  const ok = await confirmDialog(
+    "启用插件？",
+    "将把插件 " + p.name + " 加回启用清单并重启服务。\n\n若它仍与当前版本不兼容，将自动重新禁用并重启服务（服务保持可用）。确认尝试启用吗？",
+    "尝试启用"
+  );
+  if (!ok) return;
+  item.querySelectorAll("button").forEach((b) => { b.disabled = true; });
+  setNote(item, "正在尝试启用插件…", "muted");
+  bindings().EnablePlugin(p.id); // 完成/失败由 Go 弹窗提示，随后 plugins:changed 刷新列表
+}
+
+/** 本地插件更新：弹目录选择 → Go 端比较所选/当前版本 → 有差异确认后覆盖更新，相同提示已是最新。 */
+async function doLocalPluginUpdate(p, item, upBtn) {
+  item.querySelectorAll("button").forEach((b) => { b.disabled = true; });
+  try {
+    const r = await bindings().PickLocalPluginPath(p.id);
+    if (!r) return; // 对话框取消
+    if (r.error) { setNote(item, "无法更新：" + r.error, "err"); return; }
+    const curTxt = vtag(r.current) || "未安装";
+    const verTxt = vtag(r.version) || "未知版本";
+    if (r.relation === "same") {
+      setNote(item, "已经是最新（所选目录版本与当前一致：" + verTxt + "）", "muted");
+      return;
+    }
+    const isNewer = r.relation === "newer";
+    const ok = await confirmDialog(
+      isNewer ? "覆盖更新本地插件？" : "将本地插件改为所选版本？",
+      "所选目录中插件 " + p.name + " 的版本为 " + verTxt + "（当前 " + curTxt + "）。\n\n" +
+        "更新会改写该插件的安装来源为所选目录，期间服务短暂重启，失败会自动回退到更新前版本。确认继续吗？",
+      isNewer ? "覆盖更新" : "覆盖为所选版本"
+    );
+    if (!ok) return;
+    setNote(item, "正在更新本地插件…", "muted");
+    bindings().ApplyLocalPluginUpdate(p.id, r.path); // 完成/失败由 Go 弹窗提示，成功后 plugins:changed 刷新
+  } catch (e) {
+    setNote(item, "更新失败：" + (e && e.message ? e.message : e), "err");
+  } finally {
+    setTimeout(() => { item.querySelectorAll("button").forEach((b) => { b.disabled = false; }); }, 1500);
+  }
+}
+
 /** 单插件删除（确认后交给 Go 端执行，splash 进度，失败自动回退）。 */
 async function doPluginRemove(p, item, delBtn) {
+  let msg = "将物理删除插件 " + p.name +
+    (p.profile ? "（环境 " + p.profile + "）" : "") +
+    " 及其依赖，不可恢复。删除期间服务会短暂重启，失败会自动回退到删除前状态。确定删除吗？";
+  if (p.pendingLocal) {
+    msg = "将移除本地插件 " + p.name + " 的「待重指定」记录" +
+      "（原依赖路径在本机不存在，插件未安装，删除不会影响服务）。确定移除吗？";
+  }
   const ok = await confirmDialog(
-    "删除插件？",
-    "将物理删除插件 " + p.name +
-      (p.profile ? "（环境 " + p.profile + "）" : "") +
-      " 及其依赖，不可恢复。删除期间服务会短暂重启，失败会自动回退到删除前状态。确定删除吗？",
-    "删除"
+    p.pendingLocal ? "移除待重指定插件？" : "删除插件？",
+    msg,
+    p.pendingLocal ? "移除" : "删除"
   );
   if (!ok) return;
   item.querySelectorAll("button").forEach((b) => { b.disabled = true; });
@@ -756,65 +937,202 @@ function wireExport() {
   $("exp-modal-close").addEventListener("click", hideExportModal);
 }
 
-// ==================== 导入页 ====================
+// ==================== 导入页（逐项恢复：每行独立进度/状态/取消） ====================
+
+/** 解析汇总提示（#imp-hint 仅用于压缩包解析提示；行内状态走各行的 data-ptext）。 */
+function setImpHint(text, isErr) {
+  $("imp-hint").textContent = text;
+  $("imp-hint").classList.toggle("err", !!isErr);
+}
+
+/** 取某恢复项的运行态（不存在则初始化）。 */
+function impSt(kind) {
+  if (!state.imp[kind]) state.imp[kind] = { busy: false, text: "", pct: 0, pending: false, watch: 0 };
+  return state.imp[kind];
+}
+
+/** 行内状态文字：tone = "" | ok | err | muted */
+function impRowText(kind, text, tone) {
+  const st = impSt(kind);
+  st.text = text || "";
+  const el = document.querySelector('[data-ptext="' + kind + '"]');
+  if (!el) return;
+  el.textContent = st.text;
+  el.className = "imp-ptext" + (tone === "ok" || tone === "err" ? " " + tone : "");
+}
+
+/** 行内进度：busy=true 显示进度条区域并更新填充，false 收起。 */
+function impRowBusy(kind, busy, text, pct) {
+  const st = impSt(kind);
+  st.busy = !!busy;
+  const row = document.querySelector('[data-ikind="' + kind + '"]');
+  if (!row) return;
+  const pr = row.querySelector("[data-prow]");
+  const fill = row.querySelector("[data-pfill]");
+  if (pr) pr.classList.toggle("hidden", !busy);
+  if (fill && !busy) fill.style.width = "0%";
+  if (busy) {
+    if (typeof pct === "number") fill.style.width = Math.round(pct * 100) + "%";
+    if (text) impRowText(kind, text, "");
+  }
+  syncImpRow(kind);
+}
+
+/** 按当前状态同步该行的「恢复/取消/已完成」按钮可见性与禁用态。 */
+function syncImpRow(kind) {
+  const row = document.querySelector('[data-ikind="' + kind + '"]');
+  if (!row) return;
+  const done = !!state.impDone[kind];
+  const st = impSt(kind);
+  const restoreBtn = row.querySelector("[data-restore]");
+  const cancelBtn = row.querySelector("[data-cancel]");
+  const badge = row.querySelector("[data-okbadge]");
+  if (restoreBtn) {
+    restoreBtn.classList.toggle("hidden", done);
+    restoreBtn.disabled = !!state.impHealAll || !!st.busy;
+  }
+  if (badge) badge.classList.toggle("hidden", !done);
+  if (cancelBtn) {
+    if (st.busy && !done) {
+      cancelBtn.classList.remove("hidden");
+      cancelBtn.disabled = !!state.impHealAll;
+      cancelBtn.textContent = state.impHealAll ? "自愈中不可取消" : "取消恢复";
+    } else {
+      cancelBtn.classList.add("hidden");
+    }
+  }
+  row.classList.toggle("imp-item-done", done);
+}
+
+/** 共享自愈开始/结束：全局禁用各「恢复」按钮（自愈不可打断）。 */
+function syncImpHealUI(on) {
+  state.impHealAll = !!on;
+  document.querySelectorAll("[data-ikind]").forEach((row) => {
+    const k = row.getAttribute("data-ikind");
+    syncImpRow(k);
+  });
+  if (on) {
+    impRowText("plugins", "正在启动服务并自愈…（自愈过程不可取消，请稍候）", "");
+  }
+}
 
 function renderImportRows() {
   const wrap = $("imp-rows");
   wrap.innerHTML = "";
   if (!state.impItems.length) {
-    $("imp-hint").textContent = "选择 dsh-systray 导出压缩包后可恢复会话、插件或文件目录。";
+    setImpHint("选择 dsh-systray 导出压缩包后可恢复会话、插件或文件目录。", false);
     return;
   }
-  $("imp-hint").textContent = "解析成功：共 " + state.impItems.length + " 个可恢复项，点击右侧「恢复」逐项恢复。";
+  setImpHint("解析成功：共 " + state.impItems.length + " 个可恢复项，可同时点击多个「恢复」逐项恢复。", false);
   for (const it of state.impItems) {
-    const done = !!state.impDone[it.kind];
     const div = document.createElement("div");
-    div.className = "imp-item" + (done ? " imp-item-done" : "");
+    div.className = "imp-item";
+    div.dataset.ikind = it.kind;
     div.innerHTML =
-      "<div><div class=\"exp-label\">" + esc(it.label) + "</div>" +
+      '<div class="imp-head">' +
+      '<div class="imp-intro-main"><div class="exp-label">' + esc(it.label) + "</div>" +
       (it.size ? '<div class="exp-sub">' + fmtSize(it.size) + "</div>" : "") + "</div>" +
-      (done ? '<span class="imp-done" title="本项已恢复完成">✓ 已完成</span>' : "") +
-      '<button class="btn btn-primary" data-restore="' + escAttr(it.kind) + '">恢复</button>';
-    div.querySelector("[data-restore]").addEventListener("click", async () => {
-      const btn = div.querySelector("button");
-      btn.disabled = true;
-      try {
-        // 1) 准备 + 冲突检测（files 类目此时由后端弹解压位置选择）
-        const preview = await bindings().PreviewRestore(it.kind);
-        if (!preview) return;
-        if (preview.error) { $("imp-hint").textContent = "无法恢复：" + preview.error; return; }
-        if (preview.canceled) return; // 用户取消了解压位置选择
-        // 2) 有冲突 → 弹窗询问：取消=不执行任何恢复；跳过=保留现有只补缺失；覆盖=备份并替换
-        let overwrite = true;
-        if (preview.conflicts > 0) {
-          const detail = (preview.tops || []).slice(0, 3).join("、");
-          const choice = await confirmDialog3(
-            "检测到数据冲突",
-            "「" + it.label + "」与现有内容存在 " + preview.conflicts + " 项冲突" +
-              (detail ? "（" + detail + (preview.conflicts > 3 ? " 等" : "") + "）" : "") +
-              "。\n\n「跳过」将保留现有文件、只补缺失项；「覆盖并恢复」会备份并替换现有内容。",
-            "覆盖并恢复",
-            "跳过"
-          );
-          if (choice === "cancel") return; // 取消：不做任何恢复动作
-          overwrite = choice === "ok";
-          if (!overwrite) {
-            $("imp-hint").textContent = "已选择跳过 " + preview.conflicts + " 项冲突，现有内容将保留。";
-          }
-        }
-        // 3) 执行恢复
-        $("imp-progress").classList.remove("hidden");
-        $("imp-text").textContent = "正在恢复…";
-        $("imp-fill").style.width = "0%";
-        await bindings().ApplyRestore(it.kind, overwrite);
-      } catch (e) {
-        $("imp-hint").textContent = "恢复失败：" + (e && e.message ? e.message : e);
-      } finally {
-        setTimeout(() => { btn.disabled = false; }, 1200);
-      }
-    });
+      '<div class="imp-actions">' +
+      '<span data-okbadge class="imp-done hidden">✓ 已完成</span>' +
+      '<button class="btn btn-primary btn-xs" data-restore="' + escAttr(it.kind) + '">恢复</button>' +
+      '<button class="btn btn-outline btn-xs hidden" data-cancel="' + escAttr(it.kind) + '">取消恢复</button>' +
+      "</div></div>" +
+      '<div class="imp-progress-row hidden" data-prow>' +
+      '<div class="imp-track"><div class="imp-fill" data-pfill></div></div>' +
+      '<div class="imp-ptext muted" data-ptext="' + escAttr(it.kind) + '"></div>' +
+      "</div>";
+    div.querySelector("[data-restore]").addEventListener("click", () => impRestore(it));
+    div.querySelector("[data-cancel]").addEventListener("click", () => impCancel(it.kind));
     wrap.appendChild(div);
+    // 恢复完成/仍忙碌的行重渲染后恢复状态
+    if (state.impDone[it.kind]) syncImpRow(it.kind);
   }
+}
+
+/** 单行「恢复」：预览（含冲突弹窗）→ ApplyRestore（逐项状态由 import:* 事件驱动）。 */
+async function impRestore(it) {
+  const kind = it.kind;
+  if (state.impHealAll) return; // 自愈中不可开始新恢复
+  const st = impSt(kind);
+  if (st.busy) return;
+  try {
+    impRowBusy(kind, true, "正在准备恢复…", 0);
+    // 1) 准备 + 冲突检测（files 类目此时由后端弹解压位置选择）
+    const preview = await bindings().PreviewRestore(kind);
+    if (!preview || preview.canceled) { impRowBusy(kind, false, "", 0); return; } // 用户取消选择
+    if (preview.error) { impRowBusy(kind, false, "无法恢复：" + preview.error, 0); impRowText(kind, "无法恢复：" + preview.error, "err"); return; }
+    // 2) 冲突处理：取消=不执行；跳过=保留现有只补缺失；覆盖=备份并替换
+    let overwrite = true;
+    if (preview.conflicts > 0) {
+      const detail = (preview.tops || []).slice(0, 3).join("、");
+      const choice = await confirmDialog3(
+        "检测到数据冲突",
+        "「" + it.label + "」与现有内容存在 " + preview.conflicts + " 项冲突" +
+          (detail ? "（" + detail + (preview.conflicts > 3 ? " 等" : "") + "）" : "") +
+          "。\n\n「跳过」将保留现有文件、只补缺失项；「覆盖并恢复」会备份并替换现有内容。",
+        "覆盖并恢复",
+        "跳过"
+      );
+      if (choice === "cancel") { impRowBusy(kind, false, "", 0); return; }
+      overwrite = choice === "ok";
+      if (!overwrite) {
+        impRowText(kind, "已选择跳过 " + preview.conflicts + " 项冲突，现有内容将保留。", "muted");
+      }
+    }
+    // 3) 执行恢复：结果由 import:done 统一收尾
+    impRowBusy(kind, true, "正在准备恢复…", 0);
+    armImpWatch(kind, 300000); // 兜底
+    await bindings().ApplyRestore(kind, overwrite);
+  } catch (e) {
+    impRowBusy(kind, false, "", 0);
+    impRowText(kind, "恢复失败：" + (e && e.message ? e.message : e), "err");
+  }
+}
+
+/** 单行「取消恢复」：Go 端受理后该行立即解锁（后端回退在后台），结果由 import:done 收尾。 */
+async function impCancel(kind) {
+  if (state.impHealAll) return; // 自愈阶段不可取消
+  let r = "";
+  try {
+    r = await bindings().CancelRestore(kind);
+  } catch (e) { /* 忽略 */ }
+  if (state.impHealAll || r === "healing") {
+    syncImpHealUI(true);
+    impRowText(kind, "服务正在自愈，不可取消…（请等待确定结果）", "muted");
+    return;
+  }
+  if (r !== "ok") {
+    impRowBusy(kind, false, "", 0);
+    impRowText(kind, "当前没有进行中的恢复任务", "muted");
+    return;
+  }
+  // 已受理：立即解锁该行（恢复可用、进度/取消按钮收起），后端回退后台进行
+  impRowBusy(kind, false, "", 0);
+  const st = impSt(kind);
+  st.pending = true;
+  impRowText(kind, "已请求取消，正在回退到恢复前状态…（可稍后重新恢复）", "muted");
+  armImpWatch(kind, 90000);
+}
+
+/** 每行兜底：长时间未收到 import:done 时复位该行。 */
+function armImpWatch(kind, ms) {
+  const st = impSt(kind);
+  clearTimeout(st.watch);
+  st.watch = setTimeout(() => {
+    if (st.pending) {
+      st.pending = false;
+      impRowText(kind, "尚未收到取消回退的完成事件；可重新恢复或到日志页查看。", "muted");
+      return;
+    }
+    if (!st.busy) return;
+    if (state.impHealAll) {
+      impRowText(kind, "服务自愈仍在进行（不可中断），请继续等待…", "muted");
+      armImpWatch(kind, 60000);
+      return;
+    }
+    impRowBusy(kind, false, "", 0);
+    impRowText(kind, "恢复未在预期时间内收到服务端结果，界面已复位；若服务端仍在处理请稍候再试（日志页可查）。", "muted");
+  }, ms);
 }
 
 function fmtSize(n) {
@@ -825,15 +1143,19 @@ function fmtSize(n) {
 
 function wireImport() {
   $("btn-import-pick").addEventListener("click", async () => {
+    setImpHint("正在解析压缩包…", false);
     try {
       const res = await bindings().ImportPick();
-      if (!res) return;
+      if (!res) { renderImportRows(); return; }
       state.impItems = res.items || [];
+      state.impDone = {};
+      state.imp = {};
+      state.impHealAll = false;
       $("imp-path").textContent = res.path || "";
       $("imp-path").classList.remove("hidden");
       renderImportRows();
     } catch (e) {
-      $("imp-hint").textContent = "解析失败：" + (e && e.message ? e.message : e);
+      setImpHint("解析失败：" + (e && e.message ? e.message : e), false);
       $("imp-rows").innerHTML = "";
       state.impItems = [];
     }
@@ -887,22 +1209,46 @@ function wireEvents() {
   });
 
   EventsOn("import:progress", (d) => {
-    if (!d) return;
-    $("imp-text").textContent = d.text || "";
-    $("imp-fill").style.width = Math.round((d.pct || 0) * 100) + "%";
+    if (!d || !d.kind) return;
+    if (d.healing) {
+      // 进入共享自愈：所有「恢复」按钮暂时禁用（不可打断），行内提示同步
+      syncImpHealUI(true);
+      impRowText(d.kind, d.text || "正在自愈…", "muted");
+    } else {
+      const st = impSt(d.kind);
+      st.pct = d.pct || 0;
+      st.busy = true;
+      const row = document.querySelector('[data-ikind="' + d.kind + '"]');
+      const fill = row ? row.querySelector("[data-pfill]") : null;
+      if (row) row.querySelector("[data-prow]").classList.remove("hidden");
+      if (fill) fill.style.width = Math.round((d.pct || 0) * 100) + "%";
+      if (d.hint && d.text) impRowText(d.kind, d.text, "");
+      else if (d.text && !state.impDone[d.kind]) impRowText(d.kind, d.text, "muted");
+      syncImpRow(d.kind);
+    }
   });
 
   EventsOn("import:done", (d) => {
-    if (!d) return;
+    if (!d || !d.kind) return;
+    const st = impSt(d.kind);
+    clearTimeout(st.watch);
+    st.busy = false;
+    st.pending = false;
+    syncImpHealUI(false); // 自愈结束：恢复按钮重新可用（若仍有多项在跑由各自 busy 状态保持禁用）
+    let msg;
+    let tone = "muted";
     if (d.error) {
-      $("imp-hint").textContent = "恢复失败：" + d.error;
+      tone = "err";
+      msg = "恢复失败：" + d.error + (d.note ? "。" + d.note : "");
+    } else if (d.canceled) {
+      msg = "已取消恢复" + (d.note ? "。" + d.note : "，已回退到恢复前状态");
     } else {
-      $("imp-hint").textContent = "恢复完成 ✓";
-      $("imp-fill").style.width = "100%";
-      if (d.kind) state.impDone[d.kind] = true; // 完成标记：对应项显示 ✓ 已完成
+      tone = "ok";
+      msg = "恢复完成 ✓" + (d.note ? "。" + d.note : "");
+      state.impDone[d.kind] = true; // 完成标记：该行显示 ✓ 已完成
     }
-    setTimeout(() => { $("imp-progress").classList.add("hidden"); }, 6000);
-    renderImportRows();
+    impRowBusy(d.kind, false, "", 0);
+    impRowText(d.kind, msg, tone);
   });
 
   EventsOn("service:restart", (d) => {

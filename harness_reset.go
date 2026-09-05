@@ -6,14 +6,15 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 )
 
 // ==================== 重置 DeepSeek Harness ====================
-// 常规页「重置 DeepSeek Harness」：物理删除用户通过 dsh add 安装的插件
-// （排除插件导致的服务启动失败），并把 harness 回退到官方最后发布的稳定版本。
-// 弹窗警告后执行（前端 confirmDialog），全程 splash 进度，失败自动回滚版本快照。
+// 常规页「重置 DeepSeek Harness」：停服后全新安装到用户从「重置目标版本」下拉选择的、
+// 早于当前运行版本的官方版本（弹窗勾选清除会话/插件）；无更早版本等边界降级放行，
+// 按官方默认目标执行。弹窗警告后执行，全程 splash 进度，失败自动回滚版本快照。
 
 // removeInstalledPlugins 物理删除用户安装的插件（profiles 下各 profile）：
 //  1. package.json：dependencies 与 dsh.profile.bundles 移除非 @deepseek-ai/* 的条目
@@ -87,6 +88,18 @@ func cleanProfilePlugins(dir string) error {
 							}
 						}
 						prof["bundles"] = keep
+					}
+					// 同步清除用户插件的禁用记录（依赖已删除，记录无意义）
+					if disabled, ok := prof["disabledPlugins"].(map[string]interface{}); ok {
+						for k := range disabled {
+							if !isOfficialHarnessPkg(k) {
+								delete(disabled, k)
+								changed = true
+							}
+						}
+						if len(disabled) == 0 {
+							delete(prof, "disabledPlugins")
+						}
 					}
 				}
 			}
@@ -169,140 +182,92 @@ func harnessGitTagForVersion(version string) (string, error) {
 }
 
 // runHarnessReset 重置 DeepSeek Harness：停服务 →（可选）清会话/清插件 →
-// 回退「上一个正常运行的版本」（LKG，若存在）或官方最新可用版本 → 重启校验。
-// clearSessions / clearPlugins 由前端勾选弹窗传入：harness 版本回退始终执行（必选项）。
+// 全新安装 reqTarget（前端从「重置目标版本」下拉选择的、早于当前运行版本的官方版本）→
+// 重启校验。reqTarget 为空为边界降级放行（无可更早版本 / 当前版本识别失败 / 网络查询失败）：
+// 沿用 fetchNpmResetTarget 的官方默认目标（最新稳定版，仅预发布时最新发布）。
+// clearSessions / clearPlugins 由前端勾选弹窗传入（版本回退始终执行，必选项）。
 // 失败自动回退到重置前的可运行快照并弹窗报告。异步执行（按钮触发后 go 调用）。
-func runHarnessReset(clearSessions, clearPlugins bool) {
+func runHarnessReset(clearSessions, clearPlugins bool, reqTarget string) {
 	splash := startSplash("正在重置 DeepSeek Harness…")
 	defer splash.Close()
 
-	// 0) 先停止服务（否则运行中的 node 占用文件，删除/快照会失败）
+	// 0) 先停止服务（否则运行中的 node 占用文件，清空/重装会失败）
 	splash.Update("正在停止后台服务…", 0.1)
 	killServer()
 	time.Sleep(1 * time.Second)
 
-	// 0.5) 安装形态判定必须发生在快照之前（快照会把 node_modules 改名，npm 形态判定若在
-	//     快照后进行会误判为源码/未知形态——与更新流程同样的坑）；且 npm 预构建形态的
-	//     回退目标必须来自 npm：安装走 npm，而 GitHub Release tag 常领先于 npm 发布，
-	//     直接采用 GitHub tag（如 0.1.3-alpha.1）会 pnpm add "No matching version" 使重置失败。
-	npmResetMode := isNpmHarnessReady()
-	sourceResetMode := !npmResetMode && isSourceHarnessDir()
+	// 0.5) 形态判定：npm 预构建 / 缺失 → npm 全新安装；源码 checkout → 暂不支持自动清空重装。
+	if isSourceHarnessDir() {
+		splash.Close()
+		showMessageBox("重置失败：当前为源码 checkout 形态，暂不支持自动清空目录重装。\n"+
+			"请先在 Web UI 切换到 npm 预构建形态后再重置，或手动处理源码目录。\n\n日志："+unifiedLogPath(), appName)
+		return
+	}
 
-	// 1) 回退目标：优先「上一个正常运行的版本」（LKG 本地快照，秒级恢复、无需网络）；
-	//    无 LKG 时回退官方可用版本（npm 形态按 npm 已发布版本、源码形态按 GitHub Release；
-	//    均先稳定版，只有预发布时回退最新发布并 targetNote 说明——目标是"装得上的可用版本"）。
-	//    依据：更新/冷启动异常后，官方“最新版”往往就是出问题的那个版本——重置应回到更新前
-	//    经校验的 LKG 状态，而不是再装一次出问题的版本。
-	lkgOK := hasLkgInDir(harnessDir)
-	cur := installedHarnessVersion()
-	targetLabel := ""
-	latest := ""
+	// 1) 目标版本：用户显式选择的版本（执行时二次校验其真实存在于 npm——弹窗打开与
+	//    确认之间列表可能过期）；reqTarget 为空 = 边界降级放行，按官方默认目标解析。
+	splash.Update("正在查询官方可用版本…", 0.2)
+	target := ""
 	targetNote := ""
-	if lkgOK {
-		targetLabel = "上一个正常运行的版本"
-		if prev, ok := readLkgMarker(); ok && prev.HarnessVersion != "" {
-			latest = prev.HarnessVersion
-			targetNote = "（" + withV(latest) + "）"
+	if reqTarget != "" {
+		versions, err := npmHarnessPublishedVersions()
+		if err != nil {
+			splash.Close()
+			showMessageBox("重置失败：无法查询官方可用版本。\n"+err.Error()+"\n\n请检查网络后重试。", appName)
+			return
 		}
+		if !containsVersion(versions, reqTarget) {
+			splash.Close()
+			showMessageBox(fmt.Sprintf("重置失败：所选版本 %s 在 npm 上已不存在，请关闭弹窗后重试。", withV(reqTarget)), appName)
+			return
+		}
+		target = reqTarget
 	} else {
-		splash.Update("正在查询官方可用版本…", 0.2)
-		var err error
-		if npmResetMode {
-			latest, targetNote, err = fetchNpmResetTarget()
-			if targetNote != "" {
-				targetLabel = "npm 最新发布（预发布）"
-			}
-		} else {
-			latest, targetNote, err = fetchHarnessResetTarget()
-			if targetNote != "" {
-				targetLabel = "仓库最新发布（预发布）"
-			}
-		}
+		latest, note, err := fetchNpmResetTarget()
 		if err != nil {
 			splash.Close()
 			showMessageBox("重置失败：无法获取官方可用版本。\n"+err.Error()+"\n\n请检查网络后重试。", appName)
 			return
 		}
-		if targetLabel == "" {
-			targetLabel = "官方最新稳定版"
-		}
+		target, targetNote = latest, note
 	}
-	log.Printf("reset: target %s %s (current %s, lkg=%v, npmShape=%v) clearSessions=%v clearPlugins=%v",
-		targetLabel, orDash(withV(latest)), orDash(cur), lkgOK, npmResetMode, clearSessions, clearPlugins)
+	log.Printf("reset: clean reinstall to %s (shape=npm) clearSessions=%v clearPlugins=%v explicitTarget=%v",
+		orDash(target), clearSessions, clearPlugins, reqTarget != "")
 
-	// 2) 版本回退（快照当前可运行版本，失败回滚）——重置的必选核心，
-	//    且必须在可选清理之前：先清会话/插件再回退失败会把不可逆破坏留在磁盘；
-	//    版本先回退（失败时快照/LKG 还能还原现场），成功后才做清理。
-	didRestoreLkg := false
-	var rerr error
-	switch {
-	case lkgOK:
-		// LKG 回退：本地直接恢复（含 node_modules 移回），无需网络/重装；
-		// 与启动回退（tryBootRollback）一致同时恢复各 profile 的 LKG，
-		// 避免 harness 根与插件版本错配导致重启校验失败。
-		splash.Update("正在回退到上一个正常运行的版本…", 0.5)
-		didRestoreLkg = restoreLkgInDir(harnessDir)
-		for _, pf := range enumeratePluginProfiles() {
-			if hasLkgInDir(pf.dir) && restoreLkgInDir(pf.dir) {
-				didRestoreLkg = true
-			}
-		}
-		if !didRestoreLkg {
+	// 2) 清空原目录 + 全新安装官方最新版：先把旧目录整体改名为备份（快），在新目录全新安装；
+	//    成功删除备份，失败还原备份（保证不留下半成品）。
+	bakDir := harnessDir + ".reset-bak"
+	_ = os.RemoveAll(bakDir)
+	if _, serr := os.Stat(harnessDir); serr == nil {
+		splash.Update("正在清空原 harness 目录…", 0.35)
+		if rerr := os.Rename(harnessDir, bakDir); rerr != nil {
 			splash.Close()
-			showMessageBox("重置失败：LKG 备份不可用，无法回退到上一个正常运行的版本。\n\n请查看日志："+
-				unifiedLogPath(), appName)
+			showMessageBox("重置失败：无法备份原目录（"+rerr.Error()+"）。\n\n请检查文件占用后重试。", appName)
 			return
 		}
-	case cur == latest && npmResetMode:
-		// 已是最新可回退目标：无需重装，仅重启生效
-		log.Printf("reset: harness already at %s %s", targetLabel, withV(latest))
-	default:
-		hadNM := snapshotHarness()
-		switch {
-		case npmResetMode:
-			// npm 预构建形态：整家族 overrides 钉到回退目标版本（reconcile 依赖树避免新旧混装）。
-			// pnpm ≥ v10 不再读取 package.json 的 pnpm.overrides——setHarnessOverrides 同步写
-			// pnpm-workspace.yaml，保证钉版在应用自带 pnpm（v11）下仍然生效。
-			splash.Update(fmt.Sprintf("正在安装%s %s…", targetLabel, withV(latest)), 0.5)
-			if rerr = setHarnessOverrides(harnessDir, latest); rerr == nil {
-				rerr = runHarnessCmd(pnpmCmd(), "add", "@deepseek-ai/dsh@"+latest, "--save-exact")
-			}
-			if rerr == nil {
-				splash.Update("正在安装依赖…", 0.6)
-				rerr = runHarnessCmd(pnpmCmd(), "install")
-			}
-		case sourceResetMode:
-			// 源码形态：fetch tags 后切到目标 tag
-			if !isGitHarnessDir() {
-				rerr = fmt.Errorf("源码目录不是 git 仓库，无法自动回退版本，请手动处理")
-				break
-			}
-			splash.Update("正在拉取官方版本代码…", 0.5)
-			if rerr = runHarnessCmd("git", "fetch", "--tags", "--force"); rerr == nil {
-				var tag string
-				if tag, rerr = harnessGitTagForVersion(latest); rerr == nil {
-					splash.Update(fmt.Sprintf("正在切换代码到 %s…", tag), 0.55)
-					rerr = runHarnessCmd("git", "reset", "--hard", tag)
-				}
-			}
-			if rerr == nil {
-				splash.Update("正在安装 harness 依赖…", 0.7)
-				rerr = runHarnessCmd(pnpmCmd(), "install")
-			}
-			if rerr == nil {
-				splash.Update("正在构建 harness 前端…", 0.8)
-				rerr = runHarnessCmd(pnpmCmd(), "run", "build")
-			}
-		default:
-			rerr = fmt.Errorf("无法识别 harness 安装形态，跳过版本回退")
-		}
-		if rerr != nil {
-			// 回滚到快照版本并尝试重启
-			rollbackUpdate(splash, cur, hadNM, "重置回退失败")
-			return
-		}
-		cleanupHarnessSnapshot()
 	}
+	if err := os.MkdirAll(harnessDir, 0o755); err != nil {
+		_ = os.Rename(bakDir, harnessDir) // 尽力还原
+		splash.Close()
+		showMessageBox("重置失败：无法创建新目录（"+err.Error()+"）。", appName)
+		return
+	}
+	restoreBackup := func() {
+		_ = os.RemoveAll(harnessDir)
+		if os.Rename(bakDir, harnessDir) != nil {
+			log.Printf("reset: restore backup dir failed, leftover at %s", bakDir)
+		}
+	}
+	splash.Update(fmt.Sprintf("正在全新安装 %s…（原目录文件已清空）", withV(target)), 0.55)
+	rerr := ensureNpmHarnessVersion(target)
+	if rerr != nil {
+		restoreBackup()
+		splash.Close()
+		showMessageBox("重置失败：全新安装未能完成，已还原原目录。\n"+rerr.Error()+"\n\n日志："+unifiedLogPath(), appName)
+		return
+	}
+	_ = os.RemoveAll(bakDir) // 全新安装成功：旧目录备份不再需要
+	log.Printf("reset: clean reinstall done at %s", harnessDir)
 
 	// 3) 可选清理（版本已回退成功；清理失败不阻断重启，仅记录并提示）
 	cleanupNotes := ""
@@ -338,18 +303,7 @@ func runHarnessReset(clearSessions, clearPlugins bool) {
 	if clearPlugins {
 		detail += "· 已安装插件已清除\n"
 	}
-	switch {
-	case didRestoreLkg:
-		detail += "· 版本：已回退到" + targetLabel
-		if latest != "" {
-			detail += " " + withV(latest)
-		}
-		detail += "\n"
-	case cur == latest:
-		detail += "· 版本：" + targetLabel + " " + withV(latest) + "（未变更）\n"
-	default:
-		detail += "· 已回退到" + targetLabel + " " + withV(latest) + "\n"
-	}
+	detail += "· 版本：已全新安装 " + withV(target) + "（原 harness 目录文件已全部清空）\n"
 	detail += "服务已重启。" + targetNote + cleanupNotes
 	showMessageBox(detail, appName)
 }
@@ -444,4 +398,63 @@ func removeSessions() error {
 	}
 	log.Printf("reset: removing sessions root %s", dir)
 	return os.RemoveAll(dir)
+}
+
+// ==================== 重置目标版本选择（弹窗下拉） ====================
+
+// ResetVersionOption 重置目标下拉的单个候选版本。
+type ResetVersionOption struct {
+	Version    string `json:"version"`
+	Prerelease bool   `json:"prerelease"` // 预发布通道版本（-alpha/-beta/-rc 等），界面以警示色标注
+}
+
+// ResetVersionInfo GetResetVersions 返回的重置目标信息：当前版本、可选目标、默认选中与说明。
+type ResetVersionInfo struct {
+	Form    string               `json:"form"`    // "npm" | "source"（源码形态不支持自动重置）
+	Current string               `json:"current"` // 当前已装版本（识别失败为空）
+	Options []ResetVersionOption `json:"options"` // 仅早于当前版本的候选（按新→旧；当前未知=识别失败时列出全部）
+	Default string               `json:"default"` // 默认选中版本；空=无更早候选（走官方默认目标）
+	Note    string               `json:"note"`    // 边界/降级说明或错误原因（面向用户）
+}
+
+// buildResetVersionOptions 由 npm 已发布版本与当前已装版本构建重置目标候选：
+//   - 只保留早于 current 的版本（compareVersions < 0；相等与更新都不提供——仅可重置到更早版本）；
+//     current 为空（当前版本识别失败）时为降级放行列出全部版本；
+//   - 去重并按新→旧排序；
+//   - Default = 最靠前的稳定版（即最新稳定版）；全部为预发布时取最新的预发布。
+func buildResetVersionOptions(versions []string, current string) (opts []ResetVersionOption, def string) {
+	seen := map[string]bool{}
+	for _, v := range versions {
+		v = strings.TrimPrefix(strings.TrimPrefix(v, "dsh-"), "v")
+		if v == "" || seen[v] {
+			continue
+		}
+		if current != "" && compareVersions(v, current) >= 0 {
+			continue
+		}
+		seen[v] = true
+		opts = append(opts, ResetVersionOption{Version: v, Prerelease: !isStableVersion(v)})
+	}
+	sort.Slice(opts, func(i, j int) bool { return compareVersions(opts[i].Version, opts[j].Version) > 0 })
+	for _, o := range opts {
+		if !o.Prerelease {
+			def = o.Version
+			break
+		}
+	}
+	if def == "" && len(opts) > 0 {
+		def = opts[0].Version // 仅预发布可回退时：最新预发布
+	}
+	return opts, def
+}
+
+// containsVersion 判断版本列表是否包含该版本（忽略前导 v / dsh- 前缀）。
+func containsVersion(list []string, v string) bool {
+	v = strings.TrimPrefix(strings.TrimPrefix(v, "dsh-"), "v")
+	for _, x := range list {
+		if x == v {
+			return true
+		}
+	}
+	return false
 }

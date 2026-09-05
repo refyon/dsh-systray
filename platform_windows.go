@@ -577,6 +577,19 @@ func findListenerPID(port int) (int, error) {
 	return 0, fmt.Errorf("no listener on port %d", port)
 }
 
+// killProcessTreePID 强制终止指定 PID 的整个进程树（taskkill /T /F）。
+// 取消导入对齐时 pnpm 是 cmd 包装 + node 子进程——只杀直接子进程会遗留 node 并让
+// 继承的管道句柄卡死 cmd.Wait()，必须整树终止。
+func killProcessTreePID(pid int) {
+	if pid <= 0 {
+		return
+	}
+	log.Printf("killing process tree pid=%d", pid)
+	cmd := exec.Command("taskkill", "/PID", strconv.Itoa(pid), "/T", "/F")
+	hideCmdWindow(cmd)
+	_ = cmd.Run()
+}
+
 func openBrowser(url string) {
 	cmd := exec.Command("rundll32", "url.dll,FileProtocolHandler", url)
 	cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}

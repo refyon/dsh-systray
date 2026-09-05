@@ -2,9 +2,11 @@ package main
 
 import (
 	"fmt"
+	"io"
 	"log"
 	"os"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"strings"
 	"sync"
@@ -490,6 +492,100 @@ func (a *App) StartPluginUpdate(id string) {
 	go runPluginUpdate(id)
 }
 
+// PickLocalPluginPath 本地插件「选择目录更新」第一步：目录选择框 → 校验为同一插件 →
+// 返回所选目录版本与相对当前版本的关系（前端据此提示「覆盖更新」或「已是最新」）。
+// 目录选择被取消返回 Canceled=true；本地来源以外的插件不提供该入口。
+func (a *App) PickLocalPluginPath(id string) PluginLocalPick {
+	if shotMode {
+		return PluginLocalPick{Canceled: true}
+	}
+	row, ok := findPluginRowByID(id)
+	if !ok {
+		return PluginLocalPick{Error: "未找到该插件，可能已被移除。"}
+	}
+	p, err := wruntime.OpenDirectoryDialog(appCtx, wruntime.OpenDialogOptions{
+		Title: "选择插件 " + row.Name + " 的新版本目录",
+	})
+	if err != nil || p == "" {
+		return PluginLocalPick{Canceled: true}
+	}
+	name, ver, err := packageMeta(p)
+	if err != nil {
+		return PluginLocalPick{Path: p, Error: err.Error()}
+	}
+	if name != row.Name {
+		return PluginLocalPick{Path: p, Error: fmt.Sprintf(
+			"所选目录不是插件 %s（目录 package.json 的 name=%s）", row.Name, name)}
+	}
+	logUI("选择本地插件目录", fmt.Sprintf("%s（当前 v%s → 所选 v%s）", row.Name, orDash(row.Version), orDash(ver)))
+	return PluginLocalPick{Path: p, Version: ver, Current: row.Version, Relation: localPickRelation(row.Version, ver)}
+}
+
+// ApplyLocalPluginUpdate 把本地插件覆盖更新为所选目录（前端确认后调用）。执行中服务短暂
+// 重启，失败自动回退到更新前版本。
+func (a *App) ApplyLocalPluginUpdate(id, dir string) {
+	if shotMode {
+		return
+	}
+	row, ok := findPluginRowByID(id)
+	if !ok {
+		showMessageBox("未找到该插件，可能已被移除。", appName)
+		return
+	}
+	name, ver, err := packageMeta(dir)
+	if err != nil {
+		showMessageBox("无法更新本地插件：\n"+err.Error(), appName)
+		return
+	}
+	if name != row.Name {
+		showMessageBox(fmt.Sprintf("无法更新本地插件：\n所选目录不是插件 %s（目录 package.json 的 name=%s）。", row.Name, name), appName)
+		return
+	}
+	logUI("更新本地插件", fmt.Sprintf("%s → %s（v%s）", row.Name, dir, orDash(ver)))
+	if appCtx != nil {
+		wruntime.WindowShow(appCtx)
+	}
+	go runLocalPluginUpdate(row, dir)
+}
+
+// EnablePlugin 手动启用被禁用的插件（前端「启用」按钮）：
+// 清除禁用记录并加回 bundles → 重启健康校验；若启用后仍不兼容（启动日志点名该插件），
+// 自动重新禁用并重启服务——保证最终服务可启动。结果以弹窗提示。
+func (a *App) EnablePlugin(id string) {
+	if shotMode {
+		return
+	}
+	row, ok := findPluginRowByID(id)
+	if !ok {
+		showMessageBox("未找到该插件，可能已被移除。", appName)
+		return
+	}
+	if !row.Disabled {
+		return
+	}
+	logUI("启用插件", row.Name)
+	if appCtx != nil {
+		wruntime.WindowShow(appCtx)
+	}
+	go runPluginEnable(row)
+}
+
+// runPluginEnable 执行启用（见 enablePluginAndVerify）：失败自动重新禁用并重启，保证服务可启动。
+func runPluginEnable(row PluginRow) {
+	enabled, why := enablePluginAndVerify(row)
+	if enabled {
+		logUI("启用插件完成", row.Name)
+		showMessageBox(fmt.Sprintf("插件 %s 已启用，服务已重启。", row.Name), appName)
+	} else {
+		logUI("启用插件失败，已自动重新禁用", fmt.Sprintf("%s：%s", row.Name, why))
+		showMessageBox(fmt.Sprintf("插件 %s 启用失败（仍与当前版本不兼容），已自动重新禁用并重启服务。\n原因：%s\n\n"+
+			"可先「检查更新」到兼容版本，或确认插件已修复后再尝试启用。", row.Name, why), appName)
+	}
+	if appCtx != nil {
+		wruntime.EventsEmit(appCtx, "plugins:changed", nil)
+	}
+}
+
 // RemovePlugin 删除指定插件（前端确认后调用）：物理移除依赖与文件，失败自动回退。
 // 覆盖该插件声明的全部环境/profile。截图模式不执行真实删除。
 func (a *App) RemovePlugin(id string) {
@@ -518,14 +614,44 @@ func (a *App) GetResetStats() ResetStats {
 }
 
 // ResetHarness 重置 DeepSeek Harness（前端勾选弹窗确认后调用）：
-// harness 版本回退始终执行（必选项）；clearSessions / clearPlugins 按勾选物理删除
-// 对应数据（会话记录 / 已安装插件）。异步执行：进度走 splash 事件，完成/失败以弹窗提示。
-func (a *App) ResetHarness(clearSessions, clearPlugins bool) {
-	logUI("重置服务", fmt.Sprintf("clearSessions=%v clearPlugins=%v", clearSessions, clearPlugins))
+// harness 版本回退始终执行（必选项）；targetVersion 为用户从「重置目标版本」下拉选择的、
+// 早于当前运行版本的官方版本（空 = 边界降级放行，按官方默认目标执行）；
+// clearSessions / clearPlugins 按勾选物理删除对应数据（会话记录 / 已安装插件）。
+// 异步执行：进度走 splash 事件，完成/失败以弹窗提示。
+func (a *App) ResetHarness(clearSessions, clearPlugins bool, targetVersion string) {
+	logUI("重置服务", fmt.Sprintf("clearSessions=%v clearPlugins=%v target=%s", clearSessions, clearPlugins, orDash(targetVersion)))
 	if appCtx != nil {
 		wruntime.WindowShow(appCtx)
 	}
-	go runHarnessReset(clearSessions, clearPlugins)
+	go runHarnessReset(clearSessions, clearPlugins, targetVersion)
+}
+
+// GetResetVersions 返回重置弹窗「重置目标版本」下拉所需数据：当前已装版本、全部候选
+// （仅早于当前版本的官方 npm 版本，按新→旧）、默认选中与边界说明。源码形态不支持重置。
+// 查询失败（网络/registry）时 Options 为空、Note 携带原因，前端据此禁用确认并提示。
+func (a *App) GetResetVersions() ResetVersionInfo {
+	if isSourceHarnessDir() {
+		return ResetVersionInfo{Form: "source",
+			Note: "当前为源码 checkout 形态，暂不支持自动清空目录重装；请先在 Web UI 切换到 npm 预构建形态。"}
+	}
+	if shotMode {
+		// 截图模式：不触网，给出静态中性候选（与真实版本完全隔离）
+		return ResetVersionInfo{Form: "npm", Current: "0.1.1",
+			Options: []ResetVersionOption{{Version: "0.1.0", Prerelease: false}}, Default: "0.1.0"}
+	}
+	cur := installedHarnessVersion()
+	versions, err := npmHarnessPublishedVersions()
+	if err != nil {
+		return ResetVersionInfo{Form: "npm", Current: cur, Note: "查询 npm 已发布版本失败：" + err.Error()}
+	}
+	opts, def := buildResetVersionOptions(versions, cur)
+	info := ResetVersionInfo{Form: "npm", Current: cur, Options: opts, Default: def}
+	if cur == "" {
+		info.Note = "未能识别当前已装版本，已列出全部官方版本供选择。"
+	} else if len(opts) == 0 {
+		info.Note = "当前已是最早的官方已发布版本（无更早目标），将按官方默认目标执行重置。"
+	}
+	return info
 }
 
 // ==================== 导出 ====================
@@ -609,7 +735,13 @@ func (a *App) StartExport(includeSessions, includePlugins, includeFiles bool, di
 		includeSessions, includePlugins, includeFiles, len(uniq), orDash(strings.TrimSpace(savePath))))
 	go func() {
 		destFile := strings.TrimSpace(savePath)
+		// 每个打包阶段（会话/插件/文件/压缩）的首条进度也写入统一日志，便于事后排查
+		lastPhase := ""
 		final, err := buildExportZip(includeSessions, includePlugins, includeFiles, uniq, homeDownloads(), func(t string, pct float64) {
+			if t != "" && t != lastPhase {
+				lastPhase = t
+				log.Printf("export phase: %s", t)
+			}
 			if appCtx != nil {
 				wruntime.EventsEmit(appCtx, "export:progress", map[string]interface{}{"text": t, "pct": pct})
 			}
@@ -795,113 +927,74 @@ func (a *App) PreviewRestore(kind string) RestorePreview {
 	pv.Conflicts = n
 	pv.Conflict = n > 0
 	pv.Tops = tops
+	log.Printf("import preview result: kind=%s conflicts=%d tops=%v err=%v", kind, n, tops, err)
 	return pv
 }
 
 // ApplyRestore 执行恢复（须先 PreviewRestore 同 kind 成功）。
-// overwrite=true 覆盖冲突项（冲突顶层先改名备份，失败回滚）；false 跳过已有。
+// overwrite=true 覆盖冲突项（冲突顶层先改名备份，失败/取消回滚）；false 跳过已有。
 // sessions/plugins 恢复前暂停后台服务、完成后自动重新拉起并刷新状态；
-// 插件恢复成功后把源 profile 的 dependencies/bundles 合并写回目标 profile，使插件被 harness 识别。
-// 进度与结果通过事件 import:progress / import:done 推送。
+// 插件恢复成功后把源 profile 的 dependencies/bundles 合并写回目标 profile，使插件被 harness 识别；
+// 合并后对本地链接依赖做可用性改写、pnpm 对齐失败时按依赖摘除重试一次（跨机恢复硬失败自愈）。
+// 任务期间占用恢复槽（其余「恢复」请求被跳过）；CancelRestore 可请求中断解压并自动回退。
+// 进度与结果通过事件 import:progress / import:done 推送（done 含 ok/error/canceled/note）。
 func (a *App) ApplyRestore(kind string, overwrite bool) {
-	pendingRestore.mu.Lock()
-	ok := pendingRestore.kind == kind && pendingRestore.innerZip != ""
-	innerPath := pendingRestore.innerZip
-	filesDest := pendingRestore.filesDest
-	cln := pendingRestore.innerCln
-	if ok {
-		pendingRestore.kind = ""
-		pendingRestore.innerZip = ""
-		pendingRestore.innerCln = nil
-		pendingRestore.filesDest = ""
-	}
-	pendingRestore.mu.Unlock()
-	if !ok {
-		logUI("恢复导入项被跳过", "尚未预览或 kind 不匹配: "+kind)
-		return
-	}
 	logUI("恢复导入项", fmt.Sprintf("kind=%s overwrite=%v", kind, overwrite))
-	go func() {
-		defer func() {
-			if cln != nil {
-				cln() // 清理内层子包临时文件
-			}
-		}()
-		// 恢复 sessions/plugins 前暂停后台服务，避免写入运行中的 harness 环境。
-		// 插件导入走事务：恢复前快照受影响 profile（package.json/lock 备份、node_modules
-		// 整目录暂存为 .importbak），解压落在暂存后的空树——回退可离线、解压不污染 pnpm 树。
-		paused := false
-		dirs := []string(nil)
-		var hadNM []bool
-		if kind != "files" {
-			paused = pauseServiceForRestore()
+	if ok, why := importEnqueue(kind, overwrite); !ok {
+		logUI("恢复导入项被跳过", why)
+		if appCtx != nil {
+			wruntime.EventsEmit(appCtx, "import:done", map[string]interface{}{"kind": kind, "error": why})
 		}
-		if kind == "plugins" {
-			dirs = restoredPluginProfileDirs(importZipPath)
-			hadNM = snapshotImportProfiles(dirs)
-		}
-		_, err := restoreItem(kind, innerPath, filesDest, overwrite, func(t string, pct float64) {
-			if appCtx != nil {
-				wruntime.EventsEmit(appCtx, "import:progress", map[string]interface{}{"kind": kind, "text": t, "pct": pct})
-			}
-		})
-		if err == nil && kind == "plugins" {
-			// 插件文件已就位：把依赖/ bundles 写回目标 profile 的 package.json，否则 harness 不识别
-			err = registerRestoredPlugins(importZipPath)
-		}
-		var resumeErr error
-		switch {
-		case kind != "plugins":
-			// sessions/files：保持旧行为（恢复完成后按需重新拉起服务）
-			if paused {
-				resumeServiceAfterRestore()
-			}
-		case err != nil:
-			// 解压/注册失败：回退快照并尽力恢复服务到导入前状态
-			rollbackImportProfiles(dirs, hadNM)
-			if paused {
-				resumeServiceAfterRestore()
-			}
-		case len(dirs) == 0:
-			// 旧格式导出包（manifest 未含插件配置）：解压内容无清单可注册，按旧行为仅恢复服务
-			if paused {
-				resumeServiceAfterRestore()
-			}
-		default:
-			// 现代插件包事务：pnpm 对齐（网络失败降级，由健康校验定夺）→ 拉起 + 健康校验
-			// + 自动修复；仍失败由 finishPluginImport 回退快照。成功/失败都会驱动 import:done。
-			for _, dir := range dirs {
-				if perr := reconcileProfileDeps(dir); perr != nil {
-					log.Printf("import: reconcile failed (%s): %v", dir, perr)
-				}
-			}
-			resumeErr = finishPluginImport(dirs, hadNM)
-		}
-		if appCtx == nil {
-			return
-		}
-		failMsg := ""
-		if err != nil {
-			failMsg = err.Error()
-		} else if resumeErr != nil {
-			failMsg = resumeErr.Error()
-		}
-		if failMsg != "" {
-			logUI("恢复失败", failMsg)
-			wruntime.EventsEmit(appCtx, "import:done", map[string]interface{}{"kind": kind, "error": failMsg})
-			return
-		}
-		logUI("恢复完成", "kind="+kind)
-		wruntime.EventsEmit(appCtx, "import:done", map[string]interface{}{"kind": kind, "ok": true})
-	}()
+	}
+}
+
+// CancelRestore 取消指定 kind 的恢复任务（每行独立取消）。解压/对齐阶段在检查点响应
+// （对齐中的 pnpm 立即终止进程树）；已进入（共享）自愈阶段时请求被忽略——不可中断。
+// 返回：ok=已受理；healing=自愈阶段不可取消；idle=无该 kind 任务。
+func (a *App) CancelRestore(kind string) string {
+	return importCancelKind(kind)
 }
 
 // ==================== 杂项 ====================
 
-// OpenWebUI 打开 harness Web 界面（基于实际运行端口，兼容“修改端口未重启”窗口期）。
+// webTokenRe 匹配 dsh web 启动时打印的访问 URL（含最新鉴权 token）。
+var webTokenRe = regexp.MustCompile(`(?m)dsh web:\s*(https?://\S+)`)
+
+// webTokenURL 取 dsh web 当前（带最新 token 的）URL：dsh web 每次启动都会换新 token，
+// 自愈/重启后旧 token 失效会报 "authentication required; reopen the URL printed by dsh web"。
+// 按需尾部扫描统一日志（含 .1 轮转档，各最多读尾 512KB）取最新一条；取不到回退 webURL。
+func webTokenURL() string {
+	for _, p := range []string{unifiedLogPath(), unifiedLogPath() + ".1"} {
+		f, err := os.Open(p)
+		if err != nil {
+			continue
+		}
+		start := int64(0)
+		if st, serr := f.Stat(); serr == nil && st.Size() > 512*1024 {
+			start = st.Size() - 512*1024
+		}
+		if _, serr := f.Seek(start, io.SeekStart); serr != nil {
+			f.Close()
+			continue
+		}
+		b, rerr := io.ReadAll(f)
+		f.Close()
+		if rerr != nil {
+			continue
+		}
+		ms := webTokenRe.FindAllSubmatch(b, -1)
+		if len(ms) > 0 {
+			return string(ms[len(ms)-1][1])
+		}
+	}
+	return webURL
+}
+
+// OpenWebUI 打开 harness Web 界面（带最新鉴权 token，兼容“修改端口未重启/自愈重启后
+// token 轮换”两个窗口期）。
 func (a *App) OpenWebUI() {
-	if running, _, live := resolveRunningService(); running {
-		openBrowser(live)
+	if running, _, _ := resolveRunningService(); running {
+		openBrowser(webTokenURL())
 	}
 }
 

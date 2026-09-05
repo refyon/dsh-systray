@@ -4,6 +4,7 @@ import (
 	"archive/zip"
 	"crypto/rand"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -15,6 +16,9 @@ import (
 	"strings"
 	"time"
 )
+
+// errRestoreCanceled 恢复任务被用户取消的哨兵错误（解压循环在检查点返回；上层据此走回退路径）。
+var errRestoreCanceled = errors.New("恢复已取消")
 
 // ==================== 解压工具（7-Zip）检测与下载 ====================
 // 启动环境检查的一部分：优先使用 7zip；本机已装则直接用，未装则下载便携版到用户目录，
@@ -393,12 +397,23 @@ func validateZipSafe(zipPath string) error {
 }
 
 // zipExtract 解压 zip 到 destDir：优先使用 7z（overwrite=true 覆盖 / false 跳过已有），失败回退 Go 原生。
+// zipExtract 解压到目录（无取消检查；向后兼容的便捷入口）。
 func zipExtract(zipPath, destDir string, overwrite bool) error {
+	return zipExtractStop(zipPath, destDir, overwrite, nil)
+}
+
+// zipExtractStop 解压到目录，支持取消：stop 非空时在文件循环的检查点询问，
+// 返回 true 表示调用方请求中断（返回 errRestoreCanceled，可能已解出部分文件，由调用方清理/回退）。
+// 优先使用 7z（快）：7z 为单次进程，无法中途停文件，取消通过结束其进程实现。
+func zipExtractStop(zipPath, destDir string, overwrite bool, stop func() bool) error {
 	if err := validateZipSafe(zipPath); err != nil {
 		return err
 	}
 	if err := os.MkdirAll(destDir, 0o755); err != nil {
 		return err
+	}
+	if stop != nil && stop() {
+		return errRestoreCanceled
 	}
 	if tool := findArchiveTool(); tool != "" {
 		args := []string{"x", "-y", "-tzip"}
@@ -410,23 +425,49 @@ func zipExtract(zipPath, destDir string, overwrite bool) error {
 		args = append(args, "-o"+destDir, zipPath)
 		cmd := exec.Command(tool, args...)
 		hideCmdWindow(cmd)
-		if out, err := cmd.CombinedOutput(); err == nil {
-			return nil
-		} else {
-			log.Printf("7z extract failed (%s), using Go fallback: %s", strings.TrimSpace(string(out)), err)
+		done := make(chan error, 1)
+		if err := cmd.Start(); err == nil {
+			if stop != nil {
+				go func() {
+					for !stop() {
+						time.Sleep(150 * time.Millisecond)
+					}
+					if cmd.Process != nil {
+						_ = cmd.Process.Kill() // 取消：结束 7z，交由上层回退
+					}
+				}()
+			}
+			go func() { done <- cmd.Wait() }()
+			err = <-done
+			if stop != nil && stop() {
+				return errRestoreCanceled
+			}
+			if err == nil {
+				return nil
+			}
+			log.Printf("7z extract failed (%v), using Go fallback: %s", err, zipPath)
 		}
 	}
-	return goExtractZip(zipPath, destDir, overwrite)
+	return goExtractZipStop(zipPath, destDir, overwrite, stop)
 }
 
-// goExtractZip Go 原生解压（zip 格式，overwrite=false 时跳过已存在文件）。
+// goExtractZip Go 原生解压（zip 格式，overwrite=false 时跳过已存在文件）。不带取消检查。
 func goExtractZip(zipPath, destDir string, overwrite bool) error {
+	return goExtractZipStop(zipPath, destDir, overwrite, nil)
+}
+
+// goExtractZipStop Go 原生解压（zip 格式，overwrite=false 时跳过已存在文件）；
+// stop 非空时每个文件条目处理前检查一次，返回 true 则中断并返回 errRestoreCanceled。
+func goExtractZipStop(zipPath, destDir string, overwrite bool, stop func() bool) error {
 	zr, err := zip.OpenReader(zipPath)
 	if err != nil {
 		return err
 	}
 	defer zr.Close()
 	for _, f := range zr.File {
+		if stop != nil && stop() {
+			return errRestoreCanceled
+		}
 		name := filepath.Clean(filepath.FromSlash(f.Name))
 		if name == "." || name == ".." || strings.HasPrefix(name, ".."+string(filepath.Separator)) {
 			continue // 非法条目（validateZipSafe 已拦）

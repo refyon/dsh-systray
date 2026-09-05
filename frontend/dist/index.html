@@ -54,7 +54,10 @@
               </div>
               <div id="svc-sub" class="row-sub">服务就绪后可打开 Web UI</div>
             </div>
-            <button id="btn-restart" class="btn btn-primary">重启后台服务</button>
+            <div class="btn-group">
+              <button id="btn-restart" class="btn btn-primary">重启后台服务</button>
+              <button id="btn-open-webui" class="btn btn-ghost" disabled>打开 Web UI</button>
+            </div>
           </div>
         </div>
         <div class="card">
@@ -78,7 +81,7 @@
           <div class="card-row">
             <div class="row-text">
               <div class="row-title">重置 DeepSeek Harness</div>
-              <div class="row-sub">删除全部已安装插件，并回退到官方最后发布的稳定版本</div>
+              <div class="row-sub">停止服务并按所选官方版本全新重装 Harness（默认早于当前版本的最新稳定版），可勾选清除会话与插件</div>
             </div>
             <button id="btn-reset-harness" class="btn btn-danger">重置服务</button>
           </div>
@@ -182,6 +185,9 @@
         <div id="imp-progress" class="op-progress hidden">
           <div class="splash-track"><div id="imp-fill" class="splash-fill"></div></div>
           <span id="imp-text" class="row-sub"></span>
+          <div class="imp-cancel-row">
+            <button id="btn-imp-cancel" class="btn btn-ghost btn-sm hidden">取消恢复</button>
+          </div>
         </div>
       </section>
     </main>
@@ -219,13 +225,23 @@
     <div class="modal-mask"></div>
     <div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="reset-title">
       <div class="modal-title" id="reset-title">重置 DeepSeek Harness</div>
-      <div class="modal-msg">勾选需要清除的内容并确认。重置会把 DeepSeek Harness 回退到上一个正常运行的版本（存在备份时）；否则回退到官方最新稳定版（无稳定 Release 时回退到最新可用版本）。被清除的数据不可恢复。</div>
+      <div class="modal-msg">重置会停止后台服务并清空 harness 目录，然后全新安装所选官方版本（下拉仅提供早于当前运行版本的版本，默认取其中最新的稳定版）。被清除的数据不可恢复。</div>
+      <div class="reset-target">
+        <div class="reset-target-head">
+          <label for="reset-target" class="reset-target-label">重置目标版本</label>
+          <span class="row-sub" id="reset-target-cur"></span>
+        </div>
+        <select id="reset-target" class="reset-target-select" disabled>
+          <option value="">正在查询可用版本…</option>
+        </select>
+        <div id="reset-target-note" class="row-warn hidden"></div>
+      </div>
       <div class="reset-opts">
         <label class="reset-opt reset-opt-mandatory">
           <input type="checkbox" id="reset-c-harness" checked disabled>
           <span class="reset-opt-main">
             <span class="reset-opt-title">Harness 服务 <em>（必选）</em></span>
-            <span class="row-sub">回退到上一个正常运行的版本（或官方最新版）并重启服务</span>
+            <span class="row-sub">回退到下拉选择的版本（默认早于当前版本的最新稳定版）并重启服务</span>
           </span>
         </label>
         <label class="reset-opt">

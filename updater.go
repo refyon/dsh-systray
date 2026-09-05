@@ -360,16 +360,35 @@ func restartBackgroundService(onState func(stage string)) bool {
 }
 
 // queryHarnessUpdate 查询 harness 是否有新版本。返回：
-//   - latest：按当前「预发布通道」开关应安装的最新版本（空 = 无可更新目标）；
+//   - latest：按当前安装形态与「预发布通道」开关应安装的最新版本（空 = 无可更新目标）；
 //   - cur：当前已装版本（尽力获取；即使远端查询失败也回填，不再显示“当前 —”）；
 //   - newer：latest 是否比已装版本新；
 //   - note：非网络失败的面向用户说明（如“仓库仅有预发布而通道未开”），空表示无说明。
 //
-// 修复点：deepseek-harness 仓库目前只发布预发布 Release，预发布通道关闭时按稳定版过滤
-// 会得到空集——旧实现因此把“无可用稳定版”误报为“无法获取（网络问题）”。此处改为返回
-// 说明文案，由上层展示；仅真正的网络失败才由上层报“无法获取”。
+// 版本源与「重置服务」保持一致（修复：0.1.2-rc.1 已发 npm 但 GitHub Release 列表缺失时，
+// 重置显示 0.1.2-rc.1、检查更新却停在 0.1.1-rc.2 的不一致）：
+//   - npm 预构建形态 → npm registry 已发布版本（GitHub Release 常领先/缺失，而安装走 npm，
+//     必须以 npm 真实存在的版本为准），稳定版优先、全预发布回退最新发布（同 fetchNpmResetTarget）；
+//   - 源码 checkout 形态 → GitHub Release（源码更新切 git tag，以 Release 为准）。
 func queryHarnessUpdate() (latest, cur string, newer bool, note string) {
 	cur = installedHarnessVersion()
+	if isNpmHarnessReady() {
+		best, n, err := fetchNpmResetTarget()
+		if err != nil {
+			log.Printf("harness update check (npm) failed: %v", err)
+			return "", cur, false, ""
+		}
+		if best == "" {
+			return "", cur, false, ""
+		}
+		if n != "" {
+			note = "npm 上当前仅有预发布版本，已按最新发布 " + withV(best) + " 检查"
+		}
+		if cur == "" {
+			return best, "", false, "未检测到已安装的 Harness 版本，无法判断是否为最新"
+		}
+		return best, cur, isNewerVersion("v"+best, "v"+cur), note
+	}
 	tags, err := fetchHarnessLatestTags()
 	if err != nil {
 		log.Printf("harness update check failed: %v", err)
@@ -985,9 +1004,33 @@ func runHarnessUpdate(latest string) {
 		return
 	}
 
-	// 4) 重启并健康校验（就绪 + 启动日志无报错）
+	// 4) 重启并健康校验（就绪 + 启动日志无报错）。
+	//    失败时先尝试「禁用启动日志点名的用户插件」换取新版本可启动（不兼容自愈）；
+	//    禁用后健康 → 保留新版本并提示；仍失败或无嫌疑（核心故障）→ 整体回退到上一版本。
 	splash.Update("正在重启服务…", 0.85)
 	if !restartAndVerifyServer() {
+		splash.Update("启动校验失败，正在排查不兼容插件…", 0.9)
+		var profileDirs []string
+		for _, pf := range enumeratePluginProfiles() {
+			profileDirs = append(profileDirs, pf.dir)
+		}
+		disabled, ok := disableBootSuspects(profileDirs)
+		if ok {
+			// 保留新版本：harness LKG 提升到更新前快照（未来失败回退旧版时插件完整可用的状态）
+			promoteHarnessLkg(prev)
+			splash.Close()
+			names := make([]string, 0, len(disabled))
+			for _, d := range disabled {
+				names = append(names, d.Name)
+			}
+			logUI("更新 Harness 完成（含不兼容插件禁用）",
+				fmt.Sprintf("v%s | 禁用 %s", latest, strings.Join(names, "、")))
+			msg := fmt.Sprintf("DeepSeek Harness 已更新到 %s，服务已重启。\n\n以下插件与新版不兼容，已自动禁用"+
+				"（保留记录，可在「关于页 → 已安装插件」中检查更新后重新启用）：\n· %s",
+				withV(latest), strings.Join(names, "、"))
+			showMessageBox(msg, appName)
+			return
+		}
 		rollbackUpdate(splash, prev, hadNMBackup, "新版本启动失败")
 		return
 	}

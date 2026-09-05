@@ -463,6 +463,82 @@ func onShutdown(ctx context.Context) {
 	}
 }
 
+// recoverInterruptedImport 启动自愈：上一次插件导入恢复任务被意外中断（进程退出/窗口被杀，
+// 无法执行回退或清理）时的恢复。按事务日志（import-journal.json）分派：
+//   - stage=healing：中断发生在收尾自愈中 → **续跑自愈**（finishPluginImport 重入），
+//     确保 harness 服务按正常流程启动并到达确定结果（保留 / 禁用不兼容插件 / 回退）；
+//   - stage=importing：中断发生在解压/对齐中 → 回退到导入前状态（.importbak 还原）；
+//   - 无日志但有 .importbak 残留（旧版本遗留）→ 回退兜底。
+//
+// 返回处理过的目录数（0 = 无残留）。幂等：rollbackImportProfiles 与 clearImportJournal
+// 会消费掉快照与日志，正常完成/取消的导入不会在后续启动被误处理。
+func recoverInterruptedImport() int {
+	if shotMode {
+		return 0
+	}
+	stopOrphan := func() {
+		// 停掉占用 profile 文件（尤其 node_modules）的旧服务进程——可能来自上次异常退出后
+		// 残留的孤儿服务；否则文件锁会导致回退改名/删除失败。
+		if serverResponding(webURL) {
+			killServer()
+			time.Sleep(500 * time.Millisecond)
+		}
+	}
+	if j, err := readImportJournal(); err == nil && j != nil && len(j.Dirs) > 0 {
+		if j.Stage == "healing" {
+			// 自愈中被杀：续跑收尾自愈（不可中断语义跨重启保持）
+			stopOrphan()
+			note, ferr := finishPluginImport(j.Dirs, j.HadNM)
+			clearImportJournal()
+			if ferr == nil {
+				if note != "" {
+					note = "。" + note
+				}
+				logUI("恢复中断自愈", "已续上次未完成的自愈收尾，服务正常"+note)
+			} else {
+				logUI("恢复中断自愈", "续自愈未通过并已自动回退："+ferr.Error())
+			}
+			return len(j.Dirs)
+		}
+		// importing：回退到导入前状态
+		stopOrphan()
+		rollbackImportProfiles(j.Dirs, j.HadNM)
+		clearImportJournal()
+		logUI("恢复中断自愈", fmt.Sprintf("检测到上次未完成的导入恢复，已自动回退 %d 个环境", len(j.Dirs)))
+		return len(j.Dirs)
+	}
+	// 无事务日志：按 .importbak 残留扫描回退兜底（旧版本遗留）
+	profiles := enumeratePluginProfiles()
+	if len(profiles) == 0 {
+		return 0
+	}
+	var dirs []string
+	var had []bool
+	for _, pf := range profiles {
+		dir := pf.dir
+		pjBak := filepath.Join(dir, "package.json"+importBakSuffix)
+		nmBak := filepath.Join(dir, "node_modules"+importBakSuffix)
+		if _, err := os.Stat(pjBak); err != nil {
+			if _, err2 := os.Stat(nmBak); err2 != nil {
+				continue
+			}
+		}
+		dirs = append(dirs, dir)
+		if _, err := os.Stat(nmBak); err == nil {
+			had = append(had, true)
+		} else {
+			had = append(had, false)
+		}
+	}
+	if len(dirs) == 0 {
+		return 0
+	}
+	stopOrphan()
+	rollbackImportProfiles(dirs, had)
+	logUI("恢复中断自愈", fmt.Sprintf("检测到上次未完成的导入恢复，已自动回退 %d 个环境", len(dirs)))
+	return len(dirs)
+}
+
 // bootstrapService 后台服务编排（原 main 中的启动流程，改为事件驱动进度）：
 // 运行环境 → harness 安装/构建 → 启动服务 → 就绪提示。
 func bootstrapService() {
@@ -537,6 +613,12 @@ func bootstrapService() {
 		}
 	}
 
+	// 2.5) 上次导入恢复被意外中断（进程退出/窗口关闭）自愈：残留 .importbak 事务快照 →
+	// 回退到导入前状态（服务随后按正常流程拉起并健康校验）
+	if n := recoverInterruptedImport(); n > 0 {
+		splash.Update(fmt.Sprintf("已检测到上次未完成的导入恢复，自动回退 %d 个环境…", n), 0.87)
+	}
+
 	// 3) 启动服务
 	splash.Update("正在启动服务…", 0.9)
 	started := false
@@ -592,6 +674,24 @@ func bootstrapService() {
 		}
 		// 启动失败：特征指向环境本身时（进程异常退出 / 加载错误）自动尝试回退到上次正常状态
 		if bootError != "" || why == "exited" {
+			// 无法解析 bundle 特例自愈：摘除残留的激活声明后重启校验，健康则直接进入就绪
+			// （无需整体回退 LKG；本机删除 deepseek-idesign 后 bundles 残留导致启动失败实证）
+			if names := unresolvedBundleNames(serverLogBefore); len(names) > 0 {
+				if stripUnresolvedBundles(names) > 0 && restartAndVerifyServer() {
+					serverReady.Store(true)
+					serviceFailed.Store(false)
+					refreshServiceMenu()
+					notifySplashDone()
+					signalShotReady()
+					if !autostartLaunch {
+						notifyReady()
+					} else {
+						log.Printf("autostart: service ready after stripping unresolved bundles, staying silent")
+					}
+					logUI("启动自愈", "已摘除无法解析的 bundle（"+strings.Join(names, "、")+"），服务已恢复")
+					return
+				}
+			}
 			reason := bootError
 			if reason == "" {
 				reason = "服务进程异常退出"
@@ -684,8 +784,8 @@ func onReady() {
 	mQuit := systray.AddMenuItem("退出", "退出并关闭后台服务器")
 
 	menuOpen.Click(func() {
-		if running, _, live := resolveRunningService(); running {
-			openBrowser(live)
+		if running, _, _ := resolveRunningService(); running {
+			openBrowser(webTokenURL()) // 带最新 token，避免重启后旧 token 失效
 		}
 	})
 	mSettings.Click(showMainWindow)
@@ -852,13 +952,20 @@ func sourceDepsInstalled() bool {
 	return err == nil
 }
 
-// pnpmTunedEnv 慢机器调优：限制并发、克隆式安装（参考 dsh-desktop）。
+// pnpmTunedEnv 慢机器调优：限制并发、克隆式安装（参考 dsh-desktop）；网络故障快速失败
+// ——单请求 15s 超时、不重试（fetch_retries=0）：坏网络下 registry 拉取失败一次即放弃，
+// 让上层立即进入收尾（自愈/自动禁用），避免每轮 install 卡 2-4 分钟（new_device.log 实证
+// 「Will retry in 10 seconds…2 retries left」的多档重试循环）。registry 官方不可达自动切
+// npmmirror（installRegistry 探测一次并缓存）。
 func pnpmTunedEnv() []string {
 	return []string{
 		"PNPM_MAX_WORKERS=1",
 		"npm_config_child_concurrency=1",
 		"npm_config_package_import_method=clone-or-copy",
 		"npm_config_side_effects_cache=false",
+		"npm_config_fetch_retries=0",
+		"npm_config_fetch_timeout=15000",
+		"npm_config_registry=" + installRegistry(),
 	}
 }
 
@@ -882,7 +989,14 @@ func runSourceDepsInstall() error {
 }
 
 // ensureNpmHarness 全新机器：安装 npm 预构建产物 @deepseek-ai/dsh（免 git / 免构建）。
+// 默认版本钉在官方初始 rc（历史行为；显式最新版走 ensureNpmHarnessVersion）。
 func ensureNpmHarness() error {
+	return ensureNpmHarnessVersion("0.1.1-rc.2")
+}
+
+// ensureNpmHarnessVersion 在 harnessDir 安装 npm 预构建产物 @deepseek-ai/dsh@ver
+// （脚手架与白名单复刻 ensureNpmHarness 的历史语义；用于「重置=清空目录后全新安装最新版」）。
+func ensureNpmHarnessVersion(ver string) error {
 	if err := os.MkdirAll(harnessDir, 0o755); err != nil {
 		return err
 	}
@@ -916,7 +1030,7 @@ func ensureNpmHarness() error {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Minute)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, pnpmCmd(), "add", "@deepseek-ai/dsh@0.1.1-rc.2", "--save-exact")
+	cmd := exec.CommandContext(ctx, pnpmCmd(), "add", "@deepseek-ai/dsh@"+ver, "--save-exact")
 	cmd.Dir = harnessDir
 	cmd.Env = append(os.Environ(), pnpmTunedEnv()...)
 	hideCmdWindow(cmd)
@@ -928,7 +1042,7 @@ func ensureNpmHarness() error {
 		if isNpmHarnessReady() {
 			log.Printf("npm harness installed (pnpm reported: %v)", err)
 		} else {
-			return fmt.Errorf("安装 @deepseek-ai/dsh 失败：%w（日志：%s）", err, unifiedLogPath())
+			return fmt.Errorf("安装 @deepseek-ai/dsh@%s 失败：%w（日志：%s）", ver, err, unifiedLogPath())
 		}
 	} else {
 		w.Flush()
@@ -936,7 +1050,7 @@ func ensureNpmHarness() error {
 	if !isNpmHarnessReady() {
 		return fmt.Errorf("安装后未找到 dsh 入口：%s", filepath.Join(harnessDir, "node_modules", "@deepseek-ai", "dsh", "lib", "bin.js"))
 	}
-	log.Printf("npm harness installed at %s", harnessDir)
+	log.Printf("npm harness %s installed at %s", ver, harnessDir)
 	return nil
 }
 
