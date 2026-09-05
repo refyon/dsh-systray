@@ -231,7 +231,7 @@ func tryBootRollback(why string) (bool, string) {
 	}
 
 	// 2) 重启并健康校验（就绪 + 启动日志无加载错误）
-	before := serverLogSize()
+	before := rotateServerLog() // 轮转留档：本次回退启动的现场独立成档，便于失败排查
 	started, exitCh := startServer()
 	if !started {
 		return false, prev.HarnessVersion

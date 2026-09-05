@@ -543,11 +543,13 @@ func bootstrapService() {
 	started := false
 	startedByUs := false
 	var serverExitCh <-chan error
-	serverLogBefore := serverLogSize() // 本次启动的健康校验只扫描此后的追加日志段
+	serverLogBefore := int64(0)
 	if serverResponding(webURL) {
 		log.Printf("server already running on %s, skipping spawn", webURL)
 		started = true
 	} else {
+		// 本次启动的健康校验只扫描此后的追加日志段；先轮转留档，使本次冷启动现场独立成档
+		serverLogBefore = rotateServerLog()
 		started, serverExitCh = startServer()
 		startedByUs = started
 	}

@@ -288,45 +288,67 @@ func checkForUpdatesManual() {
 	}
 }
 
-// restartBackgroundService 重启后台 Web 服务：停止 → 拉起 → 等待就绪（带进度窗口）。
-// Windows/macOS 共用；startServer/killServer 由各平台实现，其余为主程序通用逻辑。
-// onState 可选：进程各阶段回调（"stopping" / "stopped" / "starting" / "running" / "error"），
-// 供设置页实时刷新服务状态（如停止后标红“已停止”）。
+// restartBackgroundService 重启后台 Web 服务：停止 → 拉起 → 就绪（带进度窗口），并做
+// 健康校验与自动修复。onState 可选：进程各阶段回调（供设置页实时刷新服务状态文案）；
+// 阶段字符串直接作为界面文案展示（不依赖前端翻译）。
+//
+// 容错（插件导入 / 变更后无法启动的自动修复）：
+//  1. 启动就绪后进入 verifyServerBoot 健康窗口，扫出迟于 HTTP 就绪出现的加载错误
+//     （版本混装 / 插件不兼容），不再把“假就绪”当成功；
+//  2. 失败时自动对所有 profile 执行一次 pnpm install 对齐（等价用户手动
+//     `pnpm dsh plugin remove/add` 触发的全树 reconcile），再重试一次启动；
+//  3. 仍失败时从 server.log 定位疑似导致启动失败的插件名并展示给用户。
+//
 // 重启成功后（非开机自启动场景，该场景不会走到此函数）弹窗询问是否立即打开 Web UI；返回是否成功。
 func restartBackgroundService(onState func(stage string)) bool {
 	splash := startSplash("正在重启后台服务…")
 	defer splash.Close()
 	splash.Update("正在停止后台服务…", 0.2)
 	if onState != nil {
-		onState("stopping")
+		onState("正在停止后台服务…")
 	}
 	killServer()
 	if onState != nil {
-		onState("stopped")
+		onState("服务已停止")
 	}
 	time.Sleep(1 * time.Second)
+
+	// 第一轮：拉起 → 就绪 → 健康窗口
 	splash.Update("正在启动后台服务…", 0.55)
 	if onState != nil {
-		onState("starting")
+		onState("正在启动后台服务…")
 	}
-	started, exitCh := startServer()
-	if !started {
+	ok, msg := startAndVerifyOnce()
+	if !ok {
+		// 自愈：对全部 profile 做一次 pnpm 对齐（健康校验失败多由依赖树不一致引起），再重试一次
+		splash.Update("启动未通过健康校验，正在修复插件依赖并重试…", 0.65)
 		if onState != nil {
-			onState("error")
+			onState("正在修复插件依赖并重试…")
 		}
-		showMessageBox("重启失败：无法启动后台服务。", appName)
-		return false
+		for _, pf := range enumeratePluginProfiles() {
+			if err := reconcileProfileDeps(pf.dir); err != nil {
+				log.Printf("restart heal: %v", err)
+			}
+		}
+		killServer()
+		time.Sleep(1 * time.Second)
+		splash.Update("正在重试启动后台服务…", 0.8)
+		ok, msg = startAndVerifyOnce()
 	}
-	splash.Update("正在等待服务就绪…", 0.85)
-	if ok, msg := waitForServerReady(webURL, exitCh, startupTimeout); !ok {
+	if !ok {
 		if onState != nil {
-			onState("error")
+			onState("重启失败")
 		}
-		showMessageBox("重启失败：\n"+msg, appName)
+		detail := msg
+		if suspects := parseBootLogSuspects(0); len(suspects) > 0 {
+			detail += "\n\n疑似导致启动失败的插件：" + strings.Join(suspects, "、") +
+				"\n可到「插件管理」中移除可疑插件后重试；或再次点击「重启」让程序自动修复。"
+		}
+		showMessageBox("重启失败：\n"+detail+"\n\n日志："+filepath.Join(logDir, "server.log"), appName)
 		return false
 	}
 	if onState != nil {
-		onState("running")
+		onState("服务运行中")
 	}
 	// 需求：设置中重启服务成功后弹窗询问是否打开 Web UI；
 	// 保留开机自启动的静默逻辑（autostartLaunch 场景不询问；此函数也仅在设置页触发）。
@@ -838,13 +860,14 @@ func verifyServerBoot(before int64, exited <-chan error) bool {
 
 // restartAndVerifyServer 重启后台服务并做健康校验：先停服务，再拉起并等待就绪（HTTP 响应），
 // 就绪后进入 verifyServerBoot 健康窗口（追加段扫描 + 进程退出侦听）。全部通过返回 true。
+// 拉起前先轮转 server.log（rotateServerLog），保证本次启动的现场独立成档、校验只扫本次段。
 func restartAndVerifyServer() bool {
 	killServer()
 	time.Sleep(1 * time.Second)
 	if serverResponding(webURL) {
 		return true // 端口已有可用服务（异常残留场景），视为可用
 	}
-	before := serverLogSize()
+	before := rotateServerLog()
 	started, exitCh := startServer()
 	if !started {
 		return false

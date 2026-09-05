@@ -846,10 +846,18 @@ func (a *App) ApplyRestore(kind string, overwrite bool) {
 				cln() // 清理内层子包临时文件
 			}
 		}()
-		// 恢复 sessions/plugins 前暂停后台服务，避免写入运行中的 harness 环境
+		// 恢复 sessions/plugins 前暂停后台服务，避免写入运行中的 harness 环境。
+		// 插件导入走事务：恢复前快照受影响 profile（package.json/lock 备份、node_modules
+		// 整目录暂存为 .importbak），解压落在暂存后的空树——回退可离线、解压不污染 pnpm 树。
 		paused := false
+		dirs := []string(nil)
+		var hadNM []bool
 		if kind != "files" {
 			paused = pauseServiceForRestore()
+		}
+		if kind == "plugins" {
+			dirs = restoredPluginProfileDirs(importZipPath)
+			hadNM = snapshotImportProfiles(dirs)
 		}
 		_, err := restoreItem(kind, innerPath, filesDest, overwrite, func(t string, pct float64) {
 			if appCtx != nil {
@@ -860,15 +868,46 @@ func (a *App) ApplyRestore(kind string, overwrite bool) {
 			// 插件文件已就位：把依赖/ bundles 写回目标 profile 的 package.json，否则 harness 不识别
 			err = registerRestoredPlugins(importZipPath)
 		}
-		if paused {
-			resumeServiceAfterRestore()
+		var resumeErr error
+		switch {
+		case kind != "plugins":
+			// sessions/files：保持旧行为（恢复完成后按需重新拉起服务）
+			if paused {
+				resumeServiceAfterRestore()
+			}
+		case err != nil:
+			// 解压/注册失败：回退快照并尽力恢复服务到导入前状态
+			rollbackImportProfiles(dirs, hadNM)
+			if paused {
+				resumeServiceAfterRestore()
+			}
+		case len(dirs) == 0:
+			// 旧格式导出包（manifest 未含插件配置）：解压内容无清单可注册，按旧行为仅恢复服务
+			if paused {
+				resumeServiceAfterRestore()
+			}
+		default:
+			// 现代插件包事务：pnpm 对齐（网络失败降级，由健康校验定夺）→ 拉起 + 健康校验
+			// + 自动修复；仍失败由 finishPluginImport 回退快照。成功/失败都会驱动 import:done。
+			for _, dir := range dirs {
+				if perr := reconcileProfileDeps(dir); perr != nil {
+					log.Printf("import: reconcile failed (%s): %v", dir, perr)
+				}
+			}
+			resumeErr = finishPluginImport(dirs, hadNM)
 		}
 		if appCtx == nil {
 			return
 		}
+		failMsg := ""
 		if err != nil {
-			logUI("恢复失败", err.Error())
-			wruntime.EventsEmit(appCtx, "import:done", map[string]interface{}{"kind": kind, "error": err.Error()})
+			failMsg = err.Error()
+		} else if resumeErr != nil {
+			failMsg = resumeErr.Error()
+		}
+		if failMsg != "" {
+			logUI("恢复失败", failMsg)
+			wruntime.EventsEmit(appCtx, "import:done", map[string]interface{}{"kind": kind, "error": failMsg})
 			return
 		}
 		logUI("恢复完成", "kind="+kind)

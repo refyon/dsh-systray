@@ -837,3 +837,165 @@ func resumeServiceAfterRestore() {
 		log.Printf("service not ready within 2 minutes after restore")
 	}
 }
+
+// ==================== 插件导入事务（快照 → 对齐 → 校验 → 回退/提升） ====================
+// 背景：直接把导出的插件文件解压进 profile 的 node_modules 会留下 pnpm 从未产生过的
+// 不一致树（版本与锁文件/.modules.yaml 脱节、junction 与真实目录混杂），dsh web 启动
+// 是 fail-loud——任一 bundle 解析/激活失败即进程退出（“服务无法启动”）。因此插件导入
+// 采用与「插件更新/删除」同级的事务保障：
+//  1. 暂停服务后把受影响 profile 的 package.json / pnpm-lock.yaml / node_modules 快照
+//     为 *.importbak（node_modules 整目录改名暂存，解压落在全新空树，杜绝 7z 穿过
+//     junction 写进 .pnpm 商店污染共享依赖；回退可离线直接移回）；
+//  2. 解压 + 注册依赖后执行 pnpm install 让 pnpm 重建一致树（网络失败降级，由健康校验定夺）；
+//  3. 拉起服务并健康校验；失败自动对齐重试一次；仍失败回退快照并恢复服务；
+//  4. 成功把导入前快照提升为 LKG（与更新/删除成功后的 LKG 语义一致）。
+
+// importBakSuffix 插件导入事务快照后缀（区别于更新流程进行中的 .dshbak 与 LKG .lkgbak）。
+const importBakSuffix = ".importbak"
+
+// restoredPluginProfileDirs 插件导入将影响的 profile 目录集合（manifest 源 profile +
+// 当前激活 profile 的并集，去重排序）——与 registerRestoredPlugins 的写入目标一致，
+// 供快照 / 回退使用。manifest 缺失或未含插件配置时返回空。
+func restoredPluginProfileDirs(masterZipPath string) []string {
+	data, err := zipReadFile(masterZipPath, "manifest.json")
+	if err != nil {
+		return nil
+	}
+	var m exportManifest
+	if err := json.Unmarshal(data, &m); err != nil || m.Plugins.Dependencies == nil {
+		return nil
+	}
+	home := dshHomeDir()
+	if home == "" {
+		return nil
+	}
+	set := map[string]bool{}
+	if m.Plugins.Profile != "" {
+		set[filepath.Join(home, "profiles", m.Plugins.Profile)] = true
+	} else {
+		set[filepath.Join(home, "profiles")] = true
+	}
+	if dir, _, err := profilePlugins(); err == nil {
+		set[dir] = true
+	}
+	out := make([]string, 0, len(set))
+	for d := range set {
+		out = append(out, d)
+	}
+	sort.Strings(out)
+	return out
+}
+
+// snapshotImportProfiles 导入插件前快照各 profile：备份 package.json / pnpm-lock.yaml，
+// 并把 node_modules 整目录改名暂存（同盘 rename，秒级；回退可直接移回、不依赖网络）。
+// 返回每个目录是否成功暂存了 node_modules。前提：服务已停止（killServer 后调用——
+// 运行中的 node 进程占用文件会导致改名失败）。
+func snapshotImportProfiles(dirs []string) []bool {
+	had := make([]bool, len(dirs))
+	for i, dir := range dirs {
+		for _, name := range []string{"package.json", "pnpm-lock.yaml"} {
+			src := filepath.Join(dir, name)
+			if data, err := os.ReadFile(src); err == nil {
+				_ = os.WriteFile(src+importBakSuffix, data, 0o644)
+			}
+		}
+		nm := filepath.Join(dir, "node_modules")
+		if _, err := os.Stat(nm); err != nil {
+			continue
+		}
+		bak := nm + importBakSuffix
+		_ = os.RemoveAll(bak)
+		if os.Rename(nm, bak) == nil {
+			had[i] = true
+		} else {
+			log.Printf("import: park node_modules failed (%s)", nm)
+		}
+	}
+	return had
+}
+
+// rollbackImportProfiles 回退插件导入：还原 package.json / pnpm-lock.yaml，并把暂存的
+// node_modules 移回（离线可用）。had[i] 指示该目录是否暂存了 node_modules。
+func rollbackImportProfiles(dirs []string, had []bool) {
+	for i, dir := range dirs {
+		for _, name := range []string{"package.json", "pnpm-lock.yaml"} {
+			bak := filepath.Join(dir, name+importBakSuffix)
+			if data, err := os.ReadFile(bak); err == nil {
+				_ = os.WriteFile(filepath.Join(dir, name), data, 0o644)
+			}
+		}
+		nm := filepath.Join(dir, "node_modules")
+		if i < len(had) && had[i] {
+			_ = os.RemoveAll(nm)
+			if os.Rename(nm+importBakSuffix, nm) != nil {
+				log.Printf("import: restore node_modules failed (%s)", nm)
+			}
+		}
+	}
+}
+
+// cleanupImportProfiles 导入成功：清理导入快照残留。
+func cleanupImportProfiles(dirs []string) {
+	for _, dir := range dirs {
+		for _, name := range []string{"package.json", "pnpm-lock.yaml"} {
+			_ = os.Remove(filepath.Join(dir, name+importBakSuffix))
+		}
+		_ = os.RemoveAll(filepath.Join(dir, "node_modules"+importBakSuffix))
+	}
+}
+
+// promoteImportProfilesToLkg 导入成功且服务校验通过：把导入前快照提升为 LKG——
+// 未来冷启动失败时可按「导入前状态」回退（与插件更新/删除成功后的 LKG 语义一致）。
+func promoteImportProfilesToLkg(dirs []string) {
+	for _, dir := range dirs {
+		for _, name := range []string{"package.json", "pnpm-lock.yaml"} {
+			src := filepath.Join(dir, name+importBakSuffix)
+			if _, err := os.Stat(src); err != nil {
+				continue
+			}
+			dst := filepath.Join(dir, name+lkgSuffix)
+			_ = os.Remove(dst)
+			_ = os.Rename(src, dst)
+		}
+		srcNM := filepath.Join(dir, "node_modules"+importBakSuffix)
+		if _, err := os.Stat(srcNM); err == nil {
+			dstNM := filepath.Join(dir, "node_modules"+lkgSuffix)
+			_ = os.RemoveAll(dstNM)
+			_ = os.Rename(srcNM, dstNM)
+		}
+	}
+}
+
+// finishPluginImport 插件导入收尾：拉起服务并健康校验（restartAndVerifyHealing，
+// 失败自动 pnpm 对齐重试一次）；仍失败则回退导入前快照并恢复服务。
+// 成功返回 nil；失败返回面向用户的说明文案（含可疑插件与回退结果）。
+func finishPluginImport(dirs []string, hadNM []bool) error {
+	healthy, suspects := restartAndVerifyHealing(dirs)
+	if healthy {
+		promoteImportProfilesToLkg(dirs)
+		cleanupImportProfiles(dirs)
+		markServiceResumed()
+		log.Printf("import: plugins restored and service verified healthy")
+		return nil
+	}
+	reason := "启动日志存在加载错误（版本/插件不兼容）"
+	if len(suspects) > 0 {
+		reason += "（疑似插件：" + strings.Join(suspects, "、") + "）"
+	}
+	log.Printf("import: service not healthy after restore heal (%s), rolling back", reason)
+	killServer()
+	time.Sleep(1 * time.Second)
+	rollbackImportProfiles(dirs, hadNM)
+	if !restartAndVerifyServer() {
+		return fmt.Errorf("导入的插件导致服务启动失败（%s）。已回退导入内容，但回退后的服务仍未能就绪，请查看日志：%s", reason, filepath.Join(logDir, "server.log"))
+	}
+	markServiceResumed()
+	return fmt.Errorf("导入的插件导致服务启动失败（%s）。已自动回退到导入前状态，服务已恢复正常，本次导入未生效。", reason)
+}
+
+// markServiceResumed 服务已就绪并刷新托盘菜单（与 resumeServiceAfterRestore 的状态口径一致）。
+func markServiceResumed() {
+	serverReady.Store(true)
+	serviceFailed.Store(false)
+	refreshServiceMenu()
+}
