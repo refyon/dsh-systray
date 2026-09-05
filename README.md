@@ -41,7 +41,7 @@ dsh-systray 是一个 Windows / macOS 系统托盘应用，围绕三个核心特
 | 平台 | 架构 | 包 | 大小 | 下载 |
 | --- | --- | --- | --- | --- |
 | Windows | x64 | ZIP | 4.8 MB | [下载 Windows 版](https://github.com/refyon/dsh-systray/releases/latest/download/dsh-systray-windows-x64.zip) |
-| macOS | Intel + Apple Silicon | ZIP (.app) | 8.4 MB | [下载 macOS 版](https://github.com/refyon/dsh-systray/releases/latest/download/dsh-systray-macos-universal.zip) |
+| macOS | Intel + Apple Silicon | ZIP (.app) | 8.5 MB | [下载 macOS 版](https://github.com/refyon/dsh-systray/releases/latest/download/dsh-systray-macos-universal.zip) |
 
 ## 功能
 
