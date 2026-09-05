@@ -342,6 +342,7 @@ func main() {
 		// 统一日志：所有行为（自身/UI/托盘/子进程）写入 logDir/dsh-systray.log
 		// （进程级单例句柄，行格式 ts [LEVEL] [module] message；见 logsetup.go）
 		initUnifiedLog()
+		mergeLegacyLogs() // 升级迁移：合并旧多文件日志后删除源文件（须先于任何新日志写入）
 		log.SetOutput(appLogWriter{})
 	}
 	log.SetFlags(log.LstdFlags)

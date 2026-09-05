@@ -29,6 +29,10 @@ const state = {
   expSelected: { sessions: true, plugins: false, files: false },
   impItems: [],
   impDone: {},          // kind → true：恢复完成标记（对应项显示 ✓ 已完成）
+  plugRows: [],         // 全量插件（Go PluginRow），供过滤渲染与事件委托按索引取用
+  plugFilter: "",       // 插件过滤关键字（输入防抖后）
+  plugState: {},        // name → {note,noteTone,upLatest,upShow}：滚动/过滤重渲染后恢复行内状态
+  plugTimer: null,      // 过滤防抖计时器
   updateProgress: null, // {text, pct} 更新进度
   splashMode: "startup", // startup | update
   shotPage: "",         // 截图模式当前页（GetShotPage 返回；空=正常模式）
@@ -304,6 +308,36 @@ function wireAbout() {
     $("btn-harness-update").disabled = true;
     await bindings().StartHarnessUpdate();
   });
+
+  // 插件过滤：输入防抖后重渲染（大量插件时快速定位）
+  const filterEl = $("plug-filter");
+  if (filterEl) {
+    filterEl.addEventListener("input", () => {
+      clearTimeout(state.plugTimer);
+      state.plugTimer = setTimeout(() => {
+        state.plugFilter = filterEl.value || "";
+        renderPlugins();
+      }, 200);
+    });
+    filterEl.addEventListener("keydown", (e) => {
+      if (e.key === "Escape") { filterEl.value = ""; state.plugFilter = ""; renderPlugins(); }
+    });
+  }
+
+  // 插件行按钮：事件委托（300+ 行也只挂一个监听），行索引对应全量 rows
+  const plugList = $("plug-list");
+  if (plugList) {
+    plugList.addEventListener("click", (e) => {
+      const item = e.target.closest(".plug-item");
+      const btn = e.target.closest("button");
+      if (!item || !btn) return;
+      const p = state.plugRows[Number(item.dataset.idx)];
+      if (!p) return;
+      if (btn.dataset.check !== undefined) doPluginCheck(p, item, btn);
+      else if (btn.dataset.update !== undefined) doPluginUpdate(p, item, btn);
+      else if (btn.dataset.del !== undefined) doPluginRemove(p, item, btn);
+    });
+  }
 }
 
 // ==================== 插件列表（每行单独检查 / 更新） ====================
@@ -321,35 +355,54 @@ function setNote(item, text, tone) {
 async function loadPlugins() {
   const a = bindings();
   if (!a) return;
-  const list = $("plug-list");
-  const empty = $("plug-empty");
-  const count = $("plug-count");
   let rows = [];
   try {
     rows = (await a.GetInstalledPlugins()) || [];
   } catch (e) {
     console.error("GetInstalledPlugins", e);
-    empty.classList.remove("hidden");
-    empty.textContent = "插件列表加载失败：" + (e && e.message ? e.message : e);
-    count.textContent = "";
+    $("plug-empty").classList.remove("hidden");
+    $("plug-empty").textContent = "插件列表加载失败：" + (e && e.message ? e.message : e);
+    $("plug-count").textContent = "";
     return;
   }
-  empty.textContent = "未安装任何用户插件（在 Web UI 中通过 dsh add 安装）";
-  list.textContent = "";
-  if (!rows.length) {
-    empty.classList.remove("hidden");
-    count.textContent = "";
-    return;
-  }
-  empty.classList.add("hidden");
-  count.textContent = rows.length + " 个";
-  for (const p of rows) list.appendChild(renderPluginRow(p));
+  state.plugRows = rows;
+  renderPlugins();
 }
 
-/** 组装一个插件行；p 为 Go 返回的 PluginRow。 */
-function renderPluginRow(p) {
+/**
+ * 按过滤关键字渲染插件列表。只负责“显示哪些行”；行内状态（检查结果/更新按钮）
+ * 由 state.plugState 恢复——过滤/刷新重渲染后不丢失。事件统一委托给 #plug-list。
+ */
+function renderPlugins() {
+  const list = $("plug-list");
+  const empty = $("plug-empty");
+  const count = $("plug-count");
+  const q = (state.plugFilter || "").trim().toLowerCase();
+  const byName = new Map();
+  const shown = [];
+  state.plugRows.forEach((p, i) => {
+    byName.set(p.name, i);
+    if (!q) { shown.push(p); return; }
+    const hay = ((p.name || "") + " " + (PLUG_SRC_LABEL[p.source] || p.source || "") + " " + (p.version || "")).toLowerCase();
+    if (hay.includes(q)) shown.push(p);
+  });
+  const total = state.plugRows.length;
+  count.textContent = total ? (shown.length + " / " + total + " 个") : "";
+  empty.textContent = total
+    ? (shown.length ? "" : "没有匹配“" + state.plugFilter + "”的插件")
+    : "未安装任何用户插件（在 Web UI 中通过 dsh add 安装）";
+  empty.classList.toggle("hidden", shown.length > 0);
+  list.textContent = "";
+  const frag = document.createDocumentFragment();
+  for (const p of shown) frag.appendChild(renderPluginRow(p, byName.get(p.name)));
+  list.appendChild(frag);
+}
+
+/** 组装一个插件行；p 为 Go 返回的 PluginRow，idx 为全量 rows 中的索引（事件委托取数据用）。 */
+function renderPluginRow(p, idx) {
   const item = document.createElement("div");
   item.className = "plug-item";
+  item.dataset.idx = String(idx);
 
   const name = document.createElement("div");
   name.className = "plug-name";
@@ -380,7 +433,7 @@ function renderPluginRow(p) {
     const checkBtn = document.createElement("button");
     checkBtn.className = "btn btn-outline btn-xs";
     checkBtn.textContent = "检查更新";
-    checkBtn.addEventListener("click", () => doPluginCheck(p, item, checkBtn));
+    checkBtn.dataset.check = "";
     actions.appendChild(checkBtn);
   }
   // 「更新」按钮：所有行同尺寸同文本，仅颜色区分——可用=主色（查出新版本后显示），不可用=灰
@@ -394,52 +447,69 @@ function renderPluginRow(p) {
     upBtn.classList.add("btn-muted"); // 与 btn-primary 相同版式，仅颜色表达不可用
   }
   upBtn.disabled = !p.canUpdate;
-  upBtn.addEventListener("click", () => doPluginUpdate(p, item, upBtn));
   actions.appendChild(upBtn);
 
   // 「删除」：确认后物理移除该插件（其全部环境），失败自动回退；完成后 Go 端发 plugins:changed 刷新。
   // 用“安静危险”样式（透明底 + 描边），避免整块红底在行内过于突兀。
   const delBtn = document.createElement("button");
   delBtn.className = "btn btn-danger-ghost btn-xs";
-  delBtn.dataset.del = "";
   delBtn.textContent = "删除";
-  delBtn.addEventListener("click", () => doPluginRemove(p, item, delBtn));
+  delBtn.dataset.del = "";
   actions.appendChild(delBtn);
 
   item.append(main, actions);
   if (!p.canUpdate && p.reason) setNote(item, p.reason, "muted");
+  // 重渲染后恢复行内状态（检查结果 / 更新可用性），避免过滤/刷新丢失
+  const st = state.plugState[p.name];
+  if (st) applyPlugState(item, st);
   return item;
 }
 
-/** 单插件检查（行内按钮触发，仅影响该行）。 */
+/** 恢复一行在检查/更新后留下的状态：note 文案语气 + 更新按钮可用性。 */
+function applyPlugState(item, st) {
+  if (st.note) setNote(item, st.note, st.noteTone || "muted");
+  const upBtn = item.querySelector("button[data-update]");
+  if (upBtn) {
+    if (st.upShow) {
+      upBtn.disabled = false;
+      upBtn.classList.remove("hidden");
+      upBtn.textContent = "更新" + (st.upLatest ? " v" + st.upLatest : "");
+    } else if (st.upShow === false) {
+      upBtn.disabled = true;
+      upBtn.classList.add("hidden");
+    }
+  }
+}
+
+/** 单插件检查（事件委托触发，仅影响该行；结果写入 plugState 供重渲染恢复）。 */
 async function doPluginCheck(p, item, btn) {
   const a = bindings();
   if (!a) return;
   btn.disabled = true;
   setNote(item, "正在检查更新…", "muted");
   const upBtn = item.querySelector("button[data-update]");
+  const st = state.plugState[p.name] || (state.plugState[p.name] = {});
   try {
     const r = await a.CheckPluginUpdate(p.name);
     if (r.error) {
-      setNote(item, "无法检查更新：" + r.error, "err");
+      st.note = "无法检查更新：" + r.error; st.noteTone = "err";
+      setNote(item, st.note, st.noteTone);
       return;
     }
     if (r.hasUpdate) {
-      setNote(item, "有新版本 " + vtag(r.latest) + "，可更新", "ok");
-      if (upBtn) {
-        upBtn.dataset.latest = r.latest || "";
-        upBtn.disabled = false;
-        upBtn.classList.remove("hidden");
-      }
+      st.note = "有新版本 " + vtag(r.latest) + "，可更新"; st.noteTone = "ok";
+      st.upLatest = r.latest || ""; st.upShow = true;
+      setNote(item, st.note, st.noteTone);
+      if (upBtn) { upBtn.disabled = false; upBtn.classList.remove("hidden"); upBtn.textContent = "更新 v" + st.upLatest; }
     } else {
-      setNote(item, "已是最新版本（" + vtag(r.latest) + "）", "muted");
-      if (upBtn) {
-        upBtn.disabled = true;
-        upBtn.classList.add("hidden");
-      }
+      st.note = "已是最新版本（" + vtag(r.latest) + "）"; st.noteTone = "muted";
+      st.upShow = false;
+      setNote(item, st.note, st.noteTone);
+      if (upBtn) { upBtn.disabled = true; upBtn.classList.add("hidden"); }
     }
   } catch (e) {
-    setNote(item, "检查失败：" + (e && e.message ? e.message : e), "err");
+    st.note = "检查失败：" + (e && e.message ? e.message : e); st.noteTone = "err";
+    setNote(item, st.note, st.noteTone);
   } finally {
     btn.disabled = false;
   }
@@ -447,7 +517,7 @@ async function doPluginCheck(p, item, btn) {
 
 /** 单插件更新（确认后交给 Go 端执行，splash 进度，完成/失败弹窗）。 */
 async function doPluginUpdate(p, item, upBtn) {
-  const ver = upBtn.dataset.latest || "";
+  const ver = (state.plugState[p.name] || {}).upLatest || "";
   const ok = await confirmDialog(
     "更新插件？",
     "将把插件 " + p.name + " 更新到" + (ver ? " " + vtag(ver) : "最新版本") +

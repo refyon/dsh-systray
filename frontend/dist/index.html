@@ -132,6 +132,9 @@
             </div>
             <span id="plug-count" class="plug-count"></span>
           </div>
+          <div class="plug-filter-row">
+            <input id="plug-filter" class="plug-filter" type="search" placeholder="过滤插件（名称 / 来源 / 版本）…" aria-label="过滤插件" autocomplete="off" />
+          </div>
           <div id="plug-list" class="plug-list"></div>
           <div id="plug-empty" class="plug-empty row-sub hidden">未安装任何用户插件（在 Web UI 中通过 dsh add 安装）</div>
         </div>
@@ -140,7 +143,6 @@
       <!-- 日志 -->
       <section id="page-logs" class="page hidden">
         <div class="log-head">
-          <div class="log-title">统一日志（时间戳 · 等级 · 模块）</div>
           <div id="log-path" class="log-path">—</div>
         </div>
         <div class="log-tools">

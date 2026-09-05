@@ -395,7 +395,35 @@ input { font-family: inherit; }
 /* 插件列表：每行 = 名称/版本/来源徽标 + 行内状态说明 + 检查/更新按钮 */
 .plug-count { font-size: var(--fs-xs); color: var(--muted); flex-shrink: 0; }
 
-.plug-list { display: flex; flex-direction: column; gap: var(--sp-2); margin-top: var(--sp-3); }
+/* 过滤框：列表内滚时保持可用，小号贴近列表头部 */
+.plug-filter-row { display: flex; margin: var(--sp-2) 0 0; }
+.plug-filter {
+  flex: 1;
+  min-width: 0;
+  height: 32px;
+  padding: 0 var(--sp-3);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface-2);
+  color: var(--text);
+  font-size: var(--fs-sm);
+  font-family: var(--font);
+}
+.plug-filter::placeholder { color: var(--muted); }
+.plug-filter:focus-visible { outline: 2px solid var(--focus); outline-offset: -1px; }
+
+/* 列表容器：大量插件（数十~上百）时限高内滚，头部（标题/计数/过滤框）保持可见 */
+.plug-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+  margin-top: var(--sp-3);
+  max-height: min(46vh, 340px);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding-right: var(--sp-1);
+  scrollbar-gutter: stable;
+}
 .plug-empty { margin: var(--sp-3) 0 var(--sp-1); }
 
 .plug-item {
@@ -458,15 +486,7 @@ input { font-family: inherit; }
   margin-bottom: var(--sp-3);
 }
 
-/* 统一日志标题：日志页左侧说明（下拉切换已移除——所有日志合并为单一文件） */
-.log-title {
-  font-size: var(--fs-sm);
-  font-weight: 600;
-  color: var(--text);
-  flex-shrink: 0;
-}
-
-/* 日志文件完整路径：占满下一行并允许换行显示完整，不再省略截断 */
+/* 统一日志路径（完整路径换行显示，不省略截断） */
 .log-path {
   flex: 1 1 100%;
   font-size: var(--fs-xs);
@@ -642,6 +662,9 @@ input { font-family: inherit; }
 .modal-card {
   position: relative;
   width: 360px;
+  max-height: calc(100% - 2 * var(--sp-5)); /* 长内容不把按钮推出窗口：卡片限高 + 内容区滚动 */
+  display: flex;
+  flex-direction: column;
   padding: var(--sp-5) var(--sp-6);
   background: var(--surface);
   border: 1px solid var(--border);
@@ -652,6 +675,7 @@ input { font-family: inherit; }
 .modal-title {
   font-size: var(--fs-lg);
   font-weight: 600;
+  flex-shrink: 0;
 }
 
 .modal-msg {
@@ -659,6 +683,9 @@ input { font-family: inherit; }
   color: var(--muted);
   font-size: var(--fs-sm);
   line-height: 1.7;
+  overflow-y: auto;      /* 长说明内部滚动，按钮行保持可见 */
+  min-height: 0;
+  overscroll-behavior: contain;
 }
 
 .modal-actions {
@@ -666,9 +693,10 @@ input { font-family: inherit; }
   justify-content: flex-end;
   gap: var(--sp-3);
   margin-top: var(--sp-5);
+  flex-shrink: 0;        /* 不被压缩挤出视口 */
 }
 
-/* ---------- 重置勾选弹层 ---------- */
+/* 重置勾选弹层（勾选区同样参与弹性布局，避免同患“按钮被挤出”问题） */
 #reset-modal .modal-card { width: 420px; }
 
 .reset-opts {
@@ -676,6 +704,8 @@ input { font-family: inherit; }
   flex-direction: column;
   gap: var(--sp-2);
   margin-top: var(--sp-4);
+  overflow-y: auto;
+  min-height: 0;
 }
 
 .reset-opt {
