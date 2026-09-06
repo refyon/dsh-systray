@@ -16,6 +16,10 @@
 </p>
 
 <p align="center">
+  <a href="README.md">简体中文</a> · <a href="README.en.md">English</a>
+</p>
+
+<p align="center">
   <a href="https://github.com/refyon/dsh-systray/releases/latest"><img alt="Latest release" src="https://img.shields.io/github/v/release/refyon/dsh-systray?style=flat-square&color=2563eb" /></a>
   <img alt="Windows x64" src="https://img.shields.io/badge/Windows-x64-2563eb.svg?style=flat-square" />
   <img alt="macOS" src="https://img.shields.io/badge/macOS-Universal-2563eb.svg?style=flat-square" />
