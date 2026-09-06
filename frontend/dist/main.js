@@ -128,7 +128,35 @@ const I18N_DYN = {
   "无法更新：{0}": "Update failed: {0}",
   "更新失败：{0}": "Update failed: {0}",
   "取消恢复": "Cancel restore",
-  "自愈中不可取消": "Cannot cancel while self-healing",
+  "确认操作": "Confirm",
+  "确定": "OK",
+  "更新并启用插件？": "Update and enable plugin?",
+  "更新插件？": "Update plugin?",
+  "启用插件？": "Enable plugin?",
+  "开始更新": "Start update",
+  "开始重置": "Start reset",
+  "覆盖更新本地插件？": "Overwrite-update local plugin?",
+  "将本地插件改为所选版本？": "Point local plugin to the selected version?",
+  "覆盖更新": "Overwrite & update",
+  "覆盖为所选版本": "Overwrite to selected version",
+  "删除插件？": "Remove plugin?",
+  "移除待重指定插件？": "Remove pending-respec plugin?",
+  "移除": "Remove",
+  "删除": "Delete",
+  "检测到数据冲突": "Data conflicts detected",
+  "覆盖并恢复": "Overwrite & restore",
+  "跳过": "Skip",
+  "已选择跳过 {0} 项冲突，现有内容将保留。": "Skipped {0} conflicts — existing content is kept.",
+  "正在准备恢复…": "Preparing restore…",
+  "插件列表加载失败：{0}": "Failed to load plugin list: {0}",
+  "开启预发布通道？": "Enable prerelease channel?",
+  "开启后，harness 更新可能安装到不稳定的 alpha / beta / rc 预发布版，可能导致服务启动失败。确定开启吗？": "Enabling may make harness updates install unstable alpha / beta / rc builds and could break the service. Enable now?",
+  "确定开启": "Enable",
+  "更新 dsh-systray？": "Update dsh-systray?",
+  "将下载并安装新版本并自动重启（当前为开发构建时无可用更新）。确认开始更新吗？": "A new version will be downloaded, installed and the app restarted (no updates in dev builds). Start now?",
+  "更新 DeepSeek Harness？": "Update DeepSeek Harness?",
+  "将更新 DeepSeek Harness 到最新版本，更新期间服务会短暂重启，失败会自动回退。确认开始更新吗？": "DeepSeek Harness will be updated to the latest version; the service restarts briefly and failures auto-rollback. Start now?",
+  "尝试启用": "Try enabling",
 };
 function tr(s) { return (curLangCode() === "en" && I18N_DYN[s]) || s; }
 function fmt(s) {
@@ -422,7 +450,7 @@ async function loadResetVersions() {
 /** 弹窗内说明行（警示色；空文本隐藏）。loadResetVersions 专用。 */
 function showResetTargetNote(text) {
   const note = $("reset-target-note");
-  note.textContent = text || "";
+  note.textContent = tr(text || "");
   note.classList.toggle("hidden", !note.textContent);
 }
 
@@ -1117,6 +1145,7 @@ function impSt(kind) {
 
 /** 行内状态文字：tone = "" | ok | err | muted */
 function impRowText(kind, text, tone) {
+  text = tr(text);
   const st = impSt(kind);
   st.text = text || "";
   const el = document.querySelector('[data-ptext="' + kind + '"]');
@@ -1458,12 +1487,12 @@ function wireSplashCancel() {
  */
 function confirmDialog3(title, msg, okLabel, skipLabel) {
   return new Promise((resolve) => {
-    $("modal-title").textContent = title || "确认操作";
-    $("modal-msg").textContent = msg || "";
-    $("modal-ok").textContent = okLabel || "确定";
+    $("modal-title").textContent = tr(title) || tr("确认操作");
+    $("modal-msg").textContent = tr(msg) || "";
+    $("modal-ok").textContent = tr(okLabel) || tr("确定");
     const skipBtn = $("modal-skip");
     skipBtn.classList.toggle("hidden", !skipLabel);
-    if (skipLabel) skipBtn.textContent = skipLabel;
+    if (skipLabel) skipBtn.textContent = tr(skipLabel);
     $("modal").classList.remove("hidden");
     const done = (val) => {
       $("modal").classList.add("hidden");
