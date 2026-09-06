@@ -924,12 +924,15 @@ func runPluginUpdate(id string) {
 		hadNM[i] = snapshotPluginProfile(dir)
 	}
 
-	// 2) pnpm 安装（逐 profile 执行）
+	// 2) pnpm 安装（逐 profile 执行；输出捕获入失败原因）
 	var perr error
 	for i, dir := range row.Locs {
 		splash.Update(fmt.Sprintf("正在更新 %s（%d/%d）…", row.Name, i+1, len(row.Locs)),
 			0.25+0.4*float64(i)/float64(len(row.Locs)))
-		if perr = runProfileCmd(dir, pnpmCmd(), args...); perr != nil {
+		var out string
+		out, perr = runProfileCmdCapture(dir, pnpmCmd(), args...)
+		if perr != nil {
+			perr = profileInstallErr(perr, out)
 			break
 		}
 	}
@@ -1061,6 +1064,23 @@ func shotPluginCheck(id string) PluginCheckResult {
 		}
 	}
 	return PluginCheckResult{Name: id, Error: "未找到该插件。"}
+}
+
+// profileInstallErr 包装 pnpm 安装失败：附带命令输出尾部（截断 ~600 字），使
+// 「安装失败：exit status 1」类干瘪原因可直接定位根因（此前失败输出只进统一日志，
+// 随轮转归档到 .1、界面不可见，需翻档排查——mac 实证：github 源依赖 SSH 解析失败）。
+func profileInstallErr(err error, out string) error {
+	if err == nil {
+		return nil
+	}
+	tail := strings.TrimSpace(out)
+	if len(tail) > 600 {
+		tail = "…" + tail[len(tail)-600:]
+	}
+	if tail == "" {
+		return err
+	}
+	return fmt.Errorf("%v：%s", err, tail)
 }
 
 // rollbackPluginUpdate 插件更新失败：回退全部 profile 快照 → 重启校验 → 弹窗报告。
@@ -1527,7 +1547,7 @@ func runLocalPluginUpdate(row PluginRow, srcDir string) {
 		hadNM[i] = snapshotPluginProfile(dir)
 	}
 
-	// 2) 逐 profile 改写 spec 并 pnpm install（失败即回退）
+	// 2) 逐 profile 改写 spec 并 pnpm install（失败即回退；输出捕获入原因，避免干瘪 exit status）
 	var perr error
 	for i, dir := range row.Locs {
 		splash.Update(fmt.Sprintf("正在更新 %s（%d/%d）…", row.Name, i+1, len(row.Locs)),
@@ -1536,7 +1556,11 @@ func runLocalPluginUpdate(row PluginRow, srcDir string) {
 		// 使 package.json 在安装前即为最终一致形态（服务重启健康校验可正确裁决兼容性）。
 		relinkPendingLocal(dir, row.Name)
 		if perr = setProfileDepSpec(dir, row.Name, spec); perr == nil {
-			perr = runProfileCmd(dir, pnpmCmd(), "install")
+			var out string
+			out, perr = runProfileCmdCapture(dir, pnpmCmd(), "install")
+			if perr != nil {
+				perr = profileInstallErr(perr, out)
+			}
 		}
 		if perr != nil {
 			break
