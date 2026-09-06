@@ -121,55 +121,14 @@ func pnpmCmd() string {
 
 func runtimeOK() bool { return nodeAvailable() && pnpmAvailable() }
 
-// macNodeURLs 便携 Node 下载地址（按序自动尝试，遇超时/失败自动切换下一个）：
-// 环境变量 DSH_NODE_MIRROR 指定时仅用该镜像；否则依次尝试官方与国内镜像。
+// macNodeURLs 便携 Node 下载地址（多镜像，见 mirrors.go；DSH_NODE_MIRROR 可固定单一来源）。
 func macNodeURLs() []string {
-	arch := macArch()
-	file := fmt.Sprintf("node-%s-darwin-%s.tar.gz", macNodeVersion, arch)
-	env := os.Getenv("DSH_NODE_MIRROR")
-	if env != "" {
-		return []string{strings.TrimRight(env, "/") + "/" + macNodeVersion + "/" + file}
-	}
-	bases := []string{
-		"https://nodejs.org/dist",
-		"https://npmmirror.com/mirrors/node",
-		"https://mirrors.huaweicloud.com/nodejs",
-	}
-	out := make([]string, 0, len(bases))
-	for _, b := range bases {
-		out = append(out, b+"/"+macNodeVersion+"/"+file)
+	file := fmt.Sprintf("%s/node-%s-darwin-%s.tar.gz", macNodeVersion, macNodeVersion, macArch())
+	out := make([]string, 0, len(nodeDistBases()))
+	for _, b := range nodeDistBases() {
+		out = append(out, b+"/"+file)
 	}
 	return out
-}
-
-// tryNodeMirrors 依次尝试下载 node 归档；单源超时（downloadTimeout）即切换下一镜像，
-// 全部失败返回汇总错误。
-func tryNodeMirrors(urls []string, tgz string, splash *SplashState) error {
-	var errs []string
-	for i, u := range urls {
-		splash.Update(fmt.Sprintf("正在下载 Node.js 运行时（来源 %d/%d：%s）…",
-			i+1, len(urls), urlHost(u)), 0.10)
-		ctx, cancel := context.WithTimeout(context.Background(), 4*time.Minute)
-		err := downloadFileTo(ctx, u, tgz)
-		cancel()
-		if err == nil {
-			return nil
-		}
-		errs = append(errs, fmt.Sprintf("%s: %v", urlHost(u), err))
-		log.Printf("node download mirror %q failed: %v", u, err)
-	}
-	return fmt.Errorf("下载 Node.js 失败（已尝试 %d 个镜像）：%s", len(urls), strings.Join(errs, "；"))
-}
-
-func urlHost(u string) string {
-	if i := strings.Index(u, "://"); i >= 0 {
-		rest := u[i+3:]
-		if j := strings.IndexAny(rest, "/"); j >= 0 {
-			return rest[:j]
-		}
-		return rest
-	}
-	return u
 }
 
 // ensureRuntime 下载便携 Node.js + 安装 pnpm（无 brew / 无需管理员，多镜像自动切换）。
@@ -184,7 +143,11 @@ func ensureRuntime(splash *SplashState) error {
 	}
 	if !nodeAvailable() {
 		tgz := filepath.Join(runtimeDir(), "node.tgz")
-		if err := tryNodeMirrors(macNodeURLs(), tgz, splash); err != nil {
+		urls := macNodeURLs()
+		err := mirrorDownload(urls, tgz, "Node.js", 4*time.Minute, func(host string, pct float64) {
+			splash.Update(fmt.Sprintf("正在下载 Node.js 运行时（来源：%s，%.0f%%）…", host, pct*100), 0.10)
+		})
+		if err != nil {
 			return err
 		}
 		splash.Update("正在解压 Node.js 运行时…", 0.24)
@@ -213,28 +176,25 @@ func ensureRuntime(splash *SplashState) error {
 	return nil
 }
 
-// pnpmRegistries pnpm 安装源（npm registry）：环境变量 DSH_NPM_REGISTRY 指定时仅用该源；
-// 否则先官方再 npmmirror（npm 默认官方，遇超时自动切换）。
-func pnpmRegistries() []string {
-	if r := os.Getenv("DSH_NPM_REGISTRY"); r != "" {
-		return []string{strings.TrimRight(r, "/")}
-	}
-	return []string{"https://registry.npmjs.org", "https://registry.npmmirror.com"}
-}
-
-// installPnpmMirrors 用便携 npm 安装 pnpm，registry 超时自动切换镜像。
+// installPnpmMirrors 用便携 npm 安装 pnpm：registry 多镜像自动切换（npmRegistryBases）；
+// 收紧 npm 自身 fetch 超时/重试，让慢源快速失败并切换（npm 默认 5 分钟×多次重试会“假超时”）。
 func installPnpmMirrors(splash *SplashState) error {
 	npm := filepath.Join(nodeDir(), "bin", "npm")
-	registries := pnpmRegistries()
+	registries := npmRegistryBases()
 	var errs []string
 	for i, reg := range registries {
-		splash.Update(fmt.Sprintf("正在安装 pnpm 包管理器（registry %d/%d）…", i+1, len(registries)), 0.26)
+		splash.Update(fmt.Sprintf("正在安装 pnpm 包管理器（registry %d/%d：%s）…",
+			i+1, len(registries), urlHost(reg)), 0.26)
 		ctx, cancel := context.WithTimeout(context.Background(), 4*time.Minute)
 		cmd := exec.CommandContext(ctx, npm, "install", "-g", "pnpm@"+macPnpmVersion,
 			"--prefix", runtimeDir(), "--loglevel", "error")
 		cmd.Env = append(os.Environ(),
 			"PATH="+filepath.Join(nodeDir(), "bin")+string(os.PathListSeparator)+os.Getenv("PATH"),
-			"npm_config_registry="+reg)
+			"npm_config_registry="+reg,
+			"npm_config_fetch_timeout=20000", // 单次 fetch 20s 即失败（而非默认 5 分钟挂起）
+			"npm_config_fetch_retries=1",
+			"npm_config_fetch_retry_mintimeout=1000",
+			"npm_config_fetch_retry_maxtimeout=10000")
 		hideCmdWindow(cmd)
 		w := newModuleLogWriter("install")
 		cmd.Stdout = w

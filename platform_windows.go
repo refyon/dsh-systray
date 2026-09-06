@@ -138,7 +138,18 @@ func legacyHarnessDir() string {
 	return filepath.Join(base, "Programs", "dsh-systray-harness")
 }
 
-const nodeDownloadURL = "https://nodejs.org/dist/v24.9.0/node-v24.9.0-win-x64.zip"
+// winNodeVersion 便携 Node 版本（与镜像 URL 拼接；与 macOS 便携运行时一致）。
+const winNodeVersion = "v24.9.0"
+
+// winNodeURLs Node.js Windows 便携包下载地址（多镜像；DSH_NODE_MIRROR 可固定单一来源）。
+func winNodeURLs() []string {
+	file := winNodeVersion + "/node-" + winNodeVersion + "-win-x64.zip"
+	out := make([]string, 0, len(nodeDistBases()))
+	for _, b := range nodeDistBases() {
+		out = append(out, b+"/"+file)
+	}
+	return out
+}
 
 // ---- 便携运行环境（无管理员权限、无窗口、后台静默） ----
 
@@ -282,39 +293,63 @@ func extractZip(zipPath, destDir string) error {
 	return nil
 }
 
-// ensureRuntime 下载便携 Node.js + 安装 pnpm（后台静默，无 UAC）。
+// ensureRuntime 下载便携 Node.js + 安装 pnpm（后台静默，无 UAC；Node/pnpm 均多镜像自动切换）。
 func ensureRuntime(splash *SplashState) error {
 	if err := os.MkdirAll(runtimeDir(), 0o755); err != nil {
 		return err
 	}
 	if !nodeAvailable() {
-		splash.Update("正在下载 Node.js 运行时（约 30MB）…", 0.10)
 		zipPath := filepath.Join(runtimeDir(), "node.zip")
-		if err := downloadFile(nodeDownloadURL, zipPath, splash, 0.10, 0.22); err != nil {
-			return fmt.Errorf("下载 Node.js 失败：%w", err)
+		urls := winNodeURLs()
+		err := mirrorDownload(urls, zipPath, "Node.js", 6*time.Minute, func(host string, pct float64) {
+			splash.Update(fmt.Sprintf("正在下载 Node.js 运行时（来源：%s，%.0f%%）…", host, pct*100),
+				0.10+0.12*pct)
+		})
+		if err != nil {
+			return err
 		}
 		splash.Update("正在解压 Node.js 运行时…", 0.24)
 		if err := extractZip(zipPath, runtimeDir()); err != nil {
 			return fmt.Errorf("解压 Node.js 失败：%w", err)
 		}
 		_ = os.Remove(zipPath)
-		src := filepath.Join(runtimeDir(), "node-v24.9.0-win-x64")
+		src := filepath.Join(runtimeDir(), "node-"+winNodeVersion+"-win-x64")
 		if err := os.Rename(src, nodeDir()); err != nil && !fileExists(nodeExe()) {
 			return fmt.Errorf("整理 Node.js 目录失败：%w", err)
 		}
 	}
 	if !pnpmAvailable() {
-		splash.Update("正在安装 pnpm 包管理器…", 0.26)
-		cmd := exec.Command(filepath.Join(nodeDir(), "npm.cmd"), "install", "-g", "pnpm@10.34.5", "--prefix", runtimeDir(), "--loglevel", "error")
-		hideCmdWindow(cmd)
-		w := newModuleLogWriter("install")
-		cmd.Stdout = w
-		cmd.Stderr = w
-		if err := cmd.Run(); err != nil {
+		npm := filepath.Join(nodeDir(), "npm.cmd")
+		registries := npmRegistryBases()
+		var errs []string
+		for i, reg := range registries {
+			splash.Update(fmt.Sprintf("正在安装 pnpm 包管理器（registry %d/%d：%s）…",
+				i+1, len(registries), urlHost(reg)), 0.26)
+			ctx, cancel := context.WithTimeout(context.Background(), 4*time.Minute)
+			cmd := exec.CommandContext(ctx, npm, "install", "-g", "pnpm@10.34.5", "--prefix", runtimeDir(), "--loglevel", "error")
+			cmd.Env = append(os.Environ(),
+				"npm_config_registry="+reg,
+				"npm_config_fetch_timeout=20000", // 单次 fetch 20s 即失败（npm 默认 5 分钟挂起会“假超时”）
+				"npm_config_fetch_retries=1",
+				"npm_config_fetch_retry_mintimeout=1000",
+				"npm_config_fetch_retry_maxtimeout=10000")
+			hideCmdWindow(cmd)
+			w := newModuleLogWriter("install")
+			cmd.Stdout = w
+			cmd.Stderr = w
+			err := cmd.Run()
 			w.Flush()
-			return fmt.Errorf("安装 pnpm 失败：%w（日志：%s）", err, unifiedLogPath())
+			cancel()
+			if err == nil {
+				break
+			}
+			log.Printf("pnpm install via registry %q failed: %v", reg, err)
+			errs = append(errs, fmt.Sprintf("%s: %v", reg, err))
 		}
-		w.Flush()
+		if len(errs) == len(registries) {
+			return fmt.Errorf("安装 pnpm 失败（已尝试 %d 个 registry）：%s（日志：%s）",
+				len(registries), strings.Join(errs, "；"), unifiedLogPath())
+		}
 	}
 	splash.Update("运行环境就绪", 0.30)
 	return nil
