@@ -3,15 +3,18 @@
 package main
 
 import (
+	"context"
 	_ "embed"
 	"fmt"
 	"log"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"syscall"
+	"time"
 
 	"dsh-systray/internal/systray"
 )
@@ -56,27 +59,197 @@ func pickHarnessDir(title, initial string) string {
 	return strings.TrimSuffix(p, "/")
 }
 
-// ---- 运行环境（macOS 依赖 Homebrew 安装的 node/pnpm） ----
+// ---- 运行环境（macOS）：优先便携 Node/pnpm，缺省时才回退系统 PATH ----
+// 与 Windows 便携运行时同一策略：应用自下载 node + 安装 pnpm 到用户目录，
+// 不依赖 Homebrew/系统安装（原 brew 方案在无 brew 或网络受限时启动即失败）。
 
-func nodeCmd() string { return "node" }
-func pnpmCmd() string { return "pnpm" }
+const (
+	macNodeVersion = "v24.9.0" // 与 Windows 便携运行时保持一致
+	macPnpmVersion = "10.34.5"
+)
 
-func runtimeOK() bool {
-	_, e1 := exec.LookPath("node")
-	_, e2 := exec.LookPath("pnpm")
-	return e1 == nil && e2 == nil
+// runtimeDir 便携运行时根目录（macOS: ~/Library/Application Support/dsh-systray/runtime）。
+func runtimeDir() string {
+	base, err := os.UserConfigDir()
+	if err != nil {
+		base = os.TempDir()
+	}
+	return filepath.Join(base, "dsh-systray", "runtime")
 }
 
-// ensureRuntime macOS：调用 brew 安装脚本（install-prereqs.sh）。
+func nodeDir() string { return filepath.Join(runtimeDir(), "node") }
+func nodeBin() string { return filepath.Join(nodeDir(), "bin", "node") }
+
+// pnpmWrapper 便携 pnpm 包装脚本（绝对路径调用便携 node 执行 pnpm.cjs，规避 PATH/env 依赖）。
+func pnpmWrapper() string { return filepath.Join(runtimeDir(), "pnpm") }
+
+func fileExists(p string) bool {
+	_, err := os.Stat(p)
+	return err == nil
+}
+
+func nodeAvailable() bool {
+	if fileExists(nodeBin()) {
+		return true
+	}
+	_, err := exec.LookPath("node")
+	return err == nil
+}
+
+func pnpmAvailable() bool {
+	if fileExists(pnpmWrapper()) {
+		return true
+	}
+	_, err := exec.LookPath("pnpm")
+	return err == nil
+}
+
+// nodeCmd / pnpmCmd 优先返回便携运行时路径，其次系统 PATH。
+func nodeCmd() string {
+	if fileExists(nodeBin()) {
+		return nodeBin()
+	}
+	return "node"
+}
+
+func pnpmCmd() string {
+	if fileExists(pnpmWrapper()) {
+		return pnpmWrapper()
+	}
+	return "pnpm"
+}
+
+func runtimeOK() bool { return nodeAvailable() && pnpmAvailable() }
+
+// macNodeURL 便携 Node 下载地址（nodejs.org，可经环境变量 DSH_NODE_MIRROR 覆盖镜像前缀）。
+func macNodeURL() string {
+	mirror := os.Getenv("DSH_NODE_MIRROR")
+	if mirror == "" {
+		mirror = "https://nodejs.org/dist"
+	}
+	arch := "x64"
+	if runtime.GOARCH == "arm64" {
+		arch = "arm64"
+	}
+	return fmt.Sprintf("%s/%s/node-%s-darwin-%s.tar.gz", mirror, macNodeVersion, macNodeVersion, arch)
+}
+
+// ensureRuntime 下载便携 Node.js + 安装 pnpm（无 brew / 无需管理员）。失败返回错误，
+// 由调用方给出可操作的提示（错误信息含下载源，便于用户配置镜像重试）。
 func ensureRuntime(splash *SplashState) error {
-	runInstaller()
+	refreshEnvPath()
 	if runtimeOK() {
 		return nil
 	}
-	return fmt.Errorf("运行依赖（Node.js / pnpm）仍缺失，请手动安装后重试")
+	if err := os.MkdirAll(runtimeDir(), 0o755); err != nil {
+		return err
+	}
+	if !nodeAvailable() {
+		splash.Update("正在下载 Node.js 运行时（约 30MB，可设 DSH_NODE_MIRROR 换镜像）…", 0.10)
+		tgz := filepath.Join(runtimeDir(), "node.tgz")
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
+		err := downloadFileTo(ctx, macNodeURL(), tgz)
+		cancel()
+		if err != nil {
+			return fmt.Errorf("下载 Node.js 失败：%w（可用环境变量 DSH_NODE_MIRROR 指定镜像）", err)
+		}
+		splash.Update("正在解压 Node.js 运行时…", 0.24)
+		if err := os.MkdirAll(runtimeDir(), 0o755); err != nil {
+			return err
+		}
+		if err := runTarXzf(tgz, runtimeDir()); err != nil {
+			return fmt.Errorf("解压 Node.js 失败：%w", err)
+		}
+		_ = os.Remove(tgz)
+		// 归档内为 node-vX.Y.Z-darwin-<arch>/ 单层目录 → 整理为 runtime/node
+		src := filepath.Join(runtimeDir(), "node-"+macNodeVersion+"-darwin-"+macArch())
+		if err := os.Rename(src, nodeDir()); err != nil && !fileExists(nodeBin()) {
+			return fmt.Errorf("整理 Node.js 目录失败：%w", err)
+		}
+	}
+	if !pnpmAvailable() {
+		splash.Update("正在安装 pnpm 包管理器…", 0.26)
+		npm := filepath.Join(nodeDir(), "bin", "npm")
+		cmd := exec.Command(npm, "install", "-g", "pnpm@"+macPnpmVersion, "--prefix", runtimeDir(), "--loglevel", "error")
+		hideCmdWindow(cmd)
+		cmd.Env = append(os.Environ(),
+			"PATH="+filepath.Join(nodeDir(), "bin")+string(os.PathListSeparator)+os.Getenv("PATH"))
+		w := newModuleLogWriter("install")
+		cmd.Stdout = w
+		cmd.Stderr = w
+		if err := cmd.Run(); err != nil {
+			w.Flush()
+			return fmt.Errorf("安装 pnpm 失败：%w（日志：%s）", err, unifiedLogPath())
+		}
+		w.Flush()
+		if err := writePnpmWrapper(); err != nil {
+			return fmt.Errorf("生成 pnpm 启动包装失败：%w", err)
+		}
+	}
+	refreshEnvPath()
+	return nil
 }
 
-func refreshEnvPath() {}
+func macArch() string {
+	if runtime.GOARCH == "arm64" {
+		return "arm64"
+	}
+	return "x64"
+}
+
+// runTarXzf 用系统 tar 解压（macOS 自带 bsdtar，支持 .tar.gz）。
+func runTarXzf(tgz, dest string) error {
+	cmd := exec.Command("tar", "-xzf", tgz, "-C", dest)
+	hideCmdWindow(cmd)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("%w: %s", err, string(out))
+	}
+	return nil
+}
+
+// writePnpmWrapper npm -g --prefix 生成的 pnpm 是 node 脚本 shim，依赖 PATH 里的 node；
+// 覆盖为固定调用便携 node 的 sh 包装，保证任意启动场景（含开机自启、无 PATH 刷新）都可执行。
+func writePnpmWrapper() error {
+	cjs := filepath.Join(runtimeDir(), "lib", "node_modules", "pnpm", "bin", "pnpm.cjs")
+	if !fileExists(cjs) {
+		return fmt.Errorf("未找到已安装的 pnpm：%s", cjs)
+	}
+	script := "#!/bin/sh\nexec %s %s \"$@\"\n"
+	content := fmt.Sprintf(script, shellQuote(nodeBin()), shellQuote(cjs))
+	p := pnpmWrapper()
+	// npm -g 生成的 pnpm 是指向 pnpm.cjs 的符号链接：先删除，避免 WriteFile 沿链接覆写包文件
+	_ = os.Remove(p)
+	if err := os.WriteFile(p, []byte(content), 0o755); err != nil {
+		return err
+	}
+	return os.Chmod(p, 0o755)
+}
+
+// shellQuote 用 %q 生成 POSIX 双引号字面量（路径含空格时安全）。
+func shellQuote(p string) string {
+	return fmt.Sprintf("%q", p)
+}
+
+// refreshEnvPath 把便携 node/pnpm 目录加入当前进程 PATH（覆盖子进程；不做用户级持久化，
+// node/pnpm 均以绝对路径/包装脚本调用，不依赖 PATH）。
+func refreshEnvPath() {
+	if !fileExists(nodeBin()) {
+		return
+	}
+	dirs := []string{filepath.Join(nodeDir(), "bin"), runtimeDir()}
+	cur := os.Getenv("PATH")
+	for _, d := range dirs {
+		if !strings.Contains(cur, d) {
+			if cur == "" {
+				cur = d
+			} else {
+				cur = d + string(os.PathListSeparator) + cur
+			}
+		}
+	}
+	os.Setenv("PATH", cur)
+}
 
 // hideCmdWindow macOS 无窗口概念，占位实现。
 func hideCmdWindow(cmd *exec.Cmd) {}

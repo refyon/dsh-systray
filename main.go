@@ -230,10 +230,26 @@ var (
 	menuStatus        *systray.MenuItem // 状态说明行
 )
 
+// statusLineMaxRunes 托盘状态行（失败原因）的最大展示长度——菜单宽度随最长文本变化，
+// 过长原因会把托盘菜单撑得很宽；完整原因保留在设置页服务副标题与日志里。
+const statusLineMaxRunes = 36
+
+// truncRunes 按字符截断（中英文都算 1 个展示位）并追加省略号。
+func truncRunes(s string, n int) string {
+	if n < 1 {
+		return ""
+	}
+	r := []rune(s)
+	if len(r) <= n {
+		return s
+	}
+	return string(r[:n]) + "…"
+}
+
 func serviceStatusText() string {
 	if serviceFailed.Load() {
 		if s, _ := serviceFailReason.Load().(string); s != "" {
-			return s
+			return truncRunes(s, statusLineMaxRunes)
 		}
 		return "服务启动失败"
 	}
@@ -768,7 +784,8 @@ func onReady() {
 	systray.SetIcon(trayIconData())
 	setTemplateIcon()
 	startIconThemeWatch()
-	systray.SetTitle(appName)
+	// 不设置托盘图标标题文字：菜单栏/托盘只显示图标（macOS 上 SetTitle 会把应用名显示在图标旁），
+	// 名称信息放鼠标悬停 tooltip。
 	systray.SetTooltip(appName)
 
 	// 状态说明行：禁用样式（置灰、不可点击），仅作状态提示；「打开 Web UI」未就绪时隐藏、就绪时显示可点
