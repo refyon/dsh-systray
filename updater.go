@@ -18,6 +18,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	wruntime "github.com/wailsapp/wails/v2/pkg/runtime"
 )
 
 // appVersion 当前程序版本，由构建注入：-X main.appVersion=X.Y.Z（可带 v，运行时统一去掉前导 v）。
@@ -65,6 +67,22 @@ var updateMirrorOverride string
 
 // harnessPrereleaseOverride 是否允许把 harness 预发布版（alpha/beta/rc）作为可更新版本（config.json 的 harnessPrerelease）。
 var harnessPrereleaseOverride bool
+
+// updateFinalizing 是否已进入「替换并重启」不可取消阶段（此后再点取消不应中断替换，
+// 否则会产生半更新状态）。由各平台在调用 replaceAndRelaunch 前置位。
+var updateFinalizing atomic.Bool
+
+// emitUpdateDone 通知前端更新流程结束（成功/取消/失败均发出，前端据此复位更新按钮并回到设置页）。
+func emitUpdateDone(ok, canceled bool, note string) {
+	if appCtx == nil {
+		return
+	}
+	wruntime.EventsEmit(appCtx, "update:done", map[string]interface{}{
+		"ok":       ok,
+		"canceled": canceled,
+		"error":    note,
+	})
+}
 
 // 进行中更新的取消控制（托盘退出时调用 cancelActiveUpdate 终止下载/安装）。
 var (
@@ -119,7 +137,11 @@ func killChildProcesses(skipPID int) {
 }
 
 // cancelActiveUpdate 取消正在进行的更新（下载/安装）；无进行中更新则忽略。
+// 「替换并重启」阶段（updateFinalizing）不可取消——此时取消会产生半更新状态。
 func cancelActiveUpdate() {
+	if updateFinalizing.Load() {
+		return
+	}
 	updateMu.Lock()
 	if activeCancel != nil {
 		activeCancel()
@@ -129,9 +151,15 @@ func cancelActiveUpdate() {
 
 // registerActiveUpdate 登记/取消登记当前更新取消句柄。
 func registerActiveUpdate(cancel context.CancelFunc) {
+	updateFinalizing.Store(false)
 	updateMu.Lock()
 	activeCancel = cancel
 	updateMu.Unlock()
+}
+
+// setUpdateFinalizing 标记进入不可取消阶段（替换并重启前调用）。
+func setUpdateFinalizing() {
+	updateFinalizing.Store(true)
 }
 
 // progress 安全地调用可选的进度回调（t 为空表示无字面文本更新；p 为 0~1 进度）。
@@ -922,6 +950,7 @@ func runHarnessUpdate(latest string) {
 			showMessageBox("无法更新 DeepSeek Harness：\n\nnpm registry 上未找到 @deepseek-ai/dsh@"+ver+
 				"（该版本 GitHub 已发布但可能尚未同步到 npm，或 registry/网络异常）。\n未对当前版本做任何改动。\n\n"+
 				"日志："+unifiedLogPath(), appName)
+			emitUpdateDone(false, false, "npm registry 上未找到目标版本")
 			return
 		}
 	case sourceMode:
@@ -929,11 +958,13 @@ func runHarnessUpdate(latest string) {
 			splash.Close()
 			showMessageBox("无法更新 DeepSeek Harness：\n\n该 Harness 目录不是 git 仓库（可能是 zip 解压或整目录复制而来），无法走源码更新。\n"+
 				"请使用 git clone 的 Harness 源码目录，或恢复 npm 预构建形态（当前目录缺少 @deepseek-ai/dsh 入口）。\n\n目录："+harnessDir, appName)
+			emitUpdateDone(false, false, "Harness 目录不是 git 仓库")
 			return
 		}
 	default:
 		splash.Close()
 		showMessageBox("无法识别 DeepSeek Harness 安装形态（npm 预构建或 git 源码 checkout）。\n\n目录："+harnessDir, appName)
+		emitUpdateDone(false, false, "无法识别 Harness 安装形态")
 		return
 	}
 
@@ -1001,6 +1032,7 @@ func runHarnessUpdate(latest string) {
 	}
 	if err != nil {
 		rollbackUpdate(splash, prev, hadNMBackup, reason)
+		emitUpdateDone(false, false, reason)
 		return
 	}
 
@@ -1029,9 +1061,11 @@ func runHarnessUpdate(latest string) {
 				"（保留记录，可在「关于页 → 已安装插件」中检查更新后重新启用）：\n· %s",
 				withV(latest), strings.Join(names, "、"))
 			showMessageBox(msg, appName)
+			emitUpdateDone(true, false, "")
 			return
 		}
 		rollbackUpdate(splash, prev, hadNMBackup, "新版本启动失败")
+		emitUpdateDone(false, false, "新版本启动失败，已回退")
 		return
 	}
 
@@ -1043,6 +1077,7 @@ func runHarnessUpdate(latest string) {
 		msg += "\n\n提示：预发布版本可能与已装插件不兼容；如遇异常，可用「重置服务」回退到上一个正常运行的版本。"
 	}
 	showMessageBox(msg, appName)
+	emitUpdateDone(true, false, "")
 }
 
 // fetchLatestRelease 查询 GitHub Releases 最新版本；直连失败时依次回退镜像前缀（国内 DNS/网络不稳时更可靠）。
@@ -1178,7 +1213,14 @@ func comparePrerelease(a, b []string) int {
 }
 
 // downloadAndApplyUpdate 下载更新包 → SHA256 校验 → 解压 → 替换并重启。
+// macOS 共用入口：登记取消句柄（前端 splash「取消更新」→ cancelActiveUpdate 中断下载）；
+// 进入「替换并重启」前置位 updateFinalizing，取消在该阶段不再生效。
 func downloadAndApplyUpdate(rel *latestRelease) error {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	registerActiveUpdate(cancel)
+	defer clearActiveUpdate()
+
 	assetName := updateAssetName()
 	var zipURL, sumURL string
 	for _, a := range rel.Assets {
@@ -1200,16 +1242,19 @@ func downloadAndApplyUpdate(rel *latestRelease) error {
 	defer os.RemoveAll(tmp)
 
 	zipPath := filepath.Join(tmp, assetName)
-	if err := downloadFileTo(context.Background(), zipURL, zipPath); err != nil {
+	if err := downloadFileTo(ctx, zipURL, zipPath); err != nil {
 		return fmt.Errorf("下载更新包失败：%w", err)
 	}
 	if sumURL != "" {
 		sumPath := filepath.Join(tmp, "SHA256SUMS.txt")
-		if err := downloadFileTo(context.Background(), sumURL, sumPath); err != nil {
+		if err := downloadFileTo(ctx, sumURL, sumPath); err != nil {
 			log.Printf("checksum file unavailable: %v", err)
 		} else if err := verifyChecksum(zipPath, assetName, sumPath); err != nil {
 			return err
 		}
+	}
+	if ctx.Err() != nil {
+		return ctx.Err()
 	}
 
 	extractDir := filepath.Join(tmp, "extract")
@@ -1223,6 +1268,10 @@ func downloadAndApplyUpdate(rel *latestRelease) error {
 	if err != nil {
 		return err
 	}
+	if ctx.Err() != nil {
+		return ctx.Err()
+	}
+	setUpdateFinalizing() // 进入替换阶段：不再接受取消
 	return replaceAndRelaunch(payload)
 }
 

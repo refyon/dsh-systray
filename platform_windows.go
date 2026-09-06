@@ -934,6 +934,7 @@ func startUpdateApply(rel *latestRelease) {
 	if err != nil {
 		splash.Close()
 		showMessageBox("创建临时目录失败：\n"+err.Error(), appName)
+		emitUpdateDone(false, false, err.Error())
 		return
 	}
 	defer os.RemoveAll(dir)
@@ -945,9 +946,11 @@ func startUpdateApply(rel *latestRelease) {
 	}); err != nil {
 		splash.Close()
 		if ctx.Err() != nil {
-			return // 用户取消，不做错误提示
+			emitUpdateDone(false, true, "") // 用户取消，不做错误提示
+			return
 		}
 		showMessageBox("下载更新包失败：\n"+err.Error()+"\n\n请检查网络，或稍后重试。", appName)
+		emitUpdateDone(false, false, err.Error())
 		return
 	}
 
@@ -955,11 +958,13 @@ func startUpdateApply(rel *latestRelease) {
 		sumPath := filepath.Join(dir, "SHA256SUMS.txt")
 		if err := downloadFileTo(ctx, sumURL, sumPath); err != nil && ctx.Err() != nil {
 			splash.Close()
-			return // 用户取消
+			emitUpdateDone(false, true, "") // 用户取消
+			return
 		} else if err == nil {
 			if err := verifyChecksum(zipPath, assetName, sumPath); err != nil {
 				splash.Close()
 				showMessageBox("更新包校验失败：\n"+err.Error(), appName)
+				emitUpdateDone(false, false, err.Error())
 				return
 			}
 		} else {
@@ -969,6 +974,7 @@ func startUpdateApply(rel *latestRelease) {
 
 	if ctx.Err() != nil {
 		splash.Close()
+		emitUpdateDone(false, true, "")
 		return
 	}
 	splash.Update("正在解压安装…", 0.65)
@@ -976,27 +982,33 @@ func startUpdateApply(rel *latestRelease) {
 	if err := os.MkdirAll(extractDir, 0o755); err != nil {
 		splash.Close()
 		showMessageBox("解压失败：\n"+err.Error(), appName)
+		emitUpdateDone(false, false, err.Error())
 		return
 	}
 	if err := extractUpdateZip(zipPath, extractDir); err != nil {
 		splash.Close()
 		showMessageBox("解压更新包失败：\n"+err.Error(), appName)
+		emitUpdateDone(false, false, err.Error())
 		return
 	}
 	payload, err := updatePayloadPath(extractDir)
 	if err != nil {
 		splash.Close()
 		showMessageBox("更新包内容异常：\n"+err.Error(), appName)
+		emitUpdateDone(false, false, err.Error())
 		return
 	}
 	if ctx.Err() != nil {
 		splash.Close()
+		emitUpdateDone(false, true, "")
 		return
 	}
+	setUpdateFinalizing() // 进入替换阶段：不再接受取消
 	splash.Update("正在更新程序…", 0.9)
 	if err := replaceAndRelaunch(payload); err != nil {
 		splash.Close()
 		showMessageBox("重启失败：\n"+err.Error()+"\n\n程序已替换，请手动重启。", appName)
+		emitUpdateDone(false, false, err.Error())
 		return
 	}
 	// replaceAndRelaunch 成功后内部 os.Exit，不会走到这里

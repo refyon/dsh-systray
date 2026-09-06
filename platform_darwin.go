@@ -5,6 +5,7 @@ package main
 import (
 	"context"
 	_ "embed"
+	"errors"
 	"fmt"
 	"log"
 	"os"
@@ -717,7 +718,13 @@ func checkWritable(dir string) error {
 // startUpdateApply macOS 保持进程内更新：下载 → 辅助脚本替换 .app → 自动重启。
 func startUpdateApply(rel *latestRelease) {
 	if err := downloadAndApplyUpdate(rel); err != nil {
+		if errors.Is(err, context.Canceled) {
+			log.Printf("update cancelled by user")
+			emitUpdateDone(false, true, "")
+			return // 用户取消，不做错误提示
+		}
 		log.Printf("update failed: %v", err)
+		emitUpdateDone(false, false, err.Error())
 		showMessageBox("更新失败：\n"+err.Error()+"\n\n请稍后重试，或前往 GitHub Releases 手动下载。", appName)
 	}
 }

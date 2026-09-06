@@ -75,7 +75,9 @@ function applyShotScroll() {
 
 function showSplash(mode, statusText) {
   state.splashMode = mode || "startup";
-  $("splash-cancel").classList.toggle("hidden", state.splashMode !== "update");
+  const cancelBtn = $("splash-cancel");
+  cancelBtn.classList.toggle("hidden", state.splashMode !== "update");
+  cancelBtn.disabled = false; // 每次进入 update 视图重置可取消状态
   $("splash-status").textContent = statusText || "正在准备运行环境…";
   $("splash-fill").style.width = "0%";
   $("splash").classList.remove("hidden");
@@ -1288,10 +1290,10 @@ function wireEvents() {
     if (d && d.stage) $("svc-sub").textContent = d.stage;
   });
 
-  // 更新完成事件（更新进度窗口关闭时前端回到设置视图）
+  // 更新流程结束（成功/取消/失败，Go 侧统一 emit update:done）：回到设置视图并恢复
+  // 「更新」按钮，用户可再次检查/发起更新。此前 Go 从未发出该事件，按钮取消后一直不可用。
   EventsOn("update:done", () => {
     showSettings();
-    // 恢复更新按钮可用并刷新模块版本（systray 更新会重启整个应用，此处主要覆盖 harness）
     const hub = $("btn-harness-update");
     if (hub) hub.disabled = false;
     const sysBtn = $("btn-systray-update");
@@ -1303,11 +1305,13 @@ function wireEvents() {
   EventsOn("plugins:changed", () => loadPlugins());
 }
 
-// 取消更新
+// 取消更新：请求 Go 中止并等待 update:done 统一收尾（复位按钮/回到设置页）。
 function wireSplashCancel() {
-  $("splash-cancel").addEventListener("click", () => {
+  const btn = $("splash-cancel");
+  btn.addEventListener("click", () => {
+    btn.disabled = true; // 防重复点击（Go 端「替换重启」阶段也会忽略取消）
+    $("splash-status").textContent = "正在取消…";
     bindings().CancelUpdate();
-    $("splash-cancel").classList.add("hidden");
   });
 }
 
