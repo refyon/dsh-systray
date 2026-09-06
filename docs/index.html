@@ -369,41 +369,50 @@ footer .sep{margin:0 8px;color:var(--border)}
   }
 
   // ==================== 界面截图轮播 ====================
-  // 图片为 WebP 且按需加载：仅轮播到对应页时才请求，已加载的缓存复用
+  // 图片为 WebP 且按需加载；EN 页优先使用 docs/shots-en/（英文 UI 截图），文件缺失时回退中文截图。
   var shots = [
-    { src: 'shots/general.webp' },
-    { src: 'shots/about-top.webp' },
-    { src: 'shots/about-bottom.webp' },
-    { src: 'shots/logs.webp' },
-    { src: 'shots/export.webp' },
-    { src: 'shots/import.webp' }
+    { en: 'shots-en/general.webp',     zh: 'shots/general.webp' },
+    { en: 'shots-en/about-top.webp',   zh: 'shots/about-top.webp' },
+    { en: 'shots-en/about-bottom.webp',zh: 'shots/about-bottom.webp' },
+    { en: 'shots-en/logs.webp',        zh: 'shots/logs.webp' },
+    { en: 'shots-en/export.webp',      zh: 'shots/export.webp' },
+    { en: 'shots-en/import.webp',      zh: 'shots/import.webp' }
   ];
   var carImg = document.getElementById('car-img');
   var carCap = document.getElementById('car-cap');
   var carDots = document.getElementById('car-dots');
   var carBox = document.querySelector('.car');
   var cur = 0, seq = 0, playTimer = null;
-  var loaded = {};   // 已加载完成的图片缓存
+  var loaded = {};   // 已加载完成的图片缓存（按真实 URL）
   var pending = {};  // 正在加载中的图片
 
   function curCaption() {
     return I18N[lang].carCap[cur] || I18N.zh.carCap[cur] || "";
   }
-  function updateCarCaption(noReload) {
+  function updateCarCaption() {
     carCap.textContent = curCaption();
     carImg.alt = curCaption();
     dotEls.forEach(function(dd, j){ dd.setAttribute('aria-label', I18N[lang].dotAria.replace('%d', j + 1)); });
-    if (!noReload && !loaded[shots[cur].src]) { /* 首次展示由 show() 负责加载 */ }
   }
 
-  function ensureImg(src, cb){
-    if (loaded[src]) { cb(); return; }
-    if (pending[src]) { return; } // 已在加载，切换时忽略（首次加载即显示）
-    pending[src] = true;
-    var im = new Image();
-    im.onload = function(){ loaded[src] = true; delete pending[src]; cb(); };
-    im.onerror = function(){ delete pending[src]; cb(); };
-    im.src = src;
+  // 候选列表按序尝试（EN 优先 → zh 兜底）；已缓存立即用，首次命中后缓存。
+  function pickShot(idx, cb) {
+    var cands = lang === 'en' ? [shots[idx].en, shots[idx].zh] : [shots[idx].zh];
+    (function next(k) {
+      if (k >= cands.length) { cb(null); return; }
+      var src = cands[k];
+      if (loaded[src]) { cb(src); return; }
+      if (pending[src]) { pending[src].push(function (s) { if (s) cb(s); else next(k + 1); }); return; }
+      pending[src] = [];
+      var im = new Image();
+      im.onload = function () { loaded[src] = true; var q = pending[src] || []; delete pending[src]; q.forEach(function (f) { f(src); }); };
+      im.onerror = function () { var q = pending[src] || []; delete pending[src]; q.forEach(function (f) { f(null); }); next(k + 1); };
+      im.src = src;
+    })(0);
+  }
+  function showShotSrc(src) {
+    carImg.src = src;
+    carImg.alt = curCaption();
   }
 
   var dotEls = shots.map(function(_, i){
@@ -418,19 +427,15 @@ footer .sep{margin:0 8px;color:var(--border)}
 
   function show(i){
     cur = (i + shots.length) % shots.length;
-    var s = shots[cur];
     var my = ++seq;
-    updateCarCaption(false);
+    updateCarCaption();
     dotEls.forEach(function(d, j){ d.classList.toggle('active', j === cur); });
-    // 按需加载：目标图就绪后切换；首次加载直接显示，已缓存则即时切换
-    if (loaded[s.src]) {
-      carImg.src = s.src;
-      carImg.alt = curCaption();
-      return;
-    }
-    ensureImg(s.src, function(){
-      if (my !== seq) return;
-      carImg.src = s.src;
+    var s = shots[cur];
+    var useLoaded = (lang === 'en' && loaded[s.en]) || loaded[s.zh];
+    if (useLoaded) { showShotSrc(lang === 'en' && loaded[s.en] ? s.en : s.zh); return; }
+    pickShot(cur, function (src) {
+      if (my !== seq || !src) return;
+      carImg.src = src;
       carImg.alt = curCaption();
     });
   }
