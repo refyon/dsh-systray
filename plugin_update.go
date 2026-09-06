@@ -1479,6 +1479,8 @@ func setProfileDepSpec(dir, name, spec string) error {
 }
 
 // runLocalPluginUpdate 把本地插件覆盖更新为所选目录（前端已确认覆盖）。异步执行。
+// 语义与远程更新对齐：待重指定行恢复原激活（bundled=true 时）；此前被自动禁用（不兼容自愈）
+// 的插件更新成功后自动尝试重新启用并健康校验——更新路径即修复尝试，保证下次启动加载。
 func runLocalPluginUpdate(row PluginRow, srcDir string) {
 	name, pickedVer, err := packageMeta(srcDir)
 	if err != nil {
@@ -1489,6 +1491,8 @@ func runLocalPluginUpdate(row PluginRow, srcDir string) {
 		showMessageBox(fmt.Sprintf("无法更新本地插件：\n所选目录不是插件 %s（目录 package.json 的 name=%s）。", row.Name, name), appName)
 		return
 	}
+	// 记录本次更新前的禁用状态：被禁用的本地插件更新成功后需尝试重新启用（见 5a 分支）
+	wasDisabled := row.Disabled
 	spec := localLinkSpec(srcDir)
 	logUI("开始更新本地插件", fmt.Sprintf("%s → %s（v%s）", row.Name, srcDir, orDash(pickedVer)))
 
@@ -1543,7 +1547,32 @@ func runLocalPluginUpdate(row PluginRow, srcDir string) {
 		return
 	}
 
-	// 5) 成功：快照提升为 LKG + 提示 + 通知前端刷新
+	// 5a) 此前被自动禁用（不兼容自愈）的本地插件：更新路径即修复尝试——成功后尝试重新启用
+	//     （清除禁用记录 + 加回 bundles 并重启健康校验），保证下次启动加载到 harness；
+	//     仍不兼容则自动重新禁用并重启服务（保留新版本 + 禁用状态，语义同远程更新 3c）。
+	if wasDisabled {
+		splash.Update("正在尝试重新启用插件…", 0.92)
+		enabled, why := enablePluginAndVerify(row)
+		for _, dir := range row.Locs {
+			promoteProfileLkg(dir)
+		}
+		splash.Close()
+		if enabled {
+			logUI("更新本地插件并重新启用", fmt.Sprintf("%s → %s（v%s）", row.Name, srcDir, orDash(newVer)))
+			showMessageBox(fmt.Sprintf("插件 %s 已更新并重新启用：\n· 来源目录：%s\n· 版本：%s → %s\n· 服务已重启，下次启动将正常加载。",
+				row.Name, srcDir, orDash(row.Version), orDash(newVer)), appName)
+		} else {
+			logUI("更新本地插件后仍禁用", fmt.Sprintf("%s（%s）", row.Name, why))
+			showMessageBox(fmt.Sprintf("插件 %s 已更新到 %s，但启用后仍不兼容，继续保持禁用。\n原因：%s\n\n可稍后再更新，或在插件确认修复后手动「启用」。",
+				row.Name, orDash(newVer), why), appName)
+		}
+		if appCtx != nil {
+			wruntime.EventsEmit(appCtx, "plugins:changed", nil)
+		}
+		return
+	}
+
+	// 5b) 成功（启用态插件）：快照提升为 LKG（下次冷启动失败可回退）+ 提示 + 通知前端刷新
 	for _, dir := range row.Locs {
 		promoteProfileLkg(dir)
 	}
