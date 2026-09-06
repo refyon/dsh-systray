@@ -121,21 +121,59 @@ func pnpmCmd() string {
 
 func runtimeOK() bool { return nodeAvailable() && pnpmAvailable() }
 
-// macNodeURL 便携 Node 下载地址（nodejs.org，可经环境变量 DSH_NODE_MIRROR 覆盖镜像前缀）。
-func macNodeURL() string {
-	mirror := os.Getenv("DSH_NODE_MIRROR")
-	if mirror == "" {
-		mirror = "https://nodejs.org/dist"
+// macNodeURLs 便携 Node 下载地址（按序自动尝试，遇超时/失败自动切换下一个）：
+// 环境变量 DSH_NODE_MIRROR 指定时仅用该镜像；否则依次尝试官方与国内镜像。
+func macNodeURLs() []string {
+	arch := macArch()
+	file := fmt.Sprintf("node-%s-darwin-%s.tar.gz", macNodeVersion, arch)
+	env := os.Getenv("DSH_NODE_MIRROR")
+	if env != "" {
+		return []string{strings.TrimRight(env, "/") + "/" + macNodeVersion + "/" + file}
 	}
-	arch := "x64"
-	if runtime.GOARCH == "arm64" {
-		arch = "arm64"
+	bases := []string{
+		"https://nodejs.org/dist",
+		"https://npmmirror.com/mirrors/node",
+		"https://mirrors.huaweicloud.com/nodejs",
 	}
-	return fmt.Sprintf("%s/%s/node-%s-darwin-%s.tar.gz", mirror, macNodeVersion, macNodeVersion, arch)
+	out := make([]string, 0, len(bases))
+	for _, b := range bases {
+		out = append(out, b+"/"+macNodeVersion+"/"+file)
+	}
+	return out
 }
 
-// ensureRuntime 下载便携 Node.js + 安装 pnpm（无 brew / 无需管理员）。失败返回错误，
-// 由调用方给出可操作的提示（错误信息含下载源，便于用户配置镜像重试）。
+// tryNodeMirrors 依次尝试下载 node 归档；单源超时（downloadTimeout）即切换下一镜像，
+// 全部失败返回汇总错误。
+func tryNodeMirrors(urls []string, tgz string, splash *SplashState) error {
+	var errs []string
+	for i, u := range urls {
+		splash.Update(fmt.Sprintf("正在下载 Node.js 运行时（来源 %d/%d：%s）…",
+			i+1, len(urls), urlHost(u)), 0.10)
+		ctx, cancel := context.WithTimeout(context.Background(), 4*time.Minute)
+		err := downloadFileTo(ctx, u, tgz)
+		cancel()
+		if err == nil {
+			return nil
+		}
+		errs = append(errs, fmt.Sprintf("%s: %v", urlHost(u), err))
+		log.Printf("node download mirror %q failed: %v", u, err)
+	}
+	return fmt.Errorf("下载 Node.js 失败（已尝试 %d 个镜像）：%s", len(urls), strings.Join(errs, "；"))
+}
+
+func urlHost(u string) string {
+	if i := strings.Index(u, "://"); i >= 0 {
+		rest := u[i+3:]
+		if j := strings.IndexAny(rest, "/"); j >= 0 {
+			return rest[:j]
+		}
+		return rest
+	}
+	return u
+}
+
+// ensureRuntime 下载便携 Node.js + 安装 pnpm（无 brew / 无需管理员，多镜像自动切换）。
+// 失败返回错误，错误信息含失败来源与可用环境变量（DSH_NODE_MIRROR / DSH_NPM_REGISTRY）。
 func ensureRuntime(splash *SplashState) error {
 	refreshEnvPath()
 	if runtimeOK() {
@@ -145,13 +183,9 @@ func ensureRuntime(splash *SplashState) error {
 		return err
 	}
 	if !nodeAvailable() {
-		splash.Update("正在下载 Node.js 运行时（约 30MB，可设 DSH_NODE_MIRROR 换镜像）…", 0.10)
 		tgz := filepath.Join(runtimeDir(), "node.tgz")
-		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
-		err := downloadFileTo(ctx, macNodeURL(), tgz)
-		cancel()
-		if err != nil {
-			return fmt.Errorf("下载 Node.js 失败：%w（可用环境变量 DSH_NODE_MIRROR 指定镜像）", err)
+		if err := tryNodeMirrors(macNodeURLs(), tgz, splash); err != nil {
+			return err
 		}
 		splash.Update("正在解压 Node.js 运行时…", 0.24)
 		if err := os.MkdirAll(runtimeDir(), 0o755); err != nil {
@@ -168,26 +202,54 @@ func ensureRuntime(splash *SplashState) error {
 		}
 	}
 	if !pnpmAvailable() {
-		splash.Update("正在安装 pnpm 包管理器…", 0.26)
-		npm := filepath.Join(nodeDir(), "bin", "npm")
-		cmd := exec.Command(npm, "install", "-g", "pnpm@"+macPnpmVersion, "--prefix", runtimeDir(), "--loglevel", "error")
-		hideCmdWindow(cmd)
-		cmd.Env = append(os.Environ(),
-			"PATH="+filepath.Join(nodeDir(), "bin")+string(os.PathListSeparator)+os.Getenv("PATH"))
-		w := newModuleLogWriter("install")
-		cmd.Stdout = w
-		cmd.Stderr = w
-		if err := cmd.Run(); err != nil {
-			w.Flush()
-			return fmt.Errorf("安装 pnpm 失败：%w（日志：%s）", err, unifiedLogPath())
+		if err := installPnpmMirrors(splash); err != nil {
+			return err
 		}
-		w.Flush()
 		if err := writePnpmWrapper(); err != nil {
 			return fmt.Errorf("生成 pnpm 启动包装失败：%w", err)
 		}
 	}
 	refreshEnvPath()
 	return nil
+}
+
+// pnpmRegistries pnpm 安装源（npm registry）：环境变量 DSH_NPM_REGISTRY 指定时仅用该源；
+// 否则先官方再 npmmirror（npm 默认官方，遇超时自动切换）。
+func pnpmRegistries() []string {
+	if r := os.Getenv("DSH_NPM_REGISTRY"); r != "" {
+		return []string{strings.TrimRight(r, "/")}
+	}
+	return []string{"https://registry.npmjs.org", "https://registry.npmmirror.com"}
+}
+
+// installPnpmMirrors 用便携 npm 安装 pnpm，registry 超时自动切换镜像。
+func installPnpmMirrors(splash *SplashState) error {
+	npm := filepath.Join(nodeDir(), "bin", "npm")
+	registries := pnpmRegistries()
+	var errs []string
+	for i, reg := range registries {
+		splash.Update(fmt.Sprintf("正在安装 pnpm 包管理器（registry %d/%d）…", i+1, len(registries)), 0.26)
+		ctx, cancel := context.WithTimeout(context.Background(), 4*time.Minute)
+		cmd := exec.CommandContext(ctx, npm, "install", "-g", "pnpm@"+macPnpmVersion,
+			"--prefix", runtimeDir(), "--loglevel", "error")
+		cmd.Env = append(os.Environ(),
+			"PATH="+filepath.Join(nodeDir(), "bin")+string(os.PathListSeparator)+os.Getenv("PATH"),
+			"npm_config_registry="+reg)
+		hideCmdWindow(cmd)
+		w := newModuleLogWriter("install")
+		cmd.Stdout = w
+		cmd.Stderr = w
+		err := cmd.Run()
+		w.Flush()
+		cancel()
+		if err == nil {
+			return nil
+		}
+		log.Printf("pnpm install via registry %q failed: %v", reg, err)
+		errs = append(errs, fmt.Sprintf("%s: %v", reg, err))
+	}
+	return fmt.Errorf("安装 pnpm 失败（已尝试 %d 个 registry）：%s（日志：%s）",
+		len(registries), strings.Join(errs, "；"), unifiedLogPath())
 }
 
 func macArch() string {

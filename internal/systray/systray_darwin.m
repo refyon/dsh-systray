@@ -73,10 +73,11 @@ withParentMenuId: (int)theParentMenuId
   self->statusItem = [[NSStatusBar systemStatusBar] statusItemWithLength:NSVariableStatusItemLength];
   self->menu = [[NSMenu alloc] init];
   [self->menu setAutoenablesItems: FALSE];
-  //[self->statusItem.button setTarget:self];
-  //[self->menu setDelegate:(SystrayAppDelegate *)self];
-  //[self->statusItem.button setAction:@selector(statusOnClick:)];
-  //[self->statusItem setMenu:self->menu]; //注释掉，不然不设置菜单事件也不启作用
+  // 常驻挂接菜单：由 AppKit 原生管理点击弹菜单（左/右键一致），
+  // 避免 show_menu 的「临时挂接 + performClick + 立即摘除」技巧在较新 macOS 上失效
+  // （表现为点击图标无菜单弹出）。挂接后 statusItem.button 的自定义 action 不再生效，
+  // 菜单项增删改走同一 NSMenu 对象即可。
+  [self->statusItem setMenu:self->menu];
   systray_ready();
 }
 
@@ -234,9 +235,11 @@ NSMenuItem *find_menu_item(NSMenu *ourMenu, NSNumber *menuId) {
 }
 
 - (void) show_menu {
-    create_menu();
-    [statusItem.button performClick:nil];
-    set_menu_nil();
+    // 菜单已在 applicationDidFinishLaunching 常驻挂接（statusItem.menu），系统点击即弹出。
+    // 此方法仅作兼容入口（Go 侧 ShowMenuAsync 可能经此触发）：确保未脱钩即可，幂等无害。
+    if (statusItem.menu == NULL) {
+      [statusItem setMenu:menu];
+    }
 }
 
 - (void) enable_on_click {
