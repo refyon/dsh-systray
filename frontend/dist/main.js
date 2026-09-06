@@ -149,6 +149,16 @@ const I18N_DYN = {
   "已选择跳过 {0} 项冲突，现有内容将保留。": "Skipped {0} conflicts — existing content is kept.",
   "正在准备恢复…": "Preparing restore…",
   "插件列表加载失败：{0}": "Failed to load plugin list: {0}",
+  "所有历史会话": "All sessions",
+  "已安装的插件": "Installed plugins",
+  "需要打包的文件目录": "Folders to include",
+  "plugins.zip · 通过 dsh add 安装的插件": "plugins.zip · plugins installed via dsh add",
+  "files.zip · 恢复时选择解压位置": "files.zip · choose where to extract on restore",
+  "移除": "Remove",
+  "已选 {0} 项，点击「导出…」打包为 zip{1}": "Selected {0} item(s) — click “Export…” to bundle a zip{1}",
+  "（含 {0} 个目录）": " (incl. {0} folder(s))",
+  "请至少勾选一项，或为「文件目录」添加目录": "Select at least one item, or add folders under “Folders to include”",
+  "选择 dsh-systray 导出压缩包后可恢复会话、插件或文件目录。": "Pick a dsh-systray export archive to restore sessions, plugins or file folders.",
   "检查更新": "Check for updates",
   "更新": "Update",
   "更新…": "Update…",
@@ -1049,7 +1059,7 @@ function renderExportRows() {
     div.dataset.kind = o.kind;
     div.innerHTML =
       '<div class="check">✓</div>' +
-      "<div><div class=\"exp-label\">" + o.label + "</div><div class=\"exp-sub\">" + o.sub + "</div></div>";
+      "<div><div class=\"exp-label\">" + tr(o.label) + "</div><div class=\"exp-sub\">" + tr(o.sub) + "</div></div>";
     div.addEventListener("click", () => {
       state.expSelected[o.kind] = !state.expSelected[o.kind];
       renderExportRows();
@@ -1065,7 +1075,7 @@ function renderExportRows() {
         row.className = "exp-dir-item";
         row.innerHTML =
           '<div class="exp-dir-label" title="' + escAttr(d) + '">' + esc(d) + "</div>" +
-          '<button class="btn btn-ghost btn-sm" data-remove-dir="' + escAttr(d) + '">移除</button>';
+          '<button class="btn btn-ghost btn-sm" data-remove-dir="' + escAttr(d) + '">' + tr('移除') + '</button>';
         row.querySelector("[data-remove-dir]").addEventListener("click", (e) => {
           e.stopPropagation();
           state.expDirs = state.expDirs.filter((x) => x !== d);
@@ -1083,8 +1093,8 @@ function renderExportRows() {
 function updateExportHint() {
   const n = Object.values(state.expSelected).filter(Boolean).length;
   $("exp-hint").textContent = n > 0
-    ? "已选 " + n + " 项，点击「导出…」打包为 zip" + (state.expDirs.length ? "（含 " + state.expDirs.length + " 个目录）" : "")
-    : "请至少勾选一项，或为「文件目录」添加目录";
+    ? fmt("已选 {0} 项，点击「导出…」打包为 zip{1}", n, state.expDirs.length ? fmt("（含 {0} 个目录）", state.expDirs.length) : "")
+    : tr("请至少勾选一项，或为「文件目录」添加目录");
 }
 
 /** 导出进度弹层（居中弹出；进度不随页面滚动隐藏）。 */
@@ -1233,7 +1243,7 @@ function renderImportRows() {
   const wrap = $("imp-rows");
   wrap.innerHTML = "";
   if (!state.impItems.length) {
-    setImpHint("选择 dsh-systray 导出压缩包后可恢复会话、插件或文件目录。", false);
+    setImpHint(tr("选择 dsh-systray 导出压缩包后可恢复会话、插件或文件目录。"), false);
     return;
   }
   setImpHint("解析成功：共 " + state.impItems.length + " 个可恢复项，可同时点击多个「恢复」逐项恢复。", false);
