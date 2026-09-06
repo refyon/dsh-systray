@@ -1394,6 +1394,21 @@ func bundleEntryExists(root map[string]interface{}, name string) bool {
 	return false
 }
 
+// logPluginTerminalState 记录本地插件重选/更新成功后的终态（依赖 spec、bundles 激活、
+// 待重指定、禁用状态），供「更新/重选后插件未加载」类问题凭日志一次定案。
+func logPluginTerminalState(dir, name, spec string) {
+	root := readProfileRoot(dir)
+	_, prof := profileSection(root)
+	deps, _ := root["dependencies"].(map[string]interface{})
+	pending, _ := prof[pendingLocalKey].(map[string]interface{})
+	dm, _ := prof["disabledPlugins"].(map[string]interface{})
+	_, depOK := deps[name]
+	_, pendOK := pending[name]
+	_, disOK := dm[name]
+	log.Printf("plugin %s terminal state: declared=%v spec=%s bundles=%v pendingLocal=%v disabled=%v",
+		name, depOK, spec, bundleEntryExists(root, name), pendOK, disOK)
+}
+
 // ==================== 本地插件更新（选择目录 → 比较 → 覆盖） ====================
 // 本地来源（file:/link:/workspace:/本地路径）插件没有远程版本来源，原「更新」按钮灰置。
 // 现在开放「选择本地目录更新」：用户选定新插件目录 → 比较版本 →
@@ -1546,6 +1561,10 @@ func runLocalPluginUpdate(row PluginRow, srcDir string) {
 		rollbackPluginUpdate(splash, row, hadNM, "更新后服务启动失败")
 		return
 	}
+
+	// 4a) 终态快照日志：「重选/更新后插件未加载」类问题凭此一行即可定案
+	//（依赖 spec 是否写入、bundles 是否激活、pending/禁用记录是否清除）。
+	logPluginTerminalState(row.Locs[0], row.Name, spec)
 
 	// 5a) 此前被自动禁用（不兼容自愈）的本地插件：更新路径即修复尝试——成功后尝试重新启用
 	//     （清除禁用记录 + 加回 bundles 并重启健康校验），保证下次启动加载到 harness；

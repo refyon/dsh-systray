@@ -914,16 +914,23 @@ async function doLocalPluginUpdate(p, item, upBtn) {
     if (r.error) { setNote(item, fmt("无法更新：{0}", r.error), "err"); return; }
     const curTxt = vtag(r.current) || "未安装";
     const verTxt = vtag(r.version) || "未知版本";
-    if (r.relation === "same") {
+    // 待重指定行：所选目录版本与残留副本一致并不等于「无需操作」——真正要做的是把
+    // 安装来源重链接到所选目录（清 pending 记录 + 恢复激活 + 改写 link: spec），
+    // 因此跳过 same 短路，照常确认并调用 Apply。版本差异仅在普通本地更新时才有意义。
+    if (r.relation === "same" && !p.pendingLocal) {
       setNote(item, "已经是最新（所选目录版本与当前一致：" + verTxt + "）", "muted");
       return;
     }
     const isNewer = r.relation === "newer";
+    const relinkOnly = !!p.pendingLocal;
     const ok = await confirmDialog(
-      isNewer ? "覆盖更新本地插件？" : "将本地插件改为所选版本？",
-      "所选目录中插件 " + p.name + " 的版本为 " + verTxt + "（当前 " + curTxt + "）。\n\n" +
-        "更新会改写该插件的安装来源为所选目录，期间服务短暂重启，失败会自动回退到更新前版本。确认继续吗？",
-      isNewer ? "覆盖更新" : "覆盖为所选版本"
+      relinkOnly ? "重新指定本地插件目录？" : (isNewer ? "覆盖更新本地插件？" : "将本地插件改为所选版本？"),
+      "所选目录中插件 " + p.name + " 的版本为 " + verTxt +
+        (relinkOnly ? "（当前为待重指定，尚未安装）" : "（当前 " + curTxt + "）") + "。\n\n" +
+        (relinkOnly
+          ? "将把该插件的安装来源重新指定为所选目录并恢复激活，期间服务短暂重启，失败会自动回退到待重指定状态。确认继续吗？"
+          : "更新会改写该插件的安装来源为所选目录，期间服务短暂重启，失败会自动回退到更新前版本。确认继续吗？"),
+      relinkOnly ? "重新指定目录" : (isNewer ? "覆盖更新" : "覆盖为所选版本")
     );
     if (!ok) return;
     setNote(item, "正在更新本地插件…", "muted");

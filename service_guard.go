@@ -89,6 +89,9 @@ func rotateServerLog() int64 {
 		log.Printf("log rotate failed (file may be locked), keeping in place")
 		return unifiedLogSize()
 	}
+	// mac/POSIX 允许 rename 打开中的文件：必须重开句柄，否则后续写入继续落进 .1，
+	// 基础文件 dsh-systray.log 消失 → 日志页空白、启动日志扫描基线失效（0.8.x mac 实证）。
+	reopenUnifiedLog()
 	log.Printf("log rotated to %s.1 (archived %d bytes)", p, fi.Size())
 	return 0
 }

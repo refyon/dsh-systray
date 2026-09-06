@@ -51,6 +51,26 @@ func initUnifiedLog() bool {
 	return true
 }
 
+// reopenUnifiedLog 轮转后重建统一日志句柄。POSIX（mac）允许 rename 打开中的文件：
+// rotateServerLog 把 dsh-systray.log 改名 .1 后，旧句柄仍持续写入 .1，基础文件不再存在
+// → 日志页（只读基础文件）空白、启动日志扫描基线失效（0.8.x mac 实证）。轮转成功后
+// 关闭旧句柄并重开，使后续写入落到新建的 dsh-systray.log。无打开句柄时不动作（测试/异常态）。
+func reopenUnifiedLog() {
+	unifiedMu.Lock()
+	defer unifiedMu.Unlock()
+	if unifiedFile == nil {
+		return
+	}
+	_ = unifiedFile.Close()
+	unifiedFile = nil
+	if err := os.MkdirAll(logDir, 0o755); err != nil {
+		return
+	}
+	if f, err := os.OpenFile(unifiedLogPath(), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644); err == nil {
+		unifiedFile = f
+	}
+}
+
 // writeUnifiedRaw 加锁写原始字节（行级写；单次 Write 由 OS 保证原子追加）。
 func writeUnifiedRaw(p []byte) {
 	if unifiedFile == nil {

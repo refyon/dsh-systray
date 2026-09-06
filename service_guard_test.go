@@ -59,6 +59,49 @@ func TestRotateServerLog(t *testing.T) {
 	}
 }
 
+// TestRotateReopensHandle 打开句柄后轮转：轮转成功（mac/POSIX）时基础文件重建为空且后续
+// 写入落到新基础文件；轮转失败（Windows 打开文件被锁、保留原文件）时后续写入仍追加原文件。
+func TestRotateReopensHandle(t *testing.T) {
+	dir := useTempLogDir(t)
+	p := filepath.Join(dir, unifiedLogName)
+	if !initUnifiedLog() {
+		t.Fatal("initUnifiedLog failed")
+	}
+	t.Cleanup(func() {
+		unifiedMu.Lock()
+		if unifiedFile != nil {
+			_ = unifiedFile.Close()
+			unifiedFile = nil
+		}
+		unifiedMu.Unlock()
+	})
+	writeUnifiedRaw([]byte("old-line\n"))
+
+	if rotateServerLog() == 0 {
+		// 轮转成功（rename 成功，mac/POSIX）：基础文件重建为空，旧内容进 .1
+		if data, err := os.ReadFile(p); err != nil || len(data) != 0 {
+			t.Fatalf("base log should be recreated empty, data=%q err=%v", data, err)
+		}
+		if data, err := os.ReadFile(p + ".1"); err != nil || string(data) != "old-line\n" {
+			t.Fatalf(".1 content = %q err=%v", data, err)
+		}
+		// 轮转后的写入落到新基础文件而非 .1
+		writeUnifiedRaw([]byte("fresh-line\n"))
+		if data, err := os.ReadFile(p); err != nil || string(data) != "fresh-line\n" {
+			t.Fatalf("post-rotate write should land in base log, data=%q err=%v", data, err)
+		}
+		if data, err := os.ReadFile(p + ".1"); err != nil || string(data) != "old-line\n" {
+			t.Fatalf(".1 should stay unchanged, data=%q err=%v", data, err)
+		}
+		return
+	}
+	// 轮转失败（Windows 打开文件被锁、保留原文件）：后续写入仍追加原基础文件
+	writeUnifiedRaw([]byte("fresh-line\n"))
+	if data, err := os.ReadFile(p); err != nil || string(data) != "old-line\nfresh-line\n" {
+		t.Fatalf("post-rotate write should append to base log, data=%q err=%v", data, err)
+	}
+}
+
 func TestParseBootLogSuspects(t *testing.T) {
 	dir := useTempLogDir(t)
 	// 统一日志 fixture：只有 [server] 模块行参与定位；harness 模块的 ERR_PNPM 行必须被忽略
