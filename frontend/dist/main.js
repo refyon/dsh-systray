@@ -250,10 +250,15 @@ async function loadResetVersions() {
     if (info && info.note) showResetTargetNote(info.note);
     const opts = (info && info.options) || [];
     if (!opts.length) {
-      // 无可更早版本 / 当前版本识别失败且列表为空 → 降级放行：空 target = 官方默认目标
-      sel.innerHTML = '<option value="">官方默认目标（最新稳定版）</option>';
-      sel.disabled = false;
-      confirm.disabled = false;
+      // 无「不高于当前版本」候选 → 降级放行：采用 Go 侧算好的具体默认目标
+      // （弹窗打开时已查证，避免确认后再触网查询最新版本）
+      sel.innerHTML = "";
+      const fb = (info && info.default) || "";
+      if (fb) {
+        sel.innerHTML = '<option value="' + fb + '" data-pre="0">官方默认目标 ' + vtag(fb) + "</option>";
+        sel.disabled = false;
+        confirm.disabled = false;
+      }
       updateResetTargetWarn();
       return;
     }
@@ -261,7 +266,8 @@ async function loadResetVersions() {
     let defIdx = 0;
     opts.forEach((o, i) => {
       if (o.version === (info && info.default)) defIdx = i;
-      const label = vtag(o.version) + (o.prerelease ? "（预发布）" : "");
+      const cur = o.version === (info && info.current) ? "（当前）" : "";
+      const label = vtag(o.version) + cur + (o.prerelease ? "（预发布）" : "");
       html += '<option value="' + o.version + '" data-pre="' + (o.prerelease ? "1" : "0") + '"' +
         (o.prerelease ? ' class="opt-pre"' : "") + ">" + label + "</option>";
     });
@@ -1012,7 +1018,7 @@ function syncImpHealUI(on) {
     syncImpRow(k);
   });
   if (on) {
-    impRowText("plugins", "正在启动服务并自愈…（自愈过程不可取消，请稍候）", "");
+    impRowText("plugins", "正在启动服务并校验插件兼容性…（启动校验过程不可取消，请稍候）", "");
   }
 }
 
@@ -1098,7 +1104,7 @@ async function impCancel(kind) {
   } catch (e) { /* 忽略 */ }
   if (state.impHealAll || r === "healing") {
     syncImpHealUI(true);
-    impRowText(kind, "服务正在自愈，不可取消…（请等待确定结果）", "muted");
+    impRowText(kind, "服务正在启动校验，不可取消…（请等待确定结果）", "muted");
     return;
   }
   if (r !== "ok") {
@@ -1126,7 +1132,7 @@ function armImpWatch(kind, ms) {
     }
     if (!st.busy) return;
     if (state.impHealAll) {
-      impRowText(kind, "服务自愈仍在进行（不可中断），请继续等待…", "muted");
+      impRowText(kind, "服务启动校验仍在进行（不可中断），请继续等待…", "muted");
       armImpWatch(kind, 60000);
       return;
     }
@@ -1211,9 +1217,9 @@ function wireEvents() {
   EventsOn("import:progress", (d) => {
     if (!d || !d.kind) return;
     if (d.healing) {
-      // 进入共享自愈：所有「恢复」按钮暂时禁用（不可打断），行内提示同步
+      // 进入批末启动校验：所有「恢复」按钮暂时禁用（不可打断），行内提示同步
       syncImpHealUI(true);
-      impRowText(d.kind, d.text || "正在自愈…", "muted");
+      impRowText(d.kind, d.text || "正在启动服务并校验插件兼容性…", "muted");
     } else {
       const st = impSt(d.kind);
       st.pct = d.pct || 0;

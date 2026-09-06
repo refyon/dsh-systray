@@ -13,8 +13,9 @@ import (
 
 // ==================== 重置 DeepSeek Harness ====================
 // 常规页「重置 DeepSeek Harness」：停服后全新安装到用户从「重置目标版本」下拉选择的、
-// 早于当前运行版本的官方版本（弹窗勾选清除会话/插件）；无更早版本等边界降级放行，
-// 按官方默认目标执行。弹窗警告后执行，全程 splash 进度，失败自动回滚版本快照。
+// 不高于当前运行版本的官方版本（含当前版本=同版本重装；弹窗勾选清除会话/插件）。
+// 弹窗打开时一次查证候选与默认目标，执行期不再触网查版本。弹窗警告后执行，
+// 全程 splash 进度，失败自动回滚版本快照。
 
 // removeInstalledPlugins 物理删除用户安装的插件（profiles 下各 profile）：
 //  1. package.json：dependencies 与 dsh.profile.bundles 移除非 @deepseek-ai/* 的条目
@@ -182,9 +183,9 @@ func harnessGitTagForVersion(version string) (string, error) {
 }
 
 // runHarnessReset 重置 DeepSeek Harness：停服务 →（可选）清会话/清插件 →
-// 全新安装 reqTarget（前端从「重置目标版本」下拉选择的、早于当前运行版本的官方版本）→
-// 重启校验。reqTarget 为空为边界降级放行（无可更早版本 / 当前版本识别失败 / 网络查询失败）：
-// 沿用 fetchNpmResetTarget 的官方默认目标（最新稳定版，仅预发布时最新发布）。
+// 全新安装 reqTarget（前端从「重置目标版本」下拉选择的、不高于当前运行版本的官方版本，
+// 含当前版本=同版本重装）→ 重启校验。reqTarget 为空或格式非法为防御性失败（前端已保证
+// 传具体版本：候选与默认目标均在弹窗打开时由 GetResetVersions 一次查证，这里不再触网查询）。
 // clearSessions / clearPlugins 由前端勾选弹窗传入（版本回退始终执行，必选项）。
 // 失败自动回退到重置前的可运行快照并弹窗报告。异步执行（按钮触发后 go 调用）。
 func runHarnessReset(clearSessions, clearPlugins bool, reqTarget string) {
@@ -204,37 +205,25 @@ func runHarnessReset(clearSessions, clearPlugins bool, reqTarget string) {
 		return
 	}
 
-	// 1) 目标版本：用户显式选择的版本（执行时二次校验其真实存在于 npm——弹窗打开与
-	//    确认之间列表可能过期）；reqTarget 为空 = 边界降级放行，按官方默认目标解析。
-	splash.Update("正在查询官方可用版本…", 0.2)
-	target := ""
-	targetNote := ""
-	if reqTarget != "" {
-		versions, err := npmHarnessPublishedVersions()
-		if err != nil {
-			splash.Close()
-			showMessageBox("重置失败：无法查询官方可用版本。\n"+err.Error()+"\n\n请检查网络后重试。", appName)
-			return
-		}
-		if !containsVersion(versions, reqTarget) {
-			splash.Close()
-			showMessageBox(fmt.Sprintf("重置失败：所选版本 %s 在 npm 上已不存在，请关闭弹窗后重试。", withV(reqTarget)), appName)
-			return
-		}
-		target = reqTarget
-	} else {
-		latest, note, err := fetchNpmResetTarget()
-		if err != nil {
-			splash.Close()
-			showMessageBox("重置失败：无法获取官方可用版本。\n"+err.Error()+"\n\n请检查网络后重试。", appName)
-			return
-		}
-		target, targetNote = latest, note
+	// 1) 目标版本：弹窗已选（GetResetVersions 在弹窗打开时查过 npm 列表并给出默认目标）；
+	//    此处只做本地格式校验，不再查询最新版本号——版本真实可装性由下方 pnpm add 决定，
+	//    失败走备份还原兜底并提示。
+	splash.Update("正在准备全新安装…", 0.2)
+	target := reqTarget
+	if target == "" {
+		splash.Close()
+		showMessageBox("重置失败：未选择重置目标版本，请重新打开弹窗选择后再试。", appName)
+		return
+	}
+	if !validResetTarget(target) {
+		splash.Close()
+		showMessageBox(fmt.Sprintf("重置失败：目标版本 %q 格式非法，请重新打开弹窗选择。", target), appName)
+		return
 	}
 	log.Printf("reset: clean reinstall to %s (shape=npm) clearSessions=%v clearPlugins=%v explicitTarget=%v",
-		orDash(target), clearSessions, clearPlugins, reqTarget != "")
+		orDash(target), clearSessions, clearPlugins, true)
 
-	// 2) 清空原目录 + 全新安装官方最新版：先把旧目录整体改名为备份（快），在新目录全新安装；
+	// 2) 清空原目录 + 全新安装所选版本：先把旧目录整体改名为备份（快），在新目录全新安装；
 	//    成功删除备份，失败还原备份（保证不留下半成品）。
 	bakDir := harnessDir + ".reset-bak"
 	_ = os.RemoveAll(bakDir)
@@ -304,7 +293,7 @@ func runHarnessReset(clearSessions, clearPlugins bool, reqTarget string) {
 		detail += "· 已安装插件已清除\n"
 	}
 	detail += "· 版本：已全新安装 " + withV(target) + "（原 harness 目录文件已全部清空）\n"
-	detail += "服务已重启。" + targetNote + cleanupNotes
+	detail += "服务已重启。" + cleanupNotes
 	showMessageBox(detail, appName)
 }
 
@@ -412,14 +401,15 @@ type ResetVersionOption struct {
 type ResetVersionInfo struct {
 	Form    string               `json:"form"`    // "npm" | "source"（源码形态不支持自动重置）
 	Current string               `json:"current"` // 当前已装版本（识别失败为空）
-	Options []ResetVersionOption `json:"options"` // 仅早于当前版本的候选（按新→旧；当前未知=识别失败时列出全部）
-	Default string               `json:"default"` // 默认选中版本；空=无更早候选（走官方默认目标）
+	Options []ResetVersionOption `json:"options"` // 不高于当前版本的候选（按新→旧；当前未知=识别失败时列出全部）
+	Default string               `json:"default"` // 默认选中版本（无候选时=降级放行的官方默认目标，具体版本）
 	Note    string               `json:"note"`    // 边界/降级说明或错误原因（面向用户）
 }
 
 // buildResetVersionOptions 由 npm 已发布版本与当前已装版本构建重置目标候选：
-//   - 只保留早于 current 的版本（compareVersions < 0；相等与更新都不提供——仅可重置到更早版本）；
-//     current 为空（当前版本识别失败）时为降级放行列出全部版本；
+//   - 只保留不高于 current 的版本（compareVersions <= 0：早于或等于当前版本——允许重置到
+//     当前版本进行同版本重装；更高版本不提供）；current 为空（当前版本识别失败）时为降级
+//     放行列出全部版本；
 //   - 去重并按新→旧排序；
 //   - Default = 最靠前的稳定版（即最新稳定版）；全部为预发布时取最新的预发布。
 func buildResetVersionOptions(versions []string, current string) (opts []ResetVersionOption, def string) {
@@ -429,7 +419,7 @@ func buildResetVersionOptions(versions []string, current string) (opts []ResetVe
 		if v == "" || seen[v] {
 			continue
 		}
-		if current != "" && compareVersions(v, current) >= 0 {
+		if current != "" && compareVersions(v, current) > 0 {
 			continue
 		}
 		seen[v] = true
@@ -448,13 +438,31 @@ func buildResetVersionOptions(versions []string, current string) (opts []ResetVe
 	return opts, def
 }
 
-// containsVersion 判断版本列表是否包含该版本（忽略前导 v / dsh- 前缀）。
-func containsVersion(list []string, v string) bool {
-	v = strings.TrimPrefix(strings.TrimPrefix(v, "dsh-"), "v")
-	for _, x := range list {
-		if x == v {
-			return true
+// validResetTarget 本地校验目标版本格式（近似 npm semver；纯防御——防止异常入参进入
+// pnpm add 的版本拼接，如空值/路径/参数注入）。弹窗候选本身来自 npm 已发布版本列表。
+func validResetTarget(v string) bool {
+	if v == "" || len(v) > 64 {
+		return false
+	}
+	if v[0] == '.' || v[len(v)-1] == '.' {
+		return false // 前导/尾随点：非合法 semver
+	}
+	digit, dot := false, false
+	for i := 0; i < len(v); i++ {
+		c := v[i]
+		switch {
+		case c >= '0' && c <= '9':
+			digit = true
+		case c == '.':
+			if dot && i > 0 && v[i-1] == '.' {
+				return false // 连续点：非合法 semver
+			}
+			dot = true
+		case c == '-' || c == '+' || (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z'):
+			// 预发布/构建后缀与字母
+		default:
+			return false
 		}
 	}
-	return false
+	return digit && dot
 }

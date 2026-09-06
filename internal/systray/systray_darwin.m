@@ -85,8 +85,26 @@ withParentMenuId: (int)theParentMenuId
   systray_on_exit();
 }
 
+// paddedStatusImage 菜单栏图标按 macOS 常规尺寸缩放并留白：
+// 常见系统/微信类图标整体约 22pt 画布、图形约占 60%（四周留白），
+// 避免源图（满幅贴边）显示得比其它应用图标大。
+- (NSImage *)paddedStatusImage:(NSImage *)image {
+  const CGFloat canvas = 22.0;
+  const CGFloat glyphRatio = 0.6;
+  NSImage *out = [NSImage imageWithSize:NSMakeSize(canvas, canvas) flipped:NO drawingHandler:^BOOL(NSRect rect) {
+    CGFloat inset = rect.size.width * (1.0 - glyphRatio) / 2.0;
+    NSRect drawRect = NSInsetRect(rect, inset, inset);
+    [image drawInRect:drawRect fromRect:NSZeroRect
+            operation:NSCompositingOperationSourceOver fraction:1.0
+      respectFlipped:NO hints:nil];
+    return YES;
+  }];
+  [out setTemplate:[image isTemplate]];
+  return out;
+}
+
 - (void)setIcon:(NSImage *)image {
-  statusItem.button.image = image;
+  statusItem.button.image = [self paddedStatusImage:image];
   [self updateTitleButtonStyle];
 }
 

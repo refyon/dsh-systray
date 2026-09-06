@@ -13,12 +13,14 @@ import (
 	"crypto/md5"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"io/ioutil"
 	"log"
 	"os"
 	"path/filepath"
 	"runtime"
 	"sort"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"syscall"
@@ -45,7 +47,10 @@ var (
 	pCreateCompatibleBitmap = g32.NewProc("CreateCompatibleBitmap")
 	pCreateCompatibleDC     = g32.NewProc("CreateCompatibleDC")
 	pCreateDIBSection       = g32.NewProc("CreateDIBSection")
+	pCreateFontIndirectW    = g32.NewProc("CreateFontIndirectW")
 	pDeleteDC               = g32.NewProc("DeleteDC")
+	pDeleteObject           = g32.NewProc("DeleteObject")
+	pGetTextExtentPoint32W  = g32.NewProc("GetTextExtentPoint32W")
 	pSelectObject           = g32.NewProc("SelectObject")
 
 	k32              = syscall.NewLazyDLL("Kernel32.dll")
@@ -59,6 +64,7 @@ var (
 	pCreatePopupMenu       = u32.NewProc("CreatePopupMenu")
 	pCreateWindowEx        = u32.NewProc("CreateWindowExW")
 	pDefWindowProc         = u32.NewProc("DefWindowProcW")
+	pDestroyMenu           = u32.NewProc("DestroyMenu")
 	pRemoveMenu            = u32.NewProc("RemoveMenu")
 	pDestroyWindow         = u32.NewProc("DestroyWindow")
 	pDispatchMessage       = u32.NewProc("DispatchMessageW")
@@ -82,6 +88,7 @@ var (
 	pSetMenuInfo           = u32.NewProc("SetMenuInfo")
 	pSetMenuItemInfo       = u32.NewProc("SetMenuItemInfoW")
 	pShowWindow            = u32.NewProc("ShowWindow")
+	pSystemParametersInfo  = u32.NewProc("SystemParametersInfoW")
 	pTrackPopupMenu        = u32.NewProc("TrackPopupMenu")
 	pTranslateMessage      = u32.NewProc("TranslateMessage")
 	pUnregisterClass       = u32.NewProc("UnregisterClassW")
@@ -200,6 +207,28 @@ type point struct {
 	X, Y int32
 }
 
+// logFontW 与 NONCLIENTMETRICS 配套的字体结构（用于取系统菜单字体测量文本宽度）。
+type logFontW struct {
+	Height, Width, Escapement, Orientation, Weight       int32
+	Italic, Underline, StrikeOut, CharSet                byte
+	OutPrecision, ClipPrecision, Quality, PitchAndFamily byte
+	FaceName                                             [32]uint16
+}
+
+// nonClientMetricsW 系统非客户区度量（SPI_GETNONCLIENTMETRICS），取 lfMenuFont。
+type nonClientMetricsW struct {
+	CbSize                                 uint32
+	BorderWidth, ScrollWidth, ScrollHeight int32
+	CaptionWidth, CaptionHeight            int32
+	CaptionFont, SmCaptionFont, MenuFont   logFontW
+	StatusFont, MessageFont                logFontW
+}
+
+// sizeW SIZE 结构（GetTextExtentPoint32W 输出）。
+type sizeW struct {
+	Cx, Cy int32
+}
+
 // The BITMAPINFO structure defines the dimensions and color information for a DIB.
 // https://learn.microsoft.com/en-us/windows/win32/api/wingdi/ns-wingdi-bitmapinfo
 type bitmapInfo struct {
@@ -272,6 +301,20 @@ type winTray struct {
 	onClick  func(menu IMenu)
 	onDClick func(menu IMenu)
 	onRClick func(menu IMenu)
+
+	// —— dsh-systray 定制：菜单宽度自适应 ——
+	// lastMenuFingerprint 最近一次弹出/重建时的菜单内容指纹（标题/状态/隐藏项）。
+	// 每次 ShowMenu 前比对：文本或可见项变化 → 重建根菜单，强制系统按当前文本重新测量宽度
+	// （修复：菜单文本先变长后变短时宽度停留在历史最大值的观感；宽度只升不降反例）。
+	lastMenuFingerprint string
+	// minMenuPx 启动时（首次弹菜单）测得的最宽标题像素，作为弹出宽度的下限：
+	// 重建时对所有标题做右侧空格补齐到不小于该值（空格参与测量且不可见）。
+	minMenuPx    int
+	minMenuPxSet bool
+	// sepIDs 已插入的菜单分隔条 id（重建根菜单时需原样重放——分隔条不在 menuItems 表里）。
+	sepIDs map[uint32]bool
+	// hiddenIDs 当前被 Hide 的菜单项（重建时不重放，保持隐藏状态）。
+	hiddenIDs map[uint32]bool
 }
 
 // windowAlive 判断托盘隐藏窗口是否仍然有效。
@@ -351,7 +394,11 @@ func (t *winTray) rebuild() {
 	t.menus = make(map[uint32]Handle)
 	t.menuOf = make(map[uint32]Handle)
 	t.visibleItems = make(map[uint32][]uint32)
+	t.sepIDs = make(map[uint32]bool)
+	t.hiddenIDs = make(map[uint32]bool)
 	t.loadedImages = make(map[string]Handle)
+	t.lastMenuFingerprint = ""
+	t.minMenuPxSet = false
 	t.initialized.Store(false)
 	if err := t.initInstance(); err != nil {
 		log.Printf("systray rebuild: initInstance failed: %s", err)
@@ -574,6 +621,8 @@ func (t *winTray) initInstance() error {
 	t.menus = make(map[uint32]Handle)
 	t.menuOf = make(map[uint32]Handle)
 	t.menuItemIcons = make(map[uint32]Handle)
+	t.sepIDs = make(map[uint32]bool)
+	t.hiddenIDs = make(map[uint32]bool)
 
 	taskbarEventNamePtr, _ := syscall.UTF16PtrFromString("TaskbarCreated")
 	// https://msdn.microsoft.com/en-us/library/windows/desktop/ms644947
@@ -747,7 +796,7 @@ func (t *winTray) addOrUpdateMenuItem(menuItemId uint32, parentId uint32, title 
 		MFS_CHECKED  = 0x00000008
 		MFS_DISABLED = 0x00000003
 	)
-	titlePtr, err := syscall.UTF16PtrFromString(title)
+	titleU, err := syscall.UTF16FromString(title)
 	if err != nil {
 		return err
 	}
@@ -756,8 +805,10 @@ func (t *winTray) addOrUpdateMenuItem(menuItemId uint32, parentId uint32, title 
 		Mask:     MIIM_FTYPE | MIIM_STRING | MIIM_ID | MIIM_STATE,
 		Type:     MFT_STRING,
 		ID:       uint32(menuItemId),
-		TypeData: titlePtr,
-		Cch:      uint32(len(title)),
+		TypeData: &titleU[0],
+		// Cch 是 UTF-16 码元数（不含结尾 NUL）。原实现误用 len(title)（字节数），
+		// 中英文混排标题下测量/复制长度错误，直接导致菜单宽度计算异常。
+		Cch: uint32(len(titleU) - 1),
 	}
 	mi.Size = uint32(unsafe.Sizeof(mi))
 	if disabled {
@@ -860,6 +911,7 @@ func (t *winTray) addSeparatorMenuItem(menuItemId, parentId uint32) error {
 	if res == 0 {
 		return err
 	}
+	t.sepIDs[menuItemId] = true // 记录分隔条 id：重建根菜单时原样重放
 
 	return nil
 }
@@ -884,14 +936,175 @@ func (t *winTray) hideMenuItem(menuItemId, parentId uint32) error {
 		return err
 	}
 	t.delFromVisibleItems(parentId, menuItemId)
+	t.hiddenIDs[menuItemId] = true // 重建根菜单时不重放隐藏项，保持隐藏状态
 
 	return nil
+}
+
+// textWidthPx 用系统菜单字体测量单行文本像素宽（菜单宽度测量基准；失败返回 0）。
+func (t *winTray) textWidthPx(s string) int {
+	if s == "" {
+		return 0
+	}
+	ncm := nonClientMetricsW{}
+	ncm.CbSize = uint32(unsafe.Sizeof(ncm))
+	r, _, _ := pSystemParametersInfo.Call(0x002A, /*SPI_GETNONCLIENTMETRICS*/
+		uintptr(ncm.CbSize), uintptr(unsafe.Pointer(&ncm)), 0)
+	if r == 0 {
+		return 0
+	}
+	hFont, _, _ := pCreateFontIndirectW.Call(uintptr(unsafe.Pointer(&ncm.MenuFont)))
+	if hFont == 0 {
+		return 0
+	}
+	defer pDeleteObject.Call(hFont)
+	hDC, _, _ := pGetDC.Call(0)
+	if hDC == 0 {
+		return 0
+	}
+	defer pReleaseDC.Call(0, hDC)
+	old, _, _ := pSelectObject.Call(hDC, hFont)
+	defer pSelectObject.Call(hDC, old)
+	u, _ := syscall.UTF16FromString(s)
+	sz := sizeW{}
+	_, _, _ = pGetTextExtentPoint32W.Call(hDC, uintptr(unsafe.Pointer(&u[0])), uintptr(len(u)-1), uintptr(unsafe.Pointer(&sz)))
+	return int(sz.Cx)
+}
+
+// padTitleToMinPx 把标题右侧补齐空格至不小于 minMenuPx（空格参与测量、视觉不可见），
+// 保证菜单弹出宽度不低于启动时默认宽度。
+func (t *winTray) padTitleToMinPx(s string) string {
+	if t.minMenuPx <= 0 {
+		return s
+	}
+	w := t.textWidthPx(s)
+	if w <= 0 || w >= t.minMenuPx {
+		return s
+	}
+	spaceW := t.textWidthPx(" ")
+	if spaceW <= 0 {
+		return s
+	}
+	for i := 0; i < 64 && w < t.minMenuPx; i++ {
+		s += " "
+		w += spaceW
+	}
+	return s
+}
+
+// currentMenuFingerprint 当前菜单内容指纹：根菜单下全部可见项（含分隔条，排除隐藏项）的
+// id+标题+启用/勾选状态。任何一项变化都会触发根菜单重建，从而让系统按当前文本重新测量宽度。
+func (t *winTray) currentMenuFingerprint() string {
+	menuItemsLock.Lock()
+	defer menuItemsLock.Unlock()
+	ids := make([]uint32, 0, len(menuItems)+len(t.sepIDs))
+	for id := range menuItems {
+		ids = append(ids, id)
+	}
+	for id := range t.sepIDs {
+		ids = append(ids, id)
+	}
+	sort.Slice(ids, func(i, j int) bool { return ids[i] < ids[j] })
+	var b strings.Builder
+	for _, id := range ids {
+		if t.hiddenIDs[id] {
+			b.WriteString(fmt.Sprintf("h%d;", id))
+			continue
+		}
+		if t.sepIDs[id] {
+			b.WriteString(fmt.Sprintf("s%d;", id))
+			continue
+		}
+		it := menuItems[id]
+		if it == nil {
+			continue
+		}
+		b.WriteString(fmt.Sprintf("%d|%s|%v|%v;", id, it.title, it.disabled, it.checked))
+	}
+	return b.String()
+}
+
+// rebuildRootMenu 销毁并重建根弹出菜单，按当前状态原样重放（标题经 min 宽度补齐）：
+// 隐藏项不重放、分隔条保留、可见项顺序与既有插入逻辑一致（按 id 升序）。
+func (t *winTray) rebuildRootMenu() {
+	t.muMenus.RLock()
+	h := t.menus[0]
+	t.muMenus.RUnlock()
+	if h != 0 {
+		pDestroyMenu.Call(uintptr(h))
+	}
+	t.menus = make(map[uint32]Handle)
+	t.menuOf = make(map[uint32]Handle)
+	t.visibleItems = make(map[uint32][]uint32)
+	if err := t.createMenu(); err != nil {
+		log.Printf("systray: rebuild root menu failed: %v", err)
+		return
+	}
+	menuItemsLock.Lock()
+	ids := make([]uint32, 0, len(menuItems)+len(t.sepIDs))
+	for id := range menuItems {
+		ids = append(ids, id)
+	}
+	for id := range t.sepIDs {
+		ids = append(ids, id)
+	}
+	menuItemsLock.Unlock()
+	sort.Slice(ids, func(i, j int) bool { return ids[i] < ids[j] })
+	for _, id := range ids {
+		menuItemsLock.Lock()
+		_, isSep := t.sepIDs[id]
+		hidden := t.hiddenIDs[id]
+		item, isItem := menuItems[id]
+		menuItemsLock.Unlock()
+		if isSep {
+			_ = wt.addSeparatorMenuItem(id, 0)
+			continue
+		}
+		if hidden || !isItem || item == nil {
+			continue
+		}
+		title := item.title
+		if title != "" {
+			title = wt.padTitleToMinPx(title)
+		}
+		_ = wt.addOrUpdateMenuItem(item.id, item.parentId(), title, item.disabled, item.checked)
+	}
+}
+
+// syncMenuWidth ShowMenu 前调用：首次弹出以当时（启动默认）文本测得最小宽度下限；
+// 之后比对指纹，文本/可见状态变化即重建根菜单，宽度自动适应当前文本（可增可减，且不小于下限）。
+func (t *winTray) syncMenuWidth() {
+	if !t.minMenuPxSet {
+		t.minMenuPxSet = true
+		best := 0
+		menuItemsLock.Lock()
+		for _, it := range menuItems {
+			if it == nil || it.title == "" {
+				continue
+			}
+			if w := t.textWidthPx(it.title); w > best {
+				best = w
+			}
+		}
+		menuItemsLock.Unlock()
+		t.minMenuPx = best
+		log.Printf("systray: menu min width baseline = %dpx", best)
+	}
+	fp := t.currentMenuFingerprint()
+	if fp != t.lastMenuFingerprint {
+		t.rebuildRootMenu()
+		t.lastMenuFingerprint = fp
+		log.Printf("systray: menu content changed, root menu rebuilt for width adaption")
+	}
 }
 
 func (t *winTray) ShowMenu() error {
 	if !wt.isReady() {
 		return ErrTrayNotReadyYet
 	}
+
+	// 文本/状态变化时重建根菜单 → 系统按当前文本重新测量宽度（自动适应，含收缩）
+	t.syncMenuWidth()
 
 	const (
 		TPM_BOTTOMALIGN = 0x0020
@@ -1266,6 +1479,7 @@ func hideMenuItem(item *MenuItem) {
 }
 
 func showMenuItem(item *MenuItem) {
+	delete(wt.hiddenIDs, uint32(item.id))
 	addOrUpdateMenuItem(item)
 }
 

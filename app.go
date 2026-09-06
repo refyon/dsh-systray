@@ -627,8 +627,9 @@ func (a *App) ResetHarness(clearSessions, clearPlugins bool, targetVersion strin
 }
 
 // GetResetVersions 返回重置弹窗「重置目标版本」下拉所需数据：当前已装版本、全部候选
-// （仅早于当前版本的官方 npm 版本，按新→旧）、默认选中与边界说明。源码形态不支持重置。
-// 查询失败（网络/registry）时 Options 为空、Note 携带原因，前端据此禁用确认并提示。
+// （不高于当前版本的官方 npm 版本，含当前版本=同版本重装；按新→旧）、默认选中与边界说明。
+// 无候选时 Default 仍给出具体降级目标（官方最新稳定版语义），保证执行期不再触网查版本。
+// 源码形态不支持重置；查询失败（网络/registry）时 Options 为空、Note 携带原因，前端据此禁用确认。
 func (a *App) GetResetVersions() ResetVersionInfo {
 	if isSourceHarnessDir() {
 		return ResetVersionInfo{Form: "source",
@@ -645,11 +646,20 @@ func (a *App) GetResetVersions() ResetVersionInfo {
 		return ResetVersionInfo{Form: "npm", Current: cur, Note: "查询 npm 已发布版本失败：" + err.Error()}
 	}
 	opts, def := buildResetVersionOptions(versions, cur)
+	if def == "" && len(versions) > 0 {
+		// 无「不高于当前版本」的候选（当前版本是最新/未被列出且无同版本可重装）：
+		// 降级放行——默认目标取官方最新稳定版（无稳定取最新发布），与旧「官方默认目标」语义一致。
+		def = pickHarnessVersion(versions, false)
+		if def == "" {
+			def = pickHarnessVersion(versions, true)
+		}
+	}
 	info := ResetVersionInfo{Form: "npm", Current: cur, Options: opts, Default: def}
-	if cur == "" {
-		info.Note = "未能识别当前已装版本，已列出全部官方版本供选择。"
-	} else if len(opts) == 0 {
-		info.Note = "当前已是最早的官方已发布版本（无更早目标），将按官方默认目标执行重置。"
+	switch {
+	case cur == "":
+		info.Note = "未能识别当前已装版本，已列出全部官方版本供选择（默认按官方最新稳定版）。"
+	case len(opts) == 0 && def != "":
+		info.Note = "没有不高于当前运行版本的候选版本，将按官方默认目标 " + withV(def) + " 执行重置。"
 	}
 	return info
 }

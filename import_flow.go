@@ -162,8 +162,9 @@ func importWorker() {
 }
 
 // runImportTask 执行单条任务的应用段（pause/解压/注册/消毒/预检/对齐）。
-// 结束态写入 t.res（非 plugins 或取消/失败的立即终态；plugins 对齐成功标记 settle，最终
-// 结果由批末 finishImportBatch 在共享自愈后写入）。
+// 结束态写入 t.res。非 settle 路径（非 plugins 任务、plugins 早失败/取消）在任务内
+// 立即 finalizeTask 发布 import:done——会话/文件等恢复完成即显示「已完成」，不必等批末
+// 服务收尾；plugins 对齐成功标记 settle，最终结果由批末 finishImportBatch 在共享校验后写入。
 func runImportTask(t *importTask) {
 	emit := func(text string, pct float64, hint ...bool) {
 		h := len(hint) > 0 && hint[0]
@@ -180,6 +181,12 @@ func runImportTask(t *importTask) {
 		}
 		importQMu.Unlock()
 	}
+	// terminal 立即终态：写入 t.res 并马上发布 import:done（批末 finishImportBatch 的
+	// finalizeTask 对已 sent 的任务跳过，不会重复发）。
+	terminal := func(res map[string]interface{}) {
+		done(res)
+		finalizeTask(t, false, "", nil)
+	}
 	okRes := func() map[string]interface{} {
 		return map[string]interface{}{"kind": t.kind, "ok": true, "note": strings.Join(t.notes, "；")}
 	}
@@ -191,7 +198,7 @@ func runImportTask(t *importTask) {
 	}
 
 	if t.cancel.Load() { // 队列中已被取消：未做任何改动，直接取消终态
-		done(cancelRes())
+		terminal(cancelRes())
 		return
 	}
 
@@ -221,25 +228,25 @@ func runImportTask(t *importTask) {
 			if t.kind == "plugins" {
 				rollbackImportProfiles(t.dirs, t.hadNM)
 			}
-			done(cancelRes())
+			terminal(cancelRes())
 			return
 		}
 		if t.kind == "plugins" {
 			rollbackImportProfiles(t.dirs, t.hadNM)
 		}
-		done(failRes(err))
+		terminal(failRes(err))
 		return
 	}
 
 	if t.kind != "plugins" {
-		done(okRes())
+		terminal(okRes()) // 会话/文件等：任务完成即报「已完成」，不等批末服务收尾
 		return
 	}
 
 	// plugins：注册 + 消毒 + 版本预检 + 对齐
 	if rerr := registerRestoredPlugins(importZipPath); rerr != nil {
 		rollbackImportProfiles(t.dirs, t.hadNM)
-		done(failRes(rerr))
+		terminal(failRes(rerr))
 		return
 	}
 	for _, dir := range t.dirs {
@@ -247,7 +254,7 @@ func runImportTask(t *importTask) {
 	}
 	if t.cancel.Load() {
 		rollbackImportProfiles(t.dirs, t.hadNM)
-		done(cancelRes())
+		terminal(cancelRes())
 		return
 	}
 
@@ -301,17 +308,17 @@ func runImportTask(t *importTask) {
 	if t.cancel.Load() {
 		emit("已中止安装，正在回退…", 0.6, true)
 		rollbackImportProfiles(t.dirs, t.hadNM)
-		done(cancelRes())
+		terminal(cancelRes())
 		return
 	}
 
-	// 对齐完成：不在此自愈——注册为批末共享自愈成员
+	// 对齐完成：不在此校验——注册为批末共享启动校验成员（导入内容必须拉起服务验证一次）
 	t.settle = true
 	importQMu.Lock()
 	healDirs = append(healDirs, t.dirs...)
 	healHadNM = append(healHadNM, t.hadNM...)
 	importQMu.Unlock()
-	emit("插件依赖已就绪，等待批量收尾自愈…", 0.85, true)
+	emit("插件依赖已就绪，等待启动校验…", 0.85, true)
 }
 
 // finishImportBatch worker 收尾：批内如有 plugins settle 成员则做一次共享自愈；然后统一
@@ -334,7 +341,7 @@ func finishImportBatch(processed []*importTask) {
 		if appCtx != nil {
 			wruntime.EventsEmit(appCtx, "import:progress", map[string]interface{}{
 				"kind": "plugins", "healing": true,
-				"text": "正在启动服务并自愈…（自愈过程不可取消，请稍候）", "pct": 0.9})
+				"text": "正在启动服务并校验插件兼容性…（启动校验过程不可取消，请稍候）", "pct": 0.9})
 		}
 		stopHB := make(chan struct{})
 		hbDone := make(chan struct{})
@@ -350,7 +357,7 @@ func finishImportBatch(processed []*importTask) {
 					if appCtx != nil {
 						wruntime.EventsEmit(appCtx, "import:progress", map[string]interface{}{
 							"kind": "plugins", "healing": true,
-							"text": fmt.Sprintf("服务自愈进行中…请勿中断（等待步骤 %d）", n), "pct": 0.93})
+							"text": fmt.Sprintf("服务启动校验中…请勿中断（等待步骤 %d）", n), "pct": 0.93})
 					}
 				case <-stopHB:
 					return
