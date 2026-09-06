@@ -3,7 +3,11 @@ package main
 import "fmt"
 
 // ==================== 界面语言（zh / en） ====================
-// langPref 用户偏好：config.json 的 language 字段，取值 auto | zh | en，缺省 auto（跟随系统）。
+// langPref 用户偏好：config.json 的 language 字段，取值 auto | zh | en。
+//
+//	config 未写该字段（旧版本升级 / 全新安装）时缺省 zh（简体中文），
+//	仅在用户显式选择 auto（跟随系统）或 en 时才按对应语义生效。
+//
 // curLang  解析后的生效语言：zh | en。托盘菜单 / 原生弹窗 / splash 文案据此渲染
 // （设置窗口内文案由前端 i18n 渲染，见 frontend/dist/main.js 的 tr()/fmt() 与 lang:changed）。
 var (

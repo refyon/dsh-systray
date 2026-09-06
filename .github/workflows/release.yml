@@ -97,7 +97,7 @@ jobs:
     needs: build
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout (main, for README size sync)
+      - name: Checkout (main, for curated release notes from docs/RELEASE_NOTES.md)
         uses: actions/checkout@v4
         with:
           ref: main

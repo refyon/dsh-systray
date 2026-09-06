@@ -339,7 +339,8 @@ footer .sep{margin:0 8px;color:var(--border)}
     var prev = document.getElementById("car-prev"), next = document.getElementById("car-next");
     if (prev) prev.setAttribute("aria-label", d.prevAria);
     if (next) next.setAttribute("aria-label", d.nextAria);
-    updateCarCaption(true); // 语言切换：只刷新文案不重载图片
+    updateCarCaption();
+    show(cur); // 语言切换后立即按新语言重选当前页图片（EN 图缺失自动回退 zh）
   }
   function toggleLang(l) {
     try { localStorage.setItem(LS_KEY, l); } catch (e) {}
@@ -395,20 +396,36 @@ footer .sep{margin:0 8px;color:var(--border)}
     dotEls.forEach(function(dd, j){ dd.setAttribute('aria-label', I18N[lang].dotAria.replace('%d', j + 1)); });
   }
 
-  // 候选列表按序尝试（EN 优先 → zh 兜底）；已缓存立即用，首次命中后缓存。
+  // 候选列表按序尝试（EN 优先 → zh 兜底）。修复两处旧缺陷：
+  // ① 首次加载完成/失败从未回调发起者（轮播要等第二圈才显示新图）；
+  // ② 失败时每个排队回调各触发一次 fallback（重复请求回退图）。
+  // 现在：每个请求者都会在加载完成时被回调；并发等待同一 src 共享一次加载。
   function pickShot(idx, cb) {
     var cands = lang === 'en' ? [shots[idx].en, shots[idx].zh] : [shots[idx].zh];
     (function next(k) {
       if (k >= cands.length) { cb(null); return; }
       var src = cands[k];
       if (loaded[src]) { cb(src); return; }
-      if (pending[src]) { pending[src].push(function (s) { if (s) cb(s); else next(k + 1); }); return; }
-      pending[src] = [];
-      var im = new Image();
-      im.onload = function () { loaded[src] = true; var q = pending[src] || []; delete pending[src]; q.forEach(function (f) { f(src); }); };
-      im.onerror = function () { var q = pending[src] || []; delete pending[src]; q.forEach(function (f) { f(null); }); next(k + 1); };
-      im.src = src;
+      var q = pending[src];
+      if (!q) { q = pending[src] = []; loadOne(src, q); }
+      q.push(function (s) { if (s) cb(s); else next(k + 1); });
     })(0);
+  }
+  function loadOne(src, q) {
+    var im = new Image();
+    im.onload = function () {
+      loaded[src] = true;
+      delete pending[src];
+      var waiters = q.slice(); q.length = 0;
+      waiters.forEach(function (f) { f(src); });
+    };
+    im.onerror = function () {
+      loaded[src] = false;
+      delete pending[src];
+      var waiters = q.slice(); q.length = 0;
+      waiters.forEach(function (f) { f(null); }); // 由各等待者自身触发下一候选（同源并发时共享一次 fallback 加载）
+    };
+    im.src = src;
   }
   function showShotSrc(src) {
     carImg.src = src;
@@ -430,9 +447,10 @@ footer .sep{margin:0 8px;color:var(--border)}
     var my = ++seq;
     updateCarCaption();
     dotEls.forEach(function(d, j){ d.classList.toggle('active', j === cur); });
-    var s = shots[cur];
-    var useLoaded = (lang === 'en' && loaded[s.en]) || loaded[s.zh];
-    if (useLoaded) { showShotSrc(lang === 'en' && loaded[s.en] ? s.en : s.zh); return; }
+    // 语言优先：目标语言图已缓存直接显示；未缓存则按序加载（EN 图失败自动回退 zh）。
+    // 注意不能以「任一语言已缓存」短路——zh 图缓存后切 EN 会永远显示中文图（旧缺陷）。
+    var want = (lang === 'en') ? shots[cur].en : shots[cur].zh;
+    if (loaded[want]) { showShotSrc(want); return; }
     pickShot(cur, function (src) {
       if (my !== seq || !src) return;
       carImg.src = src;

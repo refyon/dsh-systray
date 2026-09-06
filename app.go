@@ -143,6 +143,7 @@ func (a *App) SetLanguage(l string) {
 			"curLang": curLang,
 		})
 	}
+	refreshTrayTexts() // 托盘菜单文案即时按新语言刷新（含服务状态行）
 }
 
 // saveCurrentConfig 把当前全局配置写回 config.json。

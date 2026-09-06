@@ -236,6 +236,8 @@ var (
 	serviceFailReason atomic.Value      // string
 	menuOpen          *systray.MenuItem // “打开 Web UI”
 	menuStatus        *systray.MenuItem // 状态说明行
+	mSettings         *systray.MenuItem // “设置”
+	mQuit             *systray.MenuItem // “退出”
 )
 
 // statusLineMaxRunes 托盘状态行（失败原因）的最大展示长度——菜单宽度随最长文本变化，
@@ -290,6 +292,33 @@ func refreshServiceMenu() {
 		menuOpen.Hide()
 		menuStatus.Show()
 		menuStatus.SetTitle(serviceStatusText())
+	})
+}
+
+// refreshTrayTexts 语言切换后把托盘菜单各条目更新为当前生效语言（菜单项运行时 SetTitle 即生效）。
+// systray 操作须在消息循环线程执行，整体包进 RunOnLoop；refreshServiceMenu 再按真实服务状态
+// 覆盖状态行文案与显隐（内部自行 RunOnLoop，队列式实现，嵌套调用安全）。
+func refreshTrayTexts() {
+	if menuOpen == nil || menuStatus == nil {
+		return
+	}
+	systray.RunOnLoop(func() {
+		if menuStatus != nil {
+			menuStatus.SetTooltip(T("后台服务状态"))
+		}
+		if menuOpen != nil {
+			menuOpen.SetTitle(T("打开 Web UI"))
+			menuOpen.SetTooltip(T("打开网页端界面"))
+		}
+		if mSettings != nil {
+			mSettings.SetTitle(T("设置"))
+			mSettings.SetTooltip(T("打开设置窗口"))
+		}
+		if mQuit != nil {
+			mQuit.SetTitle(T("退出"))
+			mQuit.SetTooltip(T("退出并关闭后台服务器"))
+		}
+		refreshServiceMenu()
 	})
 }
 
@@ -349,9 +378,14 @@ func main() {
 	webURL = fmt.Sprintf("http://127.0.0.1:%d/", port)
 	harnessDir = cfg.HarnessDir
 	startupTimeout = time.Duration(cfg.StartupTimeoutSec) * time.Second
-	// 语言：偏好来自 config（auto 缺省），尽早解析生效语言，供托盘菜单/原生弹窗/splash 渲染。
-	langPref = normalizeLang(cfg.Language)
+	// 语言：config 未写 language（旧版本升级 / 全新安装）默认简体中文，避免旧用户升级后
+	// 因「跟随系统」检测到英文系统语言而整体变英文（0.8.0 升级反馈）；显式 auto/zh/en 按选择生效。
+	langPref = "zh"
+	if cfg.Language != "" {
+		langPref = normalizeLang(cfg.Language)
+	}
 	curLang = resolveLang(langPref)
+	log.Printf("[i18n] language pref=%q system=%s → curLang=%s", cfg.Language, detectSystemLang(), curLang)
 
 	// 自愈历史自启动项：旧版本注册的自启动条目未带 --autostart 参数，或残留
 	// 「裸二进制直接 exec」形态（macOS 上因缺 bundle 上下文导致开机自启失效），
@@ -875,9 +909,9 @@ func onReady() {
 	// 周期刷新，保证每次打开托盘菜单都反映服务实时状态
 	go pollServiceMenu()
 	systray.AddSeparator()
-	mSettings := systray.AddMenuItem(T("设置"), T("打开设置窗口"))
+	mSettings = systray.AddMenuItem(T("设置"), T("打开设置窗口"))
 	systray.AddSeparator()
-	mQuit := systray.AddMenuItem(T("退出"), T("退出并关闭后台服务器"))
+	mQuit = systray.AddMenuItem(T("退出"), T("退出并关闭后台服务器"))
 
 	menuOpen.Click(func() {
 		if running, _, _ := resolveRunningService(); running {

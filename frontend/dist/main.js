@@ -41,7 +41,7 @@ const state = {
   shotScroll: "",       // 截图模式内容区滚动量（bottom/像素/空）
 };
 
-// ==================== 界面语言（en 字典；默认 DOM 为中文，切 en 应用，切回整页重载复位） ====================
+// ==================== 界面语言（en 字典；默认 DOM 为中文，zh↔en 就地双向切换） ====================
 const I18N_EN = {
   splashStatus: "Preparing runtime environment…",
   splashCancel: "Cancel update",
@@ -199,24 +199,37 @@ function fmt(s) {
   return t;
 }
 
-// 静态层：把 [data-i18n] 文案 / [data-i18n-ph] placeholder 换成英文（仅 en 生效）。
-// 动态 JS 文案（弹层标题/提示/行模板等）在后续动态层处理；语言切换整体走 location.reload()。
+// 静态层：zh↔en 就地双向切换。index.html 默认 DOM 为中文文案，首次应用语言前对其快照
+// （ZH_SNAP）；en 时以 I18N_EN 覆盖，切回 zh 时从快照还原。动态 JS 文案（弹层/提示/行模板）
+// 由 rerenderDynamicText 重渲染块级内容。语言切换不再整页 reload——reload 后 init 无条件
+// 显示 splash 而设置视图仅由 Go 事件驱动出现，会永久卡在 splash（0.8.0 切换中文反馈的根因）。
+let ZH_SNAP = null;
+function snapshotStaticZh() {
+  if (ZH_SNAP) return;
+  ZH_SNAP = {};
+  document.querySelectorAll("[data-i18n]").forEach((el) => {
+    ZH_SNAP[el.getAttribute("data-i18n")] = el.innerHTML;
+  });
+  document.querySelectorAll("[data-i18n-ph]").forEach((el) => {
+    ZH_SNAP["ph:" + el.getAttribute("data-i18n-ph")] = el.getAttribute("placeholder") || "";
+  });
+}
 function applyStaticI18n() {
   const en = curLangCode() === "en";
   document.documentElement.lang = en ? "en" : "zh-CN";
   document.title = en ? "dsh-systray · Settings" : "dsh-systray · 设置";
-  if (!en) return;
+  if (!ZH_SNAP) snapshotStaticZh(); // 防御：首次调用必然发生在未被覆盖的原始 zh DOM 上，快照安全
   document.querySelectorAll("[data-i18n]").forEach((el) => {
     const k = el.getAttribute("data-i18n");
-    if (I18N_EN[k]) el.innerHTML = I18N_EN[k];
+    const txt = en ? I18N_EN[k] : ZH_SNAP[k];
+    if (txt !== undefined) el.innerHTML = txt;
   });
   document.querySelectorAll("[data-i18n-ph]").forEach((el) => {
     const k = el.getAttribute("data-i18n-ph");
-    if (I18N_EN[k]) el.setAttribute("placeholder", I18N_EN[k]);
+    const v = en ? I18N_EN[k] : ZH_SNAP["ph:" + k];
+    if (v !== undefined) el.setAttribute("placeholder", v);
   });
-  const autoOpt = document.querySelector('#sel-lang option[value="auto"]');
-  if (autoOpt && I18N_EN.langAuto) autoOpt.textContent = I18N_EN.langAuto;
-  rerenderDynamicText(); // 语言确定后重渲染服务状态/插件/导出/导入等动态区块（避免先于 GetConfig 渲染成中文）
+  rerenderDynamicText(); // 服务状态/插件/导出/导入等动态区块按当前语言重渲染（en 与 zh 恢复都执行）
 }
 
 // 动态区块统一重渲染（EN 生效后调用；各函数内部以 curLangCode() 决定语言）
@@ -1426,9 +1439,17 @@ function wireImport() {
 // ==================== 事件监听（Go → JS） ====================
 
 function wireEvents() {
-  // 语言切换：Go 已持久化并更新 curLang；整页重载让静态/动态文案按新语言完整重渲染
-  //（动态文案字典化完成前以重载保证一致性）。
-  EventsOn("lang:changed", () => location.reload());
+  // 语言切换：Go 已持久化并更新 curLang；此处就地双向切换（静态层快照还原 + 动态块重渲染 +
+  // 页标题/下拉同步），不再整页 reload（reload 后 init 无条件显示 splash，设置视图仅由
+  // splash:done / ui:show-settings 事件驱动出现，语言切换后会永久卡在 splash）。
+  EventsOn("lang:changed", (d) => {
+    if (!d) return;
+    if (state.cfg) { state.cfg.language = d.pref; state.cfg.curLang = d.curLang; }
+    const ls = $("sel-lang");
+    if (ls && d.pref) ls.value = d.pref;
+    applyStaticI18n();                 // 静态层 + 动态块按新语言重渲染
+    showPage(state.page || "general"); // 页标题 / 日志轮询按新语言复位
+  });
 
   EventsOn("splash:progress", (d) => {
     if (!d) return;
@@ -1587,6 +1608,7 @@ function confirmDialog(title, msg, okLabel) {
 // ==================== 启动 ====================
 
 async function init() {
+  snapshotStaticZh(); // 语言快照必须先于任何 en 覆盖（zh 还原基线）
   wireEvents();
   wireSplashCancel();
   wireGeneral();
