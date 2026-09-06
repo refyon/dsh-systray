@@ -30,7 +30,11 @@ def _convert(png_path):
     print(f"{os.path.basename(webp_path)}: {src_size} -> {dst_size} bytes ({dst_size * 100 // max(src_size, 1)}%)")
 
 
-for t in [os.path.join(docs, "shots"), os.path.join(docs, "screenshot-hero.png")]:
+targets = [os.path.join(docs, "shots")]
+if os.path.isdir(os.path.join(docs, "shots-en")):
+    targets.append(os.path.join(docs, "shots-en"))  # 英文版截图（存在时一并转换）
+targets.append(os.path.join(docs, "screenshot-hero.png"))
+for t in targets:
     if os.path.isdir(t):
         for f in sorted(os.listdir(t)):
             if f.endswith(".png"):

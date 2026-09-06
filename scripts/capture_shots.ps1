@@ -1,4 +1,9 @@
-﻿$ErrorActionPreference = 'Stop'
+﻿param(
+    [ValidateSet('zh','en')]
+    [string]$Lang = 'zh'
+)
+
+$ErrorActionPreference = 'Stop'
 Add-Type -AssemblyName System.Drawing
 Add-Type -TypeDefinition @"
 using System;
@@ -20,12 +25,23 @@ public class Cap {
 $crop = 8
 $root = Split-Path -Parent $PSScriptRoot
 $exe = Join-Path $root 'build\bin\dsh-systray.exe'
-$outDir = Join-Path $root 'docs\shots'
+$outDir = if ($Lang -eq 'en') { Join-Path $root 'docs\shots-en' } else { Join-Path $root 'docs\shots' }
 $readyFile = Join-Path $env:TEMP 'dsh-shot-ready.flag'
 New-Item -ItemType Directory -Force -Path $outDir | Out-Null
 
 # 截图/预览模式：抑制「打开 Web UI」弹窗；阻止启动完成后隐藏设置窗口
 $env:DSH_SYSTRAY_SHOW_WINDOW = '1'
+$restoreLang = $false
+if ($Lang -eq 'en') {
+    $cfgPath = Join-Path ([Environment]::GetFolderPath('ApplicationData')) 'dsh-systray\config.json'
+    $cfgBak = Join-Path $env:TEMP 'dsh-cfg-backup.json'
+    if (Test-Path $cfgPath) { Copy-Item $cfgPath $cfgBak -Force } else { Remove-Item $cfgBak -Force -ErrorAction SilentlyContinue }
+    $cfg = @{}
+    if (Test-Path $cfgPath) { try { $cfg = Get-Content $cfgPath -Raw | ConvertFrom-Json -AsHashtable } catch { $cfg = @{} } }
+    $cfg['language'] = 'en'
+    [IO.File]::WriteAllText($cfgPath, ($cfg | ConvertTo-Json -Depth 5), [Text.UTF8Encoding]::new($false))
+    $restoreLang = $true
+}
 $env:DSH_SYSTRAY_SHOT_READY_FILE = $readyFile
 
 function Test-Varied([System.Drawing.Bitmap]$bmp) {
@@ -141,7 +157,11 @@ SnapProcess 'import'  'import'
 
 Stop-AllInstances
 Remove-Item $readyFile -Force -ErrorAction SilentlyContinue
-Write-Host 'done (PNG only; compositing/webp run in separate steps)'
+if ($restoreLang) {
+    if (Test-Path $cfgBak) { Copy-Item $cfgBak $cfgPath -Force; Remove-Item $cfgBak -Force }
+    elseif (Test-Path $cfgPath) { Remove-Item $cfgPath -Force }
+}
+Write-Host "done $Lang (PNG only; compositing/webp run in separate steps)"
 function SnapProcess([string]$name, [string]$page, [string]$scroll = '' ) {
   for ($attempt = 1; $attempt -le 2; $attempt++) {
     if (SnapProcessOnce $name $page $scroll) { return }
