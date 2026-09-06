@@ -11,11 +11,11 @@
   <div id="splash" class="splash hidden">
     <div class="splash-card">
       <div class="splash-title">DeepSeek Harness</div>
-      <div id="splash-status" class="splash-status">正在准备运行环境…</div>
+      <div id="splash-status" class="splash-status" data-i18n="splashStatus">正在准备运行环境…</div>
       <div class="splash-track" role="progressbar" aria-label="进度" aria-valuemin="0" aria-valuemax="100">
         <div id="splash-fill" class="splash-fill"></div>
       </div>
-      <button id="splash-cancel" class="btn btn-ghost splash-cancel hidden">取消更新</button>
+      <button id="splash-cancel" class="btn btn-ghost splash-cancel hidden" data-i18n="splashCancel">取消更新</button>
     </div>
   </div>
 
@@ -23,24 +23,24 @@
   <div id="settings" class="settings hidden">
     <aside class="sidebar">
       <nav class="nav" aria-label="设置分类">
-        <button class="nav-item active" data-page="general">常规</button>
-        <button class="nav-item" data-page="about">关于</button>
-        <button class="nav-item" data-page="logs">日志</button>
-        <button class="nav-item" data-page="export">导出</button>
-        <button class="nav-item" data-page="import">导入</button>
+        <button class="nav-item active" data-page="general" data-i18n="navGeneral">常规</button>
+        <button class="nav-item" data-page="about" data-i18n="navAbout">关于</button>
+        <button class="nav-item" data-page="logs" data-i18n="navLogs">日志</button>
+        <button class="nav-item" data-page="export" data-i18n="navExport">导出</button>
+        <button class="nav-item" data-page="import" data-i18n="navImport">导入</button>
       </nav>
     </aside>
 
     <main class="content">
-      <header class="page-head"><h1 id="page-title">常规</h1></header>
+      <header class="page-head"><h1 id="page-title" data-i18n="navGeneral">常规</h1></header>
 
       <!-- 常规 -->
       <section id="page-general" class="page">
         <div class="card">
           <div class="card-row">
             <div class="row-text">
-              <div class="row-title">开机自启动</div>
-              <div class="row-sub">登录后自动启动后台服务并常驻托盘</div>
+              <div class="row-title" data-i18n="stAutoTitle">开机自启动</div>
+              <div class="row-sub" data-i18n="stAutoSub">登录后自动启动后台服务并常驻托盘</div>
             </div>
             <button id="sw-autostart" class="switch" role="switch" aria-checked="false" aria-label="开机自启动"></button>
           </div>
@@ -48,11 +48,11 @@
         <div class="card">
           <div class="card-row">
             <div class="row-text">
-              <div class="row-title">界面语言</div>
-              <div class="row-sub">托盘菜单与原生弹窗随之切换；跟随系统按当前系统语言自动选择</div>
+              <div class="row-title" data-i18n="stLangTitle">界面语言</div>
+              <div class="row-sub" data-i18n="stLangSub">托盘菜单与原生弹窗随之切换；跟随系统按当前系统语言自动选择</div>
             </div>
             <select id="sel-lang" class="input-select" aria-label="界面语言">
-              <option value="auto">跟随系统（自动检测）</option>
+              <option value="auto" data-i18n="langAuto">跟随系统（自动检测）</option>
               <option value="zh">简体中文</option>
               <option value="en">English</option>
             </select>
@@ -63,20 +63,20 @@
             <div class="row-text">
               <div class="row-title">
                 <span id="svc-dot" class="dot dot-starting"></span>
-                <span id="svc-text">后台服务：启动中</span>
+                <span id="svc-text" data-i18n="svcText">后台服务：启动中</span>
               </div>
-              <div id="svc-sub" class="row-sub">服务就绪后可打开 Web UI</div>
+              <div id="svc-sub" class="row-sub" data-i18n="svcSubReady">服务就绪后可打开 Web UI</div>
             </div>
             <div class="btn-group">
-              <button id="btn-restart" class="btn btn-primary">重启后台服务</button>
-              <button id="btn-open-webui" class="btn btn-ghost" disabled>打开 Web UI</button>
+              <button id="btn-restart" class="btn btn-primary" data-i18n="btnRestart">重启后台服务</button>
+              <button id="btn-open-webui" class="btn btn-ghost" disabled data-i18n="btnOpenWeb">打开 Web UI</button>
             </div>
           </div>
         </div>
         <div class="card">
           <div class="card-row">
             <div class="row-text">
-              <div class="row-title">服务端口</div>
+              <div class="row-title" data-i18n="stPortTitle">服务端口</div>
               <div class="row-sub" id="cfg-port-sub">http://127.0.0.1:3080</div>
             </div>
             <input id="inp-port" class="input input-narrow" type="number" min="1" max="65535" inputmode="numeric">
@@ -84,19 +84,19 @@
           <div id="port-hint" class="row-warn port-hint hidden"></div>
           <div class="card-row">
             <div class="row-text">
-              <div class="row-title">Harness 目录</div>
+              <div class="row-title" data-i18n="stHarnessTitle">Harness 目录</div>
               <div class="row-sub row-sub-path" id="cfg-harness-dir">—</div>
             </div>
-            <button id="btn-pick-harness" class="btn btn-ghost">选择…</button>
+            <button id="btn-pick-harness" class="btn btn-ghost" data-i18n="btnChoose">选择…</button>
           </div>
         </div>
         <div class="card">
           <div class="card-row">
             <div class="row-text">
-              <div class="row-title">重置 DeepSeek Harness</div>
-              <div class="row-sub">停止服务并按所选官方版本全新重装 Harness（默认不高于当前版本的最新稳定版，可选当前版本重装），可勾选清除会话与插件</div>
+              <div class="row-title" data-i18n="stResetTitle">重置 DeepSeek Harness</div>
+              <div class="row-sub" data-i18n="stResetSub">停止服务并按所选官方版本全新重装 Harness（默认不高于当前版本的最新稳定版，可选当前版本重装），可勾选清除会话与插件</div>
             </div>
-            <button id="btn-reset-harness" class="btn btn-danger">重置服务</button>
+            <button id="btn-reset-harness" class="btn btn-danger" data-i18n="btnReset">重置服务</button>
           </div>
         </div>
       </section>
@@ -106,53 +106,53 @@
         <div class="card">
           <div class="card-row">
             <div class="row-text">
-              <div class="row-title">dsh-systray 版本号</div>
-              <div class="row-sub">桌面托盘设置程序</div>
+              <div class="row-title" data-i18n="abAppVerTitle">dsh-systray 版本号</div>
+              <div class="row-sub" data-i18n="abAppVerSub">桌面托盘设置程序</div>
             </div>
             <strong class="ver-lg" id="ver-app">—</strong>
           </div>
           <div class="update-line">
             <div id="hint-systray" class="update-note"></div>
-            <button id="btn-check-systray" class="btn btn-outline btn-sm">检查更新</button>
-            <button id="btn-systray-update" class="btn btn-primary btn-sm hidden">更新 dsh-systray</button>
+            <button id="btn-check-systray" class="btn btn-outline btn-sm" data-i18n="btnCheckUpdate">检查更新</button>
+            <button id="btn-systray-update" class="btn btn-primary btn-sm hidden" data-i18n="btnUpdateApp">更新 dsh-systray</button>
           </div>
         </div>
 
         <div class="card">
           <div class="card-row">
             <div class="row-text">
-              <div class="row-title">DeepSeek Harness 版本号</div>
-              <div class="row-sub">后台服务引擎</div>
+              <div class="row-title" data-i18n="abHarnessVerTitle">DeepSeek Harness 版本号</div>
+              <div class="row-sub" data-i18n="abHarnessVerSub">后台服务引擎</div>
             </div>
             <strong class="ver-lg" id="ver-harness">—</strong>
           </div>
           <div class="card-row">
             <div class="row-text">
-              <div class="row-title">开启预发布通道</div>
-              <div class="row-sub">alpha / beta / rc 预发布版</div>
+              <div class="row-title" data-i18n="abPreTitle">开启预发布通道</div>
+              <div class="row-sub" data-i18n="abPreSub">alpha / beta / rc 预发布版</div>
             </div>
             <button id="sw-prerelease" class="switch" role="switch" aria-checked="false" aria-label="预发布通道"></button>
           </div>
           <div class="update-line">
             <div id="hint-harness" class="update-note"></div>
-            <button id="btn-check-harness" class="btn btn-outline btn-sm">检查更新</button>
-            <button id="btn-harness-update" class="btn btn-primary btn-sm hidden">更新 Harness</button>
+            <button id="btn-check-harness" class="btn btn-outline btn-sm" data-i18n="btnCheckUpdate">检查更新</button>
+            <button id="btn-harness-update" class="btn btn-primary btn-sm hidden" data-i18n="btnUpdateHarness">更新 Harness</button>
           </div>
         </div>
 
         <div class="card">
           <div class="card-row">
             <div class="row-text">
-              <div class="row-title">已安装插件</div>
-              <div class="row-sub">通过 dsh add 安装 · 每行可单独检查更新</div>
+              <div class="row-title" data-i18n="abPluginsTitle">已安装插件</div>
+              <div class="row-sub" data-i18n="abPluginsSub">通过 dsh add 安装 · 每行可单独检查更新</div>
             </div>
             <span id="plug-count" class="plug-count"></span>
           </div>
           <div class="plug-filter-row">
-            <input id="plug-filter" class="plug-filter" type="search" placeholder="过滤插件（名称 / 来源 / 版本）…" aria-label="过滤插件" autocomplete="off" />
+            <input id="plug-filter" class="plug-filter" type="search" placeholder="过滤插件（名称 / 来源 / 版本）…" aria-label="过滤插件" autocomplete="off" data-i18n-ph="plugFilterPh" />
           </div>
           <div id="plug-list" class="plug-list"></div>
-          <div id="plug-empty" class="plug-empty row-sub hidden">未安装任何用户插件（在 Web UI 中通过 dsh add 安装）</div>
+          <div id="plug-empty" class="plug-empty row-sub hidden" data-i18n="plugEmpty">未安装任何用户插件（在 Web UI 中通过 dsh add 安装）</div>
         </div>
       </section>
 
@@ -162,8 +162,8 @@
           <div id="log-path" class="log-path">—</div>
         </div>
         <div class="log-tools">
-          <button class="btn btn-primary" id="btn-log-refresh">刷新</button>
-          <button class="btn btn-danger" id="btn-log-clear">清空</button>
+          <button class="btn btn-primary" id="btn-log-refresh" data-i18n="btnRefresh">刷新</button>
+          <button class="btn btn-danger" id="btn-log-clear" data-i18n="btnClear">清空</button>
         </div>
         <div class="card log-card">
           <pre id="log-view" class="log-view" tabindex="0"></pre>
@@ -174,12 +174,12 @@
       <section id="page-export" class="page hidden">
         <div id="exp-rows"></div>
         <div class="export-foot">
-          <button id="btn-pick-dir" class="btn btn-ghost">添加打包目录…</button>
-          <button id="btn-export" class="btn btn-primary">导出…</button>
+          <button id="btn-pick-dir" class="btn btn-ghost" data-i18n="btnAddDir">添加打包目录…</button>
+          <button id="btn-export" class="btn btn-primary" data-i18n="btnExport">导出…</button>
         </div>
         <div class="exp-result">
-          <div id="exp-hint" class="row-sub">已选 0 项，点击「导出…」打包为 zip</div>
-          <button id="exp-open" class="btn btn-ghost hidden">打开导出目录</button>
+          <div id="exp-hint" class="row-sub" data-i18n="expHintDefault">已选 0 项，点击「导出…」打包为 zip</div>
+          <button id="exp-open" class="btn btn-ghost hidden" data-i18n="btnOpenDir">打开导出目录</button>
         </div>
       </section>
 
@@ -187,11 +187,11 @@
       <section id="page-import" class="page hidden">
         <div class="card imp-intro">
           <div class="imp-intro-main">
-            <div class="row-title">导入 dsh-systray 导出包</div>
-            <div class="row-sub">选择 dsh-systray-export-*.zip 压缩包，可恢复历史会话、已安装插件或文件目录。</div>
+            <div class="row-title" data-i18n="impTitle">导入 dsh-systray 导出包</div>
+            <div class="row-sub" data-i18n="impSub">选择 dsh-systray-export-*.zip 压缩包，可恢复历史会话、已安装插件或文件目录。</div>
             <div id="imp-path" class="row-sub row-sub-path imp-path hidden"></div>
           </div>
-          <button id="btn-import-pick" class="btn btn-primary btn-sm">添加压缩包…</button>
+          <button id="btn-import-pick" class="btn btn-primary btn-sm" data-i18n="btnAddZip">添加压缩包…</button>
         </div>
         <div id="imp-rows"></div>
         <div id="imp-hint" class="row-sub"></div>
@@ -199,7 +199,7 @@
           <div class="splash-track"><div id="imp-fill" class="splash-fill"></div></div>
           <span id="imp-text" class="row-sub"></span>
           <div class="imp-cancel-row">
-            <button id="btn-imp-cancel" class="btn btn-ghost btn-sm hidden">取消恢复</button>
+            <button id="btn-imp-cancel" class="btn btn-ghost btn-sm hidden" data-i18n="btnCancelRestore">取消恢复</button>
           </div>
         </div>
       </section>
@@ -210,12 +210,12 @@
   <div id="modal" class="modal hidden">
     <div class="modal-mask"></div>
     <div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="modal-title">
-      <div class="modal-title" id="modal-title">确认操作</div>
+      <div class="modal-title" id="modal-title" data-i18n="dlgConfirm">确认操作</div>
       <div class="modal-msg" id="modal-msg"></div>
       <div class="modal-actions">
-        <button class="btn btn-ghost" id="modal-cancel">取消</button>
-        <button class="btn btn-outline hidden" id="modal-skip">跳过</button>
-        <button class="btn btn-danger" id="modal-ok">确定</button>
+        <button class="btn btn-ghost" id="modal-cancel" data-i18n="btnCancel">取消</button>
+        <button class="btn btn-outline hidden" id="modal-skip" data-i18n="btnSkip">跳过</button>
+        <button class="btn btn-danger" id="modal-ok" data-i18n="btnOk">确定</button>
       </div>
     </div>
   </div>
@@ -224,11 +224,11 @@
   <div id="exp-modal" class="modal hidden">
     <div class="modal-mask"></div>
     <div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="exp-modal-title">
-      <div class="modal-title" id="exp-modal-title">正在导出</div>
-      <div id="exp-modal-text" class="modal-msg">正在准备导出…</div>
+      <div class="modal-title" id="exp-modal-title" data-i18n="expModalTitle">正在导出</div>
+      <div id="exp-modal-text" class="modal-msg" data-i18n="expModalText">正在准备导出…</div>
       <div class="splash-track"><div id="exp-modal-fill" class="splash-fill"></div></div>
       <div class="modal-actions">
-        <button class="btn btn-primary" id="exp-modal-close">完成</button>
+        <button class="btn btn-primary" id="exp-modal-close" data-i18n="btnDone">完成</button>
       </div>
     </div>
   </div>
@@ -237,15 +237,15 @@
   <div id="reset-modal" class="modal hidden">
     <div class="modal-mask"></div>
     <div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="reset-title">
-      <div class="modal-title" id="reset-title">重置 DeepSeek Harness</div>
-      <div class="modal-msg">重置会停止后台服务并清空 harness 目录，然后全新安装所选官方版本（下拉提供不高于当前运行版本的版本，可选当前版本进行同版本重装；默认取其中最新的稳定版）。被清除的数据不可恢复。</div>
+      <div class="modal-title" id="reset-title" data-i18n="rstTitle">重置 DeepSeek Harness</div>
+      <div class="modal-msg" data-i18n="rstMsg">重置会停止后台服务并清空 harness 目录，然后全新安装所选官方版本（下拉提供不高于当前运行版本的版本，可选当前版本进行同版本重装；默认取其中最新的稳定版）。被清除的数据不可恢复。</div>
       <div class="reset-target">
         <div class="reset-target-head">
-          <label for="reset-target" class="reset-target-label">重置目标版本</label>
+          <label for="reset-target" class="reset-target-label" data-i18n="rstTargetLabel">重置目标版本</label>
           <span class="row-sub" id="reset-target-cur"></span>
         </div>
         <select id="reset-target" class="reset-target-select" disabled>
-          <option value="">正在查询可用版本…</option>
+          <option value="" data-i18n="rstLoading">正在查询可用版本…</option>
         </select>
         <div id="reset-target-note" class="row-warn hidden"></div>
       </div>
@@ -253,28 +253,28 @@
         <label class="reset-opt reset-opt-mandatory">
           <input type="checkbox" id="reset-c-harness" checked disabled>
           <span class="reset-opt-main">
-            <span class="reset-opt-title">Harness 服务 <em>（必选）</em></span>
-            <span class="row-sub">全新安装下拉选择的版本（默认不高于当前版本的最新稳定版）并重启服务</span>
+            <span class="reset-opt-title" data-i18n="rstOptHarness">Harness 服务 <em>（必选）</em></span>
+            <span class="row-sub" data-i18n="rstOptHarnessSub">全新安装下拉选择的版本（默认不高于当前版本的最新稳定版）并重启服务</span>
           </span>
         </label>
         <label class="reset-opt">
           <input type="checkbox" id="reset-c-sessions">
           <span class="reset-opt-main">
-            <span class="reset-opt-title">会话记录</span>
+            <span class="reset-opt-title" data-i18n="rstOptSessions">会话记录</span>
             <span class="row-sub" id="reset-sessions-sub">将清除 0 条会话记录</span>
           </span>
         </label>
         <label class="reset-opt">
           <input type="checkbox" id="reset-c-plugins">
           <span class="reset-opt-main">
-            <span class="reset-opt-title">已安装插件</span>
+            <span class="reset-opt-title" data-i18n="rstOptPlugins">已安装插件</span>
             <span class="row-sub" id="reset-plugins-sub">将清除 0 个已安装插件</span>
           </span>
         </label>
       </div>
       <div class="modal-actions">
-        <button class="btn btn-ghost" id="reset-cancel">取消</button>
-        <button class="btn btn-danger" id="reset-confirm">开始重置</button>
+        <button class="btn btn-ghost" id="reset-cancel" data-i18n="btnCancel">取消</button>
+        <button class="btn btn-danger" id="reset-confirm" data-i18n="btnStartReset">开始重置</button>
       </div>
     </div>
   </div>

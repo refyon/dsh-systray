@@ -41,6 +41,74 @@ const state = {
   shotScroll: "",       // 截图模式内容区滚动量（bottom/像素/空）
 };
 
+// ==================== 界面语言（en 字典；默认 DOM 为中文，切 en 应用，切回整页重载复位） ====================
+const I18N_EN = {
+  splashStatus: "Preparing runtime environment…",
+  splashCancel: "Cancel update",
+  navGeneral: "General", navAbout: "About", navLogs: "Logs", navExport: "Export", navImport: "Import",
+  stAutoTitle: "Start at login", stAutoSub: "Start the background service and keep it in the tray after login",
+  stLangTitle: "Interface language", stLangSub: "Tray menu and native dialogs switch with it; “Follow system” picks the OS language",
+  langAuto: "Follow system (auto)",
+  svcText: "Background service: starting…",
+  svcSubReady: "Open the Web UI once the service is ready",
+  btnRestart: "Restart service", btnOpenWeb: "Open Web UI",
+  stPortTitle: "Service port", stHarnessTitle: "Harness directory",
+  btnChoose: "Choose…",
+  stResetTitle: "Reset DeepSeek Harness",
+  stResetSub: "Stops the service and reinstalls Harness fresh from the selected official version (default: newest stable not newer than current; same-version reinstall allowed); sessions & plugins can be cleared optionally",
+  btnReset: "Reset service",
+  abAppVerTitle: "dsh-systray version", abAppVerSub: "Desktop tray app",
+  abHarnessVerTitle: "DeepSeek Harness version", abHarnessVerSub: "Background service engine",
+  abPreTitle: "Enable prerelease channel", abPreSub: "alpha / beta / rc builds",
+  btnCheckUpdate: "Check for updates",
+  btnUpdateApp: "Update dsh-systray", btnUpdateHarness: "Update Harness",
+  abPluginsTitle: "Installed plugins", abPluginsSub: "Installed via dsh add · check each row individually",
+  plugFilterPh: "Filter plugins (name / source / version)…",
+  plugEmpty: "No user plugins installed (install via dsh add in the Web UI)",
+  btnRefresh: "Refresh", btnClear: "Clear",
+  btnAddDir: "Add folders…", btnExport: "Export…",
+  expHintDefault: "0 items selected — click “Export…” to bundle a zip",
+  btnOpenDir: "Open export folder",
+  impTitle: "Import dsh-systray export bundle",
+  impSub: "Pick a dsh-systray-export-*.zip to restore sessions, installed plugins or file folders.",
+  btnAddZip: "Add archive…",
+  btnCancelRestore: "Cancel restore",
+  dlgConfirm: "Confirm", btnCancel: "Cancel", btnSkip: "Skip", btnOk: "OK",
+  expModalTitle: "Exporting", expModalText: "Preparing export…", btnDone: "Done",
+  rstTitle: "Reset DeepSeek Harness",
+  rstMsg: "Resetting stops the background service and clears the harness directory, then performs a fresh install of the chosen official version (dropdown lists versions not newer than the running one; same-version reinstall allowed; newest stable is the default). Cleared data cannot be recovered.",
+  rstTargetLabel: "Reset target version", rstLoading: "Querying available versions…",
+  rstOptHarness: "Harness service <em>(required)</em>",
+  rstOptHarnessSub: "Freshly install the selected version (default: newest stable not newer than current) and restart the service",
+  rstOptSessions: "Sessions", rstOptPlugins: "Installed plugins",
+  rstSessionsSub: "Will clear 0 sessions", rstPluginsSub: "Will clear 0 plugins",
+  btnStartReset: "Start reset",
+};
+const PAGE_I18N_KEY = { general: "navGeneral", about: "navAbout", logs: "navLogs", export: "navExport", import: "navImport" };
+
+function curLangCode() {
+  return (state.cfg && state.cfg.curLang === "en") ? "en" : "zh";
+}
+
+// 静态层：把 [data-i18n] 文案 / [data-i18n-ph] placeholder 换成英文（仅 en 生效）。
+// 动态 JS 文案（弹层标题/提示/行模板等）在后续动态层处理；语言切换整体走 location.reload()。
+function applyStaticI18n() {
+  const en = curLangCode() === "en";
+  document.documentElement.lang = en ? "en" : "zh-CN";
+  document.title = en ? "dsh-systray · Settings" : "dsh-systray · 设置";
+  if (!en) return;
+  document.querySelectorAll("[data-i18n]").forEach((el) => {
+    const k = el.getAttribute("data-i18n");
+    if (I18N_EN[k]) el.innerHTML = I18N_EN[k];
+  });
+  document.querySelectorAll("[data-i18n-ph]").forEach((el) => {
+    const k = el.getAttribute("data-i18n-ph");
+    if (I18N_EN[k]) el.setAttribute("placeholder", I18N_EN[k]);
+  });
+  const autoOpt = document.querySelector('#sel-lang option[value="auto"]');
+  if (autoOpt && I18N_EN.langAuto) autoOpt.textContent = I18N_EN.langAuto;
+}
+
 // ==================== 页面路由 ====================
 
 const PAGE_TITLES = { general: "常规", about: "关于", logs: "日志", export: "导出", import: "导入" };
@@ -48,7 +116,9 @@ const PAGE_TITLES = { general: "常规", about: "关于", logs: "日志", export
 function showPage(name) {
   state.page = name;
   document.querySelectorAll(".nav-item").forEach((b) => b.classList.toggle("active", b.dataset.page === name));
-  $("page-title").textContent = PAGE_TITLES[name];
+  const key = PAGE_I18N_KEY[name];
+  $("page-title").textContent = (curLangCode() === "en" && key && I18N_EN[key])
+    ? I18N_EN[key] : PAGE_TITLES[name];
   document.querySelectorAll(".page").forEach((p) => p.classList.add("hidden"));
   $("page-" + name).classList.remove("hidden");
   if (name === "logs") startLogPolling();
@@ -104,6 +174,7 @@ async function refreshConfig() {
     $("sw-prerelease").setAttribute("aria-checked", String(state.cfg.harnessPrerelease));
     const ls = $("sel-lang");
     if (ls) ls.value = state.cfg.language || "auto";
+    applyStaticI18n(); // 语言生效后重刷静态文案（en 时覆盖默认中文 DOM）
     updatePortHint();
   } catch (e) { console.error("GetConfig", e); }
 }
@@ -1211,6 +1282,10 @@ function wireImport() {
 // ==================== 事件监听（Go → JS） ====================
 
 function wireEvents() {
+  // 语言切换：Go 已持久化并更新 curLang；整页重载让静态/动态文案按新语言完整重渲染
+  //（动态文案字典化完成前以重载保证一致性）。
+  EventsOn("lang:changed", () => location.reload());
+
   EventsOn("splash:progress", (d) => {
     if (!d) return;
     if (d.phase === "update" && state.splashMode !== "update") showSplash("update", d.text || "正在更新…");
