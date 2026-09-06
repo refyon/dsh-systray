@@ -9,6 +9,7 @@ import (
 	"log"
 	"os"
 	"os/exec"
+	"os/signal"
 	"path/filepath"
 	"runtime"
 	"strconv"
@@ -17,6 +18,7 @@ import (
 	"time"
 
 	"dsh-systray/internal/systray"
+	wruntime "github.com/wailsapp/wails/v2/pkg/runtime"
 )
 
 //go:embed scripts/install-prereqs.sh
@@ -415,38 +417,123 @@ func launchAgentPlistPath() string {
 	return filepath.Join(home, "Library", "LaunchAgents", launchAgentLabel+".plist")
 }
 
-func isAutostartEnabled() bool {
-	_, err := os.Stat(launchAgentPlistPath())
+// autostartLaunchTarget 自启动目标：当前可执行文件所在 .app 包目录（发布形态）。
+// 裸二进制（开发构建，不在 .app 内）没有 bundle/LSUIElement 上下文，经 launchd 直接
+// 启动会异常（正是旧版"开机自启失效"根因），此时返回 "" 由调用方给出明确报错。
+func autostartLaunchTarget() string {
+	exe, err := os.Executable()
+	if err != nil {
+		return ""
+	}
+	return appBundleDir(exe)
+}
+
+// launchAgentLoaded 校验 launchd 是否已注册本登录项：
+// plist 文件存在 ≠ 已注册（launchctl load 失败/被系统移除时会"假启用"）。
+// macOS 10.10+ 的 gui/<uid> 域可用 launchctl print 校验。
+func launchAgentLoaded() bool {
+	err := exec.Command("launchctl", "print",
+		fmt.Sprintf("gui/%d/%s", os.Getuid(), launchAgentLabel)).Run()
 	return err == nil
 }
 
-func enableAutostart() {
-	exe, err := os.Executable()
-	if err != nil {
-		log.Printf("cannot resolve exe path: %v", err)
-		return
+func isAutostartEnabled() bool {
+	if _, err := os.Stat(launchAgentPlistPath()); err != nil {
+		return false
 	}
-	plist := fmt.Sprintf(`<?xml version="1.0" encoding="UTF-8"?>
+	return launchAgentLoaded()
+}
+
+// autostartPlistContent 生成 LaunchAgent plist：
+//   - ProgramArguments 用 /usr/bin/open 打开 .app（open 经 LaunchServices 正常启动应用，
+//     LSUIElement/bundle 上下文完整），后续 --args --autostart 传给应用保持静默逻辑；
+//   - LimitLoadToSessionType=Aqua：仅图形登录会话加载（避免 SSH 等非 GUI 域误启动）；
+//   - RunAtLoad：登录即启动。
+func autostartPlistContent(bundle string) string {
+	esc := func(s string) string {
+		r := strings.NewReplacer("&", "&amp;", "<", "&lt;", ">", "&gt;")
+		return r.Replace(s)
+	}
+	return fmt.Sprintf(`<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
 	<key>Label</key><string>%s</string>
 	<key>ProgramArguments</key>
-	<array><string>%s</string><string>--autostart</string></array>
+	<array>
+		<string>/usr/bin/open</string>
+		<string>%s</string>
+		<string>--args</string>
+		<string>--autostart</string>
+	</array>
 	<key>RunAtLoad</key><true/>
+	<key>LimitLoadToSessionType</key><string>Aqua</string>
+	<key>ProcessType</key><string>Interactive</string>
 </dict>
 </plist>
-`, launchAgentLabel, exe)
-	if err := os.WriteFile(launchAgentPlistPath(), []byte(plist), 0o644); err != nil {
-		log.Printf("write launch agent failed: %v", err)
-		return
-	}
-	_ = exec.Command("launchctl", "load", launchAgentPlistPath()).Run()
+`, launchAgentLabel, esc(bundle))
 }
 
-func disableAutostart() {
-	_ = exec.Command("launchctl", "unload", launchAgentPlistPath()).Run()
-	_ = os.Remove(launchAgentPlistPath())
+// writeLaunchAgentPlist 幂等写入登录项 plist（内容未变时跳过写盘）。
+// 供 main() 启动自愈调用：老用户残留的"裸二进制直接 exec"旧 plist 在此升级为
+// open .app 形态——只写文件即可，下次登录 launchd 从磁盘加载即生效；
+// 不能在自愈里 bootout（若当前进程正由该 launchd job 启动会被自杀）。
+func writeLaunchAgentPlist() error {
+	bundle := autostartLaunchTarget()
+	if bundle == "" {
+		return fmt.Errorf("当前为非 .app 开发构建，无法注册开机自启动（请使用发布的 dsh-systray.app）")
+	}
+	content := autostartPlistContent(bundle)
+	if cur, err := os.ReadFile(launchAgentPlistPath()); err == nil && string(cur) == content {
+		return nil
+	}
+	if err := os.WriteFile(launchAgentPlistPath(), []byte(content), 0o644); err != nil {
+		return fmt.Errorf("写入登录启动项失败：%w", err)
+	}
+	return nil
+}
+
+func enableAutostart() error {
+	if err := writeLaunchAgentPlist(); err != nil {
+		return err
+	}
+	// 立即注册生效：launchctl load 已废弃（且旧 job 内容在内存中不随文件刷新），
+	// 现代 API 为 bootout（幂等忽略"未加载"）+ bootstrap 到 gui/<uid> 域。
+	_ = exec.Command("launchctl", "bootout",
+		fmt.Sprintf("gui/%d/%s", os.Getuid(), launchAgentLabel)).Run()
+	if out, err := exec.Command("launchctl", "bootstrap",
+		fmt.Sprintf("gui/%d", os.Getuid()), launchAgentPlistPath()).CombinedOutput(); err != nil {
+		return fmt.Errorf("注册登录启动项失败：%v：%s", err, strings.TrimSpace(string(out)))
+	}
+	return nil
+}
+
+func disableAutostart() error {
+	_ = exec.Command("launchctl", "bootout",
+		fmt.Sprintf("gui/%d/%s", os.Getuid(), launchAgentLabel)).Run()
+	if err := os.Remove(launchAgentPlistPath()); err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("删除登录启动项失败：%w", err)
+	}
+	return nil
+}
+
+// startSignalHandling macOS：launchd 注销/系统关机路径会对进程发 SIGTERM（SIGINT 为兜底）。
+// 捕获后保留后台服务并优雅退出：跳过交互询问、走 Wails onShutdown 清理路径；
+// 应用退出早期（appCtx 未就绪）直接退出。Windows 无此需求（WM_QUERYENDSESSION 自理）。
+func startSignalHandling() {
+	ch := make(chan os.Signal, 1)
+	signal.Notify(ch, syscall.SIGTERM, syscall.SIGINT)
+	go func() {
+		s := <-ch
+		log.Printf("received signal %v: graceful quit, server kept running", s)
+		keepServerRunning.Store(true)
+		quitRequested.Store(true)
+		if appCtx != nil {
+			wruntime.Quit(appCtx)
+		} else {
+			os.Exit(0)
+		}
+	}()
 }
 
 func runInstaller() {

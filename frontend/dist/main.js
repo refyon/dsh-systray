@@ -155,7 +155,12 @@ function wireGeneral() {
   $("sw-autostart").addEventListener("click", async () => {
     const on = $("sw-autostart").getAttribute("aria-checked") !== "true";
     await bindings().SetAutostart(on);
-    $("sw-autostart").setAttribute("aria-checked", String(on));
+    // 以后端实际注册状态为准刷新开关（注册失败弹窗后开关回弹，不与真实状态脱节）
+    try {
+      const cfg = await bindings().GetConfig();
+      if (cfg && typeof cfg.autostart === "boolean")
+        $("sw-autostart").setAttribute("aria-checked", String(cfg.autostart));
+    } catch (e) { console.error("refresh autostart state", e); }
   });
   $("inp-port").addEventListener("change", async (e) => {
     const v = parseInt(e.target.value, 10);
@@ -741,6 +746,8 @@ const LOG_LVL_RE = /^\[?(INFO|WARN|ERROR|DEBUG)\]?\s+(.*)$/;
 
 function renderLog(lines) {
   const view = $("log-view");
+  const hint = $("log-empty-hint");
+  if (hint) hint.remove(); // 有新内容时移除"暂无日志"占位
   const atBottom = view.scrollHeight - view.scrollTop - view.clientHeight < 40;
   for (const ln of lines) {
     const div = document.createElement("div");
@@ -786,14 +793,34 @@ async function pollLog() {
 }
 
 /** 日志页固定查看统一日志文件（下拉切换已移除：所有日志合并为 dsh-systray.log）。 */
+function showLogHint(text) {
+  const view = $("log-view");
+  const old = $("log-empty-hint");
+  if (old) old.remove();
+  const div = document.createElement("div");
+  div.id = "log-empty-hint";
+  div.className = "log-line";
+  div.style.opacity = ".6";
+  div.textContent = text;
+  view.appendChild(div);
+}
+
 function setLogFile(name) {
   state.logName = name || "";
   $("log-view").textContent = "";
   state.logOffset = 0;
   (async () => {
     const a = bindings();
-    if (a && state.logName) $("log-path").textContent = await a.GetLogPath(state.logName);
-    else $("log-path").textContent = "";
+    if (!a) return;
+    if (!state.logName) { $("log-path").textContent = ""; return; }
+    $("log-path").textContent = await a.GetLogPath(state.logName);
+    // 空态提示：文件不存在（尚未创建）或为空时给出明确说明，避免误判为 bug
+    try {
+      const files = await a.GetLogFiles();
+      const f = files && files[0];
+      if (f && !f.exists) showLogHint("日志文件尚未创建（应用正常启动后会自动创建并写入此文件）");
+      else if (f && f.size === 0) showLogHint("日志文件已创建但暂无内容（应用运行中的行为会写入此文件）");
+    } catch (e) { console.error("GetLogFiles", e); }
   })();
   pollLog();
 }

@@ -15,6 +15,11 @@ var (
 	menuItems     = make(map[uint32]*MenuItem)
 	menuItemsLock sync.RWMutex
 
+	// onSystemPowerChange 系统电源/会话状态回调（仅 macOS 由 NSWorkspace 通知触发）。
+	// 参数 true=关机/重启/注销已开始（应用退出应跳过交互询问，避免阻塞系统退出）；
+	// false=会话恢复（如快速用户切换切回，此前置位应复位，恢复交互询问）。
+	onSystemPowerChange func(bool)
+
 	currentID             = uint32(0)
 	quitOnce              sync.Once
 	dClickTimeMinInterval int64 = 500
@@ -145,6 +150,13 @@ func RunWithExternalLoop(onReady, onExit func()) (start, end func()) {
 		nativeEnd()
 		Quit()
 	}
+}
+
+// NotifySystemPowerChange 注册系统电源/会话状态回调（macOS：NSWorkspace 通知驱动；
+// 其它平台不触发）。回调在独立 goroutine 执行，参数 true=关机/注销开始，false=会话恢复。
+// 应用退出逻辑据此在关机路径跳过交互询问，避免模态对话框阻塞系统关机/重启。
+func NotifySystemPowerChange(fn func(bool)) {
+	onSystemPowerChange = fn
 }
 
 // Register initializes GUI and registers the callbacks but relies on the

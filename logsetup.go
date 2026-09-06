@@ -37,15 +37,18 @@ func unifiedLogPath() string {
 	return filepath.Join(logDir, unifiedLogName)
 }
 
-// initUnifiedLog 打开统一日志句柄（进程级）。打开失败仅丢弃日志，不阻塞功能
-// （与既有 O_CREATE 失败静默语义一致）。
-func initUnifiedLog() {
+// initUnifiedLog 打开统一日志句柄（进程级）。返回是否成功：失败时调用方可回退目录再试
+// （见 main()）。失败不阻塞功能，但为可诊断，main() 已把 log 同时接 stderr。
+func initUnifiedLog() bool {
 	if err := os.MkdirAll(logDir, 0o755); err != nil {
-		return
+		return false
 	}
-	if f, err := os.OpenFile(unifiedLogPath(), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644); err == nil {
-		unifiedFile = f
+	f, err := os.OpenFile(unifiedLogPath(), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+	if err != nil {
+		return false
 	}
+	unifiedFile = f
+	return true
 }
 
 // writeUnifiedRaw 加锁写原始字节（行级写；单次 Write 由 OS 保证原子追加）。

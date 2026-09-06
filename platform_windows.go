@@ -698,18 +698,39 @@ func isAutostartEnabled() bool {
 	return cmd.Run() == nil
 }
 
-func enableAutostart() {
+// writeLaunchAgentPlist Windows 对应实现：自愈刷新注册表自启动项（幂等补 --autostart）。
+// 与 main() 中 macOS 的「自愈仅写文件不注销 job」语义一致：reg add /f 只覆盖条目，
+// 不影响当前运行进程。
+func writeLaunchAgentPlist() error { return enableAutostart() }
+
+// startSignalHandling Windows：占位实现。托盘自带消息循环，关机/注销由系统消息
+// （WM_QUERYENDSESSION 等）自理，无需 SIGTERM 信号处理。
+func startSignalHandling() {}
+
+func enableAutostart() error {
 	exe, err := os.Executable()
 	if err != nil {
-		log.Printf("cannot resolve exe path: %v", err)
-		return
+		return fmt.Errorf("cannot resolve exe path: %w", err)
 	}
 	val := `"` + exe + `" --autostart`
-	runHidden("reg", "add", registryPath, "/v", registryName, "/t", "REG_SZ", "/d", val, "/f")
+	cmd := exec.Command("reg", "add", registryPath, "/v", registryName, "/t", "REG_SZ", "/d", val, "/f")
+	cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
+	if out, err := cmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("reg add autostart failed: %v: %s", err, strings.TrimSpace(string(out)))
+	}
+	return nil
 }
 
-func disableAutostart() {
-	runHidden("reg", "delete", registryPath, "/v", registryName, "/f")
+func disableAutostart() error {
+	if !isAutostartEnabled() {
+		return nil // 键不存在：无需删除
+	}
+	cmd := exec.Command("reg", "delete", registryPath, "/v", registryName, "/f")
+	cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
+	if out, err := cmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("reg delete autostart failed: %v: %s", err, strings.TrimSpace(string(out)))
+	}
+	return nil
 }
 
 func runHidden(name string, args ...string) {

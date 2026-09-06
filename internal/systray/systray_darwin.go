@@ -229,6 +229,24 @@ func systray_on_exit() {
 	systrayExit()
 }
 
+//export systray_on_system_shutdown
+func systray_on_system_shutdown() {
+	notifyPowerState(true)
+}
+
+//export systray_on_system_active
+func systray_on_system_active() {
+	notifyPowerState(false)
+}
+
+// notifyPowerState 把电源/会话事件派发到独立 goroutine（回调由 AppKit 主线程发出，
+// 避免阻塞主运行循环）。
+func notifyPowerState(shuttingDown bool) {
+	if onSystemPowerChange != nil {
+		go onSystemPowerChange(shuttingDown)
+	}
+}
+
 //export systray_menu_item_selected
 func systray_menu_item_selected(cID C.int) {
 	// 菜单动作回调运行在 AppKit 主线程；处理器（如「设置」→ 显示 wails 窗口）可能做

@@ -76,6 +76,9 @@ var (
 	serverStartedPort int
 	// quitRequested 托盘「退出」流程标记：Wails OnBeforeClose 据此放行应用退出（区别于窗口 X 关闭）
 	quitRequested atomic.Bool
+	// systemShuttingDown 系统关机/重启/注销已开始（macOS NSWorkspace 通知置位）：
+	// 退出流程据此跳过「是否停止后台服务」询问，避免阻塞系统关机。
+	systemShuttingDown atomic.Bool
 	// singleInstanceRelease 单实例互斥体释放函数（更新重启前调用，避免新进程被误判重复运行）
 	singleInstanceRelease func()
 )
@@ -342,11 +345,17 @@ func main() {
 	harnessDir = cfg.HarnessDir
 	startupTimeout = time.Duration(cfg.StartupTimeoutSec) * time.Second
 
-	// 自愈历史自启动项：旧版本注册的自启动条目未带 --autostart 参数，导致登录时被当作“手动双击”而弹提示。
+	// 自愈历史自启动项：旧版本注册的自启动条目未带 --autostart 参数，或残留
+	// 「裸二进制直接 exec」形态（macOS 上因缺 bundle 上下文导致开机自启失效），
+	// 启动时升级为 open .app 形态（仅写 plist 文件，不 bootout——当前进程可能正由
+	// 该 launchd job 启动，bootout 会自杀；文件改动下次登录加载生效）。
 	// 注意：bindings 生成进程（wailsbindings.exe，wails build/generate 运行）不执行任何真实副作用。
 	if !bindingsRun && isAutostartEnabled() {
-		enableAutostart() // 幂等：确保条目含 --autostart
-		log.Printf("autostart entry refreshed with --autostart flag")
+		if err := writeLaunchAgentPlist(); err != nil {
+			log.Printf("autostart entry refresh failed: %v", err)
+		} else {
+			log.Printf("autostart entry refreshed with --autostart flag")
+		}
 	}
 
 	cfgDir, err := os.UserConfigDir()
@@ -356,12 +365,22 @@ func main() {
 	logDir = filepath.Join(cfgDir, "dsh-systray", "logs")
 	if !bindingsRun {
 		// 统一日志：所有行为（自身/UI/托盘/子进程）写入 logDir/dsh-systray.log
-		// （进程级单例句柄，行格式 ts [LEVEL] [module] message；见 logsetup.go）
-		initUnifiedLog()
+		// （进程级单例句柄，行格式 ts [LEVEL] [module] message；见 logsetup.go）。
+		// 默认目录创建/打开失败时回退系统临时目录，保证日志总有着落（此前失败完全
+		// 静默丢弃，表现为"日志为空"且无从诊断）。
+		if !initUnifiedLog() && !strings.HasPrefix(logDir, os.TempDir()) {
+			logDir = filepath.Join(os.TempDir(), "dsh-systray", "logs")
+			initUnifiedLog()
+		}
 		mergeLegacyLogs() // 升级迁移：合并旧多文件日志后删除源文件（须先于任何新日志写入）
-		log.SetOutput(appLogWriter{})
+		// stderr 双写：macOS 上从 Console/unified 日志也能看到应用日志（诊断兜底）
+		log.SetOutput(io.MultiWriter(appLogWriter{}, os.Stderr))
 	}
 	log.SetFlags(log.LstdFlags)
+	if !bindingsRun {
+		// 启动首行：固定记录版本/pid/日志路径，便于对照「日志页显示路径」与实际落盘位置
+		log.Printf("dsh-systray v%s starting (pid=%d), log file: %s", appVersion, os.Getpid(), unifiedLogPath())
+	}
 
 	release, acquired := acquireSingleInstance()
 	singleInstanceRelease = release
@@ -423,6 +442,18 @@ func main() {
 func onStartup(ctx context.Context) {
 	appCtx = ctx
 	if runtime.GOOS == "darwin" {
+		// 系统关机/注销/重启回调须在托盘启动前注册，避免通知竞态丢失。
+		// true=关机/注销开始（跳过停服询问直接放行）；false=会话恢复（FUS 切回，复位）。
+		systray.NotifySystemPowerChange(func(shuttingDown bool) {
+			if shuttingDown {
+				systemShuttingDown.Store(true)
+				log.Printf("system shutdown/logout detected, stop-server prompt will be skipped")
+			} else {
+				systemShuttingDown.Store(false)
+				log.Printf("session became active again, stop-server prompt restored")
+			}
+		})
+		startSignalHandling() // SIGTERM/SIGINT（launchd 注销/关机路径）→ 优雅退出不弹窗
 		start, _ := systray.RunWithExternalLoop(onReady, onExit)
 		start()
 	}
@@ -464,6 +495,14 @@ func onBeforeClose(ctx context.Context) bool {
 		}
 	}
 	if runtime.GOOS == "darwin" {
+		// 系统关机/重启/注销（NSWorkspace 通知已置位）：跳过询问直接放行退出。
+		// 保留后台服务不主动 kill——系统退出流程会自行回收全部进程，且避免 lsof/
+		// pkill 等额外操作拖慢退出（表现为阻塞关机）。
+		if systemShuttingDown.Load() {
+			keepServerRunning.Store(true)
+			quitRequested.Store(true)
+			return false
+		}
 		// 真实退出请求：与托盘「退出」一致地询问停服策略（0=停止并退出 1=保留服务 -1=取消）
 		choice := askStopServer()
 		if choice < 0 {
@@ -847,11 +886,20 @@ func onExit() {
 
 // setAutostartOn 统一开关开机自启动（供设置窗口调用）。
 func setAutostartOn(on bool) {
+	var err error
 	if on {
-		enableAutostart()
+		err = enableAutostart()
+	} else {
+		err = disableAutostart()
+	}
+	if err != nil {
+		log.Printf("set autostart %v failed: %v", on, err)
+		showMessageBox("设置开机自启动失败：\n"+err.Error(), appName)
+		return
+	}
+	if on {
 		log.Printf("autostart enabled (settings)")
 	} else {
-		disableAutostart()
 		log.Printf("autostart disabled (settings)")
 	}
 }
