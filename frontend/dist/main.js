@@ -90,6 +90,53 @@ function curLangCode() {
   return (state.cfg && state.cfg.curLang === "en") ? "en" : "zh";
 }
 
+// ============ 动态文案：zh 字面量 → en；tr() 直译，fmt() 支持 {0}{1} 插值。zh 无命中回退原样 ============
+const I18N_DYN = {
+  "正在准备运行环境…": "Preparing runtime environment…",
+  "正在准备更新…": "Preparing update…",
+  "正在更新…": "Updating…",
+  "正在取消…": "Cancelling…",
+  "正在准备导出…": "Preparing export…",
+  "正在检查更新…": "Checking for updates…",
+  "检查失败：{0}": "Check failed: {0}",
+  "发现新版本 {0}（当前 {1}）": "New version {0} available (current {1})",
+  "已是最新（当前 {0}）。{1}": "Up to date (current {0}). {1}",
+  "已是最新版本（{0}）": "Already on the latest version ({0})",
+  "后台服务：运行中": "Background service: running",
+  "后台服务：启动中": "Background service: starting",
+  "后台服务：已停止": "Background service: stopped",
+  "后台服务：启动失败": "Background service: failed to start",
+  "请查看日志": "See logs",
+  "服务就绪，可打开 Web UI": "Service ready — open the Web UI",
+  "服务就绪后可打开 Web UI": "Open the Web UI once the service is ready",
+  "重启失败，请查看日志": "Restart failed — see logs",
+  "端口已修改为 {0}，当前服务仍运行于 {1}——重启后台服务后生效。": "Port changed to {0}, but the service still runs on {1} — effective after restarting the service.",
+  "注意：所选为预发布版本，可能与已安装插件不兼容；若重置后服务无法启动，请查看日志。": "Note: the selected build is a prerelease and may be incompatible with installed plugins; if the service fails to start after reset, check the logs.",
+  "导出失败：{0}": "Export failed: {0}",
+  "导出完成：{0}": "Export finished: {0}",
+  "导出完成 ✓": "Export finished ✓",
+  "已取消恢复{0}": "Restore cancelled{0}",
+  "，已回退到恢复前状态": " — rolled back to the pre-restore state",
+  "恢复失败：{0}": "Restore failed: {0}",
+  "恢复完成 ✓": "Restore finished ✓",
+  "将清除 {0} 条会话记录": "Will clear {0} sessions",
+  "将清除 {0} 个已安装插件": "Will clear {0} plugins",
+  "正在查询可用版本…": "Querying available versions…",
+  "正在更新插件…": "Updating plugin…",
+  "正在尝试启用插件…": "Trying to enable plugin…",
+  "正在删除插件…": "Removing plugin…",
+  "无法更新：{0}": "Update failed: {0}",
+  "更新失败：{0}": "Update failed: {0}",
+  "取消恢复": "Cancel restore",
+  "自愈中不可取消": "Cannot cancel while self-healing",
+};
+function tr(s) { return (curLangCode() === "en" && I18N_DYN[s]) || s; }
+function fmt(s) {
+  let t = tr(s);
+  for (let i = 1; i < arguments.length; i++) t = t.split("{" + (i - 1) + "}").join(String(arguments[i]));
+  return t;
+}
+
 // 静态层：把 [data-i18n] 文案 / [data-i18n-ph] placeholder 换成英文（仅 en 生效）。
 // 动态 JS 文案（弹层标题/提示/行模板等）在后续动态层处理；语言切换整体走 location.reload()。
 function applyStaticI18n() {
@@ -148,7 +195,7 @@ function showSplash(mode, statusText) {
   const cancelBtn = $("splash-cancel");
   cancelBtn.classList.toggle("hidden", state.splashMode !== "update");
   cancelBtn.disabled = false; // 每次进入 update 视图重置可取消状态
-  $("splash-status").textContent = statusText || "正在准备运行环境…";
+  $("splash-status").textContent = statusText || tr("正在准备运行环境…");
   $("splash-fill").style.width = "0%";
   $("splash").classList.remove("hidden");
   $("settings").classList.add("hidden");
@@ -188,7 +235,7 @@ function updatePortHint() {
   const rp = state.svc && state.svc.runningPort;
   if (p && rp !== undefined && rp !== 0 && rp !== p) {
     hint.classList.remove("hidden");
-    hint.textContent = "端口已修改为 " + p + "，当前服务仍运行于 " + rp + "——重启后台服务后生效。";
+    hint.textContent = fmt("端口已修改为 {0}，当前服务仍运行于 {1}——重启后台服务后生效。", p, rp);
   } else {
     hint.classList.add("hidden");
   }
@@ -207,10 +254,10 @@ async function refreshService() {
       stopped: "后台服务：已停止",
       failed: "后台服务：启动失败",
     };
-    $("svc-text").textContent = labels[state.svc.state] || state.svc.state;
+    $("svc-text").textContent = tr(labels[state.svc.state] || state.svc.state);
     $("svc-sub").textContent = state.svc.state === "failed"
-      ? (state.svc.reason || "请查看日志")
-      : (state.svc.state === "running" ? "服务就绪，可打开 Web UI" : "服务就绪后可打开 Web UI");
+      ? (state.svc.reason || tr("请查看日志"))
+      : (state.svc.state === "running" ? tr("服务就绪，可打开 Web UI") : tr("服务就绪后可打开 Web UI"));
     // 「打开 Web UI」仅在服务运行时可点（运行端口以实际状态为准）
     const owb = $("btn-open-webui");
     if (owb) owb.disabled = state.svc.state !== "running";
@@ -267,7 +314,7 @@ function wireGeneral() {
     $("btn-restart").disabled = true;
     $("svc-sub").textContent = "正在重启后台服务…";
     const ok = await bindings().RestartService();
-    if (!ok) $("svc-sub").textContent = "重启失败，请查看日志";
+    if (!ok) $("svc-sub").textContent = tr("重启失败，请查看日志");
     setTimeout(() => { $("btn-restart").disabled = false; refreshService(); }, 2000);
   });
   // 打开 Web UI：基于服务实际运行端口（修改端口未重启的窗口期也指向真实地址）
@@ -281,8 +328,8 @@ function wireGeneral() {
       const stats = await bindings().GetResetStats();
       const sc = (stats && stats.sessionCount) || 0;
       const pc = (stats && stats.pluginCount) || 0;
-      $("reset-sessions-sub").textContent = "将清除 " + sc + " 条会话记录";
-      $("reset-plugins-sub").textContent = "将清除 " + pc + " 个已安装插件";
+      $("reset-sessions-sub").textContent = fmt("将清除 {0} 条会话记录", sc);
+      $("reset-plugins-sub").textContent = fmt("将清除 {0} 个已安装插件", pc);
       // 默认勾选插件（重置将物理删除已装插件，谨慎起见默认勾选）；会话默认不勾选（数据谨慎）
       $("reset-c-sessions").checked = false;
       $("reset-c-plugins").checked = pc > 0;
@@ -325,7 +372,7 @@ async function loadResetVersions() {
   note.textContent = "";
   note.classList.add("hidden");
   curEl.textContent = "";
-  sel.innerHTML = '<option value="">正在查询可用版本…</option>';
+  sel.innerHTML = '<option value="">' + tr("正在查询可用版本…") + '</option>';
   try {
     const info = await bindings().GetResetVersions();
     if (tok !== state.resetVersionToken) return; // 已有更新的查询在跑，丢弃本次结果
@@ -386,7 +433,7 @@ function updateResetTargetWarn() {
   const isPre = opt && opt.dataset && opt.dataset.pre === "1";
   if (!isPre) return; // 保留 loadResetVersions 写入的边界/降级说明
   const note = $("reset-target-note");
-  note.textContent = "注意：所选为预发布版本，可能与已安装插件不兼容；若重置后服务无法启动，请查看日志。";
+  note.textContent = tr("注意：所选为预发布版本，可能与已安装插件不兼容；若重置后服务无法启动，请查看日志。");
   note.classList.remove("hidden");
 }
 
@@ -420,30 +467,30 @@ async function runModuleCheck(which) {
   const upBtn = $(which === "systray" ? "btn-systray-update" : "btn-harness-update");
   checkBtn.disabled = true;
   hintEl.className = "update-note";
-  hintEl.textContent = "正在检查更新…";
+  hintEl.textContent = tr("正在检查更新…");
   upBtn.classList.add("hidden");
   try {
     const m = which === "systray" ? await a.CheckSystrayUpdate() : await a.CheckHarnessUpdate();
     if (m.error) {
       hintEl.classList.add("err");
-      hintEl.textContent = "检查失败：" + m.error;
+      hintEl.textContent = fmt("检查失败：{0}", m.error);
       return;
     }
     if (m.hasUpdate) {
       hintEl.classList.add("ok");
-      hintEl.textContent = "发现新版本 " + vtag(m.latest) + "（当前 " + vtag(m.current) + "）";
+      hintEl.textContent = fmt("发现新版本 {0}（当前 {1}）", vtag(m.latest), vtag(m.current));
       upBtn.classList.remove("hidden");
     } else if (m.note) {
       // 非网络失败的说明（如：仓库仅预发布而通道未开）——不再误报“无法获取”
       hintEl.textContent = m.current
-        ? "已是最新（当前 " + vtag(m.current) + "）。" + m.note
+        ? fmt("已是最新（当前 {0}）。{1}", vtag(m.current), m.note)
         : m.note;
     } else {
-      hintEl.textContent = "已是最新版本（" + vtag(m.current || m.latest) + "）";
+      hintEl.textContent = fmt("已是最新版本（{0}）", vtag(m.current || m.latest));
     }
   } catch (e) {
     hintEl.classList.add("err");
-    hintEl.textContent = "检查失败：" + (e && e.message ? e.message : e);
+    hintEl.textContent = fmt("检查失败：{0}", e && e.message ? e.message : e);
   } finally {
     checkBtn.disabled = false;
   }
@@ -477,7 +524,7 @@ function wireAbout() {
     if (!ok) return;
     $("btn-systray-update").disabled = true;
     bindings().StartUpdate();
-    showSplash("update", "正在准备更新…");
+    showSplash("update", tr("正在准备更新…"));
   });
   // Harness 更新：确认后执行（进度走 splash，失败自动回退）
   $("btn-harness-update").addEventListener("click", async () => {
@@ -724,13 +771,13 @@ async function doPluginCheck(p, item, btn) {
       setNote(item, st.note, st.noteTone);
       if (upBtn) { upBtn.disabled = false; upBtn.classList.remove("hidden"); upBtn.textContent = "更新 v" + st.upLatest; }
     } else {
-      st.note = "已是最新版本（" + vtag(r.latest) + "）"; st.noteTone = "muted";
+      st.note = fmt("已是最新版本（{0}）", vtag(r.latest)); st.noteTone = "muted";
       st.upShow = false;
       setNote(item, st.note, st.noteTone);
       if (upBtn) { upBtn.disabled = true; upBtn.classList.add("hidden"); }
     }
   } catch (e) {
-    st.note = "检查失败：" + (e && e.message ? e.message : e); st.noteTone = "err";
+    st.note = fmt("检查失败：{0}", e && e.message ? e.message : e); st.noteTone = "err";
     setNote(item, st.note, st.noteTone);
   } finally {
     btn.disabled = false;
@@ -754,7 +801,7 @@ async function doPluginUpdate(p, item, upBtn) {
   );
   if (!ok) return;
   item.querySelectorAll("button").forEach((b) => { b.disabled = true; });
-  setNote(item, "正在更新插件…", "muted");
+  setNote(item, tr("正在更新插件…"), "muted");
   bindings().StartPluginUpdate(p.name); // 完成后 Go 端发 plugins:changed 刷新列表
 }
 
@@ -767,7 +814,7 @@ async function doPluginEnable(p, item, enBtn) {
   );
   if (!ok) return;
   item.querySelectorAll("button").forEach((b) => { b.disabled = true; });
-  setNote(item, "正在尝试启用插件…", "muted");
+  setNote(item, tr("正在尝试启用插件…"), "muted");
   bindings().EnablePlugin(p.id); // 完成/失败由 Go 弹窗提示，随后 plugins:changed 刷新列表
 }
 
@@ -777,7 +824,7 @@ async function doLocalPluginUpdate(p, item, upBtn) {
   try {
     const r = await bindings().PickLocalPluginPath(p.id);
     if (!r) return; // 对话框取消
-    if (r.error) { setNote(item, "无法更新：" + r.error, "err"); return; }
+    if (r.error) { setNote(item, fmt("无法更新：{0}", r.error), "err"); return; }
     const curTxt = vtag(r.current) || "未安装";
     const verTxt = vtag(r.version) || "未知版本";
     if (r.relation === "same") {
@@ -795,7 +842,7 @@ async function doLocalPluginUpdate(p, item, upBtn) {
     setNote(item, "正在更新本地插件…", "muted");
     bindings().ApplyLocalPluginUpdate(p.id, r.path); // 完成/失败由 Go 弹窗提示，成功后 plugins:changed 刷新
   } catch (e) {
-    setNote(item, "更新失败：" + (e && e.message ? e.message : e), "err");
+    setNote(item, fmt("更新失败：{0}", e && e.message ? e.message : e), "err");
   } finally {
     setTimeout(() => { item.querySelectorAll("button").forEach((b) => { b.disabled = false; }); }, 1500);
   }
@@ -817,7 +864,7 @@ async function doPluginRemove(p, item, delBtn) {
   );
   if (!ok) return;
   item.querySelectorAll("button").forEach((b) => { b.disabled = true; });
-  setNote(item, "正在删除插件…", "muted");
+  setNote(item, tr("正在删除插件…"), "muted");
   bindings().RemovePlugin(p.id); // 完成后 Go 端发 plugins:changed 刷新列表
 }
 
@@ -1039,7 +1086,7 @@ function wireExport() {
       $("btn-export").disabled = false;
       return;
     }
-    showExportModal("正在准备导出…", 0);
+    showExportModal(tr("正在准备导出…"), 0);
     await bindings().StartExport(
       state.expSelected.sessions,
       state.expSelected.plugins,
@@ -1113,7 +1160,7 @@ function syncImpRow(kind) {
     if (st.busy && !done) {
       cancelBtn.classList.remove("hidden");
       cancelBtn.disabled = !!state.impHealAll;
-      cancelBtn.textContent = state.impHealAll ? "自愈中不可取消" : "取消恢复";
+      cancelBtn.textContent = state.impHealAll ? tr("自愈中不可取消") : tr("取消恢复");
     } else {
       cancelBtn.classList.add("hidden");
     }
@@ -1202,7 +1249,7 @@ async function impRestore(it) {
     await bindings().ApplyRestore(kind, overwrite);
   } catch (e) {
     impRowBusy(kind, false, "", 0);
-    impRowText(kind, "恢复失败：" + (e && e.message ? e.message : e), "err");
+    impRowText(kind, fmt("恢复失败：{0}", e && e.message ? e.message : e), "err");
   }
 }
 
@@ -1288,7 +1335,7 @@ function wireEvents() {
 
   EventsOn("splash:progress", (d) => {
     if (!d) return;
-    if (d.phase === "update" && state.splashMode !== "update") showSplash("update", d.text || "正在更新…");
+    if (d.phase === "update" && state.splashMode !== "update") showSplash("update", d.text || tr("正在更新…"));
     if (d.phase === "startup") {
       $("splash").classList.remove("hidden");
       $("settings").classList.add("hidden");
@@ -1305,7 +1352,7 @@ function wireEvents() {
     refreshService();
   });
 
-  EventsOn("ui:show-splash", () => showSplash("startup", "正在准备运行环境…"));
+  EventsOn("ui:show-splash", () => showSplash("startup", tr("正在准备运行环境…")));
   // 托盘每次重开设置窗口：刷新版本与插件清单（更新/重置等操作可能在窗口隐藏期间完成，必须强一致重取）
   EventsOn("ui:show-settings", () => { showSettings(); refreshConfig(); refreshService(); refreshVersions(); loadPlugins(); });
 
@@ -1317,14 +1364,14 @@ function wireEvents() {
   EventsOn("export:done", (d) => {
     $("btn-export").disabled = false;
     if (d && d.error) {
-      $("exp-hint").textContent = "导出失败：" + d.error;
-      showExportModal("导出失败：" + d.error, 0);
+      $("exp-hint").textContent = fmt("导出失败：{0}", d.error);
+      showExportModal(fmt("导出失败：{0}", d.error), 0);
       $("exp-modal-close").classList.remove("hidden");
     } else if (d && d.path) {
-      $("exp-hint").textContent = "导出完成：" + d.path;
+      $("exp-hint").textContent = fmt("导出完成：{0}", d.path);
       lastExportPath = d.path;
       $("exp-open").classList.remove("hidden");
-      showExportModal("导出完成 ✓", 1);
+      showExportModal(tr("导出完成 ✓"), 1);
       setTimeout(hideExportModal, 1600);
     }
   });
@@ -1360,12 +1407,12 @@ function wireEvents() {
     let tone = "muted";
     if (d.error) {
       tone = "err";
-      msg = "恢复失败：" + d.error + (d.note ? "。" + d.note : "");
+      msg = fmt("恢复失败：{0}", d.error) + (d.note ? "。" + d.note : "");
     } else if (d.canceled) {
-      msg = "已取消恢复" + (d.note ? "。" + d.note : "，已回退到恢复前状态");
+      msg = (d.note ? fmt("已取消恢复{0}", "。" + d.note) : tr("已取消恢复") + tr("，已回退到恢复前状态"));
     } else {
       tone = "ok";
-      msg = "恢复完成 ✓" + (d.note ? "。" + d.note : "");
+      msg = tr("恢复完成 ✓") + (d.note ? "。" + d.note : "");
       state.impDone[d.kind] = true; // 完成标记：该行显示 ✓ 已完成
     }
     impRowBusy(d.kind, false, "", 0);
@@ -1396,7 +1443,7 @@ function wireSplashCancel() {
   const btn = $("splash-cancel");
   btn.addEventListener("click", () => {
     btn.disabled = true; // 防重复点击（Go 端「替换重启」阶段也会忽略取消）
-    $("splash-status").textContent = "正在取消…";
+    $("splash-status").textContent = tr("正在取消…");
     bindings().CancelUpdate();
   });
 }
@@ -1456,7 +1503,7 @@ async function init() {
   });
 
   // 初始视图：等待 Go 侧 ui:show-splash 事件（非自启动时窗口显示 splash）
-  showSplash("startup", "正在准备运行环境…");
+  showSplash("startup", tr("正在准备运行环境…"));
 
   // 截图/预览：DSH_SYSTRAY_SHOT_PAGE 指定后直接显示对应页面；SHOT_SCROLL 指定滚动位置
   try {
