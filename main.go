@@ -403,7 +403,11 @@ func main() {
 		OnDomReady:    onDomReady,
 		OnShutdown:    onShutdown,
 		OnBeforeClose: onBeforeClose,
-		StartHidden:   autostartLaunch || (!shotMode && startupEnvReady()),
+		// macOS：窗口红点关闭只隐藏应用（不经 OnBeforeClose），Dock/⌘Q 的退出请求才走
+		// onBeforeClose——两者由此可区分（此前无此开关时二者都汇入同一回调，
+		// onBeforeClose 返回 true 会连 Dock 退出也吞掉，只能强制退出）。
+		HideWindowOnClose: runtime.GOOS == "darwin",
+		StartHidden:       autostartLaunch || (!shotMode && startupEnvReady()),
 		Windows: &windows.Options{
 			WebviewIsTransparent: false,
 			WindowIsTranslucent:  false,
@@ -445,8 +449,10 @@ func onDomReady(ctx context.Context) {
 }
 
 // onBeforeClose 窗口关闭回调（Wails 的 Quit 也经此拦截）：
-// - 托盘「退出」流程（quitRequested）：放行（返回 false），允许应用退出；
-// - 窗口 X：隐藏窗口并阻止关闭（托盘常驻）；更新进行中先询问是否取消更新。
+//   - 托盘「退出」流程（quitRequested 已置位）：放行（返回 false），允许应用退出；
+//   - Windows：窗口 X 仅隐藏窗口并阻止关闭（托盘常驻）；更新进行中先询问是否取消更新；
+//   - macOS：红点关闭已由 HideWindowOnClose 直接隐藏（不到这里），到达此处即为真实退出
+//     （Dock/⌘Q/托盘退出）→ 询问是否停止后台服务：确定/保留服务均放行退出，取消则留在前台。
 func onBeforeClose(ctx context.Context) bool {
 	if quitRequested.Load() {
 		return false // 托盘退出：允许关闭并退出应用
@@ -456,6 +462,16 @@ func onBeforeClose(ctx context.Context) bool {
 			cancelActiveUpdate()
 			log.Printf("update cancelled on window close")
 		}
+	}
+	if runtime.GOOS == "darwin" {
+		// 真实退出请求：与托盘「退出」一致地询问停服策略（0=停止并退出 1=保留服务 -1=取消）
+		choice := askStopServer()
+		if choice < 0 {
+			return true // 用户取消退出：留在前台，不关闭
+		}
+		keepServerRunning.Store(choice == 1)
+		quitRequested.Store(true)
+		return false
 	}
 	wruntime.WindowHide(ctx)
 	return true
