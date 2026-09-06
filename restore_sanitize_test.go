@@ -47,15 +47,109 @@ func TestSanitizeKeepsExistingLocalTarget(t *testing.T) {
 	}
 }
 
-func TestSanitizeMissingTargetMovesToPendingNotNpm(t *testing.T) {
+func TestSanitizeMissingTargetAdoptsRestoredCopy(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("DSH_HOME", home)
+	dir := t.TempDir()
+	missing := filepath.Join(t.TempDir(), "my-local") // 源机路径在本机不存在
+	writeTestJSON(t, filepath.Join(dir, "package.json"),
+		`{"dependencies":{"my-local":"link:`+filepath.ToSlash(missing)+`"}}`)
+	// 导入包恢复出来的 node_modules 副本：应迁到 <home>/local-plugins 并继续加载，而非挂起
+	writeTestJSON(t, filepath.Join(dir, "node_modules", "my-local", "package.json"),
+		`{"name":"my-local","version":"0.3.1"}`)
+	notes := sanitizeProfileLocalDeps(dir)
+	if len(notes) != 1 {
+		t.Fatalf("want 1 note, got %v", notes)
+	}
+	if !strings.Contains(notes[0], "继续加载") {
+		t.Fatalf("note should mention adopted copy: %v", notes)
+	}
+	got := readTestJSON(t, filepath.Join(dir, "package.json"))
+	if strings.Contains(got, "npm:my-local") {
+		t.Fatalf("must not rewrite to npm: %s", got)
+	}
+	if strings.Contains(got, "pendingLocalPlugins") {
+		t.Fatalf("must not park pending when restored copy exists: %s", got)
+	}
+	canon := filepath.Join(home, "local-plugins", "my-local")
+	if !strings.Contains(got, localLinkSpec(canon)) {
+		t.Fatalf("spec not rewritten to canonical copy: %s", got)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "node_modules", "my-local")); err == nil {
+		t.Fatalf("restored copy should be moved out of node_modules")
+	}
+	if _, err := os.Stat(filepath.Join(canon, "package.json")); err != nil {
+		t.Fatalf("canonical copy missing: %v", err)
+	}
+}
+
+func TestSanitizeAdoptKeepsBundleActive(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("DSH_HOME", home)
+	dir := t.TempDir()
+	missing := filepath.Join(t.TempDir(), "my-local")
+	writeTestJSON(t, filepath.Join(dir, "package.json"),
+		`{"dependencies":{"my-local":"link:`+filepath.ToSlash(missing)+`"},
+		  "dsh":{"profile":{"bundles":["my-local","other"]}}}`)
+	writeTestJSON(t, filepath.Join(dir, "node_modules", "my-local", "package.json"),
+		`{"name":"my-local","version":"0.3.1"}`)
+	if notes := sanitizeProfileLocalDeps(dir); len(notes) != 1 {
+		t.Fatalf("want 1 note, got %v", notes)
+	}
+	var root struct {
+		Dsh struct {
+			Profile struct {
+				Bundles []string `json:"bundles"`
+			} `json:"profile"`
+		} `json:"dsh"`
+	}
+	if err := json.Unmarshal([]byte(readTestJSON(t, filepath.Join(dir, "package.json"))), &root); err != nil {
+		t.Fatal(err)
+	}
+	want := map[string]bool{"my-local": true, "other": true}
+	for _, b := range root.Dsh.Profile.Bundles {
+		delete(want, b)
+	}
+	if len(want) != 0 {
+		t.Fatalf("bundle entries changed by adopt: %+v", root.Dsh.Profile.Bundles)
+	}
+}
+
+func TestSanitizeAdoptSharedAcrossProfiles(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("DSH_HOME", home)
+	// 源 profile（zip 解压落点，含 node_modules 副本）+ 当前激活 profile（名字不同、无副本）
+	srcProf := filepath.Join(home, "profiles", "web")
+	actProf := filepath.Join(home, "profiles", "default")
+	missing := filepath.Join(t.TempDir(), "my-local")
+	pkg := `{"dependencies":{"my-local":"link:` + filepath.ToSlash(missing) + `"},
+	  "dsh":{"profile":{"bundles":["my-local"]}}}`
+	writeTestJSON(t, filepath.Join(srcProf, "package.json"), pkg)
+	writeTestJSON(t, filepath.Join(actProf, "package.json"), pkg)
+	writeTestJSON(t, filepath.Join(srcProf, "node_modules", "my-local", "package.json"),
+		`{"name":"my-local","version":"0.3.1"}`)
+	notes := sanitizeProfileLocalDepsAll([]string{srcProf, actProf})
+	if len(notes) != 1 {
+		t.Fatalf("want 1 deduped note, got %v", notes)
+	}
+	canonSpec := localLinkSpec(filepath.Join(home, "local-plugins", "my-local"))
+	for _, dir := range []string{srcProf, actProf} {
+		got := readTestJSON(t, filepath.Join(dir, "package.json"))
+		if !strings.Contains(got, canonSpec) {
+			t.Fatalf("%s spec not rewritten to canonical copy: %s", dir, got)
+		}
+		if strings.Contains(got, "pendingLocalPlugins") {
+			t.Fatalf("%s must not park pending when copy adopted: %s", dir, got)
+		}
+	}
+}
+
+func TestSanitizeMissingTargetNoCopyParksPendingNotNpm(t *testing.T) {
 	dir := t.TempDir()
 	missing := filepath.Join(t.TempDir(), "my-local") // 不存在
 	writeTestJSON(t, filepath.Join(dir, "package.json"),
 		`{"dependencies":{"my-local":"link:`+filepath.ToSlash(missing)+`"}}`)
-	// 即使 zip 已解压出安装版本（旧行为会据此改写为 npm:my-local@0.3.1），也不得改写：
-	// registry 版本可能与目标机 harness 核心不兼容，导致恢复后启动失败
-	writeTestJSON(t, filepath.Join(dir, "node_modules", "my-local", "package.json"),
-		`{"name":"my-local","version":"0.3.1"}`)
+	// 导入包内也无副本：不得改写 npm:（registry 版本可能与目标机核心不兼容，导致恢复后启动失败）
 	notes := sanitizeProfileLocalDeps(dir)
 	if len(notes) != 1 {
 		t.Fatalf("want 1 note, got %v", notes)

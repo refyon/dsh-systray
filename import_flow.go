@@ -249,9 +249,7 @@ func runImportTask(t *importTask) {
 		terminal(failRes(rerr))
 		return
 	}
-	for _, dir := range t.dirs {
-		t.notes = append(t.notes, sanitizeProfileLocalDeps(dir)...)
-	}
+	t.notes = append(t.notes, sanitizeProfileLocalDepsAll(t.dirs)...)
 	if t.cancel.Load() {
 		rollbackImportProfiles(t.dirs, t.hadNM)
 		terminal(cancelRes())

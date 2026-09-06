@@ -1254,11 +1254,13 @@ func rollbackPluginRemove(splash *SplashState, row PluginRow, hadNM []bool, reas
 
 // ==================== 本地插件「待重指定」挂起记录 ====================
 // 跨机恢复（导入导出包）时，本地链接依赖（link:/file:/workspace: 或裸路径）的目标目录在本机
-// 不存在。为不让 pnpm 对齐硬失败（ERR_PNPM_LINKED_PKG_DIR_NOT_FOUND）也不改写为 npm 引入与
-// 目标机核心不兼容的 registry 版本，sanitizeProfileLocalDeps（exportimport.go）把这类依赖
-// 移出 dependencies、记录为「待重指定」：保留在 package.json 的 dsh.profile.pendingLocalPlugins
-// 下（随既有快照/回退机制覆盖），插件列表仍合成显示该本地插件行，用户点「更新…」重新选择
-// 本地目录后，runLocalPluginUpdate 落回 link: spec 并在成功事务内恢复激活（bundled=true 时）。
+// 不存在。优先路径：导入包在 profile node_modules 恢复了该插件的副本时，sanitizeProfileLocalDepsAll
+//（exportimport.go）把副本迁到 <dshHome>/local-plugins/<name> 并改写 spec 为 link:<副本>，
+// 插件继续加载启动。仅当无副本时，为不让 pnpm 对齐硬失败（ERR_PNPM_LINKED_PKG_DIR_NOT_FOUND）
+// 也不改写为 npm 引入与目标机核心不兼容的 registry 版本，才把这类依赖移出 dependencies、
+// 记录为「待重指定」：保留在 package.json 的 dsh.profile.pendingLocalPlugins 下（随既有快照/
+// 回退机制覆盖），插件列表仍合成显示该本地插件行，用户点「更新…」重新选择本地目录后，
+// runLocalPluginUpdate 落回 link: spec 并在成功事务内恢复激活（bundled=true 时）。
 
 // pendingLocalKey 待重指定记录在 dsh.profile 下的键。
 // 记录形态：{ "<插件名>": { "spec": "<原始依赖 spec>", "bundled": <是否曾在 bundles 激活> } }

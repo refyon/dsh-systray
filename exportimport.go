@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"io/fs"
 	"log"
 	"os"
 	"path/filepath"
@@ -619,20 +620,24 @@ func mergePluginConfigIntoProfile(dir string, cfg exportPlugins) error {
 	return os.WriteFile(pj, append(b, '\n'), 0o644)
 }
 
-// ==================== 本地链接依赖跨机恢复：待重指定挂起 ====================
-// 背景：源机以 link:/file:/workspace:（或相对/绝对路径）安装的开发态插件，spec 记录的是
-// 源机绝对路径。跨机恢复时该路径在本机不存在，pnpm install 直接
-// ERR_PNPM_LINKED_PKG_DIR_NOT_FOUND 硬失败（new_device.log 实证 dsh-ui-taste），
-// 且此前 reconcile 失败只记日志、不修复，导致恢复必然回退。
+// ==================== 本地链接依赖跨机恢复：优先「副本继续加载」，无副本才「待重指定挂起」 ====================
+// 背景：源机以 link:/file:/workspace:（或相对/绝对路径）安装的开发态插件，spec 记录的是源机
+// 绝对路径。跨机恢复时该路径在本机不存在，pnpm install 直接 ERR_PNPM_LINKED_PKG_DIR_NOT_FOUND
+// 硬失败（new_device.log 实证 dsh-ui-taste），且此前 reconcile 失败只记日志、不修复，导致恢复
+// 必然回退。
 // 早期消毒把这类依赖改写为 npm:name@version（registry 版本可能与目标机 harness 核心不兼容，
 // new_device.log 实证 dsh-ui-taste 因 @deepseek-ai/dsh-settings 缺 settingsNamespace 导出、
 // codegraph 插件因 @deepseek-ai/dsh-llm 缺 assertNever 导出而启动失败）或直接删除（插件从
 // 列表消失、无法再指回本地目录）。
-// sanitizeProfileLocalDeps 在合并写回 profile package.json 之后、pnpm 对齐之前执行：
+// sanitizeProfileLocalDepsAll 在合并写回 profile package.json 之后、pnpm 对齐之前执行：
 //   - 目标路径在本机存在 → 保持原样（同机恢复的开发态链接不受影响）；
-//   - 目标路径缺失 → 移出 dependencies、记录为「待重指定」（dsh.profile.pendingLocalPlugins，
-//     含原 spec 与是否曾激活），并清理 bundle / 禁用记录。插件列表仍显示该本地插件行，
-//     用户点「更新…」重新选择本地目录后由更新事务落回 link: spec 并恢复激活。
+//   - 目标路径缺失但导入包在 profile node_modules 恢复了该插件副本 → 副本迁到
+//     <dshHome>/local-plugins/<name>，spec 改写为 link:<副本>：bundle 激活保持，插件继续加载
+//     启动；用户仍可点「更新…」改指自己的开发目录；
+//   - 目标路径缺失且无副本（插件不在导入包内等）→ 移出 dependencies、记录为「待重指定」
+//     （dsh.profile.pendingLocalPlugins，含原 spec 与是否曾激活），并清理 bundle / 禁用记录。
+//     插件列表仍显示该本地插件行，用户点「更新…」重新选择本地目录后由更新事务落回 link: spec
+//     并恢复激活。
 // 返回面向用户的说明行；package.json 改写仅在真正变化时落盘（回退路径由 .importbak 快照兜底）。
 
 // localSpecPath 从依赖 spec 提取本地目录路径（link:/file:/workspace: 或相对/绝对目录形态）。
@@ -674,18 +679,159 @@ func isDriveAbsPath(s string) bool {
 	return s[2] == '\\' || s[2] == '/'
 }
 
-// sanitizeProfileLocalDeps 改写 profile package.json 中目标路径缺失的本地依赖（见上），
-// 返回用户可见说明（无改动返回 nil）。
+// sanitizeProfileLocalDeps 单目录版（多目录走 sanitizeProfileLocalDepsAll，副本裁决跨目录共享）。
 func sanitizeProfileLocalDeps(dir string) []string {
-	pj := filepath.Join(dir, "package.json")
-	data, err := os.ReadFile(pj)
-	if err != nil {
+	return sanitizeProfileLocalDepsAll([]string{dir})
+}
+
+// sanitizeProfileLocalDepsAll 多目录版本地依赖恢复（见文件头注释）：先全局收集目标缺失的
+// 本地依赖，再统一裁决「副本继续加载 / 待重指定挂起」，最后逐目录改写。同名插件跨目录
+// 只输出一条说明。返回用户可见说明行。
+func sanitizeProfileLocalDepsAll(dirs []string) []string {
+	missing := map[string]string{} // name → 任一目录的原始本地 spec
+	for _, dir := range dirs {
+		for name, spec := range missingLocalDeps(dir) {
+			if _, ok := missing[name]; !ok {
+				missing[name] = spec
+			}
+		}
+	}
+	if len(missing) == 0 {
 		return nil
 	}
-	root := map[string]interface{}{}
-	if err := json.Unmarshal(data, &root); err != nil {
+	// 副本裁决：存在恢复副本的插件迁到稳定目录（link 指向副本继续加载）；无副本的维持待重指定。
+	adopted := map[string]string{}
+	if root := localPluginsRoot(); root != "" {
+		for name := range missing {
+			if canon, ok := adoptRestoredCopy(dirs, root, name); ok {
+				adopted[name] = canon
+				pruneRestoredCopies(dirs, name)
+			}
+		}
+	}
+	var notes []string
+	noted := map[string]bool{}
+	for _, dir := range dirs {
+		notes = append(notes, rewriteProfileLocalDeps(dir, missing, adopted, noted)...)
+	}
+	return notes
+}
+
+// localPluginsRoot 导入副本的稳定落点目录（<dshHome>/local-plugins）；home 不可得返回空
+// （此时副本裁决跳过，全部走待重指定挂起，不触碰任何磁盘位置）。
+func localPluginsRoot() string {
+	home := dshHomeDir()
+	if home == "" {
+		return ""
+	}
+	return filepath.Join(home, "local-plugins")
+}
+
+// missingLocalDeps 枚举 dir 的 package.json 中「本地 spec 且目标路径缺失」的依赖（name → spec）。
+func missingLocalDeps(dir string) map[string]string {
+	root := readProfileRoot(dir)
+	deps, _ := root["dependencies"].(map[string]interface{})
+	if deps == nil {
 		return nil
 	}
+	out := map[string]string{}
+	for name, v := range deps {
+		spec, _ := v.(string)
+		raw, ok := localSpecPath(spec)
+		if !ok {
+			continue
+		}
+		target := raw
+		if !filepath.IsAbs(target) {
+			target = filepath.Join(dir, filepath.FromSlash(target))
+		}
+		if _, err := os.Stat(filepath.Clean(target)); err == nil {
+			continue // 本机路径存在：同机开发态，保留原 spec
+		}
+		out[name] = spec
+	}
+	return out
+}
+
+// adoptRestoredCopy 把 dirs 中第一个可用的 node_modules/<name> 恢复副本迁到 <root>/<name>
+// （已存在则直接复用），返回稳定副本路径；无副本返回 ("", false)。
+func adoptRestoredCopy(dirs []string, root, name string) (string, bool) {
+	canon := filepath.Join(root, filepath.FromSlash(name))
+	if _, err := os.Stat(canon); err == nil {
+		return canon, true
+	}
+	for _, dir := range dirs {
+		copyDir := filepath.Join(dir, "node_modules", filepath.FromSlash(name))
+		if _, err := os.Stat(copyDir); err != nil {
+			continue
+		}
+		if err := os.MkdirAll(filepath.Dir(canon), 0o755); err != nil {
+			log.Printf("adopt local plugin: mkdir %s: %v", filepath.Dir(canon), err)
+			return "", false
+		}
+		if err := moveDirTree(copyDir, canon); err != nil {
+			log.Printf("adopt local plugin: move %s -> %s: %v", copyDir, canon, err)
+			return "", false
+		}
+		return canon, true
+	}
+	return "", false
+}
+
+// pruneRestoredCopies 副本裁决完成后清理各 profile node_modules 中的同名残留副本，
+// 让后续 pnpm install 在 node_modules/<name> 处创建指向稳定副本的 link（真实目录挡路会冲突）。
+func pruneRestoredCopies(dirs []string, name string) {
+	rel := filepath.Join("node_modules", filepath.FromSlash(name))
+	for _, dir := range dirs {
+		p := filepath.Join(dir, rel)
+		if _, err := os.Stat(p); err == nil {
+			if err := os.RemoveAll(p); err != nil {
+				log.Printf("prune restored copy %s: %v", p, err)
+			}
+		}
+	}
+}
+
+// moveDirTree 移动目录（同盘 rename 直接成功；跨盘失败时递归复制后删除源）。
+func moveDirTree(src, dst string) error {
+	if err := os.Rename(src, dst); err == nil {
+		return nil
+	}
+	if err := copyDirTree(src, dst); err != nil {
+		return err
+	}
+	return os.RemoveAll(src)
+}
+
+// copyDirTree 递归复制目录（文件级；插件目录来自 zip 解压，不含符号链接/特殊文件）。
+func copyDirTree(src, dst string) error {
+	return filepath.WalkDir(src, func(p string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		rel, rerr := filepath.Rel(src, p)
+		if rerr != nil {
+			return rerr
+		}
+		target := filepath.Join(dst, rel)
+		if d.IsDir() {
+			return os.MkdirAll(target, 0o755)
+		}
+		data, rerr := os.ReadFile(p)
+		if rerr != nil {
+			return rerr
+		}
+		return os.WriteFile(target, data, 0o644)
+	})
+}
+
+// rewriteProfileLocalDeps 按裁决结果改写单个 profile 的 package.json：
+//   - adopted 含该插件 → spec 改写为 link:<稳定副本>（bundle 保持原样），并清除历史挂起记录；
+//   - 否则 → 移出 dependencies、清理 bundle/禁用记录、记录待重指定（原挂起逻辑）。
+//
+// 返回该目录产生的说明行；同名插件跨目录去重（noted 为共享集合，避免重复打扰用户）。
+func rewriteProfileLocalDeps(dir string, missing map[string]string, adopted map[string]string, noted map[string]bool) []string {
+	root := readProfileRoot(dir)
 	deps, _ := root["dependencies"].(map[string]interface{})
 	if deps == nil {
 		return nil
@@ -698,21 +844,35 @@ func sanitizeProfileLocalDeps(dir string) []string {
 	}
 	sort.Strings(names)
 	for _, name := range names {
-		spec, _ := deps[name].(string)
-		raw, ok := localSpecPath(spec)
-		if !ok {
+		if _, isMissing := missing[name]; !isMissing {
 			continue
 		}
-		target := raw
-		if !filepath.IsAbs(target) {
-			// 相对/盘符路径按 profile 目录解析
-			target = filepath.Join(dir, filepath.FromSlash(target))
+		spec, _ := deps[name].(string)
+		if canon, ok := adopted[name]; ok {
+			deps[name] = localLinkSpec(canon)
+			// 历史挂起记录随激活一并清除（记录与激活必须一致）
+			if dsh, _ := root["dsh"].(map[string]interface{}); dsh != nil {
+				if prof, _ := dsh["profile"].(map[string]interface{}); prof != nil {
+					if pm, _ := prof[pendingLocalKey].(map[string]interface{}); pm != nil {
+						if _, had := pm[name]; had {
+							delete(pm, name)
+							if len(pm) == 0 {
+								delete(prof, pendingLocalKey)
+							}
+						}
+					}
+				}
+			}
+			changed = true
+			if !noted[name] {
+				noted[name] = true
+				notes = append(notes, fmt.Sprintf(
+					"本地插件 %s 的原依赖路径在本机不可用，已改用导入包内副本继续加载（%s）——如需改用你的开发目录，可点「更新…」重新指定",
+					name, canon))
+			}
+			continue
 		}
-		target = filepath.Clean(target)
-		if _, err := os.Stat(target); err == nil {
-			continue // 本机路径存在：同机开发态恢复，保留原 spec
-		}
-		// 目标路径缺失：见本函数头部注释——不改为 npm、不删除，转「待重指定」挂起。
+		// 无副本：挂起待重指定（见文件头注释——不改为 npm、不删除）
 		bundled := bundleEntryExists(root, name)
 		stripBundleEntry(root, name)
 		if dm := profileDisabledMap(root); dm != nil {
@@ -729,18 +889,17 @@ func sanitizeProfileLocalDeps(dir string) []string {
 		delete(deps, name)
 		setPendingLocalEntry(root, name, spec, bundled)
 		changed = true
-		notes = append(notes, fmt.Sprintf(
-			"本地插件 %s 的原依赖路径在本机不可用（隐私起见不显示），已保留为待重指定状态——请点「更新…」重新选择本地目录", name))
+		if !noted[name] {
+			noted[name] = true
+			notes = append(notes, fmt.Sprintf(
+				"本地插件 %s 的原依赖路径在本机不可用（隐私起见不显示），已保留为待重指定状态——请点「更新…」重新选择本地目录", name))
+		}
 	}
 	if !changed {
-		return nil
+		return notes
 	}
-	b, err := json.MarshalIndent(root, "", "  ")
-	if err != nil {
-		return nil
-	}
-	if err := os.WriteFile(pj, append(b, '\n'), 0o644); err != nil {
-		log.Printf("sanitize local deps: write package.json failed (%s): %v", pj, err)
+	if err := writeProfileRoot(dir, root); err != nil {
+		log.Printf("sanitize local deps: write package.json failed (%s): %v", dir, err)
 	}
 	return notes
 }
