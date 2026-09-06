@@ -174,7 +174,7 @@ func ensureRuntime(splash *SplashState) error {
 		if err != nil {
 			return err
 		}
-		splash.Update("正在解压 Node.js 运行时…", 0.24)
+		splash.Update(T("正在解压 Node.js 运行时…"), 0.24)
 		if err := os.MkdirAll(runtimeDir(), 0o755); err != nil {
 			return err
 		}
@@ -563,7 +563,7 @@ func runInstaller() {
 	script := strings.ReplaceAll(string(installScript), "{{HARNESS_DIR}}", harnessDir)
 	if err := os.WriteFile(tmp, []byte(script), 0o755); err != nil {
 		log.Printf("write installer failed: %v", err)
-		showMessageBox("检测到缺少运行依赖，但无法写入安装脚本。", appName)
+		showMessageBox(T("检测到缺少运行依赖，但无法写入安装脚本。"), appName)
 		return
 	}
 	cmd := exec.Command("sh", tmp)
@@ -620,16 +620,18 @@ func showMessageBox(text, caption string) {
 
 // askStopServer 退出前询问是否停止后台 Web 服务：0=停止并退出，1=保留服务，-1=取消退出。
 func askStopServer() int {
-	script := fmt.Sprintf(`display dialog "%s" with title "%s" buttons {"确定", "保留后台服务"} default button "确定"`,
-		escapeAppleScript("是否停止后台 Web 服务？确定将停止服务并退出；保留后台服务仅关闭托盘，服务继续运行。"), appName)
+	stopLabel := T("确定")
+	keepLabel := T("保留后台服务")
+	script := fmt.Sprintf(`display dialog "%s" with title "%s" buttons {%q, %q} default button %q`,
+		escapeAppleScript(T("是否停止后台 Web 服务？确定将停止服务并退出；保留后台服务仅关闭托盘，服务继续运行。")), appName, stopLabel, keepLabel, stopLabel)
 	out, err := runAppleScript(script)
 	if err != nil {
 		return -1
 	}
-	if strings.Contains(out, "确定") {
+	if strings.Contains(out, stopLabel) {
 		return 0
 	}
-	if strings.Contains(out, "保留后台服务") {
+	if strings.Contains(out, keepLabel) {
 		return 1
 	}
 	return -1
@@ -649,37 +651,40 @@ func showReadyPrompt(url string) {
 
 // askUpdateDialog 提示用户发现新版本：true=立即更新。
 func askUpdateDialog(newVer string) bool {
-	msg := fmt.Sprintf("发现新版本 %s（当前版本 %s）。\n是否立即下载并更新？", withV(newVer), withV(appVersion))
-	script := fmt.Sprintf(`display dialog "%s" with title "%s" buttons {"稍后", "立即更新"} default button "立即更新"`,
-		escapeAppleScript(msg), appName)
+	msg := TF("发现新版本 %s（当前版本 %s）。\n是否立即下载并更新？", withV(newVer), withV(appVersion))
+	updateNow := T("立即更新")
+	script := fmt.Sprintf(`display dialog "%s" with title "%s" buttons {%q, %q} default button %q`,
+		escapeAppleScript(msg), appName, T("稍后"), updateNow, updateNow)
 	out, err := runAppleScript(script)
 	if err != nil {
 		return false
 	}
-	return strings.Contains(out, "立即更新")
+	return strings.Contains(out, updateNow)
 }
 
 // askUpdateHarness 提示用户 DeepSeek Harness 有新版本：true=先更新 Harness。
 func askUpdateHarness(newVer, curVer string) bool {
-	msg := fmt.Sprintf("DeepSeek Harness 有新版本 %s（当前 %s）。\n是否先更新 Harness？", withV(newVer), withV(curVer))
-	script := fmt.Sprintf(`display dialog "%s" with title "%s" buttons {"稍后", "更新 Harness"} default button "更新 Harness"`,
-		escapeAppleScript(msg), appName)
+	msg := TF("DeepSeek Harness 有新版本 %s（当前 %s）。\n是否先更新 Harness？", withV(newVer), withV(curVer))
+	updLabel := T("更新 Harness")
+	script := fmt.Sprintf(`display dialog "%s" with title "%s" buttons {%q, %q} default button %q`,
+		escapeAppleScript(msg), appName, T("稍后"), updLabel, updLabel)
 	out, err := runAppleScript(script)
 	if err != nil {
 		return false
 	}
-	return strings.Contains(out, "更新 Harness")
+	return strings.Contains(out, updLabel)
 }
 
 // askRestartServiceMac 重启后台服务前确认（macOS）：true=确认重新启动。
 func askRestartServiceMac() bool {
-	msg := escapeAppleScript("是否重启后台 Web 服务？\n重启期间 Web UI 会短暂不可用。")
-	script := fmt.Sprintf(`display dialog "%s" with title "%s" buttons {"取消", "重新启动"} default button "重新启动"`, msg, appName)
+	msg := escapeAppleScript(T("是否重启后台 Web 服务？\n重启期间 Web UI 会短暂不可用。"))
+	restartLabel := T("重新启动")
+	script := fmt.Sprintf(`display dialog "%s" with title "%s" buttons {%q, %q} default button %q`, msg, appName, T("取消"), restartLabel, restartLabel)
 	out, err := runAppleScript(script)
 	if err != nil {
 		return false
 	}
-	return strings.Contains(out, "重新启动")
+	return strings.Contains(out, restartLabel)
 }
 
 // replaceAndRelaunch 替换当前 .app 并重启（自定义更新方案的辅助工具思路）：

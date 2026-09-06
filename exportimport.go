@@ -323,7 +323,7 @@ func buildExportZip(includeSessions, includePlugins, includeFiles bool, dirs []s
 				return "", fmt.Errorf("打包历史会话失败：%w", err)
 			}
 			if st, err := os.Stat(zp); err == nil {
-				manifest.Items = append(manifest.Items, exportItemInfo{Kind: "sessions", Label: "所有历史会话", Zip: exportZipSessions, Size: st.Size()})
+				manifest.Items = append(manifest.Items, exportItemInfo{Kind: "sessions", Label: T("所有历史会话"), Zip: exportZipSessions, Size: st.Size()})
 				staged[exportZipSessions] = zp
 			}
 		}
@@ -358,7 +358,7 @@ func buildExportZip(includeSessions, includePlugins, includeFiles bool, dirs []s
 					return "", fmt.Errorf("打包已安装的插件失败：%w", err)
 				}
 				if st, err := os.Stat(zp); err == nil {
-					manifest.Items = append(manifest.Items, exportItemInfo{Kind: "plugins", Label: fmt.Sprintf("已安装的插件（%d 个）", len(deps)), Zip: exportZipPlugins, Size: st.Size()})
+					manifest.Items = append(manifest.Items, exportItemInfo{Kind: "plugins", Label: TF("已安装的插件（%d 个）", len(deps)), Zip: exportZipPlugins, Size: st.Size()})
 					staged[exportZipPlugins] = zp
 				}
 			}
@@ -384,7 +384,7 @@ func buildExportZip(includeSessions, includePlugins, includeFiles bool, dirs []s
 				return "", fmt.Errorf("打包文件目录失败：%w", err)
 			}
 			if st, err := os.Stat(zp); err == nil {
-				manifest.Items = append(manifest.Items, exportItemInfo{Kind: "files", Label: "文件目录", Zip: exportZipFiles, Size: st.Size()})
+				manifest.Items = append(manifest.Items, exportItemInfo{Kind: "files", Label: T("文件目录"), Zip: exportZipFiles, Size: st.Size()})
 				staged[exportZipFiles] = zp
 			}
 		}
@@ -477,9 +477,9 @@ func parseExportZip(zipPath string) ([]importItem, error) {
 		}
 	}
 	known := []importItem{
-		{Kind: "sessions", Label: "所有历史会话", Zip: exportZipSessions},
-		{Kind: "plugins", Label: "已安装的插件", Zip: exportZipPlugins},
-		{Kind: "files", Label: "文件目录", Zip: exportZipFiles},
+		{Kind: "sessions", Label: T("所有历史会话"), Zip: exportZipSessions},
+		{Kind: "plugins", Label: T("已安装的插件"), Zip: exportZipPlugins},
+		{Kind: "files", Label: T("文件目录"), Zip: exportZipFiles},
 	}
 	var items []importItem
 	for _, it := range known {

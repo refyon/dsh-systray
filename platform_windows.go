@@ -323,7 +323,7 @@ func ensureRuntime(splash *SplashState) error {
 		if err != nil {
 			return err
 		}
-		splash.Update("正在解压 Node.js 运行时…", 0.24)
+		splash.Update(T("正在解压 Node.js 运行时…"), 0.24)
 		if err := extractZip(zipPath, runtimeDir()); err != nil {
 			return fmt.Errorf("解压 Node.js 失败：%w", err)
 		}
@@ -366,7 +366,7 @@ func ensureRuntime(splash *SplashState) error {
 				len(registries), strings.Join(errs, "；"), unifiedLogPath())
 		}
 	}
-	splash.Update("运行环境就绪", 0.30)
+	splash.Update(T("运行环境就绪"), 0.30)
 	return nil
 }
 
@@ -762,7 +762,7 @@ func runInstaller() {
 	script := strings.ReplaceAll(string(installScript), "{{HARNESS_DIR}}", harnessDir)
 	if err := os.WriteFile(tmp, []byte(script), 0o644); err != nil {
 		log.Printf("write installer failed: %v", err)
-		showMessageBox("检测到缺少运行依赖，但无法写入安装脚本。", appName)
+		showMessageBox(T("检测到缺少运行依赖，但无法写入安装脚本。"), appName)
 		return
 	}
 
@@ -825,7 +825,7 @@ func showMessageBox(text, caption string) {
 
 // askStopServer 退出前询问是否停止后台 Web 服务：0=停止并退出，1=保留服务，-1=取消退出。
 func askStopServer() int {
-	return runModernDialog(appName, "是否停止后台 Web 服务？\n\n「确定」将停止服务并退出；\n「保留后台服务」仅关闭托盘，服务继续运行。", []string{"确定", "保留后台服务"}, 0)
+	return runModernDialog(appName, T("是否停止后台 Web 服务？\n\n「确定」将停止服务并退出；\n「保留后台服务」仅关闭托盘，服务继续运行。"), []string{T("确定"), T("保留后台服务")}, 0)
 }
 
 func showReadyPrompt(url string) {
@@ -842,14 +842,14 @@ func showReadyPrompt(url string) {
 
 // askUpdateDialog 提示用户发现新版本：true=立即更新。
 func askUpdateDialog(newVer string) bool {
-	msg := fmt.Sprintf("发现新版本 %s（当前版本 %s）。\n是否立即下载并更新？", withV(newVer), withV(appVersion))
-	return runModernDialog(appName, msg, []string{"立即更新", "稍后"}, 0) == 0
+	msg := TF("发现新版本 %s（当前版本 %s）。\n是否立即下载并更新？", withV(newVer), withV(appVersion))
+	return runModernDialog(appName, msg, []string{T("立即更新"), T("稍后")}, 0) == 0
 }
 
 // askUpdateHarness 提示用户 DeepSeek Harness 有新版本：true=先更新 Harness。
 func askUpdateHarness(newVer, curVer string) bool {
-	msg := fmt.Sprintf("DeepSeek Harness 有新版本 %s（当前 %s）。\n是否先更新 Harness？", withV(newVer), withV(curVer))
-	return runModernDialog(appName, msg, []string{"更新 Harness", "稍后"}, 0) == 0
+	msg := TF("DeepSeek Harness 有新版本 %s（当前 %s）。\n是否先更新 Harness？", withV(newVer), withV(curVer))
+	return runModernDialog(appName, msg, []string{T("更新 Harness"), T("稍后")}, 0) == 0
 }
 
 // replaceAndRelaunch 替换当前 exe 并重启。Windows 不允许覆盖正在运行的 exe，
@@ -931,7 +931,7 @@ func startUpdateApply(rel *latestRelease) {
 		}
 	}
 	if zipURL == "" {
-		showMessageBox("未找到适用于当前系统的更新包。", appName)
+		showMessageBox(T("未找到适用于当前系统的更新包。"), appName)
 		return
 	}
 
@@ -940,7 +940,7 @@ func startUpdateApply(rel *latestRelease) {
 	registerActiveUpdate(cancel)
 	defer clearActiveUpdate()
 
-	splash := startSplash("正在准备更新…")
+	splash := startSplash(T("正在准备更新…"))
 	splash.SetOnClose(func() bool {
 		if askCancelUpdate() {
 			log.Printf("update cancelled by user")
@@ -960,7 +960,7 @@ func startUpdateApply(rel *latestRelease) {
 	defer os.RemoveAll(dir)
 
 	zipPath := filepath.Join(dir, assetName)
-	splash.Update("正在下载 "+assetName+"…", 0.08)
+	splash.Update(TF("正在下载 %s…", assetName), 0.08)
 	if err := downloadFileWithProgress(ctx, zipURL, zipPath, func(pct float64) {
 		splash.Update(fmt.Sprintf("正在下载 %s（%.0f%%）…", assetName, pct*100), 0.08+0.52*pct)
 	}); err != nil {
@@ -997,7 +997,7 @@ func startUpdateApply(rel *latestRelease) {
 		emitUpdateDone(false, true, "")
 		return
 	}
-	splash.Update("正在解压安装…", 0.65)
+	splash.Update(T("正在解压安装…"), 0.65)
 	extractDir := filepath.Join(dir, "extract")
 	if err := os.MkdirAll(extractDir, 0o755); err != nil {
 		splash.Close()
@@ -1024,7 +1024,7 @@ func startUpdateApply(rel *latestRelease) {
 		return
 	}
 	setUpdateFinalizing() // 进入替换阶段：不再接受取消
-	splash.Update("正在更新程序…", 0.9)
+	splash.Update(T("正在更新程序…"), 0.9)
 	if err := replaceAndRelaunch(payload); err != nil {
 		splash.Close()
 		showMessageBox("重启失败：\n"+err.Error()+"\n\n程序已替换，请手动重启。", appName)
@@ -1036,5 +1036,5 @@ func startUpdateApply(rel *latestRelease) {
 
 // askCancelUpdate 关闭下载进度窗口时询问是否取消更新：true=确认取消。
 func askCancelUpdate() bool {
-	return runModernDialog(appName, "是否取消更新？", []string{"取消更新", "继续更新"}, 0) == 0
+	return runModernDialog(appName, T("是否取消更新？"), []string{T("取消更新"), T("继续更新")}, 0) == 0
 }

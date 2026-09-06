@@ -494,7 +494,7 @@ func (a *App) CheckPluginUpdate(id string) PluginCheckResult {
 	}
 	row, ok := findPluginRowByID(id)
 	if !ok {
-		return PluginCheckResult{Name: id, Error: "未找到该插件，可能已被移除。"}
+		return PluginCheckResult{Name: id, Error: T("未找到该插件，可能已被移除。")}
 	}
 	res := checkPluginUpdateByRow(row)
 	state := "已是最新"
@@ -525,7 +525,7 @@ func (a *App) PickLocalPluginPath(id string) PluginLocalPick {
 	}
 	row, ok := findPluginRowByID(id)
 	if !ok {
-		return PluginLocalPick{Error: "未找到该插件，可能已被移除。"}
+		return PluginLocalPick{Error: T("未找到该插件，可能已被移除。")}
 	}
 	p, err := wruntime.OpenDirectoryDialog(appCtx, wruntime.OpenDialogOptions{
 		Title: "选择插件 " + row.Name + " 的新版本目录",
@@ -553,7 +553,7 @@ func (a *App) ApplyLocalPluginUpdate(id, dir string) {
 	}
 	row, ok := findPluginRowByID(id)
 	if !ok {
-		showMessageBox("未找到该插件，可能已被移除。", appName)
+		showMessageBox(T("未找到该插件，可能已被移除。"), appName)
 		return
 	}
 	name, ver, err := packageMeta(dir)
@@ -581,7 +581,7 @@ func (a *App) EnablePlugin(id string) {
 	}
 	row, ok := findPluginRowByID(id)
 	if !ok {
-		showMessageBox("未找到该插件，可能已被移除。", appName)
+		showMessageBox(T("未找到该插件，可能已被移除。"), appName)
 		return
 	}
 	if !row.Disabled {
@@ -848,9 +848,9 @@ func (a *App) ImportPick() (*ImportPickResult, error) {
 		return &ImportPickResult{
 			Path: "dsh-systray-export-20260903-091210-1a2b3c4d.zip",
 			Items: []ImportItem{
-				{Kind: "sessions", Label: "历史会话记录", Size: 2482124},
-				{Kind: "plugins", Label: "已安装插件", Size: 1892356},
-				{Kind: "files", Label: "自选文件目录", Size: 128512000},
+				{Kind: "sessions", Label: T("历史会话记录"), Size: 2482124},
+				{Kind: "plugins", Label: T("已安装插件"), Size: 1892356},
+				{Kind: "files", Label: T("自选文件目录"), Size: 128512000},
 			},
 		}, nil
 	}

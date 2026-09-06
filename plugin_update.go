@@ -876,7 +876,7 @@ func noteBuildScriptWarning(source string) string {
 func runPluginUpdate(id string) {
 	row, ok := findPluginRowByID(id)
 	if !ok {
-		showMessageBox("未找到该插件，可能已被移除。", appName)
+		showMessageBox(T("未找到该插件，可能已被移除。"), appName)
 		return
 	}
 	// 记录本次更新前的禁用状态：被禁用插件更新成功后需尝试重新启用（见 3c 分支）
@@ -908,7 +908,7 @@ func runPluginUpdate(id string) {
 	}
 	logUI("开始更新插件", fmt.Sprintf("%s (%s -> %s)", row.Name, orDash(row.Version), orDash(target)))
 
-	splash := startSplash("正在更新插件 " + row.Name + "…")
+	splash := startSplash(TF("正在更新插件 %s…", row.Name))
 	// 全程计数：插件更新同样占用「检查/更新窗口」，自动更新提示不再重复弹窗
 	openUpdateCheckFlow()
 	defer closeUpdateCheckFlow()
@@ -918,7 +918,7 @@ func runPluginUpdate(id string) {
 	time.Sleep(1 * time.Second)
 
 	// 1) 快照每个声明目录
-	splash.Update("正在备份当前版本…", 0.12)
+	splash.Update(T("正在备份当前版本…"), 0.12)
 	hadNM := make([]bool, len(row.Locs))
 	for i, dir := range row.Locs {
 		hadNM[i] = snapshotPluginProfile(dir)
@@ -959,9 +959,9 @@ func runPluginUpdate(id string) {
 	// 3) 重启并健康校验。失败时先尝试「禁用启动日志点名的用户插件」换取服务可启动
 	//    （可能含本次被更新的插件：新版与核心不兼容时保留新版本并保持/转为禁用，不再整体回退）；
 	//    禁用后仍失败或无嫌疑（核心故障）→ 回退到更新前版本。
-	splash.Update("正在重启服务…", 0.85)
+	splash.Update(T("正在重启服务…"), 0.85)
 	if !restartAndVerifyServer() {
-		splash.Update("启动校验失败，正在排查不兼容插件…", 0.9)
+		splash.Update(T("启动校验失败，正在排查不兼容插件…"), 0.9)
 		disabled, ok := disableBootSuspects(row.Locs)
 		if ok {
 			// 保留新版本：把更新前快照提升为 LKG（未来失败回退到可用状态）
@@ -990,7 +990,7 @@ func runPluginUpdate(id string) {
 	// 3c) 此前被禁用（不兼容自愈）的插件：更新成功后尝试重新启用——兼容则恢复启用；
 	//     仍不兼容则自动重新禁用并重启服务（保证可启动）。
 	if wasDisabled {
-		splash.Update("正在尝试重新启用插件…", 0.92)
+		splash.Update(T("正在尝试重新启用插件…"), 0.92)
 		enabled, why := enablePluginAndVerify(row)
 		for _, dir := range row.Locs {
 			promoteProfileLkg(dir)
@@ -1065,7 +1065,7 @@ func shotPluginCheck(id string) PluginCheckResult {
 
 // rollbackPluginUpdate 插件更新失败：回退全部 profile 快照 → 重启校验 → 弹窗报告。
 func rollbackPluginUpdate(splash *SplashState, row PluginRow, hadNM []bool, reason string) {
-	splash.Update("更新失败，正在回退插件版本…", 0.55)
+	splash.Update(T("更新失败，正在回退插件版本…"), 0.55)
 	killServer()
 	for i, dir := range row.Locs {
 		had := false
@@ -1074,7 +1074,7 @@ func rollbackPluginUpdate(splash *SplashState, row PluginRow, hadNM []bool, reas
 		}
 		restorePluginProfileSnapshot(dir, had)
 	}
-	splash.Update("正在重启服务…", 0.85)
+	splash.Update(T("正在重启服务…"), 0.85)
 	restartAndVerifyServer()
 	splash.Close()
 	logUI("更新插件失败", fmt.Sprintf("%s: %s", row.Name, reason))
@@ -1107,7 +1107,7 @@ func profileDeclaresPlugin(dir, name string) bool {
 func runPluginRemove(id string) {
 	row, ok := findPluginRowByID(id)
 	if !ok {
-		showMessageBox("未找到该插件，可能已被移除。", appName)
+		showMessageBox(T("未找到该插件，可能已被移除。"), appName)
 		return
 	}
 	logUI("开始删除插件", fmt.Sprintf("%s（v%s，%d 个环境）", row.Name, orDash(row.Version), len(row.Locs)))
@@ -1145,7 +1145,7 @@ func runPluginRemove(id string) {
 		return
 	}
 
-	splash := startSplash("正在删除插件 " + row.Name + "…")
+	splash := startSplash(TF("正在删除插件 %s…", row.Name))
 	// 全程计数：删除同样占用「检查/更新窗口」，自动更新提示不再重复弹窗
 	openUpdateCheckFlow()
 	defer closeUpdateCheckFlow()
@@ -1155,7 +1155,7 @@ func runPluginRemove(id string) {
 	time.Sleep(1 * time.Second)
 
 	// 1) 快照每个声明目录（失败可整体回退）
-	splash.Update("正在备份当前状态…", 0.12)
+	splash.Update(T("正在备份当前状态…"), 0.12)
 	hadNM := make([]bool, len(row.Locs))
 	for i, dir := range row.Locs {
 		hadNM[i] = snapshotPluginProfile(dir)
@@ -1192,9 +1192,9 @@ func runPluginRemove(id string) {
 
 	// 3b) 重启并健康校验。失败时尝试禁用启动日志点名的其它插件（删除本身已生效，
 	//     以禁用其它阻碍者换取服务可启动）；仍失败或无嫌疑则回退删除。
-	splash.Update("正在重启服务…", 0.85)
+	splash.Update(T("正在重启服务…"), 0.85)
 	if !restartAndVerifyServer() {
-		splash.Update("启动校验失败，正在排查不兼容插件…", 0.9)
+		splash.Update(T("启动校验失败，正在排查不兼容插件…"), 0.9)
 		disabled, ok := disableBootSuspects(row.Locs)
 		if ok {
 			// 删除成功 + 禁用其它冲突插件：清理快照与 LKG（已删除插件不应被回退“复活”）
@@ -1236,7 +1236,7 @@ func runPluginRemove(id string) {
 
 // rollbackPluginRemove 插件删除失败：回退全部目录快照 → 重启校验 → 弹窗报告。
 func rollbackPluginRemove(splash *SplashState, row PluginRow, hadNM []bool, reason string) {
-	splash.Update("删除失败，正在回退…", 0.55)
+	splash.Update(T("删除失败，正在回退…"), 0.55)
 	killServer()
 	for i, dir := range row.Locs {
 		had := false
@@ -1245,7 +1245,7 @@ func rollbackPluginRemove(splash *SplashState, row PluginRow, hadNM []bool, reas
 		}
 		restorePluginProfileSnapshot(dir, had)
 	}
-	splash.Update("正在重启服务…", 0.85)
+	splash.Update(T("正在重启服务…"), 0.85)
 	restartAndVerifyServer()
 	splash.Close()
 	logUI("删除插件失败", fmt.Sprintf("%s: %s", row.Name, reason))
@@ -1496,7 +1496,7 @@ func runLocalPluginUpdate(row PluginRow, srcDir string) {
 	spec := localLinkSpec(srcDir)
 	logUI("开始更新本地插件", fmt.Sprintf("%s → %s（v%s）", row.Name, srcDir, orDash(pickedVer)))
 
-	splash := startSplash("正在更新本地插件 " + row.Name + "…")
+	splash := startSplash(TF("正在更新本地插件 %s…", row.Name))
 	// 全程计数：占用「检查/更新窗口」，自动更新提示不再重复弹窗
 	openUpdateCheckFlow()
 	defer closeUpdateCheckFlow()
@@ -1506,7 +1506,7 @@ func runLocalPluginUpdate(row PluginRow, srcDir string) {
 	time.Sleep(1 * time.Second)
 
 	// 1) 快照每个声明目录
-	splash.Update("正在备份当前版本…", 0.12)
+	splash.Update(T("正在备份当前版本…"), 0.12)
 	hadNM := make([]bool, len(row.Locs))
 	for i, dir := range row.Locs {
 		hadNM[i] = snapshotPluginProfile(dir)
@@ -1541,7 +1541,7 @@ func runLocalPluginUpdate(row PluginRow, srcDir string) {
 	}
 
 	// 4) 重启并健康校验
-	splash.Update("正在重启服务…", 0.85)
+	splash.Update(T("正在重启服务…"), 0.85)
 	if !restartAndVerifyServer() {
 		rollbackPluginUpdate(splash, row, hadNM, "更新后服务启动失败")
 		return
@@ -1551,7 +1551,7 @@ func runLocalPluginUpdate(row PluginRow, srcDir string) {
 	//     （清除禁用记录 + 加回 bundles 并重启健康校验），保证下次启动加载到 harness；
 	//     仍不兼容则自动重新禁用并重启服务（保留新版本 + 禁用状态，语义同远程更新 3c）。
 	if wasDisabled {
-		splash.Update("正在尝试重新启用插件…", 0.92)
+		splash.Update(T("正在尝试重新启用插件…"), 0.92)
 		enabled, why := enablePluginAndVerify(row)
 		for _, dir := range row.Locs {
 			promoteProfileLkg(dir)

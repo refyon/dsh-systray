@@ -275,15 +275,15 @@ func autoCheckUpdate() {
 // 在窗口下完成 harness + dsh-systray 版本查询；harness 有新版则优先提示先更新 harness。
 func checkForUpdatesManual() {
 	if appVersion == "" || appVersion == "dev" {
-		showMessageBox("当前为开发版本（dev），未启用自动更新。", appName)
+		showMessageBox(T("当前为开发版本（dev），未启用自动更新。"), appName)
 		return
 	}
 	// 全程计数：进度窗口 + 结果提示期间都视为“检查更新窗口在开”，自动检查不再重复弹窗。
 	openUpdateCheckFlow()
 	defer closeUpdateCheckFlow()
 	// 立即弹出进度窗口（不等待查询结果）
-	splash := startSplash("正在查询最新版本…")
-	splash.Update("正在查询最新版本…", 0.15)
+	splash := startSplash(T("正在查询最新版本…"))
+	splash.Update(T("正在查询最新版本…"), 0.15)
 
 	// 1) 查询 DeepSeek Harness 是否有新版本
 	harnessLatest, harnessCur, harnessNewer, _ := queryHarnessUpdate()
@@ -329,9 +329,9 @@ func checkForUpdatesManual() {
 //
 // 重启成功后（非开机自启动场景，该场景不会走到此函数）弹窗询问是否立即打开 Web UI；返回是否成功。
 func restartBackgroundService(onState func(stage string)) bool {
-	splash := startSplash("正在重启后台服务…")
+	splash := startSplash(T("正在重启后台服务…"))
 	defer splash.Close()
-	splash.Update("正在停止后台服务…", 0.2)
+	splash.Update(T("正在停止后台服务…"), 0.2)
 	if onState != nil {
 		onState("正在停止后台服务…")
 	}
@@ -342,14 +342,14 @@ func restartBackgroundService(onState func(stage string)) bool {
 	time.Sleep(1 * time.Second)
 
 	// 第一轮：拉起 → 就绪 → 健康窗口
-	splash.Update("正在启动后台服务…", 0.55)
+	splash.Update(T("正在启动后台服务…"), 0.55)
 	if onState != nil {
 		onState("正在启动后台服务…")
 	}
 	ok, msg := startAndVerifyOnce()
 	if !ok {
 		// 自愈：对全部 profile 做一次 pnpm 对齐（健康校验失败多由依赖树不一致引起），再重试一次
-		splash.Update("启动未通过健康校验，正在修复插件依赖并重试…", 0.65)
+		splash.Update(T("启动未通过健康校验，正在修复插件依赖并重试…"), 0.65)
 		if onState != nil {
 			onState("正在修复插件依赖并重试…")
 		}
@@ -360,7 +360,7 @@ func restartBackgroundService(onState func(stage string)) bool {
 		}
 		killServer()
 		time.Sleep(1 * time.Second)
-		splash.Update("正在重试启动后台服务…", 0.8)
+		splash.Update(T("正在重试启动后台服务…"), 0.8)
 		ok, msg = startAndVerifyOnce()
 	}
 	if !ok {
@@ -910,10 +910,10 @@ func restartAndVerifyServer() bool {
 
 // rollbackUpdate 更新失败处理：停止服务 → 回退快照 → 重启校验 → 弹窗报告。
 func rollbackUpdate(splash *SplashState, prev string, hadNMBackup bool, reason string) {
-	splash.Update("更新失败，正在回退到上一可用版本…", 0.6)
+	splash.Update(T("更新失败，正在回退到上一可用版本…"), 0.6)
 	killServer()
 	restoreHarnessSnapshot(hadNMBackup)
-	splash.Update("正在重启服务…", 0.85)
+	splash.Update(T("正在重启服务…"), 0.85)
 	restartAndVerifyServer()
 	splash.Close()
 	msg := "DeepSeek Harness 更新失败（" + reason + "），已回退到"
@@ -929,7 +929,7 @@ func rollbackUpdate(splash *SplashState, prev string, hadNMBackup bool, reason s
 // runHarnessUpdate 更新 DeepSeek Harness（npm 模式更新 @deepseek-ai/dsh；源码模式 git pull+install+build），
 // 完成后重启服务并校验；失败自动回退到上一可运行版本。异步执行，带进度窗口。
 func runHarnessUpdate(latest string) {
-	splash := startSplash("正在更新 DeepSeek Harness…")
+	splash := startSplash(T("正在更新 DeepSeek Harness…"))
 	prev := installedHarnessVersion()
 
 	// 0) 先判定安装形态——必须在快照之前：快照会把 node_modules 改名备份，而 npm 形态判定
@@ -973,14 +973,14 @@ func runHarnessUpdate(latest string) {
 	time.Sleep(1 * time.Second)
 
 	// 2) 快照当前可运行版本（本地回退用）
-	splash.Update("正在备份当前版本…", 0.15)
+	splash.Update(T("正在备份当前版本…"), 0.15)
 	hadNMBackup := snapshotHarness()
 
 	// 3) 安装新版本（失败原因按分支细化，供回退弹窗明确展示）
 	var err error
 	reason := "安装失败"
 	if npmMode {
-		splash.Update("正在更新 DeepSeek Harness 依赖…", 0.35)
+		splash.Update(T("正在更新 DeepSeek Harness 依赖…"), 0.35)
 		// 安装检查到的新版本而非 @latest：npm 的 prerelease（如 0.1.2-alpha.2）不会成为 latest 标签，
 		// 用 @latest 会装回旧版导致“更新后仍是旧版本”。
 		ver := latest
@@ -995,7 +995,7 @@ func runHarnessUpdate(latest string) {
 		}
 		if err == nil {
 			// 全量 install 重新 reconcile 整个依赖树，避免只改根依赖导致的新旧版本混装
-			splash.Update("正在安装依赖…", 0.55)
+			splash.Update(T("正在安装依赖…"), 0.55)
 			err = runHarnessCmd(pnpmCmd(), "install")
 			if err != nil {
 				reason = "依赖安装失败（详见日志末尾）"
@@ -1005,13 +1005,13 @@ func runHarnessUpdate(latest string) {
 		}
 	} else {
 		prevHead := runHarnessCmdCapture("git", "rev-parse", "HEAD")
-		splash.Update("正在拉取 DeepSeek Harness 最新代码…", 0.3)
+		splash.Update(T("正在拉取 DeepSeek Harness 最新代码…"), 0.3)
 		err = runHarnessCmd("git", "pull")
 		if err == nil {
-			splash.Update("正在安装 harness 依赖…", 0.5)
+			splash.Update(T("正在安装 harness 依赖…"), 0.5)
 			err = runHarnessCmd(pnpmCmd(), "install")
 			if err == nil {
-				splash.Update("正在构建 harness 前端…", 0.7)
+				splash.Update(T("正在构建 harness 前端…"), 0.7)
 				err = runHarnessCmd(pnpmCmd(), "run", "build")
 				if err != nil {
 					reason = "前端构建失败（详见日志末尾）"
@@ -1024,7 +1024,7 @@ func runHarnessUpdate(latest string) {
 		}
 		if err != nil && prevHead != "" {
 			// 源码模式回退：回到更新前 HEAD 并重装
-			splash.Update("正在回退代码…", 0.6)
+			splash.Update(T("正在回退代码…"), 0.6)
 			_ = runHarnessCmd("git", "reset", "--hard", prevHead)
 			_ = runHarnessCmd(pnpmCmd(), "install")
 			_ = runHarnessCmd(pnpmCmd(), "run", "build")
@@ -1039,9 +1039,9 @@ func runHarnessUpdate(latest string) {
 	// 4) 重启并健康校验（就绪 + 启动日志无报错）。
 	//    失败时先尝试「禁用启动日志点名的用户插件」换取新版本可启动（不兼容自愈）；
 	//    禁用后健康 → 保留新版本并提示；仍失败或无嫌疑（核心故障）→ 整体回退到上一版本。
-	splash.Update("正在重启服务…", 0.85)
+	splash.Update(T("正在重启服务…"), 0.85)
 	if !restartAndVerifyServer() {
-		splash.Update("启动校验失败，正在排查不兼容插件…", 0.9)
+		splash.Update(T("启动校验失败，正在排查不兼容插件…"), 0.9)
 		var profileDirs []string
 		for _, pf := range enumeratePluginProfiles() {
 			profileDirs = append(profileDirs, pf.dir)

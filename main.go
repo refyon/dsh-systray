@@ -397,7 +397,7 @@ func main() {
 			return // bindings 生成进程：直接退出，不弹窗
 		}
 		// 已在运行：弹窗提示后退出，不产生第二个托盘图标。
-		showMessageBox("DeepSeek Harness 已在运行中，请使用系统托盘图标操作。", appName)
+		showMessageBox(T("DeepSeek Harness 已在运行中，请使用系统托盘图标操作。"), appName)
 		return
 	}
 	defer release()
@@ -656,15 +656,15 @@ func bootstrapService() {
 		}
 	}
 
-	splash := maybeStartSplash("正在准备运行环境…")
+	splash := maybeStartSplash(T("正在准备运行环境…"))
 
 	// 0.5) 解压工具：环境检查加入 7-Zip（优先下载使用，Windows/macOS 均可）；失败不阻塞启动（zip 有 Go 兜底）。
-	splash.Update("正在检查解压工具…", 0.07)
+	splash.Update(T("正在检查解压工具…"), 0.07)
 	ensureArchiveTool(func(t string, pct float64) { splash.Update(t, 0.07+0.01*pct) })
 
 	// 1) 运行环境：优先便携 Node.js / pnpm（无管理员权限、无窗口、后台静默）
 	if !runtimeOK() {
-		splash.Update("正在下载 Node.js / pnpm 运行时（首次约 1-3 分钟）…", 0.08)
+		splash.Update(T("正在下载 Node.js / pnpm 运行时（首次约 1-3 分钟）…"), 0.08)
 		if err := ensureRuntime(splash); err != nil {
 			splash.Close()
 			showMessageBox("下载运行环境失败：\n"+err.Error()+"\n\n请检查网络后重试；日志："+unifiedLogPath(), appName)
@@ -684,7 +684,7 @@ func bootstrapService() {
 	switch harnessMode() {
 	case "source":
 		if !sourceDepsInstalled() {
-			splash.Update("正在安装 harness 依赖（首次约 2-5 分钟）…", 0.35)
+			splash.Update(T("正在安装 harness 依赖（首次约 2-5 分钟）…"), 0.35)
 			if err := runSourceDepsInstall(); err != nil {
 				splash.Close()
 				showMessageBox("安装 harness 依赖失败：\n"+err.Error()+"\n\n日志："+unifiedLogPath(), appName)
@@ -692,7 +692,7 @@ func bootstrapService() {
 			}
 		}
 		if !harnessBuiltOK() {
-			splash.Update("正在构建 harness 前端产物（首次约 1-3 分钟）…", 0.55)
+			splash.Update(T("正在构建 harness 前端产物（首次约 1-3 分钟）…"), 0.55)
 			if err := runHarnessBuild(); err != nil {
 				splash.Close()
 				showMessageBox("harness 构建失败：\n"+err.Error()+"\n\n日志："+unifiedLogPath(), appName)
@@ -700,7 +700,7 @@ func bootstrapService() {
 			}
 		}
 	case "missing":
-		splash.Update("正在安装 DeepSeek Harness（首次约 2-5 分钟）…", 0.35)
+		splash.Update(T("正在安装 DeepSeek Harness（首次约 2-5 分钟）…"), 0.35)
 		if err := ensureNpmHarness(); err != nil {
 			splash.Close()
 			showMessageBox("安装 DeepSeek Harness 失败：\n"+err.Error()+"\n\n日志："+unifiedLogPath(), appName)
@@ -715,7 +715,7 @@ func bootstrapService() {
 	}
 
 	// 3) 启动服务
-	splash.Update("正在启动服务…", 0.9)
+	splash.Update(T("正在启动服务…"), 0.9)
 	started := false
 	startedByUs := false
 	var serverExitCh <-chan error

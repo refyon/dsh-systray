@@ -189,11 +189,11 @@ func harnessGitTagForVersion(version string) (string, error) {
 // clearSessions / clearPlugins 由前端勾选弹窗传入（版本回退始终执行，必选项）。
 // 失败自动回退到重置前的可运行快照并弹窗报告。异步执行（按钮触发后 go 调用）。
 func runHarnessReset(clearSessions, clearPlugins bool, reqTarget string) {
-	splash := startSplash("正在重置 DeepSeek Harness…")
+	splash := startSplash(T("正在重置 DeepSeek Harness…"))
 	defer splash.Close()
 
 	// 0) 先停止服务（否则运行中的 node 占用文件，清空/重装会失败）
-	splash.Update("正在停止后台服务…", 0.1)
+	splash.Update(T("正在停止后台服务…"), 0.1)
 	killServer()
 	time.Sleep(1 * time.Second)
 
@@ -208,7 +208,7 @@ func runHarnessReset(clearSessions, clearPlugins bool, reqTarget string) {
 	// 1) 目标版本：弹窗已选（GetResetVersions 在弹窗打开时查过 npm 列表并给出默认目标）；
 	//    此处只做本地格式校验，不再查询最新版本号——版本真实可装性由下方 pnpm add 决定，
 	//    失败走备份还原兜底并提示。
-	splash.Update("正在准备全新安装…", 0.2)
+	splash.Update(T("正在准备全新安装…"), 0.2)
 	target := reqTarget
 	if target == "" {
 		splash.Close()
@@ -228,7 +228,7 @@ func runHarnessReset(clearSessions, clearPlugins bool, reqTarget string) {
 	bakDir := harnessDir + ".reset-bak"
 	_ = os.RemoveAll(bakDir)
 	if _, serr := os.Stat(harnessDir); serr == nil {
-		splash.Update("正在清空原 harness 目录…", 0.35)
+		splash.Update(T("正在清空原 harness 目录…"), 0.35)
 		if rerr := os.Rename(harnessDir, bakDir); rerr != nil {
 			splash.Close()
 			showMessageBox("重置失败：无法备份原目录（"+rerr.Error()+"）。\n\n请检查文件占用后重试。", appName)
@@ -261,14 +261,14 @@ func runHarnessReset(clearSessions, clearPlugins bool, reqTarget string) {
 	// 3) 可选清理（版本已回退成功；清理失败不阻断重启，仅记录并提示）
 	cleanupNotes := ""
 	if clearSessions {
-		splash.Update("正在清除会话记录…", 0.6)
+		splash.Update(T("正在清除会话记录…"), 0.6)
 		if err := removeSessions(); err != nil {
 			log.Printf("reset: clear sessions failed: %v", err)
 			cleanupNotes += "\n· 会话记录清理失败：" + err.Error()
 		}
 	}
 	if clearPlugins {
-		splash.Update("正在清除已安装的插件…", 0.65)
+		splash.Update(T("正在清除已安装的插件…"), 0.65)
 		if _, err := removeInstalledPlugins(); err != nil {
 			log.Printf("reset: clear plugins failed: %v", err)
 			cleanupNotes += "\n· 已安装插件清理失败：" + err.Error()
@@ -276,7 +276,7 @@ func runHarnessReset(clearSessions, clearPlugins bool, reqTarget string) {
 	}
 
 	// 4) 重启并健康校验（就绪 + 启动日志无加载报错）
-	splash.Update("正在重启服务…", 0.9)
+	splash.Update(T("正在重启服务…"), 0.9)
 	if !restartAndVerifyServer() {
 		splash.Close()
 		showMessageBox("重置后服务未能正常启动，请查看日志：\n"+unifiedLogPath()+cleanupNotes, appName)
@@ -285,7 +285,7 @@ func runHarnessReset(clearSessions, clearPlugins bool, reqTarget string) {
 	// 重置成功：回退后的状态即新的良好基线，旧 LKG 不应再用于回退
 	clearAllLkg()
 	splash.Close()
-	detail := "DeepSeek Harness 已重置：\n"
+	detail := T("DeepSeek Harness 已重置：\n")
 	if clearSessions {
 		detail += "· 会话记录已清除\n"
 	}

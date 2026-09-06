@@ -205,7 +205,7 @@ func tryBootRollback(why string) (bool, string) {
 	prev, _ := readLkgMarker()
 	log.Printf("lkg: boot failed (%s), attempting rollback to last known good state", why)
 
-	rsplash := maybeStartSplash("启动失败，正在回退到上次正常状态…")
+	rsplash := maybeStartSplash(T("启动失败，正在回退到上次正常状态…"))
 	defer rsplash.Close()
 
 	killServer()

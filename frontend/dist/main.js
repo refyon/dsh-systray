@@ -159,6 +159,14 @@ const I18N_DYN = {
   "（含 {0} 个目录）": " (incl. {0} folder(s))",
   "请至少勾选一项，或为「文件目录」添加目录": "Select at least one item, or add folders under “Folders to include”",
   "选择 dsh-systray 导出压缩包后可恢复会话、插件或文件目录。": "Pick a dsh-systray export archive to restore sessions, plugins or file folders.",
+  "无法恢复：{0}": "Cannot restore: {0}",
+  "服务正在启动校验，不可取消…（请等待确定结果）": "Service boot is being verified — cannot cancel yet… (wait for the result)",
+  "当前没有进行中的恢复任务": "No restore task in progress",
+  "已请求取消，正在回退到恢复前状态…（可稍后重新恢复）": "Cancel requested — rolling back to the pre-restore state… (you can restore again later)",
+  "解析成功：共 {0} 个可恢复项，可同时点击多个「恢复」逐项恢复。": "Parsed {0} restorable item(s) — you can click multiple “Restore” buttons.",
+  "恢复": "Restore",
+  "✓ 已完成": "✓ Restored",
+  "正在启动服务并校验插件兼容性…（启动校验过程不可取消，请稍候）": "Starting the service and verifying plugin compatibility… (cannot cancel during boot check, please wait)",
   "检查更新": "Check for updates",
   "更新": "Update",
   "更新…": "Update…",
@@ -208,6 +216,14 @@ function applyStaticI18n() {
   });
   const autoOpt = document.querySelector('#sel-lang option[value="auto"]');
   if (autoOpt && I18N_EN.langAuto) autoOpt.textContent = I18N_EN.langAuto;
+  rerenderDynamicText(); // 语言确定后重渲染服务状态/插件/导出/导入等动态区块（避免先于 GetConfig 渲染成中文）
+}
+
+// 动态区块统一重渲染（EN 生效后调用；各函数内部以 curLangCode() 决定语言）
+function rerenderDynamicText() {
+  [refreshService, renderPlugins, renderExportRows, renderImportRows].forEach((fn) => {
+    if (typeof fn === "function") { try { fn(); } catch (e) { console.error("rerenderDynamicText", fn && fn.name, e); } }
+  });
 }
 
 // ==================== 页面路由 ====================
@@ -931,6 +947,18 @@ async function doPluginRemove(p, item, delBtn) {
 // 日志行时间戳/级别识别：时间戳统一显示为行头（muted），兼容斜杠（Go log / 子进程前缀
 // "2026/09/04 14:00:13"）与横杠+T 两种写法；级别词着色便于扫读。
 const LOG_TS_RE = /^\s*(\d{4}[-\/]\d{2}[-\/]\d{2}[ T]\d{2}:\d{2}:\d{2})\s+(.*)$/;
+
+// 截图模式(EN)下展示的样例日志（真实运行日志为诊断内容，按 i18n 边界保留原文）
+const SAMPLE_EN_LOG = [
+  "2026/09/06 12:00:01 [INFO] dsh-systray v0.7.3 starting (pid 12345)",
+  "2026/09/06 12:00:02 [INFO] runtime ready: node v24.9.0 / pnpm 10.34.5",
+  "2026/09/06 12:00:03 [server] starting DeepSeek Harness web service on 127.0.0.1:3080",
+  "2026/09/06 12:00:04 [server] service ready — open the Web UI",
+  "2026/09/06 12:00:05 [INFO] tray menu refreshed (language: en)",
+  "2026/09/06 12:00:06 [WARN] background update check skipped (dev build)",
+  "2026/09/06 12:00:07 [INFO] latest records follow automatically; clear with one click",
+];
+let sampleLogInjected = false;
 const LOG_LVL_RE = /^\[?(INFO|WARN|ERROR|DEBUG)\]?\s+(.*)$/;
 
 function renderLog(lines) {
@@ -972,6 +1000,16 @@ function esc(s) {
 function escAttr(s) { return esc(s).replace(/"/g, "&quot;"); }
 
 async function pollLog() {
+  if (state.shotPage && curLangCode() === "en") {
+    // 截图模式 EN：渲染样例日志而非真实中文运行日志（真实日志内容非 UI 文案）
+    if (!sampleLogInjected) {
+      const view = $("log-view");
+      view.textContent = "";
+      renderLog(SAMPLE_EN_LOG);
+      sampleLogInjected = true;
+    }
+    return;
+  }
   const a = bindings();
   if (!a || state.page !== "logs" || !state.logName) return;
   try {
@@ -1246,7 +1284,7 @@ function renderImportRows() {
     setImpHint(tr("选择 dsh-systray 导出压缩包后可恢复会话、插件或文件目录。"), false);
     return;
   }
-  setImpHint("解析成功：共 " + state.impItems.length + " 个可恢复项，可同时点击多个「恢复」逐项恢复。", false);
+  setImpHint(fmt("解析成功：共 {0} 个可恢复项，可同时点击多个「恢复」逐项恢复。", state.impItems.length), false);
   for (const it of state.impItems) {
     const div = document.createElement("div");
     div.className = "imp-item";
@@ -1256,9 +1294,9 @@ function renderImportRows() {
       '<div class="imp-intro-main"><div class="exp-label">' + esc(it.label) + "</div>" +
       (it.size ? '<div class="exp-sub">' + fmtSize(it.size) + "</div>" : "") + "</div>" +
       '<div class="imp-actions">' +
-      '<span data-okbadge class="imp-done hidden">✓ 已完成</span>' +
-      '<button class="btn btn-primary btn-xs" data-restore="' + escAttr(it.kind) + '">恢复</button>' +
-      '<button class="btn btn-outline btn-xs hidden" data-cancel="' + escAttr(it.kind) + '">取消恢复</button>' +
+      '<span data-okbadge class="imp-done hidden">' + tr("✓ 已完成") + '</span>' +
+      '<button class="btn btn-primary btn-xs" data-restore="' + escAttr(it.kind) + '">' + tr('恢复') + '</button>' +
+      '<button class="btn btn-outline btn-xs hidden" data-cancel="' + escAttr(it.kind) + '">' + tr('取消恢复') + '</button>' +
       "</div></div>" +
       '<div class="imp-progress-row hidden" data-prow>' +
       '<div class="imp-track"><div class="imp-fill" data-pfill></div></div>' +
@@ -1279,11 +1317,11 @@ async function impRestore(it) {
   const st = impSt(kind);
   if (st.busy) return;
   try {
-    impRowBusy(kind, true, "正在准备恢复…", 0);
+    impRowBusy(kind, true, tr("正在准备恢复…"), 0);
     // 1) 准备 + 冲突检测（files 类目此时由后端弹解压位置选择）
     const preview = await bindings().PreviewRestore(kind);
     if (!preview || preview.canceled) { impRowBusy(kind, false, "", 0); return; } // 用户取消选择
-    if (preview.error) { impRowBusy(kind, false, "无法恢复：" + preview.error, 0); impRowText(kind, "无法恢复：" + preview.error, "err"); return; }
+    if (preview.error) { const er = fmt("无法恢复：{0}", preview.error); impRowBusy(kind, false, er, 0); impRowText(kind, er, "err"); return; }
     // 2) 冲突处理：取消=不执行；跳过=保留现有只补缺失；覆盖=备份并替换
     let overwrite = true;
     if (preview.conflicts > 0) {
@@ -1299,11 +1337,11 @@ async function impRestore(it) {
       if (choice === "cancel") { impRowBusy(kind, false, "", 0); return; }
       overwrite = choice === "ok";
       if (!overwrite) {
-        impRowText(kind, "已选择跳过 " + preview.conflicts + " 项冲突，现有内容将保留。", "muted");
+        impRowText(kind, fmt("已选择跳过 {0} 项冲突，现有内容将保留。", preview.conflicts), "muted");
       }
     }
     // 3) 执行恢复：结果由 import:done 统一收尾
-    impRowBusy(kind, true, "正在准备恢复…", 0);
+    impRowBusy(kind, true, tr("正在准备恢复…"), 0);
     armImpWatch(kind, 300000); // 兜底
     await bindings().ApplyRestore(kind, overwrite);
   } catch (e) {
@@ -1321,19 +1359,19 @@ async function impCancel(kind) {
   } catch (e) { /* 忽略 */ }
   if (state.impHealAll || r === "healing") {
     syncImpHealUI(true);
-    impRowText(kind, "服务正在启动校验，不可取消…（请等待确定结果）", "muted");
+    impRowText(kind, tr("服务正在启动校验，不可取消…（请等待确定结果）"), "muted");
     return;
   }
   if (r !== "ok") {
     impRowBusy(kind, false, "", 0);
-    impRowText(kind, "当前没有进行中的恢复任务", "muted");
+    impRowText(kind, tr("当前没有进行中的恢复任务"), "muted");
     return;
   }
   // 已受理：立即解锁该行（恢复可用、进度/取消按钮收起），后端回退后台进行
   impRowBusy(kind, false, "", 0);
   const st = impSt(kind);
   st.pending = true;
-  impRowText(kind, "已请求取消，正在回退到恢复前状态…（可稍后重新恢复）", "muted");
+  impRowText(kind, tr("已请求取消，正在回退到恢复前状态…（可稍后重新恢复）"), "muted");
   armImpWatch(kind, 90000);
 }
 
