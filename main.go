@@ -259,12 +259,12 @@ func serviceStatusText() string {
 		if s, _ := serviceFailReason.Load().(string); s != "" {
 			return truncRunes(s, statusLineMaxRunes)
 		}
-		return "服务启动失败"
+		return T("服务启动失败")
 	}
 	if serverReady.Load() {
-		return "服务已停止"
+		return T("服务已停止")
 	}
-	return "服务启动中…"
+	return T("服务启动中…")
 }
 
 // refreshServiceMenu 按服务实际运行状态刷新托盘菜单（可跨线程、可周期调用）。
@@ -852,16 +852,16 @@ func onReady() {
 	systray.SetTooltip(appName)
 
 	// 状态说明行：禁用样式（置灰、不可点击），仅作状态提示；「打开 Web UI」未就绪时隐藏、就绪时显示可点
-	menuStatus = systray.AddMenuItem("服务启动中…", "后台服务状态")
+	menuStatus = systray.AddMenuItem(T("服务启动中…"), T("后台服务状态"))
 	menuStatus.Disable()
-	menuOpen = systray.AddMenuItem("打开 Web UI", "打开网页端界面")
+	menuOpen = systray.AddMenuItem(T("打开 Web UI"), T("打开网页端界面"))
 	refreshServiceMenu()
 	// 周期刷新，保证每次打开托盘菜单都反映服务实时状态
 	go pollServiceMenu()
 	systray.AddSeparator()
-	mSettings := systray.AddMenuItem("设置", "打开设置窗口")
+	mSettings := systray.AddMenuItem(T("设置"), T("打开设置窗口"))
 	systray.AddSeparator()
-	mQuit := systray.AddMenuItem("退出", "退出并关闭后台服务器")
+	mQuit := systray.AddMenuItem(T("退出"), T("退出并关闭后台服务器"))
 
 	menuOpen.Click(func() {
 		if running, _, _ := resolveRunningService(); running {
