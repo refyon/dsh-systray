@@ -80,7 +80,9 @@ jobs:
             powershell -NoProfile -Command "Compress-Archive -Path dist/dsh-systray.exe -DestinationPath ${{ matrix.artifact }} -Force"
           else
             chmod +x "dist/dsh-systray.app/Contents/MacOS/dsh-systray"
-            zip -r -y "${{ matrix.artifact }}" "dist/dsh-systray.app"
+            # 从 dist/ 内以「根级 .app」打包：更新器 updatePayloadPath 只认解压目录根级
+            # dsh-systray.app（带 dist/ 前缀的旧布局会报「更新包中缺少 dsh-systray.app」）
+            (cd dist && zip -r -y "../${{ matrix.artifact }}" "dsh-systray.app")
           fi
 
       - name: Upload artifact

@@ -1411,19 +1411,30 @@ func extractUpdateZip(zipPath, destDir string) error {
 }
 
 // updatePayloadPath 解压目录中待替换的程序主体：Windows 为 exe，macOS 为 .app 包。
+// 先查根级；再兼容解压目录带一层子目录（如历史包 `dist/` 前缀布局）的形态，防打包回归。
 func updatePayloadPath(extractDir string) (string, error) {
 	if runtime.GOOS == "windows" {
 		p := filepath.Join(extractDir, "dsh-systray.exe")
-		if _, err := os.Stat(p); err != nil {
-			return "", fmt.Errorf("更新包中缺少 dsh-systray.exe")
+		if _, err := os.Stat(p); err == nil {
+			return p, nil
 		}
-		return p, nil
+		if m, _ := filepath.Glob(filepath.Join(extractDir, "*", "dsh-systray.exe")); len(m) > 0 {
+			if _, err := os.Stat(m[0]); err == nil {
+				return m[0], nil
+			}
+		}
+		return "", fmt.Errorf("更新包中缺少 dsh-systray.exe")
 	}
 	p := filepath.Join(extractDir, "dsh-systray.app")
-	if fi, err := os.Stat(p); err != nil || !fi.IsDir() {
-		return "", fmt.Errorf("更新包中缺少 dsh-systray.app")
+	if fi, err := os.Stat(p); err == nil && fi.IsDir() {
+		return p, nil
 	}
-	return p, nil
+	if m, _ := filepath.Glob(filepath.Join(extractDir, "*", "dsh-systray.app")); len(m) > 0 {
+		if fi, err := os.Stat(m[0]); err == nil && fi.IsDir() {
+			return m[0], nil
+		}
+	}
+	return "", fmt.Errorf("更新包中缺少 dsh-systray.app")
 }
 
 // cleanupStaleUpdateFiles 清理上次更新遗留的旧程序文件（Windows：exe.old）。

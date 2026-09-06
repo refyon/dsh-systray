@@ -4,6 +4,27 @@
 > `## vX.Y.Z` 区块（最新在上）。CI 推送 `v*` tag 后会自动把该区块作为 GitHub Release 正文；
 > 找不到对应区块时回退为 GitHub 自动生成（提交列表）。
 
+## v0.8.1
+
+自 v0.8.0 起：修复 macOS 自更新失败与 app/Dock 图标不可见两大回归；界面语言切换体验修正（就地切换不再卡 splash、旧版升级默认中文、托盘菜单语言即时刷新）；网站轮播按语言显示英文截图；README 恢复 `README.md` / `README.en.md` 双语互链（GitHub 不支持 HTML README，撤销单文件折叠版）。
+
+### 修复
+
+- **macOS 自更新失败（「更新包中缺少 dsh-systray.app」）**：发布 zip 内 `dsh-systray.app` 被嵌套在 `dist/` 子目录，而更新器只认解压目录根级包 → mac 自更新自上线起实际从未成功。CI 打包改为在 `dist/` 内以根级 `.app` 打包；更新器同时兼容一层子目录嵌套（防御回归）。
+- **macOS app/Dock 图标近乎不可见**：0.8.0 把 Wails 图标源 `build/appicon.png` 处理成高透明细鲸鱼轮廓，Dock/Finder 上只剩淡影；改用「品牌蓝圆角底 + 白色鲸鱼」实心图标（与网站/深浅色主题一致；Windows exe 图标走 `build/windows/icon.ico`，不受影响）。
+- **切换界面语言后卡在启动进度页**：语言切换走整页 reload，而设置视图只由 Go 事件驱动出现 → reload 后永久卡 splash（语言实际已切换成功）。改为就地双向切换（中文快照还原 + 动态区块重渲染），去掉 reload。
+- **网站轮播切 EN 后仍是中文截图**：中文图缓存后 EN 图从未被请求的短路缺陷；顺带修复轮播图「首次加载完成后从不显示、失败重复请求」的隐藏缺陷。
+
+### 变更
+
+- **升级后默认中文**：config.json 无 `language` 字段（旧版本升级 / 全新安装）时默认简体中文，不再因「跟随系统」检测到英文系统语言而整体变英文；显式选择「跟随系统 / English」仍按选择生效。
+- **托盘菜单 / 原生弹窗即时切换**：设置页切换语言后托盘菜单文案实时刷新（此前需重启生效）；启动日志新增 `[i18n] language pref=… system=… → curLang=…` 诊断行。
+- README 恢复中文 `README.md` + 英文 `README.en.md` 双文件顶部互链（GitHub 不支持 HTML README，原地点击切换仅在站点 refyon.github.io/dsh-systray 提供）。
+
+### 移除
+
+- 单文件 `<details>` 折叠双语 README（被双文件互链取代）。
+
 ## v0.8.0
 
 自 v0.7.3 起：全应用中英双语（界面骨架翻译，错误细节/日志保留原文）＋网站/README 双语与英文界面截图；更新取消/结束后按钮自动复位；截图流程（就绪弹窗抑制/置顶保活/逐页重试/单脚本 -Lang zh|en）；mac 图标微调。

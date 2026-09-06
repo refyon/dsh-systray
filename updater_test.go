@@ -1,9 +1,51 @@
 package main
 
 import (
+	"os"
+	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
+
+// TestUpdatePayloadPathNested 更新包兼容一层子目录（历史 `dist/` 前缀布局）：
+// 无包报错 → 嵌套命中兜底 → 根级与嵌套并存时根级优先。
+func TestUpdatePayloadPathNested(t *testing.T) {
+	payload := "dsh-systray.exe"
+	if runtime.GOOS != "windows" {
+		payload = "dsh-systray.app"
+	}
+	dir := t.TempDir()
+	if _, err := updatePayloadPath(dir); err == nil {
+		t.Fatal("expected error on empty extract dir")
+	}
+	nested := filepath.Join(dir, "dist", payload)
+	if err := os.MkdirAll(nested, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	got, err := updatePayloadPath(dir)
+	if err != nil {
+		t.Fatalf("nested fallback failed: %v", err)
+	}
+	if got != nested {
+		t.Fatalf("nested fallback got %s, want %s", got, nested)
+	}
+	// 根级存在时优先于嵌套
+	if err := os.RemoveAll(nested); err != nil {
+		t.Fatal(err)
+	}
+	root := filepath.Join(dir, payload)
+	if err := os.MkdirAll(root, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	got2, err := updatePayloadPath(dir)
+	if err != nil {
+		t.Fatalf("root case failed: %v", err)
+	}
+	if got2 != root {
+		t.Fatalf("root should win, got %s", got2)
+	}
+}
 
 func TestCompareVersions(t *testing.T) {
 	cases := []struct {
