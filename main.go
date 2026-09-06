@@ -478,9 +478,25 @@ func signalShotReady() {
 
 // onDomReady 前端就绪：非自启动场景通知前端进入 splash 视图。
 func onDomReady(ctx context.Context) {
-	// 截图/预览模式：窗口自身置顶，确保屏幕截取不被其它窗口遮挡
+	// 截图/预览模式：窗口保持置顶（WebView2 偶发重绘/失焦会让一次性置顶失效，
+	// 常驻心跳每 1.2s 重新置顶，保证 PrintWindow / 屏幕截取窗口始终最前且不被遮挡）。
 	if os.Getenv("DSH_SYSTRAY_SHOW_WINDOW") == "1" {
 		wruntime.WindowSetAlwaysOnTop(ctx, true)
+		go func() {
+			t := time.NewTicker(1200 * time.Millisecond)
+			defer t.Stop()
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case <-t.C:
+					if quitting.Load() {
+						return
+					}
+					wruntime.WindowSetAlwaysOnTop(ctx, true)
+				}
+			}
+		}()
 	}
 	if !autostartLaunch {
 		wruntime.EventsEmit(ctx, "ui:show-splash", nil)
