@@ -149,6 +149,22 @@ const I18N_DYN = {
   "已选择跳过 {0} 项冲突，现有内容将保留。": "Skipped {0} conflicts — existing content is kept.",
   "正在准备恢复…": "Preparing restore…",
   "插件列表加载失败：{0}": "Failed to load plugin list: {0}",
+  "检查更新": "Check for updates",
+  "更新": "Update",
+  "更新…": "Update…",
+  "启用": "Enable",
+  "删除": "Delete",
+  "已禁用": "Disabled",
+  "已禁用（{0}）": "Disabled ({0})",
+  "与当前版本不兼容": "incompatible with current version",
+  "未安装": "not installed",
+  "当前版本 {0}": "Version {0}",
+  " · 环境 {0}": " · profile {0}",
+  "本地路径：{0}": "Local path: {0}",
+  "没有匹配“{0}”的插件": "No plugins match “{0}”",
+  "本地": "Local",
+  "压缩包": "Archive",
+  "未知来源": "Unknown source",
   "开启预发布通道？": "Enable prerelease channel?",
   "开启后，harness 更新可能安装到不稳定的 alpha / beta / rc 预发布版，可能导致服务启动失败。确定开启吗？": "Enabling may make harness updates install unstable alpha / beta / rc builds and could break the service. Enable now?",
   "确定开启": "Enable",
@@ -602,6 +618,10 @@ function wireAbout() {
 // ==================== 插件列表（每行单独检查 / 更新） ====================
 
 const PLUG_SRC_LABEL = { npm: "npm", github: "GitHub", file: "本地", tarball: "压缩包", unknown: "未知来源" };
+function srcLabel(src) {
+  const z = PLUG_SRC_LABEL[src];
+  return tr(z || src || "未知来源");
+}
 
 /** 行内小号状态文字：tone = ok | err | muted */
 function setNote(item, text, tone) {
@@ -646,10 +666,10 @@ function renderPlugins() {
     if (hay.includes(q)) shown.push(p);
   });
   const total = state.plugRows.length;
-  count.textContent = total ? (shown.length + " / " + total + " 个") : "";
+  count.textContent = total ? (shown.length + " / " + total + (curLangCode() === "en" ? "" : " 个")) : "";
   empty.textContent = total
-    ? (shown.length ? "" : "没有匹配“" + state.plugFilter + "”的插件")
-    : "未安装任何用户插件（在 Web UI 中通过 dsh add 安装）";
+    ? (shown.length ? "" : fmt("没有匹配“{0}”的插件", state.plugFilter))
+    : (curLangCode() === "en" ? I18N_EN.plugEmpty : "未安装任何用户插件（在 Web UI 中通过 dsh add 安装）");
   empty.classList.toggle("hidden", shown.length > 0);
   list.textContent = "";
   const frag = document.createDocumentFragment();
@@ -668,22 +688,22 @@ function renderPluginRow(p, idx) {
   name.textContent = p.name;
   const badge = document.createElement("span");
   badge.className = "plug-badge";
-  badge.textContent = PLUG_SRC_LABEL[p.source] || p.source || "未知";
+  badge.textContent = srcLabel(p.source);
   name.appendChild(badge);
   if (p.disabled) {
     const disBadge = document.createElement("span");
     disBadge.className = "plug-badge-dis";
-    disBadge.textContent = "已禁用";
+    disBadge.textContent = tr("已禁用");
     name.appendChild(disBadge);
   }
 
   const sub = document.createElement("div");
   sub.className = "plug-sub";
-  sub.textContent = "当前版本 " + (p.version ? vtag(p.version) : "未安装") +
-    (p.profile ? " · 环境 " + p.profile : "");
+  sub.textContent = fmt("当前版本 {0}", p.version ? vtag(p.version) : tr("未安装")) +
+    (p.profile ? fmt(" · 环境 {0}", p.profile) : "");
   // 本地插件：仅当存在「用户已重指定/生效」的本地路径时才展示（原路径不出现，保护隐私）
   if (p.localDir) {
-    sub.textContent += " · 本地路径：" + p.localDir;
+    sub.textContent += " · " + fmt("本地路径：{0}", p.localDir);
     sub.title = p.localDir;
   }
 
@@ -702,7 +722,7 @@ function renderPluginRow(p, idx) {
   if (p.canUpdate) {
     const checkBtn = document.createElement("button");
     checkBtn.className = "btn btn-outline btn-xs";
-    checkBtn.textContent = "检查更新";
+    checkBtn.textContent = tr("检查更新");
     checkBtn.dataset.check = "";
     actions.appendChild(checkBtn);
   }
@@ -713,10 +733,10 @@ function renderPluginRow(p, idx) {
   //  - 其余不可更新来源（tarball 等）：灰置表达不可用。
   const upBtn = document.createElement("button");
   upBtn.className = "btn btn-primary btn-xs";
-  upBtn.textContent = "更新";
+  upBtn.textContent = tr("更新");
   if (p.source === "file") {
     upBtn.className = "btn btn-outline btn-xs";
-    upBtn.textContent = "更新…";
+    upBtn.textContent = tr("更新…");
     upBtn.dataset.localupdate = "";
   } else {
     upBtn.dataset.update = "";
@@ -735,7 +755,7 @@ function renderPluginRow(p, idx) {
   if (p.disabled && !p.ghostDisabled) {
     const enBtn = document.createElement("button");
     enBtn.className = "btn btn-outline btn-xs";
-    enBtn.textContent = "启用";
+    enBtn.textContent = tr("启用");
     enBtn.dataset.enable = "";
     actions.appendChild(enBtn);
   }
@@ -744,7 +764,7 @@ function renderPluginRow(p, idx) {
   // 用“安静危险”样式（透明底 + 描边），避免整块红底在行内过于突兀。
   const delBtn = document.createElement("button");
   delBtn.className = "btn btn-danger-ghost btn-xs";
-  delBtn.textContent = "删除";
+  delBtn.textContent = tr("删除");
   delBtn.dataset.del = "";
   actions.appendChild(delBtn);
 
@@ -757,7 +777,7 @@ function renderPluginRow(p, idx) {
   if (st) applyPlugState(item, st);
   // 禁用行默认原因行（无动态检查状态时显示）
   if (p.disabled && !(st && st.note)) {
-    setNote(item, "已禁用（" + (p.disabledReason || "与当前版本不兼容") + "）", "err");
+    setNote(item, fmt("已禁用（{0}）", p.disabledReason || tr("与当前版本不兼容")), "err");
   }
   return item;
 }
@@ -770,7 +790,7 @@ function applyPlugState(item, st) {
     if (st.upShow) {
       upBtn.disabled = false;
       upBtn.classList.remove("hidden");
-      upBtn.textContent = "更新" + (st.upLatest ? " v" + st.upLatest : "");
+      upBtn.textContent = tr("更新") + (st.upLatest ? " v" + st.upLatest : "");
     } else if (st.upShow === false) {
       upBtn.disabled = true;
       upBtn.classList.add("hidden");
