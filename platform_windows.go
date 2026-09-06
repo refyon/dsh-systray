@@ -829,7 +829,12 @@ func askStopServer() int {
 }
 
 func showReadyPrompt(url string) {
-	ret := runModernDialog(appName, "DeepSeek Harness 服务已就绪。\n是否立即打开 Web UI？", []string{"打开", "取消"}, 0)
+	// 截图/演示模式（shotMode 或 SHOW_WINDOW=1）抑制就绪弹窗：置顶模态会阻塞截图脚本的
+	// PrintWindow/前台切换（此前的 EN/中文截图均可能被它挡住而超时跳过）。
+	if shotMode || os.Getenv("DSH_SYSTRAY_SHOW_WINDOW") == "1" {
+		return
+	}
+	ret := runModernDialog(appName, T("DeepSeek Harness 服务已就绪。\n是否立即打开 Web UI？"), []string{T("打开"), T("取消")}, 0)
 	if ret == 0 {
 		openBrowser(url)
 	}

@@ -636,7 +636,11 @@ func askStopServer() int {
 }
 
 func showReadyPrompt(url string) {
-	script := fmt.Sprintf(`display dialog "%s" with title "%s" buttons {"打开", "取消"} default button "打开"`, escapeAppleScript("DeepSeek Harness 服务已就绪。是否立即打开 Web UI？"), appName)
+	// 截图/演示模式抑制就绪弹窗（见 platform_windows.go 同注释）。
+	if shotMode || os.Getenv("DSH_SYSTRAY_SHOW_WINDOW") == "1" {
+		return
+	}
+	script := fmt.Sprintf(`display dialog "%s" with title "%s" buttons {"打开", "取消"} default button "打开"`, escapeAppleScript(T("DeepSeek Harness 服务已就绪。是否立即打开 Web UI？")), appName)
 	out, err := runAppleScript(script)
 	if err == nil && strings.Contains(out, "打开") {
 		openBrowser(url)

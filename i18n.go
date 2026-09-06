@@ -45,6 +45,10 @@ var i18nEnMap = map[string]string{
 	"打开设置窗口":     "Open settings window",
 	"退出":         "Quit",
 	"退出并关闭后台服务器": "Quit and stop the background server",
+	"打开":         "Open",
+	"取消":         "Cancel",
+	"DeepSeek Harness 服务已就绪。\n是否立即打开 Web UI？": "DeepSeek Harness service is ready.\nOpen the Web UI now?",
+	"DeepSeek Harness 服务已就绪。是否立即打开 Web UI？":   "DeepSeek Harness service is ready. Open the Web UI now?",
 }
 
 // T 按当前生效语言翻译 zh 文案；无映射时回退原文（zh）。
