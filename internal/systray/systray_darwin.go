@@ -231,7 +231,11 @@ func systray_on_exit() {
 
 //export systray_menu_item_selected
 func systray_menu_item_selected(cID C.int) {
-	systrayMenuItemSelected(uint32(cID))
+	// 菜单动作回调运行在 AppKit 主线程；处理器（如「设置」→ 显示 wails 窗口）可能做
+	// 主线程同步调用（wruntime.WindowShow/EventsEmit），直接同步执行会与主运行循环互相
+	// 等待而死锁（表现为点「设置」卡死）。统一派发到独立 goroutine 执行。
+	id := uint32(cID)
+	go systrayMenuItemSelected(id)
 }
 
 //export systray_on_click

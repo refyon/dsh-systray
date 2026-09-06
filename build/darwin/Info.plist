@@ -7,6 +7,7 @@
 	<key>CFBundleIdentifier</key><string>com.deepseek.dsh-systray</string>
 	<key>CFBundlePackageType</key><string>APPL</string>
 	<key>CFBundleExecutable</key><string>dsh-systray</string>
+	<key>CFBundleIconFile</key><string>iconfile</string>
 	<key>CFBundleShortVersionString</key><string>${VERSION}</string>
 	<key>CFBundleVersion</key><string>${VERSION}</string>
 	<key>LSMinimumSystemVersion</key><string>11.0</string>
