@@ -62,7 +62,7 @@ function Stop-AllInstances {
   Start-Sleep -Milliseconds 700
 }
 
-function SnapProcess([string]$name, [string]$page, [string]$scroll = '' ) {
+function SnapProcessOnce([string]$name, [string]$page, [string]$scroll = '' ) {
   Stop-AllInstances
   Remove-Item Env:DSH_SYSTRAY_SHOT_SPLASH -ErrorAction SilentlyContinue
   if ($scroll) { $env:DSH_SYSTRAY_SHOT_SCROLL = $scroll } else { Remove-Item Env:DSH_SYSTRAY_SHOT_SCROLL -ErrorAction SilentlyContinue }
@@ -76,7 +76,7 @@ function SnapProcess([string]$name, [string]$page, [string]$scroll = '' ) {
     if (Test-Path $readyFile) { break }
     Start-Sleep -Milliseconds 500
   }
-  if (-not (Test-Path $readyFile)) { Write-Host "skip $name (ready marker timeout)"; return }
+  if (-not (Test-Path $readyFile)) { Write-Host "  fail: ready marker timeout"; return $false }
   Start-Sleep -Milliseconds 900   # let the page settle after view switch
 
   # 2) find the real main window (wide enough)
@@ -91,7 +91,7 @@ function SnapProcess([string]$name, [string]$page, [string]$scroll = '' ) {
     $w = $cr.R - $cr.L; $hh = $cr.B - $cr.T
     if ($w -ge 600 -and $hh -ge 200) { $h = $p.MainWindowHandle; $cw = $w; $ch = $hh; break }
   }
-  if ($h -eq [IntPtr]::Zero) { Write-Host "skip $name (main window not found)"; return }
+  if ($h -eq [IntPtr]::Zero) { Write-Host "  fail: main window not found"; return $false }
 
   # 3) force topmost + foreground (Alt trick), retry until foreground owned
   [void][Cap]::ShowWindow($h, 9)
@@ -116,7 +116,7 @@ function SnapProcess([string]$name, [string]$page, [string]$scroll = '' ) {
     Save-Shot $bmp $name
     Write-Host "  method=printwindow"
     $bmp.Dispose()
-    return
+    return $true
   }
   $bmp.Dispose()
   Write-Host "  printwindow blank/failed, fallback to screen copy"
@@ -129,6 +129,7 @@ function SnapProcess([string]$name, [string]$page, [string]$scroll = '' ) {
   Save-Shot $full $name
   Write-Host "  method=screencopy"
   $full.Dispose()
+  return $true
 }
 
 SnapProcess 'general' 'general'
@@ -141,3 +142,11 @@ SnapProcess 'import'  'import'
 Stop-AllInstances
 Remove-Item $readyFile -Force -ErrorAction SilentlyContinue
 Write-Host 'done (PNG only; compositing/webp run in separate steps)'
+function SnapProcess([string]$name, [string]$page, [string]$scroll = '' ) {
+  for ($attempt = 1; $attempt -le 2; $attempt++) {
+    if (SnapProcessOnce $name $page $scroll) { return }
+    Write-Host ("  retry {0} ({1}/2)" -f $name, $attempt)
+    Start-Sleep -Milliseconds 800
+  }
+  Write-Host "skip $name (after retries)"
+}
