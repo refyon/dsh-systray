@@ -148,6 +148,14 @@ function SnapProcessOnce([string]$name, [string]$page, [string]$scroll = '' ) {
   return $true
 }
 
+function SnapProcess([string]$name, [string]$page, [string]$scroll = '' ) {
+  for ($attempt = 1; $attempt -le 2; $attempt++) {
+    if (SnapProcessOnce $name $page $scroll) { return }
+    Write-Host ("  retry {0} ({1}/2)" -f $name, $attempt)
+    Start-Sleep -Milliseconds 800
+  }
+  Write-Host "skip $name (after retries)"
+}
 SnapProcess 'general' 'general'
 SnapProcess 'about-top'    'about'
 SnapProcess 'about-bottom' 'about' 'bottom'
@@ -162,11 +170,3 @@ if ($restoreLang) {
     elseif (Test-Path $cfgPath) { Remove-Item $cfgPath -Force }
 }
 Write-Host "done $Lang (PNG only; compositing/webp run in separate steps)"
-function SnapProcess([string]$name, [string]$page, [string]$scroll = '' ) {
-  for ($attempt = 1; $attempt -le 2; $attempt++) {
-    if (SnapProcessOnce $name $page $scroll) { return }
-    Write-Host ("  retry {0} ({1}/2)" -f $name, $attempt)
-    Start-Sleep -Milliseconds 800
-  }
-  Write-Host "skip $name (after retries)"
-}
