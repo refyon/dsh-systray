@@ -106,6 +106,8 @@ type appConfig struct {
 	UpdateMirror      string `json:"updateMirror"`
 	// HarnessPrerelease 允许把 alpha/beta/rc 等预发布版视为 DeepSeek Harness 的可更新版本（默认关闭）。
 	HarnessPrerelease bool `json:"harnessPrerelease"`
+	// Language 界面语言偏好：auto（跟随系统）| zh | en；缺省 auto。运行时解析见 i18n.go。
+	Language string `json:"language"`
 }
 
 // configFilePath 用户配置目录下的 config.json（Windows: %APPDATA%\dsh-systray；macOS: ~/Library/Application Support/dsh-systray）。
@@ -151,6 +153,9 @@ func applyConfigFile(cfg *appConfig, path string) {
 	}
 	if f.HarnessPrerelease {
 		cfg.HarnessPrerelease = true
+	}
+	if l := normalizeLang(f.Language); l != "auto" {
+		cfg.Language = l
 	}
 }
 
@@ -344,6 +349,9 @@ func main() {
 	webURL = fmt.Sprintf("http://127.0.0.1:%d/", port)
 	harnessDir = cfg.HarnessDir
 	startupTimeout = time.Duration(cfg.StartupTimeoutSec) * time.Second
+	// 语言：偏好来自 config（auto 缺省），尽早解析生效语言，供托盘菜单/原生弹窗/splash 渲染。
+	langPref = normalizeLang(cfg.Language)
+	curLang = resolveLang(langPref)
 
 	// 自愈历史自启动项：旧版本注册的自启动条目未带 --autostart 参数，或残留
 	// 「裸二进制直接 exec」形态（macOS 上因缺 bundle 上下文导致开机自启失效），
@@ -620,14 +628,14 @@ func bootstrapService() {
 		log.Printf("configured harness dir %s not found, falling back to default %s", harnessDir, defaultHarnessDir())
 		harnessDir = defaultHarnessDir()
 		harnessDirExplicit = false
-		saveConfig(appConfig{Port: port, HarnessDir: harnessDir, StartupTimeoutSec: int(startupTimeout / time.Second), UpdateMirror: updateMirrorOverride, HarnessPrerelease: harnessPrereleaseOverride})
+		saveConfig(appConfig{Port: port, HarnessDir: harnessDir, StartupTimeoutSec: int(startupTimeout / time.Second), UpdateMirror: updateMirrorOverride, HarnessPrerelease: harnessPrereleaseOverride, Language: langPref})
 	}
 
 	// 未显式配置时：自动探测已存在的 harness 源码 checkout（如各盘符根目录下的 deepseek-harness）
 	if !harnessDirExplicit {
 		if found := findExistingHarnessDir(); found != "" {
 			harnessDir = found
-			saveConfig(appConfig{Port: port, HarnessDir: harnessDir, StartupTimeoutSec: int(startupTimeout / time.Second), UpdateMirror: updateMirrorOverride, HarnessPrerelease: harnessPrereleaseOverride})
+			saveConfig(appConfig{Port: port, HarnessDir: harnessDir, StartupTimeoutSec: int(startupTimeout / time.Second), UpdateMirror: updateMirrorOverride, HarnessPrerelease: harnessPrereleaseOverride, Language: langPref})
 			log.Printf("detected existing harness at %s", found)
 		}
 	}

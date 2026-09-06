@@ -103,6 +103,8 @@ type ConfigInfo struct {
 	WebURL            string `json:"webURL"`
 	Autostart         bool   `json:"autostart"`
 	AutostartLaunch   bool   `json:"autostartLaunch"`
+	Language          string `json:"language"` // 语言偏好：auto | zh | en
+	CurLang           string `json:"curLang"`  // 解析后的生效语言：zh | en
 }
 
 func (a *App) GetConfig() ConfigInfo {
@@ -119,6 +121,27 @@ func (a *App) GetConfig() ConfigInfo {
 		WebURL:            webURL,
 		Autostart:         isAutostartEnabled(),
 		AutostartLaunch:   autostartLaunch,
+		Language:          langPref,
+		CurLang:           curLang,
+	}
+}
+
+// SetLanguage 设置界面语言偏好（auto 跟随系统 / zh / en）：立即解析生效语言，
+// 持久化到 config.json，并广播 lang:changed 供前端即时重渲染。
+func (a *App) SetLanguage(l string) {
+	l = strings.TrimSpace(l)
+	if l != "auto" && l != "zh" && l != "en" {
+		return // 非法值忽略
+	}
+	logUI("设置界面语言", map[string]string{"auto": "跟随系统", "zh": "简体中文", "en": "English"}[l])
+	langPref = normalizeLang(l)
+	curLang = resolveLang(langPref)
+	saveCurrentConfig()
+	if appCtx != nil {
+		wruntime.EventsEmit(appCtx, "lang:changed", map[string]interface{}{
+			"pref":    langPref,
+			"curLang": curLang,
+		})
 	}
 }
 
@@ -130,6 +153,7 @@ func saveCurrentConfig() {
 		StartupTimeoutSec: int(startupTimeout / time.Second),
 		UpdateMirror:      updateMirrorOverride,
 		HarnessPrerelease: harnessPrereleaseOverride,
+		Language:          langPref,
 	})
 }
 

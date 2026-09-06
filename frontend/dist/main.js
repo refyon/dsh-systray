@@ -102,6 +102,8 @@ async function refreshConfig() {
     $("inp-port").value = state.cfg.port;
     $("cfg-harness-dir").textContent = state.cfg.harnessDir;
     $("sw-prerelease").setAttribute("aria-checked", String(state.cfg.harnessPrerelease));
+    const ls = $("sel-lang");
+    if (ls) ls.value = state.cfg.language || "auto";
     updatePortHint();
   } catch (e) { console.error("GetConfig", e); }
 }
@@ -154,6 +156,15 @@ async function refreshService() {
 }
 
 function wireGeneral() {
+  const selLang = $("sel-lang");
+  if (selLang) {
+    selLang.addEventListener("change", async (e) => {
+      try {
+        await bindings().SetLanguage(e.target.value);
+      } catch (err) { console.error("SetLanguage", err); }
+      refreshConfig(); // 读回生效偏好（auto 时下拉仍显示 auto）
+    });
+  }
   $("sw-autostart").addEventListener("click", async () => {
     const on = $("sw-autostart").getAttribute("aria-checked") !== "true";
     await bindings().SetAutostart(on);

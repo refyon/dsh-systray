@@ -29,6 +29,27 @@ const launchAgentLabel = "com.deepseek.dsh-systray"
 
 var serverCmd *exec.Cmd
 
+// detectSystemLang 系统 UI 语言检测（macOS）：读 AppleLanguages 首选语言列表，
+// 首项以 zh 开头判中文；异常时回退 LANG 环境变量；其余一律 en（仅区分 zh / en）。
+func detectSystemLang() string {
+	if out, err := exec.Command("defaults", "read", "-g", "AppleLanguages").Output(); err == nil {
+		s := string(out)
+		if i := strings.Index(s, "\""); i >= 0 {
+			if j := strings.Index(s[i+1:], "\""); j >= 0 {
+				code := strings.ToLower(s[i+1 : i+1+j])
+				if strings.HasPrefix(code, "zh") {
+					return "zh"
+				}
+				return "en"
+			}
+		}
+	}
+	if strings.HasPrefix(strings.ToLower(os.Getenv("LANG")), "zh") {
+		return "zh"
+	}
+	return "en"
+}
+
 // ensureMainWindowForeground macOS：把应用激活到前台（macOS 无 Windows 式强制置顶，
 // Wails 的 WindowShow 已触发应用激活；此处兜底按 bundle id 再激活一次）。
 // 开发构建（裸二进制、非 .app 内运行）定位不到 bundle 时静默忽略。

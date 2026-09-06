@@ -838,6 +838,24 @@ input { font-family: inherit; }
 #reset-target option.opt-pre { color: var(--warn); } /* 展开列表内预发布候选着色（闭合态以文本“（预发布）”兜底） */
 #reset-target-note { margin: var(--sp-2) 0 0; display: block; }
 
+/* 常规页下拉（语言选择等通用窄下拉） */
+.input-select {
+  min-width: 208px;
+  max-width: 240px;
+  min-height: 36px;
+  padding: 0 var(--sp-3);
+  background: var(--surface);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  font-family: var(--font);
+  font-size: var(--fs-base);
+  cursor: pointer;
+  transition: border-color var(--dur) var(--ease);
+}
+.input-select:hover:not(:disabled) { border-color: var(--primary); }
+.input-select:focus-visible { outline: 2px solid var(--focus); outline-offset: 1px; }
+
 /* ---------- Reduced motion ---------- */
 @media (prefers-reduced-motion: reduce) {
   * { transition: none !important; animation: none !important; }

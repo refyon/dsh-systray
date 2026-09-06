@@ -21,6 +21,21 @@ import (
 	"dsh-systray/internal/systray"
 )
 
+// detectSystemLang 系统 UI 语言检测（Windows）：GetUserDefaultUILanguage 返回 LANGID，
+// 主语言 ID = LANGID & 0x3FF，中文主语言 ID 为 0x04；仅区分 zh / en。
+func detectSystemLang() string {
+	k32 := syscall.NewLazyDLL("kernel32.dll")
+	if p := k32.NewProc("GetUserDefaultUILanguage"); p != nil {
+		if r, _, _ := p.Call(); r != 0 {
+			if r&0x3FF == 0x04 { // LANG_CHINESE
+				return "zh"
+			}
+			return "en"
+		}
+	}
+	return "zh"
+}
+
 //go:embed scripts/install-prereqs.ps1
 var installScript []byte
 
