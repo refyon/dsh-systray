@@ -844,32 +844,25 @@ async function doPluginCheck(p, item, btn) {
   if (!a) return;
   btn.disabled = true;
   setNote(item, "正在检查更新…", "muted");
-  const upBtn = item.querySelector("button[data-update]");
   const st = state.plugState[p.name] || (state.plugState[p.name] = {});
   try {
     const r = await a.CheckPluginUpdate(p.name);
     if (r.error) {
       st.note = "无法检查更新：" + r.error; st.noteTone = "err";
-      setNote(item, st.note, st.noteTone);
-      return;
-    }
-    if (r.hasUpdate) {
+      st.upShow = false; st.upLatest = "";
+    } else if (r.hasUpdate) {
       st.note = "有新版本 " + vtag(r.latest) + "，可更新"; st.noteTone = "ok";
       st.upLatest = r.latest || ""; st.upShow = true;
-      setNote(item, st.note, st.noteTone);
-      if (upBtn) { upBtn.disabled = false; upBtn.classList.remove("hidden"); upBtn.textContent = "更新 v" + st.upLatest; }
     } else {
       st.note = fmt("已是最新版本（{0}）", vtag(r.latest)); st.noteTone = "muted";
-      st.upShow = false;
-      setNote(item, st.note, st.noteTone);
-      if (upBtn) { upBtn.disabled = true; upBtn.classList.add("hidden"); }
+      st.upShow = false; st.upLatest = "";
     }
   } catch (e) {
     st.note = fmt("检查失败：{0}", e && e.message ? e.message : e); st.noteTone = "err";
-    setNote(item, st.note, st.noteTone);
-  } finally {
-    btn.disabled = false;
   }
+  // 检查完成后刷新插件列表：版本列以实读 node_modules 为准（本地开发目录改动 / 导入副本 /
+  // 外部更新都可能让行内「当前版本」过期）；行内状态（提示语、更新按钮）由 plugState 恢复，不丢失。
+  await loadPlugins();
 }
 
 /** 单插件更新（确认后交给 Go 端执行，splash 进度，完成/失败弹窗）。 */
@@ -1566,6 +1559,7 @@ function wireEvents() {
     }
     impRowBusy(d.kind, false, "", 0);
     impRowText(d.kind, msg, tone);
+    if (d.kind === "plugins") loadPlugins(); // 导入改变插件安装/版本（adopt 副本/待重指定等），刷新关于页列表
   });
 
   EventsOn("service:restart", (d) => {

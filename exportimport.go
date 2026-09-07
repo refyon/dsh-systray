@@ -55,6 +55,9 @@ type exportPlugins struct {
 	Dependencies map[string]string `json:"dependencies,omitempty"` // 插件名 → 版本规格
 	Bundles      []string          `json:"bundles,omitempty"`      // dsh.profile.bundles 插件清单
 	Disabled     map[string]string `json:"disabled,omitempty"`     // dsh.profile.disabledPlugins（禁用原因）
+	Versions     map[string]string `json:"versions,omitempty"`     // 插件名 → 导出时实际已装版本（node_modules 读取）：
+	// 导入侧据此做版本感知的副本裁决/刷新（本地插件重复导入后新机仍显示旧版本——
+	// 若无版本快照，目标机已有旧 local-plugins 副本时无法判断导入包是否更新）。
 }
 
 // importItem 解析出的可恢复项。
@@ -231,21 +234,67 @@ func resolveNodeModules(root, name string) (string, bool) {
 	return "", false
 }
 
+// readPkgVersionField 读取目录 package.json 的 version（缺失/解析失败返回空）。
+func readPkgVersionField(dir string) string {
+	data, err := os.ReadFile(filepath.Join(dir, "package.json"))
+	if err != nil {
+		return ""
+	}
+	var m struct {
+		Version string `json:"version"`
+	}
+	if json.Unmarshal(data, &m) != nil {
+		return ""
+	}
+	return strings.TrimPrefix(strings.TrimSpace(m.Version), "v")
+}
+
+// pluginVersionSnapshot 导出时记录每个已装插件的实际版本（name → version，node_modules 读取），
+// 写入 manifest.Plugins.Versions 供导入侧版本感知裁决（见 exportPlugins.Versions 注释）。
+func pluginVersionSnapshot(profileDir string, deps map[string]string) map[string]string {
+	out := map[string]string{}
+	names := make([]string, 0, len(deps))
+	for n := range deps {
+		names = append(names, n)
+	}
+	sort.Strings(names)
+	for _, name := range names {
+		if name == "" || isOfficialHarnessPkg(name) {
+			continue
+		}
+		if v := installedPluginVersion(profileDir, name); v != "" {
+			out[name] = v
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
 // collectPluginClosure 从插件包出发递归收集其依赖闭包（跳过 @deepseek-ai/* harness 自带包），
-// 返回 包名 → 解析后真实目录。
-func collectPluginClosure(root string, roots []string) map[string]string {
+// 返回 包名 → 打包源真实目录。deps 为 profile 顶层依赖（name → spec）：对本地 spec
+// （file:/link:/workspace:）且目标目录存在、其 package.json 的 name 与依赖名一致时，打包源
+// 直取该目标目录——保证导出包携带开发目录的当前版本，而非 node_modules 中 pnpm 安装时的旧
+// 快照（本地插件 0.2.1 导出后新机仍显示 0.2.0 的根因之二）。嵌套依赖仍从 profile node_modules
+// 解析（不含本地 spec 偏好）。
+func collectPluginClosure(root, profileDir string, deps map[string]string) map[string]string {
 	out := map[string]string{}
 	visited := map[string]bool{}
-	var walk func(name string)
-	walk = func(name string) {
+	var walk func(name, from string)
+	walk = func(name, from string) {
 		if visited[name] {
 			return
 		}
 		visited[name] = true
-		real, ok := resolveNodeModules(root, name)
-		if !ok {
-			log.Printf("export: plugin dep not found in node_modules: %s", name)
-			return
+		real := from
+		if real == "" {
+			var ok bool
+			real, ok = resolveNodeModules(root, name)
+			if !ok {
+				log.Printf("export: plugin dep not found in node_modules: %s", name)
+				return
+			}
 		}
 		out[name] = real
 		data, err := os.ReadFile(filepath.Join(real, "package.json"))
@@ -262,11 +311,23 @@ func collectPluginClosure(root string, roots []string) map[string]string {
 			if strings.HasPrefix(dep, "@deepseek-ai/") {
 				continue // harness 自身包：恢复目标机必然存在，不打包
 			}
-			walk(dep)
+			walk(dep, "")
 		}
 	}
-	for _, r := range roots {
-		walk(r)
+	for name, spec := range deps {
+		src := ""
+		if p, ok := localSpecPath(spec); ok {
+			target := p
+			if !filepath.IsAbs(target) {
+				target = filepath.Join(profileDir, filepath.FromSlash(target))
+			}
+			if st, err := os.Stat(filepath.Clean(target)); err == nil && st.IsDir() {
+				if pkgName, _, perr := packageMeta(filepath.Clean(target)); perr == nil && pkgName == name {
+					src = filepath.Clean(target) // 本地 spec 且目录有效：直取开发目录当前内容
+				}
+			}
+		}
+		walk(name, src)
 	}
 	return out
 }
@@ -340,12 +401,15 @@ func buildExportZip(includeSessions, includePlugins, includeFiles bool, dirs []s
 			log.Printf("export: no plugins installed via dsh add, skipping plugins")
 		default:
 			manifest.Plugins = profilePluginConfig(dir)
+			// 版本快照随 manifest 写入（name → node_modules 实际已装版本），供导入侧版本感知裁决
+			manifest.Plugins.Versions = pluginVersionSnapshot(dir, manifest.Plugins.Dependencies)
 			root := filepath.Join(pluginsSourceDir())
 			if _, err := os.Stat(root); err != nil {
 				log.Printf("export: plugins dir missing %s: %v", root, err)
 			} else {
-				// 仅打包用户通过 dsh add 安装的插件及其非 harness 依赖闭包
-				closure := collectPluginClosure(root, deps)
+				// 仅打包用户通过 dsh add 安装的插件及其非 harness 依赖闭包；
+				// 本地 spec 插件打包源直取 spec 目标目录（当前版本），而非 node_modules 旧快照
+				closure := collectPluginClosure(root, dir, manifest.Plugins.Dependencies)
 				prefix := pluginsRelPrefix()
 				entries := make(map[string]string, len(closure))
 				for name, real := range closure {
@@ -685,8 +749,10 @@ func sanitizeProfileLocalDeps(dir string) []string {
 }
 
 // sanitizeProfileLocalDepsAll 多目录版本地依赖恢复（见文件头注释）：先全局收集目标缺失的
-// 本地依赖，再统一裁决「副本继续加载 / 待重指定挂起」，最后逐目录改写。同名插件跨目录
-// 只输出一条说明。返回用户可见说明行。
+// 本地依赖，再统一裁决「副本继续加载 / 待重指定挂起」，随后逐目录改写，最后做「版本感知
+// 刷新」——spec 已指向本地稳定副本但本次导入包携带更新副本时升级副本（重复导入场景，
+// 修复「本地 0.2.1 导出、新机导入后仍显示 0.2.0」）。同名插件跨目录只输出一条说明。
+// 返回用户可见说明行。
 func sanitizeProfileLocalDepsAll(dirs []string) []string {
 	missing := map[string]string{} // name → 任一目录的原始本地 spec
 	for _, dir := range dirs {
@@ -696,24 +762,37 @@ func sanitizeProfileLocalDepsAll(dirs []string) []string {
 			}
 		}
 	}
-	if len(missing) == 0 {
-		return nil
-	}
+	var notes []string
 	// 副本裁决：存在恢复副本的插件迁到稳定目录（link 指向副本继续加载）；无副本的维持待重指定。
 	adopted := map[string]string{}
+	replaced := map[string]string{} // name → 旧版本号（已用导入包更新版本替换稳定副本）
 	if root := localPluginsRoot(); root != "" {
 		for name := range missing {
-			if canon, ok := adoptRestoredCopy(dirs, root, name); ok {
+			if canon, oldVer, ok := adoptRestoredCopy(dirs, root, name); ok {
 				adopted[name] = canon
+				if oldVer != "" {
+					replaced[name] = oldVer
+				}
 				pruneRestoredCopies(dirs, name)
 			}
 		}
 	}
-	var notes []string
 	noted := map[string]bool{}
 	for _, dir := range dirs {
 		notes = append(notes, rewriteProfileLocalDeps(dir, missing, adopted, noted)...)
 	}
+	for name, oldVer := range replaced {
+		if noted[name] {
+			continue
+		}
+		noted[name] = true
+		newVer := readPkgVersionField(adopted[name])
+		notes = append(notes, fmt.Sprintf(
+			"本地插件 %s 的原依赖路径在本机不可用，已用导入包内版本更新本地副本（v%s → v%s，旧副本已备份）——如需改用你的开发目录，可点「更新…」重新指定",
+			name, oldVer, orDash(newVer)))
+	}
+	// 版本感知刷新：spec 已指向稳定副本（此前进过 adopt）且导入包副本更新 → 升级稳定副本
+	notes = append(notes, refreshStableLocalCopies(dirs, noted)...)
 	return notes
 }
 
@@ -753,29 +832,167 @@ func missingLocalDeps(dir string) map[string]string {
 	return out
 }
 
-// adoptRestoredCopy 把 dirs 中第一个可用的 node_modules/<name> 恢复副本迁到 <root>/<name>
-// （已存在则直接复用），返回稳定副本路径；无副本返回 ("", false)。
-func adoptRestoredCopy(dirs []string, root, name string) (string, bool) {
+// adoptRestoredCopy 把 dirs 中可用的 node_modules/<name> 恢复副本迁到 <root>/<name> 稳定副本：
+//   - 稳定副本不存在 → 取版本最高的副本迁入（oldVer 为空）；
+//   - 稳定副本已存在 → 版本比较：任一恢复副本更新才替换（旧目录改名 .dshbak-<ts> 备份，
+//     替换失败回退），否则复用旧副本（oldVer 为空，说明无替换）。
+//
+// 返回稳定副本路径、被替换的旧版本号（未替换为空）、是否就绪。副本/稳定副本缺 package.json
+// 版本信息时不比较不替换（保守复用，日志留痕）。local-plugins 不在 .importbak 快照保护内，
+// 因此替换自带 .dshbak 备份回退。
+func adoptRestoredCopy(dirs []string, root, name string) (string, string, bool) {
 	canon := filepath.Join(root, filepath.FromSlash(name))
-	if _, err := os.Stat(canon); err == nil {
-		return canon, true
+	type cand struct {
+		dir string
+		ver string
 	}
+	var copies []cand
 	for _, dir := range dirs {
 		copyDir := filepath.Join(dir, "node_modules", filepath.FromSlash(name))
-		if _, err := os.Stat(copyDir); err != nil {
+		if _, err := os.Stat(filepath.Join(copyDir, "package.json")); err != nil {
 			continue
+		}
+		copies = append(copies, cand{dir: copyDir, ver: readPkgVersionField(copyDir)})
+	}
+	if len(copies) == 0 {
+		return "", "", false
+	}
+	if _, err := os.Stat(canon); err != nil {
+		// 尚无稳定副本：取版本最高者迁入（同版本取第一个）
+		best := copies[0]
+		for _, c := range copies[1:] {
+			if c.ver != "" && (best.ver == "" || compareVersions("v"+c.ver, "v"+best.ver) > 0) {
+				best = c
+			}
 		}
 		if err := os.MkdirAll(filepath.Dir(canon), 0o755); err != nil {
 			log.Printf("adopt local plugin: mkdir %s: %v", filepath.Dir(canon), err)
-			return "", false
+			return "", "", false
 		}
-		if err := moveDirTree(copyDir, canon); err != nil {
-			log.Printf("adopt local plugin: move %s -> %s: %v", copyDir, canon, err)
-			return "", false
+		if err := moveDirTree(best.dir, canon); err != nil {
+			log.Printf("adopt local plugin: move %s -> %s: %v", best.dir, canon, err)
+			return "", "", false
 		}
-		return canon, true
+		return canon, "", true
 	}
-	return "", false
+	// 稳定副本已存在：仅当恢复副本版本更新才替换（重复导入场景的核心修复）
+	canonVer := readPkgVersionField(canon)
+	var best *cand
+	for i := range copies {
+		c := copies[i]
+		if c.ver == "" || canonVer == "" {
+			continue
+		}
+		if compareVersions("v"+c.ver, "v"+canonVer) > 0 &&
+			(best == nil || compareVersions("v"+c.ver, "v"+best.ver) > 0) {
+			b := c
+			best = &b
+		}
+	}
+	if best != nil {
+		bak := canon + ".dshbak-" + time.Now().Format("20060102-150405")
+		_ = os.RemoveAll(bak)
+		if os.Rename(canon, bak) == nil {
+			if err := moveDirTree(best.dir, canon); err != nil {
+				_ = os.Rename(bak, canon) // 替换失败：恢复旧副本
+				log.Printf("adopt local plugin: replace rollback %s: %v", name, err)
+				return canon, "", true
+			}
+			log.Printf("adopt local plugin: replaced stale copy %s v%s -> v%s (backup %s)",
+				name, orDash(canonVer), orDash(best.ver), bak)
+			return canon, canonVer, true
+		}
+		log.Printf("adopt local plugin: backup rename failed, reuse existing copy %s", name)
+	}
+	return canon, "", true
+}
+
+// refreshStableLocalCopies 版本感知刷新：profile 依赖 spec 已指向 <dshHome>/local-plugins/<name>
+// 的稳定副本（此前导入已 adopt，重复导入时 spec 路径在本机存在，missingLocalDeps 不会命中，
+// adoptRestoredCopy 的复用分支也不触发），而本次导入包在 node_modules 恢复出更高版本副本——
+// 此时把稳定副本升级为导入包版本（旧副本 .dshbak-<ts> 备份，失败回退），spec 不变。
+// 修复「同一导出机器升级后再次导入，新机仍显示旧版本」。同名插件跨目录去重，返回说明行。
+func refreshStableLocalCopies(dirs []string, noted map[string]bool) []string {
+	root := localPluginsRoot()
+	if root == "" {
+		return nil
+	}
+	stale := map[string]string{} // name → 需要刷新的稳定副本路径
+	for _, dir := range dirs {
+		profileRoot := readProfileRoot(dir)
+		deps, _ := profileRoot["dependencies"].(map[string]interface{})
+		if deps == nil {
+			continue
+		}
+		for name, v := range deps {
+			spec, _ := v.(string)
+			raw, ok := localSpecPath(spec)
+			if !ok {
+				continue
+			}
+			target := raw
+			if !filepath.IsAbs(target) {
+				target = filepath.Join(dir, filepath.FromSlash(target))
+			}
+			target = filepath.Clean(target)
+			want := filepath.Join(root, filepath.FromSlash(name))
+			if target != want {
+				continue // 仅刷新指向稳定副本的依赖（开发目录同机恢复不受影响）
+			}
+			if _, err := os.Stat(target); err != nil {
+				continue
+			}
+			canonVer := readPkgVersionField(target)
+			if canonVer == "" {
+				continue
+			}
+			copyVer := readPkgVersionField(filepath.Join(dir, "node_modules", filepath.FromSlash(name)))
+			if copyVer != "" && compareVersions("v"+copyVer, "v"+canonVer) > 0 {
+				stale[name] = target
+			}
+		}
+	}
+	if len(stale) == 0 {
+		return nil
+	}
+	var notes []string
+	for name, canon := range stale {
+		// 用版本最高的恢复副本刷新
+		bestCopy, bestVer := "", ""
+		for _, dir := range dirs {
+			copyDir := filepath.Join(dir, "node_modules", filepath.FromSlash(name))
+			v := readPkgVersionField(copyDir)
+			if v == "" {
+				continue
+			}
+			if bestVer == "" || compareVersions("v"+v, "v"+bestVer) > 0 {
+				bestCopy, bestVer = copyDir, v
+			}
+		}
+		if bestCopy == "" {
+			continue
+		}
+		oldVer := readPkgVersionField(canon)
+		bak := canon + ".dshbak-" + time.Now().Format("20060102-150405")
+		_ = os.RemoveAll(bak)
+		if os.Rename(canon, bak) != nil {
+			log.Printf("refresh local plugin: backup rename failed %s", canon)
+			continue
+		}
+		if err := moveDirTree(bestCopy, canon); err != nil {
+			_ = os.Rename(bak, canon) // 回退
+			log.Printf("refresh local plugin: replace rollback %s: %v", name, err)
+			continue
+		}
+		pruneRestoredCopies(dirs, name)
+		log.Printf("refresh local plugin: %s v%s -> v%s (backup %s)", name, orDash(oldVer), bestVer, bak)
+		if !noted[name] {
+			noted[name] = true
+			notes = append(notes, fmt.Sprintf(
+				"本地插件 %s 已从导入包更新到新版本 v%s（原 v%s 已备份）", name, bestVer, orDash(oldVer)))
+		}
+	}
+	return notes
 }
 
 // pruneRestoredCopies 副本裁决完成后清理各 profile node_modules 中的同名残留副本，

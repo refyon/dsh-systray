@@ -502,3 +502,140 @@ func TestNpmDocVersions(t *testing.T) {
 		t.Fatalf("versions wrong: %v", v)
 	}
 }
+
+// versionOf 读取 package.json version（测试辅助）。
+func versionOf(t *testing.T, dir string) string {
+	t.Helper()
+	var m struct {
+		Version string `json:"version"`
+	}
+	if err := json.Unmarshal([]byte(readTestJSON(t, filepath.Join(dir, "package.json"))), &m); err != nil {
+		t.Fatalf("parse %s: %v", dir, err)
+	}
+	return m.Version
+}
+
+// 测试基础：home/local-plugins 稳定副本已存在但落后于导入包副本（spec 指向的源机路径缺失）：
+// adopt 应把稳定副本替换为导入包版本（旧目录 .dshbak 备份），spec 改写指向稳定副本。
+func TestSanitizeAdoptReplacesStaleCanon(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("DSH_HOME", home)
+	dir := t.TempDir()
+	missing := filepath.Join(t.TempDir(), "my-local") // 源机路径在本机不存在
+	canon := filepath.Join(home, "local-plugins", "my-local")
+	writeTestJSON(t, filepath.Join(canon, "package.json"), `{"name":"my-local","version":"0.2.0"}`)
+	writeTestJSON(t, filepath.Join(dir, "package.json"),
+		`{"dependencies":{"my-local":"link:`+filepath.ToSlash(missing)+`"}}`)
+	writeTestJSON(t, filepath.Join(dir, "node_modules", "my-local", "package.json"),
+		`{"name":"my-local","version":"0.2.1"}`)
+	notes := sanitizeProfileLocalDeps(dir)
+	joined := strings.Join(notes, "；")
+	if !strings.Contains(joined, "更新") {
+		t.Fatalf("note should mention replacement: %v", notes)
+	}
+	if got := versionOf(t, canon); got != "0.2.1" {
+		t.Fatalf("canon not upgraded to import version: got v%s", got)
+	}
+	got := readTestJSON(t, filepath.Join(dir, "package.json"))
+	if !strings.Contains(got, localLinkSpec(canon)) {
+		t.Fatalf("spec not rewritten to canonical copy: %s", got)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "node_modules", "my-local")); err == nil {
+		t.Fatalf("restored copy should be moved out of node_modules")
+	}
+	baks, _ := filepath.Glob(canon + ".dshbak-*")
+	if len(baks) != 1 {
+		t.Fatalf("want 1 backup dir of stale canon, got %v", baks)
+	}
+	if got := versionOf(t, baks[0]); got != "0.2.0" {
+		t.Fatalf("backup should hold old v0.2.0, got v%s", got)
+	}
+}
+
+// 重复导入场景（需求根因）：spec 已指向稳定副本（前次导入 adopt），副本为旧版 0.2.0，
+// 本次导入包在 node_modules 恢复出 0.2.1 —— refreshStableLocalCopies 应升级稳定副本并保 spec。
+func TestSanitizeRefreshExistingCanonFromReimport(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("DSH_HOME", home)
+	dir := t.TempDir()
+	canon := filepath.Join(home, "local-plugins", "my-local")
+	writeTestJSON(t, filepath.Join(canon, "package.json"), `{"name":"my-local","version":"0.2.0"}`)
+	writeTestJSON(t, filepath.Join(dir, "package.json"),
+		`{"dependencies":{"my-local":"`+localLinkSpec(canon)+`"}}`)
+	writeTestJSON(t, filepath.Join(dir, "node_modules", "my-local", "package.json"),
+		`{"name":"my-local","version":"0.2.1"}`)
+	notes := sanitizeProfileLocalDeps(dir)
+	joined := strings.Join(notes, "；")
+	if !strings.Contains(joined, "v0.2.1") {
+		t.Fatalf("note should mention refreshed version: %v", notes)
+	}
+	if got := versionOf(t, canon); got != "0.2.1" {
+		t.Fatalf("stable canon not refreshed: got v%s", got)
+	}
+	got := readTestJSON(t, filepath.Join(dir, "package.json"))
+	if !strings.Contains(got, localLinkSpec(canon)) {
+		t.Fatalf("spec must stay pointing at canonical copy: %s", got)
+	}
+	baks, _ := filepath.Glob(canon + ".dshbak-*")
+	if len(baks) != 1 || versionOf(t, baks[0]) != "0.2.0" {
+		t.Fatalf("old canon backup wrong: %v", baks)
+	}
+}
+
+// 稳定副本比导入包副本更新：复用旧副本，不改版本、不产生备份。
+func TestSanitizeAdoptReuseKeepsNewerCanon(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("DSH_HOME", home)
+	dir := t.TempDir()
+	missing := filepath.Join(t.TempDir(), "my-local")
+	canon := filepath.Join(home, "local-plugins", "my-local")
+	writeTestJSON(t, filepath.Join(canon, "package.json"), `{"name":"my-local","version":"0.2.2"}`)
+	writeTestJSON(t, filepath.Join(dir, "package.json"),
+		`{"dependencies":{"my-local":"link:`+filepath.ToSlash(missing)+`"}}`)
+	writeTestJSON(t, filepath.Join(dir, "node_modules", "my-local", "package.json"),
+		`{"name":"my-local","version":"0.2.1"}`)
+	notes := sanitizeProfileLocalDeps(dir)
+	for _, n := range notes {
+		if strings.Contains(n, "已用导入包内版本更新") || strings.Contains(n, "已从导入包更新") {
+			t.Fatalf("no replacement expected, got note: %s", n)
+		}
+	}
+	if got := versionOf(t, canon); got != "0.2.2" {
+		t.Fatalf("canon must be kept at v0.2.2, got v%s", got)
+	}
+	if baks, _ := filepath.Glob(canon + ".dshbak-*"); len(baks) != 0 {
+		t.Fatalf("no backup expected, got %v", baks)
+	}
+}
+
+// 导出闭包：本地 spec 且目标目录有效时打包源取开发目录（当前版本），而非 node_modules 旧副本。
+func TestCollectPluginClosurePrefersLocalSpecTarget(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("DSH_HOME", home)
+	profileDir := filepath.Join(home, "profiles", "web")
+	root := filepath.Join(profileDir, "node_modules")
+	devDir := t.TempDir() // 开发目录：当前 v0.2.1
+	writeTestJSON(t, filepath.Join(devDir, "package.json"), `{"name":"my-local","version":"0.2.1"}`)
+	// node_modules 中 pnpm 安装时的旧快照 v0.2.0（file: 依赖快照可能滞后于 dev 目录）
+	writeTestJSON(t, filepath.Join(root, "my-local", "package.json"), `{"name":"my-local","version":"0.2.0"}`)
+	deps := map[string]string{"my-local": "file:" + filepath.ToSlash(devDir)}
+	closure := collectPluginClosure(root, profileDir, deps)
+	if closure["my-local"] != devDir {
+		t.Fatalf("pack source should be dev dir, got %q", closure["my-local"])
+	}
+	// 版本快照仍以 node_modules 实装版本为准（供导入侧展示/比较导入时的实际运行版本）
+	vers := pluginVersionSnapshot(profileDir, deps)
+	if vers["my-local"] != "0.2.0" {
+		t.Fatalf("version snapshot wrong: %v", vers)
+	}
+	// 非本地 spec 走 node_modules 解析
+	deps2 := map[string]string{"my-local": "^0.2.0"}
+	closure2 := collectPluginClosure(root, profileDir, deps2)
+	want2, ok := resolveNodeModules(root, "my-local")
+	if !ok {
+		t.Fatalf("resolveNodeModules failed")
+	}
+	if closure2["my-local"] != want2 {
+		t.Fatalf("npm spec should resolve via node_modules, got %q want %q", closure2["my-local"], want2)
+	}
+}
