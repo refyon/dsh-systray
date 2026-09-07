@@ -6,6 +6,7 @@ package main
 import (
 	"encoding/json"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -298,5 +299,18 @@ func TestStripUnresolvedBundles(t *testing.T) {
 	f := readPkgFixture(t, prof)
 	if len(f.Dsh.Profile.Bundles) != 1 || f.Dsh.Profile.Bundles[0] != "keep" {
 		t.Fatalf("bundles wrong: %+v", f.Dsh.Profile.Bundles)
+	}
+}
+
+func TestActivatedUserPluginNames(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("DSH_HOME", home)
+	prof := filepath.Join(home, "profiles", "web")
+	writeTestJSON(t, filepath.Join(prof, "package.json"),
+		`{"dependencies":{},"dsh":{"profile":{"bundles":["alpha","beta@1.2.0","@deepseek-ai/official","alpha"]}}}`)
+	names := activatedUserPluginNames()
+	want := []string{"alpha", "beta"}
+	if !reflect.DeepEqual(names, want) {
+		t.Fatalf("names = %v, want %v（官方包过滤、@版本取 base、去重排序）", names, want)
 	}
 }

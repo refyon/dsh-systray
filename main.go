@@ -825,7 +825,16 @@ func bootstrapService() {
 			if reason == "" {
 				reason = "服务进程异常退出"
 			}
-			rolled, prev := tryBootRollback(reason)
+			kept, rolled, prev, disabledNames := tryBootRollback(reason)
+			if kept {
+				reportBootKept(disabledNames, reason)
+				notifySplashDone()
+				signalShotReady()
+				if !autostartLaunch {
+					notifyReady()
+				}
+				return
+			}
 			reportBootRollback(rolled, prev, reason)
 			if rolled {
 				notifySplashDone()

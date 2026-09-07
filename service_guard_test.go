@@ -155,3 +155,55 @@ func TestLogLineModule(t *testing.T) {
 		t.Fatalf("module = %q, want empty", got)
 	}
 }
+
+// TestReadLogTailResetOnTruncate 轮转/截断（offset 越过文件末尾）时：Reset=true 且从头
+// 重读，前端据此清空视图并重载归档——此前直接跳到末尾会把「轮转后新写入的行」整体跳过
+// （mac 每次服务重启都轮转日志，这段现场正是排障最需要的部分）。
+func TestReadLogTailResetOnTruncate(t *testing.T) {
+	dir := useTempLogDir(t)
+	p := filepath.Join(dir, unifiedLogName)
+	if err := os.WriteFile(p, []byte("a\nb\nc\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	app := &App{}
+	tail := app.ReadLogTail(unifiedLogName, 0)
+	if len(tail.Lines) != 3 || tail.Reset || tail.NextOffset != 6 {
+		t.Fatalf("first read wrong: %+v", tail)
+	}
+	// 模拟轮转：旧文件被 rename，新基础文件从空开始增长（此时旧 offset 越过新文件末尾）
+	if err := os.WriteFile(p, []byte("x\ny\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	tail = app.ReadLogTail(unifiedLogName, 1000)
+	if !tail.Reset {
+		t.Fatalf("want reset when offset beyond size: %+v", tail)
+	}
+	if len(tail.Lines) != 2 || tail.Lines[0] != "x" || tail.Lines[1] != "y" {
+		t.Fatalf("reset read must re-read from start: %+v", tail)
+	}
+	if tail.NextOffset != 4 {
+		t.Fatalf("nextOffset = %d, want 4", tail.NextOffset)
+	}
+}
+
+// TestReadLogArchivesMergesOldestFirst 归档按时间从旧到新（.3 → .2 → .1）合并返回，
+// 与基础文件尾读拼成完整历史（日志页「完整显示所有已写入内容」）。
+func TestReadLogArchivesMergesOldestFirst(t *testing.T) {
+	dir := useTempLogDir(t)
+	base := filepath.Join(dir, unifiedLogName)
+	if err := os.WriteFile(base+".3", []byte("old3\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(base+".2", []byte("old2-a\nold2-b\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(base+".1", []byte("old1\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	app := &App{}
+	tail := app.ReadLogArchives()
+	want := []string{"old3", "old2-a", "old2-b", "old1"}
+	if !reflect.DeepEqual(tail.Lines, want) {
+		t.Fatalf("archive merge = %v, want %v", tail.Lines, want)
+	}
+}

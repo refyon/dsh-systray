@@ -24,6 +24,7 @@ const state = {
   svc: null,
   logName: "dsh-systray.log", // 统一日志：所有行为与子进程输出合并到单文件（路径见日志页 log-path）
   logOffset: 0,
+  logArchiveLoaded: false, // 轮转归档（.3/.2/.1）是否已加载：首次与轮转重置后重载，保证完整历史可见
   logTimer: null,
   expDirs: [],          // 已选打包目录
   expSelected: { sessions: true, plugins: false, files: false },
@@ -1006,8 +1007,8 @@ function renderLog(lines) {
     div.innerHTML = html;
     view.appendChild(div);
   }
-  // 限制 DOM 行数，避免长期运行后卡顿（保留最近 4000 行）
-  while (view.childElementCount > 4000) view.removeChild(view.firstChild);
+  // 不再裁剪 DOM 行数：日志页须完整显示所有已写入内容（轮转归档 + 基础文件在重置时
+  // 整体重载，视图规模受轮转窗口约束；裁剪会把最早写入的行从页面上静默丢掉）
   if (atBottom) view.scrollTop = view.scrollHeight;
 }
 
@@ -1032,8 +1033,24 @@ async function pollLog() {
   }
   const a = bindings();
   if (!a || state.page !== "logs" || !state.logName) return;
+  // 首次加载：先渲染轮转归档（.3/.2/.1 由旧到新），再尾读基础文件——完整历史一次可见
+  if (!state.logArchiveLoaded) {
+    state.logArchiveLoaded = true;
+    try {
+      const arch = await a.ReadLogArchives();
+      if (arch && arch.lines && arch.lines.length) renderLog(arch.lines);
+    } catch (e) { console.error("ReadLogArchives", e); }
+  }
   try {
     const tail = await a.ReadLogTail(state.logName, state.logOffset);
+    if (tail.reset) {
+      // 基础文件被轮转/清空：清空视图，重载归档并从头读基础文件（旧内容经归档完整保留）
+      $("log-view").textContent = "";
+      state.logOffset = 0;
+      state.logArchiveLoaded = false;
+      pollLog();
+      return;
+    }
     if (tail.lines && tail.lines.length) renderLog(tail.lines);
     state.logOffset = tail.nextOffset;
   } catch (e) { console.error("ReadLogTail", e); }
@@ -1056,6 +1073,7 @@ function setLogFile(name) {
   state.logName = name || "";
   $("log-view").textContent = "";
   state.logOffset = 0;
+  state.logArchiveLoaded = false; // 重新加载归档 + 基础文件（完整历史）
   (async () => {
     const a = bindings();
     if (!a) return;
@@ -1085,11 +1103,17 @@ function stopLogPolling() {
 }
 
 function wireLogs() {
-  $("btn-log-refresh").addEventListener("click", () => { $("log-view").textContent = ""; state.logOffset = 0; pollLog(); });
-  $("btn-log-clear").addEventListener("click", async () => {
-    await bindings().ClearLog(state.logName);
+  $("btn-log-refresh").addEventListener("click", () => {
     $("log-view").textContent = "";
     state.logOffset = 0;
+    state.logArchiveLoaded = false;
+    pollLog();
+  });
+  $("btn-log-clear").addEventListener("click", async () => {
+    await bindings().ClearLog(state.logName); // Go 侧同时清除轮转归档
+    $("log-view").textContent = "";
+    state.logOffset = 0;
+    state.logArchiveLoaded = true; // 归档已删除，无需重载
   });
 }
 

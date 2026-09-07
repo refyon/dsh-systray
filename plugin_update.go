@@ -1280,7 +1280,9 @@ func rollbackPluginRemove(splash *SplashState, row PluginRow, hadNM []bool, reas
 // 也不改写为 npm 引入与目标机核心不兼容的 registry 版本，才把这类依赖移出 dependencies、
 // 记录为「待重指定」：保留在 package.json 的 dsh.profile.pendingLocalPlugins 下（随既有快照/
 // 回退机制覆盖），插件列表仍合成显示该本地插件行，用户点「更新…」重新选择本地目录后，
-// runLocalPluginUpdate 落回 link: spec 并在成功事务内恢复激活（bundled=true 时）。
+// runLocalPluginUpdate 落回 link: spec 并在成功事务内恢复激活。
+// 语义（用户决策）：重选目录 = 显式期望加载该插件——无论历史记录 bundled 真假，一律激活进
+// dsh.profile.bundles（源机未激活只是历史状态，不阻挠用户本次的显式激活意图）。
 
 // pendingLocalKey 待重指定记录在 dsh.profile 下的键。
 // 记录形态：{ "<插件名>": { "spec": "<原始依赖 spec>", "bundled": <是否曾在 bundles 激活> } }
@@ -1363,7 +1365,10 @@ func clearPendingLocal(dir, name string) bool {
 }
 
 // relinkPendingLocal 本地插件重指定（更新事务逐目录调用）：若该目录存在 name 的待重指定记录，
-// 在写回 link: spec 前恢复其 bundle 激活（原记录 bundled=true 时）并删除挂起记录。
+// 在写回 link: spec 前无条件把 name 加回 bundle 激活清单并删除挂起记录——重选目录即用户显式
+// 期望加载该插件（bundled 仅记录源机历史激活状态，不决定本次是否激活；此前 bundled=false 时
+// 只清记录不激活，重选后 spec/node_modules 均已就位但 harness 激活清单里没有它 → 插件永不
+// 加载且无任何提示，mac 实证的「重选后依旧没进 harness」无症状形态）。
 func relinkPendingLocal(dir, name string) {
 	root := readProfileRoot(dir)
 	_, prof := profileSection(root)
@@ -1371,18 +1376,14 @@ func relinkPendingLocal(dir, name string) {
 	if pm == nil {
 		return
 	}
-	raw, ok := pm[name].(map[string]interface{})
-	if !ok {
+	if _, ok := pm[name].(map[string]interface{}); !ok {
 		return
 	}
-	bd, _ := raw["bundled"].(bool)
 	delete(pm, name)
 	if len(pm) == 0 {
 		delete(prof, pendingLocalKey)
 	}
-	if bd {
-		appendBundleEntry(root, name)
-	}
+	appendBundleEntry(root, name)
 	if err := writeProfileRoot(dir, root); err != nil {
 		log.Printf("relinkPendingLocal: write %s package.json: %v", dir, err)
 	}
@@ -1415,7 +1416,8 @@ func bundleEntryExists(root map[string]interface{}, name string) bool {
 }
 
 // logPluginTerminalState 记录本地插件重选/更新成功后的终态（依赖 spec、bundles 激活、
-// 待重指定、禁用状态），供「更新/重选后插件未加载」类问题凭日志一次定案。
+// 待重指定、禁用状态与 node_modules 链接是否建立），供「更新/重选后插件未加载」类问题
+// 凭日志一次定案。
 func logPluginTerminalState(dir, name, spec string) {
 	root := readProfileRoot(dir)
 	_, prof := profileSection(root)
@@ -1425,8 +1427,12 @@ func logPluginTerminalState(dir, name, spec string) {
 	_, depOK := deps[name]
 	_, pendOK := pending[name]
 	_, disOK := dm[name]
-	log.Printf("plugin %s terminal state: declared=%v spec=%s bundles=%v pendingLocal=%v disabled=%v",
-		name, depOK, spec, bundleEntryExists(root, name), pendOK, disOK)
+	linkState := "missing"
+	if _, err := os.Stat(filepath.Join(dir, "node_modules", filepath.FromSlash(name))); err == nil {
+		linkState = "exists"
+	}
+	log.Printf("plugin %s terminal state: declared=%v spec=%s bundles=%v pendingLocal=%v disabled=%v node_modules:%s",
+		name, depOK, spec, bundleEntryExists(root, name), pendOK, disOK, linkState)
 }
 
 // ==================== 本地插件更新（选择目录 → 比较 → 覆盖） ====================
@@ -1514,8 +1520,9 @@ func setProfileDepSpec(dir, name, spec string) error {
 }
 
 // runLocalPluginUpdate 把本地插件覆盖更新为所选目录（前端已确认覆盖）。异步执行。
-// 语义与远程更新对齐：待重指定行恢复原激活（bundled=true 时）；此前被自动禁用（不兼容自愈）
-// 的插件更新成功后自动尝试重新启用并健康校验——更新路径即修复尝试，保证下次启动加载。
+// 语义与远程更新对齐：待重指定行重选 = 显式激活（无论历史 bundled 真假，见 relinkPendingLocal）；
+// 此前被自动禁用（不兼容自愈）的插件更新成功后自动尝试重新启用并健康校验——
+// 更新路径即修复尝试，保证下次启动加载。
 func runLocalPluginUpdate(row PluginRow, srcDir string) {
 	name, pickedVer, err := packageMeta(srcDir)
 	if err != nil {
@@ -1586,9 +1593,11 @@ func runLocalPluginUpdate(row PluginRow, srcDir string) {
 		return
 	}
 
-	// 4a) 终态快照日志：「重选/更新后插件未加载」类问题凭此一行即可定案
-	//（依赖 spec 是否写入、bundles 是否激活、pending/禁用记录是否清除）。
-	logPluginTerminalState(row.Locs[0], row.Name, spec)
+	// 4a) 终态快照日志（每个声明目录各一行）：「重选/更新后插件未加载」类问题凭日志即可定案
+	//（依赖 spec 是否写入、bundles 是否激活、pending/禁用记录是否清除、node_modules 链接是否建立）。
+	for _, dir := range row.Locs {
+		logPluginTerminalState(dir, row.Name, spec)
+	}
 
 	// 5a) 此前被自动禁用（不兼容自愈）的本地插件：更新路径即修复尝试——成功后尝试重新启用
 	//     （清除禁用记录 + 加回 bundles 并重启健康校验），保证下次启动加载到 harness；
@@ -1621,8 +1630,15 @@ func runLocalPluginUpdate(row PluginRow, srcDir string) {
 	}
 	splash.Close()
 	logUI("更新本地插件完成", fmt.Sprintf("%s → %s（v%s）", row.Name, srcDir, orDash(newVer)))
-	showMessageBox(fmt.Sprintf("插件 %s 已覆盖更新：\n· 来源目录：%s\n· 版本：%s → %s\n· 服务已重启。",
-		row.Name, srcDir, orDash(row.Version), orDash(newVer)), appName)
+	msg := fmt.Sprintf("插件 %s 已覆盖更新：\n· 来源目录：%s\n· 版本：%s → %s\n· 服务已重启。",
+		row.Name, srcDir, orDash(row.Version), orDash(newVer))
+	// 所选目录缺少 node_modules（依赖未安装/未构建）时插件大概率无法被 harness 加载——
+	// 重选/更新成功弹窗如实提示（此前静默不加载、无从排查，mac 实证）。
+	if st, err := os.Stat(filepath.Join(srcDir, "node_modules")); err != nil || !st.IsDir() {
+		msg += "\n\n提示：所选目录没有 node_modules（依赖未安装或未构建）。" +
+			"若插件自身有依赖或需要构建产物，harness 可能无法正常加载——请先在所选目录内安装依赖/构建后重试。"
+	}
+	showMessageBox(msg, appName)
 	if appCtx != nil {
 		wruntime.EventsEmit(appCtx, "plugins:changed", nil)
 	}

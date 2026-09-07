@@ -248,9 +248,12 @@ func (a *App) RestartService() bool {
 // ==================== 日志 ====================
 
 // LogTail 日志增量读取：Lines 为新增行，NextOffset 为下一次读取的起点。
+// Reset 为 true 表示文件已被轮转/截断（offset 越过文件末尾）：前端应清空视图，
+// 重新加载归档与基础文件——保证「已写入的内容」不因轮转/清空而从页面上消失。
 type LogTail struct {
 	Lines      []string `json:"lines"`
 	NextOffset int64    `json:"nextOffset"`
+	Reset      bool     `json:"reset"`
 }
 
 // LogFile 日志文件选项。
@@ -301,7 +304,10 @@ func (a *App) GetLogPath(name string) string {
 	return sanitizeShotPath(p)
 }
 
-// ReadLogTail 从 offset 起增量读取指定日志（前端定时轮询；offset 超出文件长度时重置为 0）。
+// ReadLogTail 从 offset 起增量读取指定日志（前端定时轮询）。offset 越过文件末尾
+// （文件被轮转 rename 后新基础文件变短、或被清空/截断）时置 Reset=true 并从头重读：
+// 此前直接跳到当前末尾，会把「轮转后、下一次轮询前」新写入的行整体跳过——mac 每次
+// 服务重启都会轮转日志，这段现场正是排障最需要的部分。
 // 截图模式下返回固定演示日志，与真实环境完全隔离（防止截图泄露路径/主机名等敏感信息）。
 func (a *App) ReadLogTail(name string, offset int64) LogTail {
 	if shotMode {
@@ -320,8 +326,10 @@ func (a *App) ReadLogTail(name string, offset int64) LogTail {
 	if err != nil {
 		return LogTail{}
 	}
+	reset := false
 	if offset > st.Size() || offset < 0 {
-		offset = st.Size() // 文件被清空/截断：回到当前末尾
+		offset = 0
+		reset = true // 轮转/截断：从头重读，前端清空视图后重载归档+基础文件
 	}
 	if _, err := f.Seek(offset, 0); err != nil {
 		return LogTail{}
@@ -336,16 +344,45 @@ func (a *App) ReadLogTail(name string, offset int64) LogTail {
 			lines = append(lines, sanitizeShotLine(ln))
 		}
 	}
-	return LogTail{Lines: lines, NextOffset: offset + int64(n)}
+	return LogTail{Lines: lines, NextOffset: offset + int64(n), Reset: reset}
 }
 
-// ClearLog 清空指定日志。
+// ReadLogArchives 读取统一日志的轮转归档（.3/.2/.1，按时间从旧到新合并）。日志页在
+// 首次加载与检测到轮转（ReadLogTail.Reset）时调用，把归档 + 基础文件拼成完整历史——
+// 「日志页完整显示所有已写入内容」：轮转前的内容不再因文件被 rename 而不可见。
+// 截图模式返回空（前端用演示日志）。
+func (a *App) ReadLogArchives() LogTail {
+	if shotMode {
+		return LogTail{}
+	}
+	base := unifiedLogPath()
+	var lines []string
+	for _, suffix := range []string{".3", ".2", ".1"} {
+		data, err := os.ReadFile(base + suffix)
+		if err != nil {
+			continue
+		}
+		for _, ln := range strings.Split(string(data), "\n") {
+			ln = strings.TrimRight(ln, "\r")
+			if ln != "" {
+				lines = append(lines, sanitizeShotLine(ln))
+			}
+		}
+	}
+	return LogTail{Lines: lines, NextOffset: -1}
+}
+
+// ClearLog 清空指定日志（连同轮转归档一起删除——否则清空后归档仍在，日志页重载会
+// 重新出现「已清空」的历史内容）。
 func (a *App) ClearLog(name string) {
 	if !logNameAllowed(name) {
 		return
 	}
 	logUI("清空日志", name)
 	_ = os.WriteFile(filepath.Join(logDir, name), nil, 0o644)
+	for _, suffix := range []string{".1", ".2", ".3"} {
+		_ = os.Remove(filepath.Join(logDir, name+suffix))
+	}
 }
 
 // ==================== 更新 ====================

@@ -195,23 +195,53 @@ func clearAllLkg() {
 	log.Printf("lkg: cleared (current state verified good)")
 }
 
-// tryBootRollback 启动失败时尝试回退 LKG 并重启校验。
-// 返回 (是否回退并重启成功, 回退到的 harness 版本描述)。失败时不动 LKG 现场，便于用户排查。
-func tryBootRollback(why string) (bool, string) {
+// tryBootRollback 启动失败时优先自愈「保留当前版本 + 禁用肇事插件」，其次回退 LKG。
+// 用户决策：导入插件/更新 harness 后，尽可能以当前版本启动成功为目标，尽量不回退版本——
+// ①先按启动日志点名禁用肇事插件（disableBootSuspects），未奏效或无点名嫌疑时禁用全部
+// 已激活的用户插件（disableAllUserPlugins），任一成功即保留当前版本（kept=true）；
+// ②两者都失败才恢复 LKG（rolled=true）。
+// 返回 (kept, rolled, prev, disabledNames)：kept 时 disabledNames 为被禁用的插件；
+// rolled 时 prev 为回退到的 harness 版本描述；都失败时全零值，LKG 现场保留便于排查。
+func tryBootRollback(why string) (kept, rolled bool, prev string, disabledNames []string) {
+	log.Printf("lkg: boot failed (%s), attempting self-heal", why)
+
+	rsplash := maybeStartSplash(T("启动失败，正在自动修复…"))
+	defer rsplash.Close()
+
+	// 1) 禁用优先（保留当前版本）
+	var profileDirs []string
+	for _, pf := range enumeratePluginProfiles() {
+		profileDirs = append(profileDirs, pf.dir)
+	}
+	disabled, ok := disableBootSuspects(profileDirs)
+	if !ok {
+		disabled, ok = disableAllUserPlugins(profileDirs)
+	}
+	if ok {
+		// 当前版本 + 禁用后的状态已验证可启动：成为新的良好基线（旧 LKG 不再需要）
+		clearAllLkg()
+		serverReady.Store(true)
+		serviceFailed.Store(false)
+		refreshServiceMenu()
+		names := make([]string, 0, len(disabled))
+		for _, d := range disabled {
+			names = append(names, d.Name)
+		}
+		logUI("启动失败已自愈", fmt.Sprintf("保持当前版本，禁用 %s", strings.Join(names, "、")))
+		return true, false, "", names
+	}
+
 	if !hasAnyLkg() {
 		log.Printf("lkg: boot failed (%s) but no LKG available, skip rollback", why)
-		return false, ""
+		return false, false, "", nil
 	}
-	prev, _ := readLkgMarker()
+	prevMarker, _ := readLkgMarker()
 	log.Printf("lkg: boot failed (%s), attempting rollback to last known good state", why)
-
-	rsplash := maybeStartSplash(T("启动失败，正在回退到上次正常状态…"))
-	defer rsplash.Close()
 
 	killServer()
 	time.Sleep(1 * time.Second)
 
-	// 1) 恢复 harness 与各 profile 的 LKG
+	// 2) 恢复 harness 与各 profile 的 LKG
 	restored := false
 	if hasLkgInDir(harnessDir) {
 		if restoreLkgInDir(harnessDir) {
@@ -227,31 +257,43 @@ func tryBootRollback(why string) (bool, string) {
 	}
 	if !restored {
 		log.Printf("lkg: nothing to restore, abort rollback")
-		return false, ""
+		return false, false, "", nil
 	}
 
-	// 2) 重启并健康校验（就绪 + 启动日志无加载错误）
+	// 3) 重启并健康校验（就绪 + 启动日志无加载错误）
 	before := rotateServerLog() // 轮转留档：本次回退启动的现场独立成档，便于失败排查
 	started, exitCh := startServer()
 	if !started {
-		return false, prev.HarnessVersion
+		return false, false, prevMarker.HarnessVersion, nil
 	}
 	if ok, msg := waitForServerReady(webURL, exitCh, startupTimeout); !ok {
 		log.Printf("lkg: rollback restart failed: %s", msg)
-		return false, prev.HarnessVersion
+		return false, false, prevMarker.HarnessVersion, nil
 	}
 	// 健康窗口校验（错误可能迟于就绪数秒出现；直接短窗口扫描会漏判并把回退当成功）
 	if !verifyServerBoot(before, exitCh) {
 		log.Printf("lkg: rollback restart has boot errors")
-		return false, prev.HarnessVersion
+		return false, false, prevMarker.HarnessVersion, nil
 	}
 
-	// 3) 回退成功：恢复出的状态已验证可运行，视为新的当前良好态（清理 LKG 防跨启动反复回退）
+	// 4) 回退成功：恢复出的状态已验证可运行，视为新的当前良好态（清理 LKG 防跨启动反复回退）
 	clearAllLkg()
 	serverReady.Store(true)
 	serviceFailed.Store(false)
 	refreshServiceMenu()
-	return true, prev.HarnessVersion
+	return false, true, prevMarker.HarnessVersion, nil
+}
+
+// reportBootKept 启动失败后「保留当前版本 + 禁用肇事插件」自愈成功的提示：
+// 交互场景弹窗，自启动静默场景仅记日志。
+func reportBootKept(names []string, why string) {
+	list := strings.Join(names, "、")
+	msg := "DeepSeek Harness 启动失败（" + why + "），已自动禁用不兼容插件（" + list +
+		"）并保持当前版本，服务已重新启动。\n\n可在「关于页 → 已安装插件」中检查更新后重新启用。"
+	log.Printf("[UI] 启动失败自愈成功（禁用插件，保持当前版本）| %s", why)
+	if !autostartLaunch {
+		showMessageBox(msg, appName)
+	}
 }
 
 // reportBootRollback 回退结果提示：交互场景弹窗，自启动静默场景仅记日志。

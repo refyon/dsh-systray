@@ -1420,8 +1420,15 @@ func finishPluginImport(dirs []string, hadNM []bool) (string, error) {
 	if len(suspects) > 0 {
 		reason += "（疑似插件：" + strings.Join(suspects, "、") + "）"
 	}
-	// 不兼容自愈：禁用点名用户插件后重启，健康则保留本次导入（这些插件记为禁用、可后续更新/启用）
+	// 不兼容自愈：禁用点名用户插件后重启，健康则保留本次导入（这些插件记为禁用、可后续更新/启用）。
+	// 点名禁用未奏效或无点名嫌疑时，按用户决策（尽量不回退导入与当前版本）禁用全部已激活的
+	// 用户插件再试；仍失败才回退导入前快照。
 	disabled, ok := disableBootSuspects(dirs)
+	allDisabled := false
+	if !ok {
+		disabled, ok = disableAllUserPlugins(dirs)
+		allDisabled = ok
+	}
 	if ok {
 		promoteImportProfilesToLkg(dirs)
 		cleanupImportProfiles(dirs)
@@ -1431,6 +1438,10 @@ func finishPluginImport(dirs []string, hadNM []bool) (string, error) {
 			names = append(names, d.Name)
 		}
 		log.Printf("import: plugins restored with incompatible ones disabled: %s", strings.Join(names, "、"))
+		if allDisabled {
+			return "已恢复导入，但服务启动失败且未能定位具体的不兼容插件，已自动禁用全部已激活的用户插件以保证服务启动" +
+				"（保留记录，可在关于页逐个检查更新或重新启用）：" + strings.Join(names, "、"), nil
+		}
 		return "已恢复导入，但以下插件与当前版本不兼容，已自动禁用（可在关于页检查更新，或确认修复后点击「启用」重试）：" +
 			strings.Join(names, "、"), nil
 	}

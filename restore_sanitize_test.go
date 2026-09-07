@@ -369,7 +369,9 @@ func TestRelinkPendingRestoresBundleAndClearsRecord(t *testing.T) {
 	if len(f.Dsh.Profile.Bundles) != 1 || f.Dsh.Profile.Bundles[0] != "x" {
 		t.Fatalf("bundle activation not restored: %+v", f.Dsh.Profile.Bundles)
 	}
-	// bundled=false：只清记录、不激活
+	// bundled=false：历史记录未激活，但「重选=显式激活」语义下同样补进 bundles——
+	// 用户重选目录即期望该插件加载进 harness，历史 bundled 只记录源机状态、不决定本次激活
+	//（旧语义「只清记录、不激活」会导致重选后 spec/node_modules 就位但 harness 永不加载）。
 	dir2 := t.TempDir()
 	writeTestJSON(t, filepath.Join(dir2, "package.json"),
 		`{"dependencies":{},"dsh":{"profile":{"pendingLocalPlugins":{"y":{"spec":"link:C:/nope","bundled":false}}}}}`)
@@ -378,8 +380,8 @@ func TestRelinkPendingRestoresBundleAndClearsRecord(t *testing.T) {
 	if _, ok := f2.Dsh.Profile.PendingLocalPlugins["y"]; ok {
 		t.Fatalf("pending not cleared: %+v", f2.Dsh.Profile.PendingLocalPlugins)
 	}
-	if len(f2.Dsh.Profile.Bundles) != 0 {
-		t.Fatalf("unbundled relink must not activate: %+v", f2.Dsh.Profile.Bundles)
+	if len(f2.Dsh.Profile.Bundles) != 1 || f2.Dsh.Profile.Bundles[0] != "y" {
+		t.Fatalf("relink must always activate (re-select = explicit activation): %+v", f2.Dsh.Profile.Bundles)
 	}
 }
 

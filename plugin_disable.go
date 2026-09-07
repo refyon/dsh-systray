@@ -357,6 +357,132 @@ func disableBootSuspects(dirs []string) (disabled []PluginRow, healthy bool) {
 	return suspects, false
 }
 
+// ==================== 兜底：禁用全部用户插件（保留当前 harness 版本优先） ====================
+// 用户决策：导入插件/更新 harness 后，尽可能以「当前已更新的 harness 版本启动成功」为目标，
+// 尽量不回退版本——启动日志点名禁用未奏效、或无点名嫌疑时，禁用全部已激活的用户插件换取
+// 服务可启动（禁用只摘除 bundles 激活并记录原因，依赖与文件保留，可逐个重新启用）。
+
+// activatedUserPluginNames 枚举所有 profile 激活清单（dsh.profile.bundles）中的非官方用户
+// 插件名（兼容 name@… 变体，取 base 名；去重排序）。
+func activatedUserPluginNames() []string {
+	set := map[string]bool{}
+	for _, pf := range enumeratePluginProfiles() {
+		root := readProfileRoot(pf.dir)
+		dsh, _ := root["dsh"].(map[string]interface{})
+		if dsh == nil {
+			continue
+		}
+		prof, _ := dsh["profile"].(map[string]interface{})
+		if prof == nil {
+			continue
+		}
+		for _, b := range prof["bundles"].([]interface{}) {
+			s, ok := b.(string)
+			if !ok || s == "" {
+				continue
+			}
+			base := s
+			if i := strings.IndexByte(base, '@'); i > 0 {
+				base = base[:i]
+			}
+			if !isOfficialHarnessPkg(base) {
+				set[base] = true
+			}
+		}
+	}
+	out := make([]string, 0, len(set))
+	for n := range set {
+		out = append(out, n)
+	}
+	sort.Strings(out)
+	return out
+}
+
+// disableAllUserPlugins 兜底禁用全部已激活用户插件并重启健康校验（语义见文件头）：
+//  1. 无已激活用户插件 → 返回 healthy=false（无对象可禁，调用方走各自回退）；
+//  2. 有 → 备份受影响 profile 的 package.json（.disbak）→ 逐个禁用（有依赖行的走
+//     disablePluginInProfile，bundle-only 的走 disableGhostPluginInProfile）→ 重启校验；
+//     - 成功：保持禁用、清理 .disbak，返回被禁用插件（含 bundle-only 合成行）与 healthy=true；
+//     - 仍失败：还原 .disbak（全部重新激活），返回 healthy=false（调用方整体回退）。
+func disableAllUserPlugins(dirs []string) ([]PluginRow, bool) {
+	names := activatedUserPluginNames()
+	if len(names) == 0 {
+		log.Printf("disable-all: no activated user plugins to disable")
+		return nil, false
+	}
+	byName := map[string]PluginRow{}
+	for _, r := range buildPluginRows() {
+		if _, ok := byName[r.Name]; !ok {
+			byName[r.Name] = r
+		}
+	}
+	const reason = "与当前 harness 版本不兼容或存在启动冲突（已自动禁用以保证服务启动，可在关于页重新启用）"
+
+	all := map[string]bool{}
+	for _, d := range dirs {
+		all[d] = true
+	}
+	for _, n := range names {
+		if r, ok := byName[n]; ok {
+			for _, d := range r.Locs {
+				all[d] = true
+			}
+		}
+	}
+	for _, pf := range enumeratePluginProfiles() {
+		all[pf.dir] = true
+	}
+	var bak []string
+	for d := range all {
+		backupProfilePkgJSON(d)
+		bak = append(bak, d)
+	}
+
+	killServer()
+	time.Sleep(700 * time.Millisecond)
+	var out []PluginRow
+	for _, n := range names {
+		if row, hasRow := byName[n]; hasRow {
+			for _, d := range row.Locs {
+				if err := disablePluginInProfile(d, n, reason); err != nil {
+					log.Printf("disable-all %s in %s failed: %v", n, d, err)
+				}
+			}
+			out = append(out, row)
+		} else {
+			// 无依赖声明的 bundle-only：摘除激活 + 记录禁用原因（关于页按 disabledPlugins 合成行）
+			ghost := PluginRow{Name: n}
+			for d := range all {
+				if bundleEntryExists(readProfileRoot(d), n) {
+					if err := disableGhostPluginInProfile(d, n, reason); err != nil {
+						log.Printf("disable-all ghost %s in %s failed: %v", n, d, err)
+					} else {
+						ghost.Locs = append(ghost.Locs, d)
+					}
+				}
+			}
+			if len(ghost.Locs) > 0 {
+				out = append(out, ghost)
+			}
+		}
+		log.Printf("disable-all user plugin %s", n)
+	}
+
+	if restartAndVerifyServer() {
+		for _, d := range bak {
+			clearProfilePkgJSONBackup(d)
+		}
+		logUI("自动禁用全部用户插件", strings.Join(names, "、")+"，服务已恢复启动")
+		return out, true
+	}
+	// 禁用后仍无法启动：还原全部受影响 profile（全部重新激活），交回调用方整体回退
+	for _, d := range bak {
+		restoreProfilePkgJSONBackup(d)
+	}
+	log.Printf("disable-all (%s) did not fix boot, profiles restored", strings.Join(names, "、"))
+	return out, false
+}
+
 // ==================== 手动启用（失败自动重新禁用） ====================
 
 // enablePluginAndVerify 手动启用插件并保证服务可启动：

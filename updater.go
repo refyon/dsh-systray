@@ -1038,7 +1038,8 @@ func runHarnessUpdate(latest string) {
 
 	// 4) 重启并健康校验（就绪 + 启动日志无报错）。
 	//    失败时先尝试「禁用启动日志点名的用户插件」换取新版本可启动（不兼容自愈）；
-	//    禁用后健康 → 保留新版本并提示；仍失败或无嫌疑（核心故障）→ 整体回退到上一版本。
+	//    点名禁用未奏效或无点名嫌疑时，按用户决策（尽量保留新版本、不回退）禁用全部
+	//    已激活的用户插件再试；仍失败（核心故障）→ 整体回退到上一版本。
 	splash.Update(T("正在重启服务…"), 0.85)
 	if !restartAndVerifyServer() {
 		splash.Update(T("启动校验失败，正在排查不兼容插件…"), 0.9)
@@ -1047,6 +1048,12 @@ func runHarnessUpdate(latest string) {
 			profileDirs = append(profileDirs, pf.dir)
 		}
 		disabled, ok := disableBootSuspects(profileDirs)
+		allDisabled := false
+		if !ok {
+			splash.Update(T("仍无法启动，正在禁用其余用户插件…"), 0.93)
+			disabled, ok = disableAllUserPlugins(profileDirs)
+			allDisabled = ok
+		}
 		if ok {
 			// 保留新版本：harness LKG 提升到更新前快照（未来失败回退旧版时插件完整可用的状态）
 			promoteHarnessLkg(prev)
@@ -1060,6 +1067,11 @@ func runHarnessUpdate(latest string) {
 			msg := fmt.Sprintf("DeepSeek Harness 已更新到 %s，服务已重启。\n\n以下插件与新版不兼容，已自动禁用"+
 				"（保留记录，可在「关于页 → 已安装插件」中检查更新后重新启用）：\n· %s",
 				withV(latest), strings.Join(names, "、"))
+			if allDisabled {
+				msg = fmt.Sprintf("DeepSeek Harness 已更新到 %s，服务已重启。\n\n未能定位到具体的不兼容插件，"+
+					"已禁用全部已激活的用户插件以保证新版启动（保留记录，可在「关于页 → 已安装插件」中逐个重新启用）：\n· %s",
+					withV(latest), strings.Join(names, "、"))
+			}
 			showMessageBox(msg, appName)
 			emitUpdateDone(true, false, "")
 			return

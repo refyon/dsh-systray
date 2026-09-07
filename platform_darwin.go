@@ -357,13 +357,27 @@ func startServer() (bool, <-chan error) {
 
 func killServer() {
 	if serverCmd != nil && serverCmd.Process != nil {
-		_ = serverCmd.Process.Kill()
+		_ = serverCmd.Process.Kill() // 本进程拉起的 node 直接 SIGKILL
 		serverCmd = nil
 	}
-	// 终止监听本端口的 dsh web 进程（即使不是本应用启动的）
-	if pid, err := findListenerPID(port); err == nil {
-		log.Printf("killing listener pid=%d on port %d", pid, port)
+	// 终止监听本端口的 dsh web 进程（即使不是本应用启动的）：SIGTERM 优雅退出，
+	// 轮询等待端口释放；仍存活（忽略信号/子进程接管端口）时 SIGKILL 兜底。
+	// 旧进程未退出会让 restartAndVerifyServer 误判「端口已有可用服务」而跳过重启，
+	// 插件重选/更新/导入的新配置永不加载（mac 实证「重选后依旧没进 harness」的候选根因）。
+	for i := 0; i < 10; i++ {
+		pid, err := findListenerPID(port)
+		if err != nil {
+			return
+		}
+		if i == 0 {
+			log.Printf("killing listener pid=%d on port %d", pid, port)
+		}
 		_ = syscall.Kill(pid, syscall.SIGTERM)
+		time.Sleep(200 * time.Millisecond)
+	}
+	if pid, err := findListenerPID(port); err == nil {
+		log.Printf("listener pid=%d still alive after SIGTERM, force SIGKILL", pid)
+		_ = syscall.Kill(pid, syscall.SIGKILL)
 	}
 }
 
