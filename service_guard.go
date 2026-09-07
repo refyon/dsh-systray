@@ -22,6 +22,7 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"sync/atomic"
 	"time"
 )
 
@@ -74,10 +75,15 @@ func serverLogLines(offset int64) string {
 // 日志扫描基线偏移。文件不存在或为空时不轮转，直接返回 0；轮转失败（如文件被其它进程
 // 占用）时保留原文件并返回其当前大小，健康校验仍按追加段语义工作。
 // 调用方应在 killServer 之后、startServer 之前调用，使本次启动独占新文件、旧现场完整归档。
+// 基线同时记录到 lastBootLogBase：启动嫌疑定位（parseBootLogSuspects/bootSuspectReasons/
+// unresolvedBundleNames）传 offset=0 时默认只扫本次启动窗口——轮转失败时统一日志不换文件、
+// 历史启动现场持续累积，全量扫描会把历史报错误判为本轮嫌疑、并摘取陈旧错误作禁用原因
+// （dsh-ui-taste 被记 9/5 旧错误、restrict-discipline 被历史日志误禁用的实证）。
 func rotateServerLog() int64 {
 	p := unifiedLogPath()
 	fi, err := os.Stat(p)
 	if err != nil || fi.Size() == 0 {
+		lastBootLogBase.Store(0)
 		return 0
 	}
 	// 级联轮转：.2→.3、.1→.2、dsh-systray.log→.1（.3 旧内容直接丢弃）。
@@ -87,13 +93,29 @@ func rotateServerLog() int64 {
 	_ = os.Rename(p+".1", p+".2")
 	if os.Rename(p, p+".1") != nil {
 		log.Printf("log rotate failed (file may be locked), keeping in place")
-		return unifiedLogSize()
+		base := unifiedLogSize()
+		lastBootLogBase.Store(base)
+		return base
 	}
 	// mac/POSIX 允许 rename 打开中的文件：必须重开句柄，否则后续写入继续落进 .1，
 	// 基础文件 dsh-systray.log 消失 → 日志页空白、启动日志扫描基线失效（0.8.x mac 实证）。
 	reopenUnifiedLog()
 	log.Printf("log rotated to %s.1 (archived %d bytes)", p, fi.Size())
+	lastBootLogBase.Store(0)
 	return 0
+}
+
+// lastBootLogBase 最近一次启动校验的日志扫描基线（rotateServerLog 记录；0=从未轮转，
+// 或轮转成功——新基础文件整体即本次启动现场）。
+var lastBootLogBase atomic.Int64
+
+// bootWindowOffset 解析启动嫌疑时把 offset=0（调用方的「当前启动窗口」语义）归一为
+// lastBootLogBase；显式非 0 offset 原样使用（verifyServerBoot 等已持有具体基线）。
+func bootWindowOffset(offset int64) int64 {
+	if offset <= 0 {
+		return lastBootLogBase.Load()
+	}
+	return offset
 }
 
 // bootSuspectNameRe 启动失败日志中的插件定位线索（错误文本来自 dsh-app-boot / cordis
@@ -122,9 +144,10 @@ func splitPluginNames(s string) []string {
 }
 
 // parseBootLogSuspects 从统一日志的 offset 追加段（仅 [server] 模块行）提取疑似导致
-// 启动失败的插件包名，按首次出现顺序去重。读取失败返回 nil（调用方降级为通用提示）。
+// 启动失败的插件包名，按首次出现顺序去重。offset=0 时使用最近一次启动校验的基线
+// （bootWindowOffset），只扫本次启动窗口；读取失败返回 nil（调用方降级为通用提示）。
 func parseBootLogSuspects(offset int64) []string {
-	s := serverLogLines(offset)
+	s := serverLogLines(bootWindowOffset(offset))
 	if s == "" {
 		return nil
 	}
@@ -174,9 +197,10 @@ func parseBootLogSuspects(offset int64) []string {
 var bootErrorHintRe = regexp.MustCompile(`(?i)(error|syntaxerror|typeerror|referenceerror|does not provide an export|failed to import loader entry|cannot resolve|not found|failed to load)`)
 
 // bootSuspectReasons 为嫌疑插件名摘取启动日志（[server] 追加段）中的首条加载错误证据行，
-// 压成单行限长；无证据行时回退通用文案。供「禁用原因」的记录与展示。
+// 压成单行限长；无证据行时回退通用文案。offset=0 时只扫本次启动窗口（bootWindowOffset）。
+// 供「禁用原因」的记录与展示。
 func bootSuspectReasons(offset int64, names []string) map[string]string {
-	s := serverLogLines(offset)
+	s := serverLogLines(bootWindowOffset(offset))
 	out := map[string]string{}
 	for _, name := range names {
 		best := ""
@@ -412,8 +436,9 @@ func dropProfileDependency(dir, name string) bool {
 var unresolvedBundleRe = regexp.MustCompile(`cannot resolve profile bundle "([^"]+)"`)
 
 // unresolvedBundleNames 从统一日志的 offset 追加段提取无法解析的 bundle 插件名（去重排序）。
+// offset=0 时只扫本次启动窗口（bootWindowOffset）。
 func unresolvedBundleNames(offset int64) []string {
-	s := serverLogLines(offset)
+	s := serverLogLines(bootWindowOffset(offset))
 	if s == "" {
 		return nil
 	}

@@ -696,8 +696,8 @@ func mergePluginConfigIntoProfile(dir string, cfg exportPlugins) error {
 // sanitizeProfileLocalDepsAll 在合并写回 profile package.json 之后、pnpm 对齐之前执行：
 //   - 目标路径在本机存在 → 保持原样（同机恢复的开发态链接不受影响）；
 //   - 目标路径缺失但导入包在 profile node_modules 恢复了该插件副本 → 副本迁到
-//     <dshHome>/local-plugins/<name>，spec 改写为 link:<副本>：bundle 激活保持，插件继续加载
-//     启动；用户仍可点「更新…」改指自己的开发目录；
+//     <dshHome>/profiles/local-plugins/<name>，spec 改写为 link:<副本>：bundle 激活保持，
+//     插件继续加载启动；用户仍可点「更新…」改指自己的开发目录；
 //   - 目标路径缺失且无副本（插件不在导入包内等）→ 移出 dependencies、记录为「待重指定」
 //     （dsh.profile.pendingLocalPlugins，含原 spec 与是否曾激活），并清理 bundle / 禁用记录。
 //     插件列表仍显示该本地插件行，用户点「更新…」重新选择本地目录后由更新事务落回 link: spec
@@ -792,18 +792,99 @@ func sanitizeProfileLocalDepsAll(dirs []string) []string {
 			name, oldVer, orDash(newVer)))
 	}
 	// 版本感知刷新：spec 已指向稳定副本（此前进过 adopt）且导入包副本更新 → 升级稳定副本
+	notes = append(notes, migrateLegacyLocalCopies(dirs, noted)...)
 	notes = append(notes, refreshStableLocalCopies(dirs, noted)...)
 	return notes
 }
 
-// localPluginsRoot 导入副本的稳定落点目录（<dshHome>/local-plugins）；home 不可得返回空
-// （此时副本裁决跳过，全部走待重指定挂起，不触碰任何磁盘位置）。
+// localPluginsRoot 导入副本的稳定落点目录（<dshHome>/profiles/local-plugins）；home 不可得
+// 返回空（此时副本裁决跳过，全部走待重指定挂起，不触碰任何磁盘位置）。
+// 落点必须在 profiles 工作区树内：dsh 的 loader 以 Node ESM 解析插件依赖，link: 依赖的
+// 真实路径决定了 node_modules 上溯链——旧落点 <dshHome>/local-plugins 在 profiles 之外，
+// 上溯链找不到提升的 profiles/node_modules（@deepseek-ai/dsh-settings 等官方 peer），
+// 插件加载报 ERR_MODULE_NOT_FOUND（dsh-ui-taste 跨机导入实证）；本落点的上溯链命中
+// profiles/node_modules，peer 依赖可解析。
 func localPluginsRoot() string {
 	home := dshHomeDir()
 	if home == "" {
 		return ""
 	}
+	return filepath.Join(home, "profiles", "local-plugins")
+}
+
+// legacyLocalPluginsRoot 旧版稳定副本落点（<dshHome>/local-plugins，v0.8.x 及更早；
+// 因位于 profiles 工作区树外导致插件无法解析 peer 依赖，见 localPluginsRoot 注释）。
+func legacyLocalPluginsRoot() string {
+	home := dshHomeDir()
+	if home == "" {
+		return ""
+	}
 	return filepath.Join(home, "local-plugins")
+}
+
+// migrateLegacyLocalCopies 把 spec 指向旧落点（<dshHome>/local-plugins/<name>）的稳定副本
+// 迁移到新落点（<dshHome>/profiles/local-plugins/<name>）并改写 spec——修复历史版本在旧落点
+// 留下的「副本存在但插件加载 ERR_MODULE_NOT_FOUND」状态（副本继续加载的路子本应生效，
+// 但旧落点使 peer 依赖不可解析）。迁移为 rename（同盘瞬时完成），失败保守保留原状仅记日志；
+// 新落点已有同名副本时只改 spec 指向（不覆盖）。返回用户可见说明行。
+func migrateLegacyLocalCopies(dirs []string, noted map[string]bool) []string {
+	oldRoot := legacyLocalPluginsRoot()
+	root := localPluginsRoot()
+	if oldRoot == "" || oldRoot == root {
+		return nil
+	}
+	var notes []string
+	for _, dir := range dirs {
+		profileRoot := readProfileRoot(dir)
+		deps, _ := profileRoot["dependencies"].(map[string]interface{})
+		if deps == nil {
+			continue
+		}
+		changed := false
+		for name, v := range deps {
+			spec, _ := v.(string)
+			raw, ok := localSpecPath(spec)
+			if !ok {
+				continue
+			}
+			target := raw
+			if !filepath.IsAbs(target) {
+				target = filepath.Join(dir, filepath.FromSlash(target))
+			}
+			oldCanon := filepath.Join(oldRoot, filepath.FromSlash(name))
+			if filepath.Clean(target) != oldCanon {
+				continue
+			}
+			if _, err := os.Stat(oldCanon); err != nil {
+				continue // 旧副本已不存在：交给 missingLocalDeps/adopt 或挂起流程
+			}
+			newCanon := filepath.Join(root, filepath.FromSlash(name))
+			if _, err := os.Stat(newCanon); err != nil {
+				if err := os.MkdirAll(filepath.Dir(newCanon), 0o755); err != nil {
+					log.Printf("migrate local plugin: mkdir %s: %v", filepath.Dir(newCanon), err)
+					continue
+				}
+				if err := moveDirTree(oldCanon, newCanon); err != nil {
+					log.Printf("migrate local plugin: move %s -> %s: %v", oldCanon, newCanon, err)
+					continue
+				}
+			}
+			deps[name] = localLinkSpec(newCanon)
+			changed = true
+			if !noted[name] {
+				noted[name] = true
+				notes = append(notes, fmt.Sprintf(
+					"本地插件 %s 的副本已迁移到可加载位置（%s）——旧位置无法解析依赖导致插件加载失败，现已修复",
+					name, newCanon))
+			}
+		}
+		if changed {
+			if err := writeProfileRoot(dir, profileRoot); err != nil {
+				log.Printf("migrate local plugins: write package.json failed (%s): %v", dir, err)
+			}
+		}
+	}
+	return notes
 }
 
 // missingLocalDeps 枚举 dir 的 package.json 中「本地 spec 且目标路径缺失」的依赖（name → spec）。

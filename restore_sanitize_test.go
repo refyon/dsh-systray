@@ -54,7 +54,7 @@ func TestSanitizeMissingTargetAdoptsRestoredCopy(t *testing.T) {
 	missing := filepath.Join(t.TempDir(), "my-local") // 源机路径在本机不存在
 	writeTestJSON(t, filepath.Join(dir, "package.json"),
 		`{"dependencies":{"my-local":"link:`+filepath.ToSlash(missing)+`"}}`)
-	// 导入包恢复出来的 node_modules 副本：应迁到 <home>/local-plugins 并继续加载，而非挂起
+	// 导入包恢复出来的 node_modules 副本：应迁到 <home>/profiles/local-plugins 并继续加载，而非挂起
 	writeTestJSON(t, filepath.Join(dir, "node_modules", "my-local", "package.json"),
 		`{"name":"my-local","version":"0.3.1"}`)
 	notes := sanitizeProfileLocalDeps(dir)
@@ -71,7 +71,7 @@ func TestSanitizeMissingTargetAdoptsRestoredCopy(t *testing.T) {
 	if strings.Contains(got, "pendingLocalPlugins") {
 		t.Fatalf("must not park pending when restored copy exists: %s", got)
 	}
-	canon := filepath.Join(home, "local-plugins", "my-local")
+	canon := filepath.Join(home, "profiles", "local-plugins", "my-local")
 	if !strings.Contains(got, localLinkSpec(canon)) {
 		t.Fatalf("spec not rewritten to canonical copy: %s", got)
 	}
@@ -132,7 +132,7 @@ func TestSanitizeAdoptSharedAcrossProfiles(t *testing.T) {
 	if len(notes) != 1 {
 		t.Fatalf("want 1 deduped note, got %v", notes)
 	}
-	canonSpec := localLinkSpec(filepath.Join(home, "local-plugins", "my-local"))
+	canonSpec := localLinkSpec(filepath.Join(home, "profiles", "local-plugins", "my-local"))
 	for _, dir := range []string{srcProf, actProf} {
 		got := readTestJSON(t, filepath.Join(dir, "package.json"))
 		if !strings.Contains(got, canonSpec) {
@@ -503,6 +503,61 @@ func TestNpmDocVersions(t *testing.T) {
 	}
 }
 
+// 历史版本遗留：稳定副本在旧落点 <home>/local-plugins（profiles 工作区树外，peer 依赖
+// 不可解析、插件加载报 ERR_MODULE_NOT_FOUND），spec 仍指向旧副本——消毒时应迁移到
+// <home>/profiles/local-plugins 并改写 spec（dsh-ui-taste 跨机导入实证的修复）。
+func TestMigrateLegacyLocalCopies(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("DSH_HOME", home)
+	dir := t.TempDir()
+	oldCanon := filepath.Join(home, "local-plugins", "my-local")
+	newCanon := filepath.Join(home, "profiles", "local-plugins", "my-local")
+	writeTestJSON(t, filepath.Join(oldCanon, "package.json"), `{"name":"my-local","version":"0.2.1"}`)
+	writeTestJSON(t, filepath.Join(dir, "package.json"),
+		`{"dependencies":{"my-local":"`+localLinkSpec(oldCanon)+`"}}`)
+	notes := sanitizeProfileLocalDeps(dir)
+	joined := strings.Join(notes, "；")
+	if !strings.Contains(joined, "迁移") {
+		t.Fatalf("note should mention migration: %v", notes)
+	}
+	got := readTestJSON(t, filepath.Join(dir, "package.json"))
+	if !strings.Contains(got, localLinkSpec(newCanon)) {
+		t.Fatalf("spec not rewritten to new canonical root: %s", got)
+	}
+	if _, err := os.Stat(filepath.Join(newCanon, "package.json")); err != nil {
+		t.Fatalf("copy not migrated to profiles tree: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(oldCanon, "package.json")); err == nil {
+		t.Fatalf("old copy should be moved away")
+	}
+}
+
+// 新落点已有副本时迁移只改 spec 指向（不覆盖既有副本），且不动非旧落点的本地依赖。
+func TestMigrateLegacyLocalCopiesKeepsExistingNewCopy(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("DSH_HOME", home)
+	dir := t.TempDir()
+	oldCanon := filepath.Join(home, "local-plugins", "my-local")
+	newCanon := filepath.Join(home, "profiles", "local-plugins", "my-local")
+	writeTestJSON(t, filepath.Join(oldCanon, "package.json"), `{"name":"my-local","version":"0.2.0"}`)
+	writeTestJSON(t, filepath.Join(newCanon, "package.json"), `{"name":"my-local","version":"0.2.1"}`)
+	writeTestJSON(t, filepath.Join(dir, "package.json"),
+		`{"dependencies":{"my-local":"`+localLinkSpec(oldCanon)+`","keep":"^1.0.0"}}`)
+	if notes := sanitizeProfileLocalDeps(dir); len(notes) != 1 {
+		t.Fatalf("want 1 note, got %v", notes)
+	}
+	got := readTestJSON(t, filepath.Join(dir, "package.json"))
+	if !strings.Contains(got, localLinkSpec(newCanon)) {
+		t.Fatalf("spec not pointed at existing new copy: %s", got)
+	}
+	if !strings.Contains(got, `"keep": "^1.0.0"`) {
+		t.Fatalf("unrelated dep touched: %s", got)
+	}
+	if got := versionOf(t, newCanon); got != "0.2.1" {
+		t.Fatalf("existing new copy must be kept, got v%s", got)
+	}
+}
+
 // versionOf 读取 package.json version（测试辅助）。
 func versionOf(t *testing.T, dir string) string {
 	t.Helper()
@@ -515,14 +570,14 @@ func versionOf(t *testing.T, dir string) string {
 	return m.Version
 }
 
-// 测试基础：home/local-plugins 稳定副本已存在但落后于导入包副本（spec 指向的源机路径缺失）：
+// 测试基础：home/profiles/local-plugins 稳定副本已存在但落后于导入包副本（spec 指向的源机路径缺失）：
 // adopt 应把稳定副本替换为导入包版本（旧目录 .dshbak 备份），spec 改写指向稳定副本。
 func TestSanitizeAdoptReplacesStaleCanon(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("DSH_HOME", home)
 	dir := t.TempDir()
 	missing := filepath.Join(t.TempDir(), "my-local") // 源机路径在本机不存在
-	canon := filepath.Join(home, "local-plugins", "my-local")
+	canon := filepath.Join(home, "profiles", "local-plugins", "my-local")
 	writeTestJSON(t, filepath.Join(canon, "package.json"), `{"name":"my-local","version":"0.2.0"}`)
 	writeTestJSON(t, filepath.Join(dir, "package.json"),
 		`{"dependencies":{"my-local":"link:`+filepath.ToSlash(missing)+`"}}`)
@@ -558,7 +613,7 @@ func TestSanitizeRefreshExistingCanonFromReimport(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("DSH_HOME", home)
 	dir := t.TempDir()
-	canon := filepath.Join(home, "local-plugins", "my-local")
+	canon := filepath.Join(home, "profiles", "local-plugins", "my-local")
 	writeTestJSON(t, filepath.Join(canon, "package.json"), `{"name":"my-local","version":"0.2.0"}`)
 	writeTestJSON(t, filepath.Join(dir, "package.json"),
 		`{"dependencies":{"my-local":"`+localLinkSpec(canon)+`"}}`)
@@ -588,7 +643,7 @@ func TestSanitizeAdoptReuseKeepsNewerCanon(t *testing.T) {
 	t.Setenv("DSH_HOME", home)
 	dir := t.TempDir()
 	missing := filepath.Join(t.TempDir(), "my-local")
-	canon := filepath.Join(home, "local-plugins", "my-local")
+	canon := filepath.Join(home, "profiles", "local-plugins", "my-local")
 	writeTestJSON(t, filepath.Join(canon, "package.json"), `{"name":"my-local","version":"0.2.2"}`)
 	writeTestJSON(t, filepath.Join(dir, "package.json"),
 		`{"dependencies":{"my-local":"link:`+filepath.ToSlash(missing)+`"}}`)

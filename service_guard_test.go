@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -18,6 +19,7 @@ func useTempLogDir(t *testing.T) string {
 
 func TestRotateServerLog(t *testing.T) {
 	dir := useTempLogDir(t)
+	t.Cleanup(func() { lastBootLogBase.Store(0) })
 	p := filepath.Join(dir, unifiedLogName)
 
 	// 文件不存在 / 为空：不轮转，基线 0
@@ -63,6 +65,7 @@ func TestRotateServerLog(t *testing.T) {
 // 写入落到新基础文件；轮转失败（Windows 打开文件被锁、保留原文件）时后续写入仍追加原文件。
 func TestRotateReopensHandle(t *testing.T) {
 	dir := useTempLogDir(t)
+	t.Cleanup(func() { lastBootLogBase.Store(0) })
 	p := filepath.Join(dir, unifiedLogName)
 	if !initUnifiedLog() {
 		t.Fatal("initUnifiedLog failed")
@@ -144,6 +147,40 @@ func TestParseBootLogSuspects(t *testing.T) {
 	logDir = t.TempDir()
 	if got := parseBootLogSuspects(0); got != nil {
 		t.Fatalf("missing file suspects = %v, want nil", got)
+	}
+}
+
+// 轮转失败时统一日志不换文件、历史启动现场持续累积：嫌疑定位（offset=0）必须只扫
+// 本次启动窗口（lastBootLogBase 之后），历史报错不得误判为本轮嫌疑——否则会误禁插件
+// 并把陈旧错误记为禁用原因（dsh-ui-taste/restrict-discipline 实证）。
+func TestParseBootLogSuspectsBootWindow(t *testing.T) {
+	dir := useTempLogDir(t)
+	t.Cleanup(func() { lastBootLogBase.Store(0) })
+	p := filepath.Join(dir, unifiedLogName)
+	fixture := `2026/09/05 10:59:54 [ERROR] [server] Error: failed to import loader entry restrict-discipline (restrict-discipline): The requested module '@deepseek-ai/dsh-settings' does not provide an export named 'settingsNamespace'
+2026/09/07 19:25:54 [ERROR] [server] Error: dsh: plugin tree failed to load: failed to import loader entry dsh-ui-taste (dsh-ui-taste): Cannot find package '@deepseek-ai/dsh-settings' imported from C:\Users\work\.dsh\local-plugins\dsh-ui-taste\lib\index.js
+`
+	if err := os.WriteFile(p, []byte(fixture), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// 基线落在本次启动首行：历史 restrict-discipline 行必须被排除
+	base := int64(strings.Index(fixture, "2026/09/07"))
+	lastBootLogBase.Store(base)
+	got := parseBootLogSuspects(0)
+	want := []string{"dsh-ui-taste"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("boot-window suspects = %v, want %v", got, want)
+	}
+	reasons := bootSuspectReasons(0, []string{"dsh-ui-taste", "restrict-discipline"})
+	if r := reasons["restrict-discipline"]; r != "与当前 harness 版本不兼容（启动日志存在加载错误）" {
+		t.Fatalf("historical suspect should get generic reason, got %q", r)
+	}
+	if !strings.Contains(reasons["dsh-ui-taste"], "Cannot find package") {
+		t.Fatalf("fresh suspect reason should come from current boot window, got %q", reasons["dsh-ui-taste"])
+	}
+	// 显式非 0 offset 保持原语义（调用方持有具体基线）
+	if got := parseBootLogSuspects(0); !reflect.DeepEqual(got, want) {
+		t.Fatalf("repeat boot-window scan = %v, want %v", got, want)
 	}
 }
 

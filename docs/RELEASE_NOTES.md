@@ -4,6 +4,23 @@
 > `## vX.Y.Z` 区块（最新在上）。CI 推送 `v*` tag 后会自动把该区块作为 GitHub Release 正文；
 > 找不到对应区块时回退为 GitHub 自动生成（提交列表）。
 
+## v0.8.5
+
+自 v0.8.4 起（dsh-ui-taste 跨机导入无法加载的根因修复 + 启动嫌疑定位只扫本次启动窗口）：
+
+### 修复
+
+- **跨机导入的本地插件无法加载（dsh-ui-taste 实证，`ERR_MODULE_NOT_FOUND: Cannot find package '@deepseek-ai/dsh-settings'`）**：根因是导入副本的稳定落点 `<dshHome>/local-plugins` 位于 profiles 工作区树之外——dsh 的 loader 按 Node ESM 规则从插件**真实路径**上溯 node_modules，旧落点上溯链找不到提升的 `profiles/node_modules`（@deepseek-ai/dsh-settings 等官方 peer 依赖所在），插件加载失败。修复：①稳定副本落点改为 `<dshHome>/profiles/local-plugins`（上溯链命中 profiles/node_modules，peer 依赖可解析）；②新增旧落点自动迁移——spec 仍指向旧落点的副本迁移到新落点并改写 spec（历史版本遗留的「副本在但加载失败」状态导入/更新时自动修复）。
+- **启动嫌疑定位误判历史错误（restrict-discipline 被历史日志误禁用、dsh-ui-taste 被记下数天前的陈旧原因）**：日志轮转失败时统一日志不换文件、历史启动现场持续累积，而嫌疑解析（parseBootLogSuspects/bootSuspectReasons/unresolvedBundleNames）以 offset=0 扫描全量日志，把历史启动的报错误判为本轮嫌疑。修复：轮转时记录本次启动的日志基线（lastBootLogBase），offset=0 默认只扫基线之后的追加段——嫌疑名单与禁用原因均来自本次启动现场。
+
+### 变更
+
+- 无。
+
+### 移除
+
+- 无。
+
 ## v0.8.4
 
 自 v0.8.3 起（导出/导入插件版本一致性 + 检查更新后刷新版本状态）：
