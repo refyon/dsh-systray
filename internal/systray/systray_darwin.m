@@ -117,13 +117,11 @@ withParentMenuId: (int)theParentMenuId
 }
 
 // paddedStatusImage 菜单栏图标按 macOS 常规尺寸缩放并留白：
-// 菜单栏图标通用标准：图形约 16-18pt 见方（18×18pt @1x / 36×36pt @2x 模板惯例），
-// 画布 18pt（小于 22pt 菜单栏高度，四周自然留白），图形占比 0.95 ≈ 17.1pt。
-// 此前的 22pt 画布 + 60% 图形会让按钮占满菜单栏且图形偏小，两头都不符合惯例；
-// 后调至 18pt 画布 + 90% 仍偏保守，再放大到 95% 贴近画布上限，视觉更清晰。
+// 常见系统/微信类图标整体约 22pt 画布、图形约占 80%（四周留白），
+// 让鲸鱼尽量占满菜单栏图标位（此前 60% 显得偏小）。
 - (NSImage *)paddedStatusImage:(NSImage *)image {
-  const CGFloat canvas = 18.0;
-  const CGFloat glyphRatio = 0.95;
+  const CGFloat canvas = 22.0;
+  const CGFloat glyphRatio = 0.8;
   NSImage *out = [NSImage imageWithSize:NSMakeSize(canvas, canvas) flipped:NO drawingHandler:^BOOL(NSRect rect) {
     CGFloat inset = rect.size.width * (1.0 - glyphRatio) / 2.0;
     NSRect drawRect = NSInsetRect(rect, inset, inset);

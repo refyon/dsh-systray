@@ -1,5 +1,9 @@
 // scripts/restyle-appicon.mjs — APP 图标重制为「品牌蓝圆角底 + 白色鲸鱼」
-// 输入：whale-src.png（透明底灰色鲸鱼剪影）；输出：app-icon.png、icon.ico、preview-new.png
+// 几何对齐 apps/mug-uninstaller/make-icon.swift：背景 squircle 缩进 7% 画布、圆角 22.37%×背景边长、
+// 鲸鱼墨量面积对齐 mug 图标（杯体+把手 ≈19.7% 画布）。
+// 输入：whale-src.png（透明底灰色鲸鱼剪影）；输出：app-icon.png、icon.ico、preview-new.png、iconfile.icns
+// 注：iconfile.icns 用纯 Node 封装 ic10 单条目（1024 PNG 原样嵌入），载荷与 app-icon.png 逐字节一致、可独立验证。
+//     （早前曾误判 sips+iconutil 产物损坏，实为临时校验脚本的 PNG Paeth 滤镜解码 bug；经 Go 官方 png.Decode 验证，两种管道产物均正确。）
 import { readFileSync, writeFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
@@ -105,7 +109,8 @@ function restyle(src) {
   const srcW = whale.width, srcH = whale.height
   const SS = 4 // 超采样倍数：先渲染 4 倍，再盒式下采样回源分辨率，抗锯齿平滑边缘
   const W = srcW * SS, H = srcH * SS
-  const R = Math.round(W * 0.21) // 圆角（macOS app icon 风格）
+  const INSET = Math.round(W * 0.07) // 画布缩进 7%（与 mug-uninstaller 图标一致，背景不顶满画布）
+  const R = Math.round(0.2237 * (W - 2 * INSET)) // 圆角随背景边长：22.37% 连续曲率比（mug 同款）
   // 鲸鱼轮廓 bbox（原图为透明底灰鲸鱼剪影）
   let xmin = srcW, ymin = srcH, xmax = -1, ymax = -1
   for (let y = 0; y < srcH; y++) {
@@ -118,7 +123,9 @@ function restyle(src) {
   }
   if (xmax < 0) { xmin = 0; ymin = 0; xmax = srcW - 1; ymax = srcH - 1 }
   const whaleW = xmax - xmin + 1, whaleH = ymax - ymin + 1
-  const fit = 0.80 // 鲸鱼占图标宽/高 80%，四周留均匀边距，避免拥挤
+  // 鲸鱼墨量面积对齐 mug 图标：源图墨量占画布 35.8%，缩放后占比 = 0.3815·fit²，
+  // 令其等于 mug 杯体+把手 ≈19.7% → fit = √(0.197/0.3815) ≈ 0.718（原 0.80 太满）。
+  const fit = 0.718
   const s = Math.min((W * fit) / whaleW, (H * fit) / whaleH)
   const nw = whaleW * s, nh = whaleH * s
   const ox = (W - nw) / 2, oy = (H - nh) / 2
@@ -126,11 +133,11 @@ function restyle(src) {
   const out = Buffer.alloc(W * H * 4)
   const blue = [29, 78, 216] // #1d4ed8 品牌蓝（云隙蓝主题）
   const inRound = (x, y) => {
-    if (x < 0 || x >= W || y < 0 || y >= H) return false
-    if (x >= R && x <= W - R) return true
-    if (y >= R && y <= H - R) return true
-    const cx = x < R ? R : W - R
-    const cy = y < R ? R : H - R
+    if (x < INSET || x >= W - INSET || y < INSET || y >= H - INSET) return false
+    if (x >= INSET + R && x <= W - INSET - R) return true
+    if (y >= INSET + R && y <= H - INSET - R) return true
+    const cx = x < INSET + R ? INSET + R : W - INSET - R
+    const cy = y < INSET + R ? INSET + R : H - INSET - R
     const dx = x - cx, dy = y - cy
     return dx * dx + dy * dy <= R * R
   }
@@ -173,10 +180,20 @@ const app = readFileSync(join(root, 'whale-src.png'))
 const styled = restyle(app)
 writeFileSync(join(root, 'app-icon.png'), styled)
 
+// macOS 应用图标（Dock / Finder）：icns = 'icns' 魔数 + 总长 + ic10 条目（1024 PNG 原样）
+function makeICNS(png) {
+  const total = Buffer.alloc(4)
+  total.writeUInt32BE(8 + 8 + png.length)
+  const len = Buffer.alloc(4)
+  len.writeUInt32BE(8 + png.length)
+  return Buffer.concat([Buffer.from('icns'), total, Buffer.from('ic10'), len, png])
+}
+writeFileSync(join(root, 'iconfile.icns'), makeICNS(styled))
+
 const dec = decodePNG(styled)
 const small = downsample(dec, 4)
 const ico = makeICO([{ size: 256, data: encodePNG(small.width, small.height, small.data) }])
 writeFileSync(join(root, 'icon.ico'), ico)
 writeFileSync(join(root, 'preview-new.png'), styled)
 
-console.log('done | app-icon:', styled.length, '| icon.ico:', ico.length, '| preview-new:', styled.length)
+console.log('done | app-icon:', styled.length, '| icon.ico:', ico.length, '| preview-new:', styled.length, '| iconfile.icns')

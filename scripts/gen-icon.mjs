@@ -1,7 +1,8 @@
 // scripts/gen-icon.mjs — 图标生成：纯 Node、零外部依赖（不依赖外部 SVG / sharp）。
 //
-// 输入：icon_gen.go 中已嵌入的浅色鲸鱼 ICO（iconDataB64）与 macOS 模板 PNG（iconTemplateB64）。
-// 输出：icon_gen.go（浅色 + 深色双主题 ICO + 模板 PNG）、icon.ico、preview-dark.png。
+// 输入：whale-src.png（透明底鲸鱼剪影）。
+// 输出：icon_gen.go（浅色 + 深色双主题 ICO + macOS 菜单栏模板 PNG）、icon.ico、preview-dark.png。
+// 模板 PNG 由 whale-src.png 渲染：纯黑鲸鱼、透明底、正方形画布、按自然比例 1.33 填满宽度（宽>高）。
 // 用法：node scripts/gen-icon.mjs [输出路径]
 
 import { readFileSync, writeFileSync } from 'node:fs'
@@ -25,7 +26,6 @@ function extractConst(name) {
   return genSrc.slice(b64Start, end)
 }
 const icoSrc = Buffer.from(extractConst('iconDataB64'), 'base64')
-const template = Buffer.from(extractConst('iconTemplateB64'), 'base64')
 
 // ---- 纯 Node PNG 编解码（zlib deflate/inflate，无 sharp 依赖） ----
 const CRC_TABLE = (() => {
@@ -244,6 +244,35 @@ function renderTray(size) {
   const d = downsample(raw, SS)
   return encodePNG(d.width, d.height, d.data)
 }
+// ---- macOS 菜单栏模板：纯黑鲸鱼、透明底、正方形画布，鲸鱼按自然比例 1.33 填满宽度 ----
+// 注意：systray_darwin.m 的 paddedStatusImage 会把模板画进 22pt 正方形并按 glyphRatio=0.8 留白，
+// 因此模板必须是正方形画布；否则非正方形被塞进方框后，macOS 缩放会把它显示成竖向窄片。
+// 鲸鱼宽高比 1.33（宽>高），填满画布宽度、垂直居中。
+function renderWhaleMaskRaw(W, H) {
+  const s = W / ww // 填满宽度（鲸鱼比画布更宽，宽度即约束）
+  const nw = ww * s, nh = wh * s
+  const ox = (W - nw) / 2, oy = (H - nh) / 2
+  const out = Buffer.alloc(W * H * 4)
+  for (let y = 0; y < H; y++) {
+    for (let x = 0; x < W; x++) {
+      const i = (y * W + x) * 4
+      if (x >= ox && x < ox + nw && y >= oy && y < oy + nh) {
+        const sx = Math.floor(wxmin + (x - ox) / s)
+        const sy = Math.floor(wymin + (y - oy) / s)
+        if (whaleSrc.data[(sy * WSRC + sx) * 4 + 3] > 0) { out[i + 3] = 255 }
+      }
+    }
+  }
+  return { width: W, height: H, data: out }
+}
+const template = (() => {
+  const SS = 4
+  const S = 1024 // 正方形画布（与菜单栏图标方框同构）
+  const raw = renderWhaleMaskRaw(S * SS, S * SS)
+  const d = downsample(raw, SS)
+  return encodePNG(d.width, d.height, d.data)
+})()
+
 const icoLight = makeICO([16, 24, 32, 48, 64, 256].map((size) => ({ size, data: renderTray(size) })))
 const icoDark = makeICO([16, 24, 32, 48, 64, 256].map((size) => ({ size, data: renderTray(size) })))
 
@@ -261,7 +290,7 @@ const go =
   '// iconDataDark 深色鲸鱼主图标（浅色任务栏，配合主题自适应切换）。\n' +
   'var iconDataDark = mustDecodeIcon(iconDataDarkB64)\n' +
   '\n' +
-  '// iconDataTemplate macOS 菜单栏模板图标：纯黑鲸鱼、透明背景。\n' +
+  '// iconDataTemplate macOS 菜单栏模板图标：纯黑鲸鱼、透明背景，鲸鱼占满画布。\n' +
   'var iconDataTemplate = mustDecodeIcon(iconTemplateB64)\n' +
   '\n' +
   'const iconDataB64 = `' + b64(icoLight) + '`\n' +

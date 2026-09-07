@@ -24,3 +24,6 @@ preview*.png
 # Wails �������build/bin�����Զ����ɵİ󶨣�frontend/wailsjs��
 build/bin/
 frontend/wailsjs/
+
+# 本地部署用 icns（scripts/restyle-appicon.mjs 生成，wails build 会从 build/appicon.png 自动重生成）
+iconfile.icns
