@@ -91,6 +91,7 @@ var i18nEnMap = map[string]string{
 	"正在下载 Node.js 运行时（来源：%s，%.0f%%）…":      "Downloading Node.js runtime (source: %s, %.0f%%)…",
 	"正在安装 pnpm 包管理器（registry %d/%d：%s）…":   "Installing pnpm (registry %d/%d: %s)…",
 	"正在解压安装…":                              "Extracting & installing…",
+	"正在校验更新包…":                            "Verifying update package…",
 	"正在更新程序…":                              "Updating the app…",
 	"正在重启后台服务…":                            "Restarting background service…",
 	"正在准备更新…":                              "Preparing update…",

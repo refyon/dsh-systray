@@ -44,8 +44,12 @@ func setSplashOnClose(fn func() bool) {
 }
 
 // startSplash 开始推送进度到前端 splash 视图。autostart 场景由 maybeStartSplash 返回空实现。
+// 若调用方已声明更新阶段（startUpdateApplyWithUI 置 phase=update），保留 update——
+// 前端据此显示更新视图与「取消更新」按钮；否则按启动阶段处理。
 func startSplash(text string) *SplashState {
-	setSplashPhase("startup")
+	if cur, _ := splashPhase.Load().(string); cur != "update" {
+		setSplashPhase("startup")
+	}
 	if text != "" {
 		emitSplash(text, 0)
 	}

@@ -760,8 +760,23 @@ func checkWritable(dir string) error {
 }
 
 // startUpdateApply macOS 保持进程内更新：下载 → 辅助脚本替换 .app → 自动重启。
+// 进度经 splash 视图逐段刷新（下载百分比 → 校验 → 解压 → 替换重启），
+// 关闭窗口时询问是否取消（askCancelUpdateMac），确认后 cancelActiveUpdate 中断下载。
 func startUpdateApply(rel *latestRelease) {
-	if err := downloadAndApplyUpdate(rel); err != nil {
+	splash := startSplash(T("正在准备更新…"))
+	splash.SetOnClose(func() bool {
+		if askCancelUpdateMac() {
+			log.Printf("update cancelled by user")
+			cancelActiveUpdate()
+			return true // 关闭进度窗口并中止
+		}
+		return false // 继续更新，不关闭窗口
+	})
+	err := downloadAndApplyUpdate(rel, func(text string, pct float64) {
+		splash.Update(text, pct)
+	})
+	if err != nil {
+		splash.Close()
 		if errors.Is(err, context.Canceled) {
 			log.Printf("update cancelled by user")
 			emitUpdateDone(false, true, "")
@@ -771,6 +786,19 @@ func startUpdateApply(rel *latestRelease) {
 		emitUpdateDone(false, false, err.Error())
 		showMessageBox("更新失败：\n"+err.Error()+"\n\n请稍后重试，或前往 GitHub Releases 手动下载。", appName)
 	}
+}
+
+// askCancelUpdateMac 关闭进度窗口时询问是否取消更新（AppleScript 对话框，与 Windows 对称）。
+func askCancelUpdateMac() bool {
+	msg := escapeAppleScript(T("是否取消更新？"))
+	keep := T("继续更新")
+	cancel := T("取消更新")
+	script := fmt.Sprintf(`display dialog "%s" with title "%s" buttons {%q, %q} default button %q`, msg, appName, keep, cancel, keep)
+	out, err := runAppleScript(script)
+	if err != nil {
+		return false
+	}
+	return strings.Contains(out, cancel)
 }
 
 // setClipboardText macOS：经 pbcopy 写入系统剪贴板（无原生剪贴板 syscall 封装）。

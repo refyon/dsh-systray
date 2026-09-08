@@ -73,7 +73,10 @@ var harnessPrereleaseOverride bool
 var updateFinalizing atomic.Bool
 
 // emitUpdateDone 通知前端更新流程结束（成功/取消/失败均发出，前端据此复位更新按钮并回到设置页）。
+// 同时把 splash 阶段复位为 startup：更新期间的 phase=update 不泄漏到后续
+// 插件/harness 更新与重启服务的进度视图（那些流程不注册「取消更新」句柄）。
 func emitUpdateDone(ok, canceled bool, note string) {
+	setSplashPhase("startup")
 	if appCtx == nil {
 		return
 	}
@@ -1255,7 +1258,14 @@ func comparePrerelease(a, b []string) int {
 // downloadAndApplyUpdate 下载更新包 → SHA256 校验 → 解压 → 替换并重启。
 // macOS 共用入口：登记取消句柄（前端 splash「取消更新」→ cancelActiveUpdate 中断下载）；
 // 进入「替换并重启」前置位 updateFinalizing，取消在该阶段不再生效。
-func downloadAndApplyUpdate(rel *latestRelease) error {
+// onProgress 进度回调（文本 + 0~1 分度；nil 表示不回调），供 splash 视图逐段刷新——
+// 此前 macOS 更新全程无回调，下载耗时 1-2 分钟界面停在「正在准备更新」不动。
+func downloadAndApplyUpdate(rel *latestRelease, onProgress func(text string, pct float64)) error {
+	progress := func(text string, pct float64) {
+		if onProgress != nil {
+			onProgress(text, pct)
+		}
+	}
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	registerActiveUpdate(cancel)
@@ -1282,10 +1292,14 @@ func downloadAndApplyUpdate(rel *latestRelease) error {
 	defer os.RemoveAll(tmp)
 
 	zipPath := filepath.Join(tmp, assetName)
-	if err := downloadFileTo(ctx, zipURL, zipPath); err != nil {
+	progress(TF("正在下载 %s…", assetName), 0.08)
+	if err := downloadFileWithProgress(ctx, zipURL, zipPath, func(pct float64) {
+		progress(fmt.Sprintf("正在下载 %s（%.0f%%）…", assetName, pct*100), 0.08+0.52*pct)
+	}); err != nil {
 		return fmt.Errorf("下载更新包失败：%w", err)
 	}
 	if sumURL != "" {
+		progress(T("正在校验更新包…"), 0.62)
 		sumPath := filepath.Join(tmp, "SHA256SUMS.txt")
 		if err := downloadFileTo(ctx, sumURL, sumPath); err != nil {
 			log.Printf("checksum file unavailable: %v", err)
@@ -1297,6 +1311,7 @@ func downloadAndApplyUpdate(rel *latestRelease) error {
 		return ctx.Err()
 	}
 
+	progress(T("正在解压安装…"), 0.68)
 	extractDir := filepath.Join(tmp, "extract")
 	if err := os.MkdirAll(extractDir, 0o755); err != nil {
 		return err
@@ -1312,6 +1327,7 @@ func downloadAndApplyUpdate(rel *latestRelease) error {
 		return ctx.Err()
 	}
 	setUpdateFinalizing() // 进入替换阶段：不再接受取消
+	progress(T("正在更新程序…"), 0.9)
 	return replaceAndRelaunch(payload)
 }
 
