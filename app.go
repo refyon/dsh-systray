@@ -304,6 +304,15 @@ func (a *App) GetLogPath(name string) string {
 	return sanitizeShotPath(p)
 }
 
+// CopyToClipboard 把文本复制到系统剪贴板（日志页路径「点击复制」）。
+// 返回错误时前端显示失败提示（如剪贴板被其他进程瞬时占用）。
+func (a *App) CopyToClipboard(text string) error {
+	if text == "" {
+		return nil
+	}
+	return setClipboardText(text)
+}
+
 // ReadLogTail 从 offset 起增量读取指定日志（前端定时轮询）。offset 越过文件末尾
 // （文件被轮转 rename 后新基础文件变短、或被清空/截断）时置 Reset=true 并从头重读：
 // 此前直接跳到当前末尾，会把「轮转后、下一次轮询前」新写入的行整体跳过——mac 每次

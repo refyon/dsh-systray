@@ -486,7 +486,7 @@ input { font-family: inherit; }
   margin-bottom: var(--sp-3);
 }
 
-/* 统一日志路径（完整路径换行显示，不省略截断） */
+/* 统一日志路径（完整路径换行显示，不省略截断；按钮化：点击复制） */
 .log-path {
   flex: 1 1 100%;
   font-size: var(--fs-xs);
@@ -495,7 +495,12 @@ input { font-family: inherit; }
   white-space: normal;
   overflow-wrap: anywhere;
   word-break: break-all;
+  text-align: left;
+  padding: 0;
 }
+.log-path:hover { color: var(--primary); text-decoration: underline; text-underline-offset: 3px; }
+.log-path.copied { color: var(--ok); text-decoration: none; }
+.log-path.copied-fail { color: var(--danger); text-decoration: none; }
 
 .log-tools { display: flex; gap: var(--sp-3); margin-bottom: var(--sp-3); }
 

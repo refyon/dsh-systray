@@ -67,6 +67,7 @@ const I18N_EN = {
   plugFilterPh: "Filter plugins (name / source / version)…",
   plugEmpty: "No user plugins installed (install via dsh add in the Web UI)",
   btnRefresh: "Refresh", btnClear: "Clear",
+  logPathCopyHint: "Click to copy the log file path",
   btnAddDir: "Add folders…", btnExport: "Export…",
   expHintDefault: "0 items selected — click “Export…” to bundle a zip",
   btnOpenDir: "Open export folder",
@@ -108,6 +109,8 @@ const I18N_DYN = {
   "后台服务：已停止": "Background service: stopped",
   "后台服务：启动失败": "Background service: failed to start",
   "请查看日志": "See logs",
+  "已复制": "Copied",
+  "复制失败": "Copy failed",
   "服务就绪，可打开 Web UI": "Service ready — open the Web UI",
   "服务就绪后可打开 Web UI": "Open the Web UI once the service is ready",
   "重启失败，请查看日志": "Restart failed — see logs",
@@ -214,6 +217,9 @@ function snapshotStaticZh() {
   document.querySelectorAll("[data-i18n-ph]").forEach((el) => {
     ZH_SNAP["ph:" + el.getAttribute("data-i18n-ph")] = el.getAttribute("placeholder") || "";
   });
+  document.querySelectorAll("[data-i18n-title]").forEach((el) => {
+    ZH_SNAP["title:" + el.getAttribute("data-i18n-title")] = el.getAttribute("title") || "";
+  });
 }
 function applyStaticI18n() {
   const en = curLangCode() === "en";
@@ -229,6 +235,11 @@ function applyStaticI18n() {
     const k = el.getAttribute("data-i18n-ph");
     const v = en ? I18N_EN[k] : ZH_SNAP["ph:" + k];
     if (v !== undefined) el.setAttribute("placeholder", v);
+  });
+  document.querySelectorAll("[data-i18n-title]").forEach((el) => {
+    const k = el.getAttribute("data-i18n-title");
+    const v = en ? I18N_EN[k] : ZH_SNAP["title:" + k];
+    if (v !== undefined) el.setAttribute("title", v);
   });
   rerenderDynamicText(); // 服务状态/插件/导出/导入等动态区块按当前语言重渲染（en 与 zh 恢复都执行）
 }
@@ -1107,6 +1118,27 @@ function wireLogs() {
     $("log-view").textContent = "";
     state.logOffset = 0;
     state.logArchiveLoaded = true; // 归档已删除，无需重载
+  });
+  // 日志路径点击复制：成功/失败时文案短暂变“已复制/复制失败”，1.6s 后还原原路径
+  const pathEl = $("log-path");
+  let copyTimer = null;
+  pathEl.addEventListener("click", async () => {
+    const txt = pathEl.textContent || "";
+    if (!txt || txt === "—" || pathEl.dataset.copy) return; // 占位符 / 正在显示提示时不再复制
+    let ok = false;
+    try { await bindings().CopyToClipboard(txt); ok = true; }
+    catch (e) { console.error("CopyToClipboard", e); }
+    const mark = tr(ok ? "已复制" : "复制失败");
+    pathEl.dataset.copy = txt; // 保存原路径（刷新会重写文本并覆盖该标记，还原时校验）
+    pathEl.textContent = mark;
+    pathEl.classList.add(ok ? "copied" : "copied-fail");
+    clearTimeout(copyTimer);
+    copyTimer = setTimeout(() => {
+      const orig = pathEl.dataset.copy || "";
+      delete pathEl.dataset.copy;
+      pathEl.classList.remove("copied", "copied-fail");
+      if (orig && pathEl.textContent === mark) pathEl.textContent = orig; // 仅当仍显示提示才还原，避免覆盖刷新后的新路径
+    }, 1600);
   });
 }
 

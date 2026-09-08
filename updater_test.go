@@ -168,3 +168,71 @@ func TestResolveHarnessLatest(t *testing.T) {
 		t.Errorf("empty tags: latest/note = %q/%q, want empty", latest, note)
 	}
 }
+
+// TestResolveNpmUpdateTarget npm 形态的预发布通道判定：npm 已发布版本全为预发布
+// （实测 registry 现状：0.0.1-rc.1 … 0.1.3-alpha.2，无稳定版）时，通道关闭不应返回
+// 任何更新目标（此前误报“检测到 0.1.3-alpha.2”），只给说明；通道开启才取最新预发布。
+func TestResolveNpmUpdateTarget(t *testing.T) {
+	// 真实 npm 版本表（@deepseek-ai/dsh，全预发布，最新 0.1.3-alpha.2）
+	npmPreOnly := []string{
+		"0.0.1-rc.1", "0.0.1-rc.2", "0.0.1-rc.5",
+		"0.1.0-rc.2", "0.1.0-rc.3", "0.1.0-rc.6", "0.1.0-rc.7", "0.1.0-rc.8",
+		"0.1.1-rc.1", "0.1.1-rc.2",
+		"0.1.2-alpha.2", "0.1.2-alpha.3", "0.1.2-alpha.4", "0.1.2-alpha.5",
+		"0.1.2-rc.1", "0.1.3-alpha.2",
+	}
+
+	// 通道关闭 + 全预发布：不返回更新目标（修复误报的核心断言），note 提及最新发布
+	v, note, err := resolveNpmUpdateTarget(npmPreOnly, false)
+	if err != nil {
+		t.Fatalf("channel off: unexpected err %v", err)
+	}
+	if v != "" {
+		t.Errorf("channel off + pre-only: version = %q, want empty (无稳定版不得检测预发布)", v)
+	}
+	if note == "" || !strings.Contains(note, "v0.1.3-alpha.2") {
+		t.Errorf("channel off + pre-only: note = %q, want guidance mentioning v0.1.3-alpha.2", note)
+	}
+
+	// 通道开启 + 全预发布：取版本号最大者（0.1.3-alpha.2），附“全预发布”说明
+	v, note, err = resolveNpmUpdateTarget(npmPreOnly, true)
+	if err != nil {
+		t.Fatalf("channel on: unexpected err %v", err)
+	}
+	if v != "0.1.3-alpha.2" {
+		t.Errorf("channel on + pre-only: version = %q, want 0.1.3-alpha.2", v)
+	}
+	if note == "" {
+		t.Error("channel on + pre-only: note empty, want 说明（npm 仅有预发布）")
+	}
+
+	// 存在稳定版 + 通道关闭：取最新稳定版，无说明
+	npmWithStable := append(append([]string{}, npmPreOnly...), "0.1.2", "0.1.1")
+	v, note, err = resolveNpmUpdateTarget(npmWithStable, false)
+	if err != nil {
+		t.Fatalf("with stable + channel off: unexpected err %v", err)
+	}
+	if v != "0.1.2" {
+		t.Errorf("with stable + channel off: version = %q, want 0.1.2", v)
+	}
+	if note != "" {
+		t.Errorf("with stable + channel off: note = %q, want empty", note)
+	}
+
+	// 存在稳定版但更新预发布 + 通道开启：取版本号最大（与源码形态 resolveHarnessLatest 一致）
+	v, note, err = resolveNpmUpdateTarget(npmWithStable, true)
+	if err != nil {
+		t.Fatalf("with stable + channel on: unexpected err %v", err)
+	}
+	if v != "0.1.3-alpha.2" {
+		t.Errorf("with stable + channel on: version = %q, want 0.1.3-alpha.2（版本号最大含预发布）", v)
+	}
+	if note != "" {
+		t.Errorf("with stable + channel on: note = %q, want empty（存在稳定版时不附全预发布说明）", note)
+	}
+
+	// 空版本表：错误返回
+	if _, _, err = resolveNpmUpdateTarget(nil, false); err == nil {
+		t.Error("empty versions: want error")
+	}
+}

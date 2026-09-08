@@ -396,18 +396,21 @@ func restartBackgroundService(onState func(stage string)) bool {
 // 版本源与「重置服务」保持一致（修复：0.1.2-rc.1 已发 npm 但 GitHub Release 列表缺失时，
 // 重置显示 0.1.2-rc.1、检查更新却停在 0.1.1-rc.2 的不一致）：
 //   - npm 预构建形态 → npm registry 已发布版本（GitHub Release 常领先/缺失，而安装走 npm，
-//     必须以 npm 真实存在的版本为准），稳定版优先、全预发布回退最新发布（同 fetchNpmResetTarget）；
+//     必须以 npm 真实存在的版本为准）。目标按「预发布通道」开关选取：开启取版本号最大
+//     （与源码形态 resolveHarnessLatest 一致）；关闭仅取稳定版，npm 无稳定版时不提供更新
+//     目标、只返回说明（修复：未开通道仍“检测到”npm 最新预发布 0.1.3-alpha.2 的误报）；
 //   - 源码 checkout 形态 → GitHub Release（源码更新切 git tag，以 Release 为准）。
 func queryHarnessUpdate() (latest, cur string, newer bool, note string) {
 	cur = installedHarnessVersion()
 	if isNpmHarnessReady() {
-		best, n, err := fetchNpmResetTarget()
+		best, n, err := fetchNpmResetTarget(harnessPrereleaseOverride)
 		if err != nil {
 			log.Printf("harness update check (npm) failed: %v", err)
 			return "", cur, false, ""
 		}
 		if best == "" {
-			return "", cur, false, ""
+			// 通道关闭且 npm 仅有预发布：无更新目标，n 为面向用户说明（前端显示 note，不误报“检查失败”）
+			return "", cur, false, n
 		}
 		if n != "" {
 			note = "npm 上当前仅有预发布版本，已按最新发布 " + withV(best) + " 检查"
@@ -654,21 +657,46 @@ func npmHarnessPublishedVersions() ([]string, error) {
 	return outV, nil
 }
 
-// fetchNpmResetTarget 返回 npm 预构建形态的「重置回退目标」：npm registry 上按通道语义
-// 选最新版本——有稳定版取稳定版；仓库/npm 只有预发布时回退最新发布并给说明（与
-// fetchHarnessResetTarget 的 GitHub 版本同思路，但保证目标真实存在于 npm、装得上）。
-func fetchNpmResetTarget() (version, note string, err error) {
+// fetchNpmResetTarget 返回 npm 预构建形态应检测/回退的版本（现仅被 queryHarnessUpdate 调用；
+// 重置下拉目标由 GetResetVersions 独立解析）。目标必须真实存在于 npm（pnpm add 精确版本
+// 才装得上），按「预发布通道」开关解析：
+//   - allowPrerelease=false：取最新稳定版；npm 无稳定版时不返回目标、只返回 note 说明；
+//   - allowPrerelease=true：取版本号最大者（含预发布，与源码形态 resolveHarnessLatest 一致）；
+//     全部为预发布时 note 说明按最新发布检测。
+func fetchNpmResetTarget(allowPrerelease bool) (version, note string, err error) {
 	versions, err := npmHarnessPublishedVersions()
 	if err != nil {
 		return "", "", err
 	}
-	if best := pickHarnessVersion(versions, false); best != "" {
-		return best, "", nil
+	return resolveNpmUpdateTarget(versions, allowPrerelease)
+}
+
+// resolveNpmUpdateTarget 由 npm 已发布版本表按通道开关解析应检测目标（纯函数，便于单测）。
+func resolveNpmUpdateTarget(versions []string, allowPrerelease bool) (version, note string, err error) {
+	stable := pickHarnessVersion(versions, false)
+	if !allowPrerelease {
+		if stable != "" {
+			return stable, "", nil
+		}
+		if newest := pickHarnessVersion(versions, true); newest != "" {
+			return "", harnessNpmPreOnlyNote(newest), nil
+		}
+		return "", "", fmt.Errorf("npm registry 未发现可用的 @deepseek-ai/dsh 版本")
 	}
-	if best := pickHarnessVersion(versions, true); best != "" {
-		return best, "（npm 已发布版本均为预发布，回退目标为最新发布 " + withV(best) + "）", nil
+	best := pickHarnessVersion(versions, true)
+	if best == "" {
+		return "", "", fmt.Errorf("npm registry 未发现可用的 @deepseek-ai/dsh 版本")
 	}
-	return "", "", fmt.Errorf("npm registry 未发现可用的 @deepseek-ai/dsh 版本")
+	if stable == "" {
+		return best, "（npm 已发布版本均为预发布，最新可用 " + withV(best) + "）", nil
+	}
+	return best, "", nil
+}
+
+// harnessNpmPreOnlyNote 组装「npm 仅有预发布而通道关闭」的说明文案（npm 数据源措辞，
+// 与源码形态 harnessPreOnlyNote 对齐但区分数据源）。
+func harnessNpmPreOnlyNote(newest string) string {
+	return fmt.Sprintf("npm 上暂无稳定版本，最新发布为 %s（预发布）；开启「预发布通道」后可更新", withV(newest))
 }
 
 // setHarnessOverrides 向 harness 目录注入 pnpm.overrides["@deepseek-ai/*"] = <ver>，

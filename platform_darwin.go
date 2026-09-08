@@ -772,3 +772,13 @@ func startUpdateApply(rel *latestRelease) {
 		showMessageBox("更新失败：\n"+err.Error()+"\n\n请稍后重试，或前往 GitHub Releases 手动下载。", appName)
 	}
 }
+
+// setClipboardText macOS：经 pbcopy 写入系统剪贴板（无原生剪贴板 syscall 封装）。
+func setClipboardText(text string) error {
+	cmd := exec.Command("pbcopy")
+	cmd.Stdin = strings.NewReader(text)
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("pbcopy 失败：%w", err)
+	}
+	return nil
+}

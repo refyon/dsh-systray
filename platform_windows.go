@@ -5,6 +5,7 @@ package main
 import (
 	"context"
 	_ "embed"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -1037,4 +1038,61 @@ func startUpdateApply(rel *latestRelease) {
 // askCancelUpdate 关闭下载进度窗口时询问是否取消更新：true=确认取消。
 func askCancelUpdate() bool {
 	return runModernDialog(appName, T("是否取消更新？"), []string{T("取消更新"), T("继续更新")}, 0) == 0
+}
+
+// setClipboardText 把 UTF-16 文本写入系统剪贴板（CF_UNICODETEXT，路径含中文时无编码问题）。
+// OpenClipboard 可能因其他进程瞬时占用而失败：短重试后返回错误（调用方给用户可理解提示）。
+// SetClipboardData 成功后内存所有权归系统，不得 GlobalFree。
+func setClipboardText(text string) error {
+	user32 := syscall.NewLazyDLL("user32.dll")
+	kernel32 := syscall.NewLazyDLL("kernel32.dll")
+	openClipboard := user32.NewProc("OpenClipboard")
+	emptyClipboard := user32.NewProc("EmptyClipboard")
+	setClipboardData := user32.NewProc("SetClipboardData")
+	closeClipboard := user32.NewProc("CloseClipboard")
+	globalAlloc := kernel32.NewProc("GlobalAlloc")
+	globalLock := kernel32.NewProc("GlobalLock")
+	globalUnlock := kernel32.NewProc("GlobalUnlock")
+	copyMemory := kernel32.NewProc("CopyMemory")
+
+	var opened uintptr
+	for i := 0; i < 10; i++ {
+		r, _, _ := openClipboard.Call(0) // hwnd=0：剪贴板与当前任务关联，不依赖主窗口
+		if r != 0 {
+			opened = r
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if opened == 0 {
+		return errors.New("无法打开系统剪贴板（可能被其他程序占用），请重试")
+	}
+	defer closeClipboard.Call()
+
+	if r, _, _ := emptyClipboard.Call(); r == 0 {
+		return errors.New("无法清空系统剪贴板")
+	}
+	// 组 UTF-16LE 字节（UTF16FromString 返回含结尾 NUL 的序列；Windows 小端）。
+	// 锁定地址以 uintptr 原样传给 CopyMemory，源为 Go []byte（Pointer→uintptr，
+	// 项目既有惯例）；不做 uintptr→unsafe.Pointer 直转（go vet unsafeptr 会告警）。
+	u16, _ := syscall.UTF16FromString(text)
+	raw := make([]byte, 0, len(u16)*2)
+	for _, c := range u16 {
+		raw = append(raw, byte(c), byte(c>>8))
+	}
+	const gmemMoveable = 0x0002
+	hMem, _, _ := globalAlloc.Call(gmemMoveable, uintptr(len(raw)))
+	if hMem == 0 {
+		return errors.New("剪贴板内存分配失败")
+	}
+	addr, _, _ := globalLock.Call(hMem)
+	if addr == 0 {
+		return errors.New("剪贴板内存锁定失败")
+	}
+	copyMemory.Call(addr, uintptr(unsafe.Pointer(&raw[0])), uintptr(len(raw)))
+	globalUnlock.Call(hMem)
+	if r, _, _ := setClipboardData.Call(13 /* CF_UNICODETEXT */, hMem); r == 0 {
+		return errors.New("写入系统剪贴板失败")
+	}
+	return nil
 }
