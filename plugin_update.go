@@ -12,6 +12,7 @@ package main
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -36,8 +37,42 @@ var pluginRegistries = []string{
 	"https://registry.npmmirror.com",
 }
 
+// ==================== 单插件操作结果事件（Go → 前端行状态刷新） ====================
+// 此前更新/删除/启用完成后只发无负载的 plugins:changed：成功路径 plugState 残留
+// 「有新版本」提示、失败路径（回退等）完全无事件——行永久停留「正在更新插件…」。
+// plugin:op:done 带结果负载，前端据此更新对应行的提示语与更新按钮状态。
+
+// PluginOpDone 单插件操作（update/remove/enable）收尾事件负载。
+type PluginOpDone struct {
+	Name    string `json:"name"`              // 插件名
+	Op      string `json:"op"`                // update | remove | enable
+	OK      bool   `json:"ok"`                // 操作是否成功（保留版本/删除生效/启用成功）
+	Version string `json:"version,omitempty"` // 操作后的插件版本（失败/删除可为空）
+	Reason  string `json:"reason,omitempty"`  // 失败原因；成功时若有「连带禁用的其它插件」则为其名单（"、" 连接）
+}
+
+func emitPluginOpDone(d PluginOpDone) {
+	if appCtx != nil {
+		wruntime.EventsEmit(appCtx, "plugin:op:done", d)
+	}
+}
+
+// disabledNames 禁用插件列表 → 名单文案（弹窗与事件 reason 共用）。
+func disabledNames(rows []PluginRow) string {
+	names := make([]string, 0, len(rows))
+	for _, r := range rows {
+		names = append(names, r.Name)
+	}
+	return strings.Join(names, "、")
+}
+
 // pluginCheckDeadline 单插件一次检查的最长耗时（多个候选源共用该预算，超时即报错返回）。
 const pluginCheckDeadline = 15 * time.Second
+
+// pluginCheckCandidateTimeout 单候选请求超时（且不超共享 deadline 剩余预算）：
+// 某候选被墙/挂起时不再独占整个共享预算，后续镜像与 API 兜底候选仍有机会尝试
+// （2026-09-08 复盘：mirror.ghproxy.com 挂起吃掉整段 15s，restrict-discipline 检查更新报超时）。
+const pluginCheckCandidateTimeout = 6 * time.Second
 
 // installRegistry 探测/缓存安装用 registry：官方可达用官方，不可达自动切 npmmirror——
 // 坏网络/被墙时 pnpm install 不再因 registry.npmjs.org error(23) 整体失败
@@ -461,15 +496,18 @@ func findPluginRowByID(id string) (PluginRow, bool) {
 // ---- 网络查询 ----
 
 // getWithMirrors 带多候选（直连 + 镜像前缀）的 GET，把候选 URL 依次请求直至成功。
-// deadline 为整体预算（上下文超时，逐候选共享），避免镜像全挂时长时间卡 UI。
+// deadline 为整体预算（上下文超时，逐候选共享），避免镜像全挂时长时间卡 UI；
+// 单候选另有 pluginCheckCandidateTimeout 上限（取剩余预算更小者），防止单个挂起候选独占预算。
 func getWithMirrors(candidates []string, deadline time.Duration) ([]byte, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), deadline)
 	defer cancel()
 	client := &http.Client{}
 	var lastErr error
 	for _, u := range candidates {
-		req, err := http.NewRequestWithContext(ctx, "GET", u, nil)
+		candCtx, candCancel := context.WithTimeout(ctx, pluginCheckCandidateTimeout)
+		req, err := http.NewRequestWithContext(candCtx, "GET", u, nil)
 		if err != nil {
+			candCancel()
 			lastErr = err
 			continue
 		}
@@ -477,16 +515,19 @@ func getWithMirrors(candidates []string, deadline time.Duration) ([]byte, error)
 		req.Header.Set("Accept", "application/vnd.github+json, application/json")
 		resp, err := client.Do(req)
 		if err != nil {
+			candCancel()
 			lastErr = err
 			continue
 		}
 		if resp.StatusCode != http.StatusOK {
 			resp.Body.Close()
+			candCancel()
 			lastErr = fmt.Errorf("HTTP %d", resp.StatusCode)
 			continue
 		}
 		body, err := io.ReadAll(io.LimitReader(resp.Body, updateMaxBodySize))
 		resp.Body.Close()
+		candCancel()
 		if err != nil {
 			lastErr = err
 			continue
@@ -706,11 +747,39 @@ func githubDefaultBranch(owner, repo string) (string, error) {
 	return m.DefaultBranch, nil
 }
 
-// githubRawFile 读取仓库默认分支上的指定文件（raw.githubusercontent，带镜像回退）。
+// githubRawFile 读取仓库默认分支上的指定文件。
+// 通道 1：raw.githubusercontent.com（直连 + 镜像前缀）；通道 2（兜底）：GitHub API
+// contents 端点（api.github.com 与 raw 属不同通道——2026-09-08 复盘实证 raw 通道全挂时
+// API 通道仍可达，restrict-discipline 检查更新曾因此报「读取默认分支 package.json 失败」）。
 func githubRawFile(owner, repo, branch, file string) ([]byte, error) {
 	raw := fmt.Sprintf("https://raw.githubusercontent.com/%s/%s/%s/%s",
 		url.PathEscape(owner), url.PathEscape(repo), url.PathEscape(branch), file)
-	return getWithMirrors(mirrorCandidates(raw), pluginCheckDeadline)
+	if body, err := getWithMirrors(mirrorCandidates(raw), pluginCheckDeadline); err == nil {
+		return body, nil
+	}
+	api := fmt.Sprintf("https://api.github.com/repos/%s/%s/contents/%s?ref=%s",
+		url.PathEscape(owner), url.PathEscape(repo), url.PathEscape(file), url.QueryEscape(branch))
+	body, err := getWithMirrors(mirrorCandidates(api), pluginCheckDeadline)
+	if err != nil {
+		return nil, err
+	}
+	return decodeGithubContents(body)
+}
+
+// decodeGithubContents 解析 GitHub API contents 响应（encoding=base64 的 content 字段，容忍换行拆分）。
+func decodeGithubContents(body []byte) ([]byte, error) {
+	var m struct {
+		Encoding string `json:"encoding"`
+		Content  string `json:"content"`
+	}
+	if json.Unmarshal(body, &m) != nil || m.Encoding != "base64" || m.Content == "" {
+		return nil, fmt.Errorf("GitHub API contents 响应缺 base64 内容")
+	}
+	dec, err := base64.StdEncoding.DecodeString(strings.Join(strings.Fields(m.Content), ""))
+	if err != nil {
+		return nil, fmt.Errorf("GitHub API contents base64 解码失败：%w", err)
+	}
+	return dec, nil
 }
 
 // fetchGithubLatestVersion 按默认分支 package.json 的 version 判定最新版本
@@ -877,6 +946,7 @@ func runPluginUpdate(id string) {
 	row, ok := findPluginRowByID(id)
 	if !ok {
 		showMessageBox(T("未找到该插件，可能已被移除。"), appName)
+		emitPluginOpDone(PluginOpDone{Name: id, Op: "update", OK: false, Reason: "未找到该插件，可能已被移除"})
 		return
 	}
 	// 记录本次更新前的禁用状态：被禁用插件更新成功后需尝试重新启用（见 3c 分支）
@@ -889,6 +959,7 @@ func runPluginUpdate(id string) {
 			msg = "该插件无远程更新来源。"
 		}
 		showMessageBox("无法更新插件：\n"+msg, appName)
+		emitPluginOpDone(PluginOpDone{Name: row.Name, Op: "update", OK: false, Reason: msg})
 		return
 	}
 	// 确定安装目标与同源 registry（npm 必须与检查结果同源，避免镜像/缓存漂移）
@@ -904,6 +975,7 @@ func runPluginUpdate(id string) {
 	args, err := pluginUpdateArgs(row, target, registry)
 	if err != nil {
 		showMessageBox(err.Error(), appName)
+		emitPluginOpDone(PluginOpDone{Name: row.Name, Op: "update", OK: false, Reason: err.Error()})
 		return
 	}
 	logUI("开始更新插件", fmt.Sprintf("%s (%s -> %s)", row.Name, orDash(row.Version), orDash(target)))
@@ -924,21 +996,46 @@ func runPluginUpdate(id string) {
 		hadNM[i] = snapshotPluginProfile(dir)
 	}
 
-	// 2) pnpm 安装（逐 profile 执行；输出捕获入失败原因）
+	// 2) pnpm 安装（逐 profile 执行；输出捕获入失败原因）。
+	//    供应链策略失败（minimumReleaseAge：lockfile 中其它插件新发布未满年龄，如
+	//    dsh-cost-meter@1.7.14 案例）会卡死整条命令——与目标插件无关，自动以
+	//    --config.minimumReleaseAge=0 临时跳过年龄校验重试一次（仅本次；不动 profile 配置）。
 	var perr error
-	for i, dir := range row.Locs {
-		splash.Update(fmt.Sprintf("正在更新 %s（%d/%d）…", row.Name, i+1, len(row.Locs)),
-			0.25+0.4*float64(i)/float64(len(row.Locs)))
-		var out string
-		out, perr = runProfileCmdCapture(dir, pnpmCmd(), args...)
-		if perr != nil {
-			perr = profileInstallErr(perr, out)
+	retried := false
+	for attempt := 1; attempt <= 2; attempt++ {
+		if attempt == 2 {
+			splash.Update("供应链策略拦截（发布年龄校验），正在以临时跳过校验重试…", 0.55)
+			retried = true
+		}
+		perr = nil
+		var failOut string
+		for i, dir := range row.Locs {
+			splash.Update(fmt.Sprintf("正在更新 %s（%d/%d）…", row.Name, i+1, len(row.Locs)),
+				0.25+0.4*float64(i)/float64(len(row.Locs)))
+			var out string
+			cmdArgs := args
+			if attempt == 2 {
+				cmdArgs = append(append([]string{}, args...), "--config.minimumReleaseAge=0")
+			}
+			out, perr = runProfileCmdCapture(dir, pnpmCmd(), cmdArgs...)
+			if perr != nil {
+				failOut = out
+				perr = profileInstallErr(perr, out)
+				break
+			}
+		}
+		if perr == nil || !supplyChainViolation(failOut) || attempt == 2 {
 			break
 		}
+		logUI("供应链策略拦截，重试", fmt.Sprintf("%s：lockfile 发布年龄校验失败，临时跳过重试", row.Name))
 	}
 	if perr != nil {
 		// 3a) 失败：回退所有 profile 快照并重启校验
-		rollbackPluginUpdate(splash, row, hadNM, fmt.Sprintf("安装失败：%v", perr))
+		msg := fmt.Sprintf("安装失败：%v", perr)
+		if retried {
+			msg += "（已以临时跳过发布年龄校验重试仍失败；可检查 pnpm-workspace.yaml 的 minimumReleaseAge 设置）"
+		}
+		rollbackPluginUpdate(splash, row, hadNM, msg)
 		return
 	}
 
@@ -959,31 +1056,70 @@ func runPluginUpdate(id string) {
 		}
 	}
 
-	// 3) 重启并健康校验。失败时先尝试「禁用启动日志点名的用户插件」换取服务可启动
-	//    （可能含本次被更新的插件：新版与核心不兼容时保留新版本并保持/转为禁用，不再整体回退）；
-	//    禁用后仍失败或无嫌疑（核心故障）→ 回退到更新前版本。
+	// 3) 重启并健康校验。失败时先尝试「禁用启动日志点名的用户插件」换取服务可启动，
+	//    并按嫌疑是否含本次更新的插件分层处理，避免与本次更新无关的其它插件问题
+	//    （半损坏/残留 bundle）把无辜的目标插件更新整体回退：
+	//    - 无嫌疑（核心/官方故障）→ 回退；
+	//    - 嫌疑含目标插件 → 禁全部嫌疑（含目标）验证：成功保留新版本（含禁用名单）；
+	//      仍失败回退（此时目标插件确实可疑）；
+	//    - 嫌疑只含其它插件 → 先禁其它嫌疑（exclude 目标）：成功保留新版本（目标插件本身健康）；
+	//      仍失败再兜底禁全部用户插件；仍失败才回退（启动失败与本次更新无关，回退仅是恢复现场）。
 	splash.Update(T("正在重启服务…"), 0.85)
 	if !restartAndVerifyServer() {
 		splash.Update(T("启动校验失败，正在排查不兼容插件…"), 0.9)
-		disabled, ok := disableBootSuspects(row.Locs)
-		if ok {
-			// 保留新版本：把更新前快照提升为 LKG（未来失败回退到可用状态）
+		// finish 保留新版本：快照提升为 LKG + 弹窗 + 事件（disabled 为被禁用插件；all=禁用了全部用户插件）
+		finish := func(disabled []PluginRow, all bool) {
 			for _, dir := range row.Locs {
 				promoteProfileLkg(dir)
 			}
 			splash.Close()
-			names := make([]string, 0, len(disabled))
-			for _, d := range disabled {
-				names = append(names, d.Name)
+			names := disabledNames(disabled)
+			var verb string
+			if all {
+				verb = "未能定位到具体的不兼容插件，已禁用全部已激活的用户插件以保证新版启动（保留记录，可在关于页逐个重新启用）：\n· " + names
+			} else {
+				verb = "以下插件与新版本不兼容，已自动禁用（保留记录，可在关于页重新启用或继续更新）：\n· " + names
 			}
 			logUI("更新插件完成（含不兼容插件禁用）",
-				fmt.Sprintf("%s: %s -> %s | 禁用 %s", row.Name, orDash(row.Version), orDash(newVer), strings.Join(names, "、")))
-			showMessageBox(fmt.Sprintf("插件 %s 已更新：\n· %s → %s\n· 服务已重启。\n\n"+
-				"以下插件与新版本不兼容，已自动禁用（保留记录，可在关于页重新启用或继续更新）：\n· %s",
-				row.Name, orDash(row.Version), orDash(newVer), strings.Join(names, "、")), appName)
+				fmt.Sprintf("%s: %s -> %s | 禁用 %s", row.Name, orDash(row.Version), orDash(newVer), names))
+			showMessageBox(fmt.Sprintf("插件 %s 已更新：\n· %s → %s\n· 服务已重启。\n\n%s",
+				row.Name, orDash(row.Version), orDash(newVer), verb), appName)
 			if appCtx != nil {
 				wruntime.EventsEmit(appCtx, "plugins:changed", nil)
 			}
+			emitPluginOpDone(PluginOpDone{Name: row.Name, Op: "update", OK: true, Version: newVer, Reason: names})
+		}
+		hit := false
+		for _, s := range userSuspectPlugins() {
+			if s.Name == row.Name {
+				hit = true
+				break
+			}
+		}
+		if !hit {
+			// 嫌疑不含目标插件：先禁其它嫌疑（exclude 目标），成功即保留新版本
+			if disabled, ok := disableSuspectsExcept(row.Locs, map[string]bool{row.Name: true}); ok {
+				finish(disabled, false)
+				return
+			}
+			// 其它嫌疑禁用无效：兜底禁全部用户插件（对齐 harness 更新路径）
+			var profileDirs []string
+			for _, pf := range enumeratePluginProfiles() {
+				profileDirs = append(profileDirs, pf.dir)
+			}
+			if disabled, ok := disableAllUserPlugins(profileDirs); ok {
+				finish(disabled, true)
+				return
+			}
+			// 启动失败与本次更新无关且两级禁用均未解决：回退恢复现场（reason 写明尝试过程）
+			rollbackPluginUpdate(splash, row, hadNM,
+				"更新后服务启动失败（与插件 "+row.Name+" 无关：启动日志点名的是其它插件，已尝试禁用仍未解决）")
+			return
+		}
+		// 嫌疑含目标插件：按原语义禁全部嫌疑（含目标）验证
+		disabled, ok := disableBootSuspects(row.Locs)
+		if ok {
+			finish(disabled, false)
 			return
 		}
 		rollbackPluginUpdate(splash, row, hadNM, "更新后服务启动失败")
@@ -1003,10 +1139,12 @@ func runPluginUpdate(id string) {
 			logUI("更新插件并重新启用", fmt.Sprintf("%s: %s -> %s", row.Name, orDash(row.Version), orDash(newVer)))
 			showMessageBox(fmt.Sprintf("插件 %s 已更新到 %s 并重新启用，服务已重启。",
 				row.Name, orDash(newVer)), appName)
+			emitPluginOpDone(PluginOpDone{Name: row.Name, Op: "update", OK: true, Version: newVer})
 		} else {
 			logUI("更新插件后仍禁用", fmt.Sprintf("%s: %s（%s）", row.Name, orDash(newVer), why))
 			showMessageBox(fmt.Sprintf("插件 %s 已更新到 %s，但启用后仍不兼容，继续保持禁用。\n原因：%s\n\n"+
 				"可稍后再更新，或在插件确认修复后手动「启用」。", row.Name, orDash(newVer), why), appName)
+			emitPluginOpDone(PluginOpDone{Name: row.Name, Op: "update", OK: true, Version: newVer, Reason: "已更新但仍不兼容，继续保持禁用：" + why})
 		}
 		if appCtx != nil {
 			wruntime.EventsEmit(appCtx, "plugins:changed", nil)
@@ -1037,6 +1175,7 @@ func runPluginUpdate(id string) {
 	if appCtx != nil {
 		wruntime.EventsEmit(appCtx, "plugins:changed", nil)
 	}
+	emitPluginOpDone(PluginOpDone{Name: row.Name, Op: "update", OK: true, Version: newVer})
 }
 
 // ==================== 截图 / 演示模式 ====================
@@ -1064,6 +1203,24 @@ func shotPluginCheck(id string) PluginCheckResult {
 		}
 	}
 	return PluginCheckResult{Name: id, Error: "未找到该插件。"}
+}
+
+// supplyChainViolation pnpm 输出是否为供应链策略拦截（lockfile 条目发布年龄校验失败）。
+// 实测形态（pnpm 11.x）：
+//
+//	✗ Lockfile failed supply-chain policy check …
+//	[ERR_PNPM_MINIMUM_RELEASE_AGE_VIOLATION] 1 lockfile entries failed verification:
+//	  <name>@<ver> was published at …, within the minimumReleaseAge cutoff (…)
+//
+// 拦截对象可能是与本次更新无关的其它插件（lockfile 任一条目被拒，整条命令即失败）——
+// 调用方据此刻意以 --config.minimumReleaseAge=0 临时跳过年龄校验重试一次（仅本次，不动 profile 配置）。
+func supplyChainViolation(out string) bool {
+	low := strings.ToLower(out)
+	return strings.Contains(out, "ERR_PNPM_MINIMUM_RELEASE_AGE_VIOLATION") ||
+		strings.Contains(low, "minimumreleaseage") ||
+		strings.Contains(low, "minimum release age") ||
+		strings.Contains(low, "supply-chain policy") ||
+		strings.Contains(low, "um_release_age_violation")
 }
 
 // profileInstallErr 包装 pnpm 安装失败：附带命令输出尾部（截断 ~600 字），使
@@ -1099,6 +1256,8 @@ func rollbackPluginUpdate(splash *SplashState, row PluginRow, hadNM []bool, reas
 	splash.Close()
 	logUI("更新插件失败", fmt.Sprintf("%s: %s", row.Name, reason))
 	showMessageBox("插件 "+row.Name+" 更新失败（"+reason+"），已回退到更新前版本。\n\n日志："+unifiedLogPath(), appName)
+	// 结果事件：行内显示失败原因（此前失败路径无任何事件，行永久停留「正在更新插件…」）
+	emitPluginOpDone(PluginOpDone{Name: row.Name, Op: "update", OK: false, Reason: reason})
 }
 
 // ==================== 插件删除 ====================
@@ -1144,6 +1303,7 @@ func runPluginRemove(id string) {
 		if appCtx != nil {
 			wruntime.EventsEmit(appCtx, "plugins:changed", nil)
 		}
+		emitPluginOpDone(PluginOpDone{Name: row.Name, Op: "remove", OK: true})
 		return
 	}
 	// 「已自动禁用且无依赖声明」行：只有禁用记录与（可能残留的）文件，无依赖可移除——
@@ -1162,6 +1322,7 @@ func runPluginRemove(id string) {
 		if appCtx != nil {
 			wruntime.EventsEmit(appCtx, "plugins:changed", nil)
 		}
+		emitPluginOpDone(PluginOpDone{Name: row.Name, Op: "remove", OK: true})
 		return
 	}
 
@@ -1184,17 +1345,39 @@ func runPluginRemove(id string) {
 	// 2) pnpm remove（逐目录执行）；pnpm 不感知 dsh.profile.bundles，删除必须同步摘除
 	// bundle 激活声明——残留会导致服务启动报「cannot resolve profile bundle」硬失败
 	// （本机删除 deepseek-idesign 实证，健康校验失败后整体回退、删除永远不生效）。
+	// 供应链策略失败（lockfile 其它插件发布年龄校验，见 supplyChainViolation）同 update 路径：
+	// 自动临时跳过年龄校验重试一次。
 	var perr error
-	for i, dir := range row.Locs {
-		splash.Update(fmt.Sprintf("正在移除 %s（%d/%d）…", row.Name, i+1, len(row.Locs)),
-			0.25+0.4*float64(i)/float64(len(row.Locs)))
-		if perr = runProfileCmd(dir, pnpmCmd(), "remove", row.Name); perr != nil {
+	retried := false
+	for attempt := 1; attempt <= 2; attempt++ {
+		if attempt == 2 {
+			splash.Update("供应链策略拦截（发布年龄校验），正在以临时跳过校验重试…", 0.55)
+			retried = true
+		}
+		perr = nil
+		var failOut string
+		for i, dir := range row.Locs {
+			splash.Update(fmt.Sprintf("正在移除 %s（%d/%d）…", row.Name, i+1, len(row.Locs)),
+				0.25+0.4*float64(i)/float64(len(row.Locs)))
+			var out string
+			cmdArgs := []string{"remove", row.Name}
+			if attempt == 2 {
+				cmdArgs = append(cmdArgs, "--config.minimumReleaseAge=0")
+			}
+			out, perr = runProfileCmdCapture(dir, pnpmCmd(), cmdArgs...)
+			if perr != nil {
+				failOut = out
+				break
+			}
+			if err := stripProfileBundleEntry(dir, row.Name); err != nil {
+				perr = fmt.Errorf("清理激活清单失败：%v", err)
+				break
+			}
+		}
+		if perr == nil || !supplyChainViolation(failOut) || attempt == 2 {
 			break
 		}
-		if err := stripProfileBundleEntry(dir, row.Name); err != nil {
-			perr = fmt.Errorf("清理激活清单失败：%v", err)
-			break
-		}
+		logUI("供应链策略拦截，重试", fmt.Sprintf("%s：lockfile 发布年龄校验失败，临时跳过重试", row.Name))
 	}
 	if perr == nil {
 		// 3a) 移除后校验：任一目录的 package.json 仍声明该插件即视为失败
@@ -1206,36 +1389,54 @@ func runPluginRemove(id string) {
 		}
 	}
 	if perr != nil {
-		rollbackPluginRemove(splash, row, hadNM, fmt.Sprintf("移除失败：%v", perr))
+		msg := fmt.Sprintf("移除失败：%v", perr)
+		if retried {
+			msg += "（已以临时跳过发布年龄校验重试仍失败）"
+		}
+		rollbackPluginRemove(splash, row, hadNM, msg)
 		return
 	}
 
 	// 3b) 重启并健康校验。失败时尝试禁用启动日志点名的其它插件（删除本身已生效，
-	//     以禁用其它阻碍者换取服务可启动）；仍失败或无嫌疑则回退删除。
+	//     以禁用其它阻碍者换取服务可启动）；点名禁用无效再兜底禁全部用户插件；
+	//     仍失败或无嫌疑则回退删除（reason 写明尝试过程，避免「被无关插件拖累回退」的误读）。
 	splash.Update(T("正在重启服务…"), 0.85)
 	if !restartAndVerifyServer() {
 		splash.Update(T("启动校验失败，正在排查不兼容插件…"), 0.9)
-		disabled, ok := disableBootSuspects(row.Locs)
-		if ok {
+		keepRemoved := func(disabled []PluginRow, all bool) {
 			// 删除成功 + 禁用其它冲突插件：清理快照与 LKG（已删除插件不应被回退“复活”）
 			for _, dir := range row.Locs {
 				cleanupPluginProfileSnapshot(dir)
 				clearLkgInDir(dir)
 			}
 			splash.Close()
-			names := make([]string, 0, len(disabled))
-			for _, d := range disabled {
-				names = append(names, d.Name)
+			names := disabledNames(disabled)
+			var verb string
+			if all {
+				verb = "未能定位到具体的不兼容插件，已禁用全部已激活的用户插件以保证服务启动（可在关于页逐个重新启用）：\n· " + names
+			} else {
+				verb = "删除后以下插件与当前版本不兼容，已自动禁用（可在关于页检查更新后重新启用）：\n· " + names
 			}
-			logUI("删除插件完成（含其它插件禁用）", fmt.Sprintf("%s | 禁用 %s", row.Name, strings.Join(names, "、")))
-			showMessageBox(fmt.Sprintf("插件 %s 已删除，服务已重启。\n\n删除后以下插件与当前版本不兼容，已自动禁用"+
-				"（可在关于页检查更新后重新启用）：\n· %s", row.Name, strings.Join(names, "、")), appName)
+			logUI("删除插件完成（含其它插件禁用）", fmt.Sprintf("%s | 禁用 %s", row.Name, names))
+			showMessageBox(fmt.Sprintf("插件 %s 已删除，服务已重启。\n\n%s", row.Name, verb), appName)
 			if appCtx != nil {
 				wruntime.EventsEmit(appCtx, "plugins:changed", nil)
 			}
+			emitPluginOpDone(PluginOpDone{Name: row.Name, Op: "remove", OK: true, Reason: names})
+		}
+		if disabled, ok := disableBootSuspects(row.Locs); ok {
+			keepRemoved(disabled, false)
 			return
 		}
-		rollbackPluginRemove(splash, row, hadNM, "删除后服务启动失败")
+		var profileDirs []string
+		for _, pf := range enumeratePluginProfiles() {
+			profileDirs = append(profileDirs, pf.dir)
+		}
+		if disabled, ok := disableAllUserPlugins(profileDirs); ok {
+			keepRemoved(disabled, true)
+			return
+		}
+		rollbackPluginRemove(splash, row, hadNM, "删除后服务启动失败（与已删除插件无关：已尝试禁用其它插件仍未解决）")
 		return
 	}
 
@@ -1252,6 +1453,7 @@ func runPluginRemove(id string) {
 	if appCtx != nil {
 		wruntime.EventsEmit(appCtx, "plugins:changed", nil)
 	}
+	emitPluginOpDone(PluginOpDone{Name: row.Name, Op: "remove", OK: true})
 }
 
 // rollbackPluginRemove 插件删除失败：回退全部目录快照 → 重启校验 → 弹窗报告。
@@ -1270,6 +1472,7 @@ func rollbackPluginRemove(splash *SplashState, row PluginRow, hadNM []bool, reas
 	splash.Close()
 	logUI("删除插件失败", fmt.Sprintf("%s: %s", row.Name, reason))
 	showMessageBox("插件 "+row.Name+" 删除失败（"+reason+"），已回退到删除前状态。\n\n日志："+unifiedLogPath(), appName)
+	emitPluginOpDone(PluginOpDone{Name: row.Name, Op: "remove", OK: false, Reason: reason})
 }
 
 // ==================== 本地插件「待重指定」挂起记录 ====================
@@ -1554,7 +1757,8 @@ func runLocalPluginUpdate(row PluginRow, srcDir string) {
 		hadNM[i] = snapshotPluginProfile(dir)
 	}
 
-	// 2) 逐 profile 改写 spec 并 pnpm install（失败即回退；输出捕获入原因，避免干瘪 exit status）
+	// 2) 逐 profile 改写 spec 并 pnpm install（失败即回退；输出捕获入原因，避免干瘪 exit status；
+	//    供应链策略拦截时同远程更新路径自动临时跳过发布年龄校验重试一次）。
 	var perr error
 	for i, dir := range row.Locs {
 		splash.Update(fmt.Sprintf("正在更新 %s（%d/%d）…", row.Name, i+1, len(row.Locs)),
@@ -1562,16 +1766,37 @@ func runLocalPluginUpdate(row PluginRow, srcDir string) {
 		// 待重指定行的重指定：先恢复 bundle 激活（原记录 bundled=true 时）并清除挂起记录，
 		// 使 package.json 在安装前即为最终一致形态（服务重启健康校验可正确裁决兼容性）。
 		relinkPendingLocal(dir, row.Name)
-		if perr = setProfileDepSpec(dir, row.Name, spec); perr == nil {
-			var out string
-			out, perr = runProfileCmdCapture(dir, pnpmCmd(), "install")
-			if perr != nil {
-				perr = profileInstallErr(perr, out)
-			}
-		}
-		if perr != nil {
+		if perr = setProfileDepSpec(dir, row.Name, spec); perr != nil {
 			break
 		}
+	}
+	for attempt := 1; attempt <= 2; attempt++ {
+		if attempt == 2 {
+			splash.Update("供应链策略拦截（发布年龄校验），正在以临时跳过校验重试…", 0.55)
+		}
+		perr = nil
+		var failRaw string
+		for _, dir := range row.Locs {
+			var out string
+			cmdArgs := []string{"install"}
+			if attempt == 2 {
+				cmdArgs = append(cmdArgs, "--config.minimumReleaseAge=0")
+			}
+			out, perr = runProfileCmdCapture(dir, pnpmCmd(), cmdArgs...)
+			if perr != nil {
+				failRaw = out
+				perr = profileInstallErr(perr, out)
+				break
+			}
+		}
+		if perr == nil {
+			break // 全部目录安装成功
+		}
+		if attempt == 1 && supplyChainViolation(failRaw) {
+			logUI("供应链策略拦截，重试", fmt.Sprintf("%s：lockfile 发布年龄校验失败，临时跳过重试", row.Name))
+			continue
+		}
+		break
 	}
 	if perr != nil {
 		rollbackPluginUpdate(splash, row, hadNM, fmt.Sprintf("安装失败：%v", perr))
@@ -1613,10 +1838,12 @@ func runLocalPluginUpdate(row PluginRow, srcDir string) {
 			logUI("更新本地插件并重新启用", fmt.Sprintf("%s → %s（v%s）", row.Name, srcDir, orDash(newVer)))
 			showMessageBox(fmt.Sprintf("插件 %s 已更新并重新启用：\n· 来源目录：%s\n· 版本：%s → %s\n· 服务已重启，下次启动将正常加载。",
 				row.Name, srcDir, orDash(row.Version), orDash(newVer)), appName)
+			emitPluginOpDone(PluginOpDone{Name: row.Name, Op: "update", OK: true, Version: newVer})
 		} else {
 			logUI("更新本地插件后仍禁用", fmt.Sprintf("%s（%s）", row.Name, why))
 			showMessageBox(fmt.Sprintf("插件 %s 已更新到 %s，但启用后仍不兼容，继续保持禁用。\n原因：%s\n\n可稍后再更新，或在插件确认修复后手动「启用」。",
 				row.Name, orDash(newVer), why), appName)
+			emitPluginOpDone(PluginOpDone{Name: row.Name, Op: "update", OK: true, Version: newVer, Reason: "已更新但仍不兼容，继续保持禁用：" + why})
 		}
 		if appCtx != nil {
 			wruntime.EventsEmit(appCtx, "plugins:changed", nil)
@@ -1642,4 +1869,5 @@ func runLocalPluginUpdate(row PluginRow, srcDir string) {
 	if appCtx != nil {
 		wruntime.EventsEmit(appCtx, "plugins:changed", nil)
 	}
+	emitPluginOpDone(PluginOpDone{Name: row.Name, Op: "update", OK: true, Version: newVer})
 }

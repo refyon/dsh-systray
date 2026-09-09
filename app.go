@@ -647,10 +647,12 @@ func runPluginEnable(row PluginRow) {
 	if enabled {
 		logUI("启用插件完成", row.Name)
 		showMessageBox(fmt.Sprintf("插件 %s 已启用，服务已重启。", row.Name), appName)
+		emitPluginOpDone(PluginOpDone{Name: row.Name, Op: "enable", OK: true, Version: row.Version})
 	} else {
 		logUI("启用插件失败，已自动重新禁用", fmt.Sprintf("%s：%s", row.Name, why))
 		showMessageBox(fmt.Sprintf("插件 %s 启用失败（仍与当前版本不兼容），已自动重新禁用并重启服务。\n原因：%s\n\n"+
 			"可先「检查更新」到兼容版本，或确认插件已修复后再尝试启用。", row.Name, why), appName)
+		emitPluginOpDone(PluginOpDone{Name: row.Name, Op: "enable", OK: false, Reason: why})
 	}
 	if appCtx != nil {
 		wruntime.EventsEmit(appCtx, "plugins:changed", nil)

@@ -1053,7 +1053,9 @@ func setClipboardText(text string) error {
 	globalAlloc := kernel32.NewProc("GlobalAlloc")
 	globalLock := kernel32.NewProc("GlobalLock")
 	globalUnlock := kernel32.NewProc("GlobalUnlock")
-	copyMemory := kernel32.NewProc("CopyMemory")
+	// kernel32 只导出 RtlMoveMemory（CopyMemory 是 C 头文件宏、非 DLL 导出符号；
+	// 此前 NewProc("CopyMemory") 在调用时 mustFind panic，日志路径复制从未成功过）
+	copyMemory := kernel32.NewProc("RtlMoveMemory")
 
 	var opened uintptr
 	for i := 0; i < 10; i++ {

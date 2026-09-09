@@ -116,6 +116,8 @@ const I18N_DYN = {
   "重启失败，请查看日志": "Restart failed — see logs",
   "端口已修改为 {0}，当前服务仍运行于 {1}——重启后台服务后生效。": "Port changed to {0}, but the service still runs on {1} — effective after restarting the service.",
   "注意：所选为预发布版本，可能与已安装插件不兼容；若重置后服务无法启动，请查看日志。": "Note: the selected build is a prerelease and may be incompatible with installed plugins; if the service fails to start after reset, check the logs.",
+  "已关闭预发布通道，检查更新将仅显示稳定版本": "Prerelease channel off — update checks now only show stable releases",
+  "已开启预发布通道，可重新检查更新（含预发布版）": "Prerelease channel on — re-check for updates to see prereleases",
   "导出失败：{0}": "Export failed: {0}",
   "导出完成：{0}": "Export finished: {0}",
   "导出完成 ✓": "Export finished ✓",
@@ -557,6 +559,8 @@ async function refreshVersions() {
 async function runModuleCheck(which) {
   const a = bindings();
   if (!a) return;
+  const tok = (state.checkToken = state.checkToken || {});
+  const myTok = (tok[which] = (tok[which] || 0) + 1); // 防竞态：开关切换/连点后过期响应不覆盖新状态
   const checkBtn = $("btn-check-" + which);
   const hintEl = $("hint-" + which);
   const upBtn = $(which === "systray" ? "btn-systray-update" : "btn-harness-update");
@@ -566,6 +570,7 @@ async function runModuleCheck(which) {
   upBtn.classList.add("hidden");
   try {
     const m = which === "systray" ? await a.CheckSystrayUpdate() : await a.CheckHarnessUpdate();
+    if (myTok !== tok[which]) return; // 已有更新的检查/开关复位，丢弃本次过期结果
     if (m.error) {
       hintEl.classList.add("err");
       hintEl.textContent = fmt("检查失败：{0}", m.error);
@@ -584,11 +589,22 @@ async function runModuleCheck(which) {
       hintEl.textContent = fmt("已是最新版本（{0}）", vtag(m.current || m.latest));
     }
   } catch (e) {
+    if (myTok !== tok[which]) return;
     hintEl.classList.add("err");
     hintEl.textContent = fmt("检查失败：{0}", e && e.message ? e.message : e);
   } finally {
-    checkBtn.disabled = false;
+    if (myTok === tok[which]) checkBtn.disabled = false;
   }
+}
+
+/** 复位单模块检查结果（通道开关切换后调用，避免残留过期状态误导）。systray 与 harness 各自独立。 */
+function resetModuleCheck(which) {
+  const tok = (state.checkToken = state.checkToken || {});
+  tok[which] = (tok[which] || 0) + 1; // 使在途检查响应失效
+  const hintEl = $("hint-" + which);
+  if (hintEl) { hintEl.className = "update-note"; hintEl.textContent = ""; }
+  const upBtn = $(which === "systray" ? "btn-systray-update" : "btn-harness-update");
+  if (upBtn) upBtn.classList.add("hidden");
 }
 
 function wireAbout() {
@@ -605,6 +621,13 @@ function wireAbout() {
     }
     await bindings().SetHarnessPrerelease(on);
     $("sw-prerelease").setAttribute("aria-checked", String(on));
+    // 通道语义变化后必须复位 harness 检查结果：残留的「发现新版本（预发布）」提示与已关闭的通道矛盾
+    resetModuleCheck("harness");
+    const hint = $("hint-harness");
+    hint.textContent = tr(on
+      ? "已开启预发布通道，可重新检查更新（含预发布版）"
+      : "已关闭预发布通道，检查更新将仅显示稳定版本");
+    if (on) runModuleCheck("harness"); // 开启后按新通道自动重查一次（关闭则留给用户手动复查）
   });
   // dsh-systray / Harness：各自的检查按钮
   $("btn-check-systray").addEventListener("click", () => runModuleCheck("systray"));
@@ -1611,6 +1634,31 @@ function wireEvents() {
 
   // 插件更新完成：刷新插件列表（版本/来源状态可能变化）
   EventsOn("plugins:changed", () => loadPlugins());
+
+  // 单插件操作收尾（更新/删除/启用）：结果事件驱动行状态刷新——
+  //  - 成功：清除 plugState 残留的「有新版本」提示（否则更新后行内仍假提示可更新），显示已更新版本；
+  //  - 失败：行内显示失败原因（此前失败路径无任何事件，行永久停留「正在更新插件…」且无原因）。
+  // loadPlugins 重渲染时由 applyPlugState 恢复本事件写入的行状态。
+  EventsOn("plugin:op:done", (d) => {
+    if (!d || !d.name) return;
+    const st = state.plugState[d.name] || (state.plugState[d.name] = {});
+    if (d.ok) {
+      let label = d.op === "remove" ? "已删除" : (d.op === "enable" ? "已启用" : "已更新");
+      if (d.version) label += " " + vtag(d.version);
+      if (d.reason) label += "（" + d.reason + "）";
+      st.note = label;
+      st.noteTone = "ok";
+      st.upShow = false;
+      st.upLatest = "";
+    } else {
+      const verb = d.op === "remove" ? "删除失败" : (d.op === "enable" ? "启用失败" : "更新失败");
+      st.note = verb + "：" + (d.reason || "");
+      if (st.note.length > 140) st.note = st.note.slice(0, 137) + "…";
+      st.noteTone = "err";
+      st.upShow = true; // 保留「更新」按钮便于修复后重试
+    }
+    loadPlugins();
+  });
 }
 
 // 取消更新：请求 Go 中止并等待 update:done 统一收尾（复位按钮/回到设置页）。

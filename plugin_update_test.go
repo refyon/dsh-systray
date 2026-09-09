@@ -325,3 +325,64 @@ func TestPluginProfileSnapshotRestoreRoundTrip(t *testing.T) {
 		t.Error("package.json should be restored with npm-a declared")
 	}
 }
+
+// TestDecodeGithubContents GitHub API contents 响应的 base64 解码
+// （含 \n 换行拆分容忍，以及缺失/非法响应报错）。
+func TestDecodeGithubContents(t *testing.T) {
+	// {"name":"x","version":"0.9.0"} 的 base64（40 字符，无填充）
+	const b64 = "eyJuYW1lIjoieCIsInZlcnNpb24iOiIwLjkuMCJ9"
+	got, err := decodeGithubContents([]byte(`{"name":"package.json","encoding":"base64","content":"` + b64 + `"}`))
+	if err != nil {
+		t.Fatalf("decode err: %v", err)
+	}
+	if !strings.Contains(string(got), `"version":"0.9.0"`) {
+		t.Errorf("decoded content wrong: %s", got)
+	}
+	// content 带 JSON 转义换行（GitHub 行拆分的 base64）也应成功
+	wrapped := `{"encoding":"base64","content":"` + strings.ReplaceAll(b64, "Ijoi", "Ijoi\\n") + `"}`
+	if _, err := decodeGithubContents([]byte(wrapped)); err != nil {
+		t.Errorf("wrapped base64 should decode: %v", err)
+	}
+	if _, err := decodeGithubContents([]byte(`{"encoding":"none","content":""}`)); err == nil {
+		t.Error("missing base64 content should error")
+	}
+	if _, err := decodeGithubContents([]byte(`not json`)); err == nil {
+		t.Error("non-json should error")
+	}
+}
+
+// TestSupplyChainViolation 供应链策略失败识别（minimumReleaseAge 发布年龄校验）。
+// 拦截对象可能是与本次更新无关的其它插件（lockfile 任一条目被拒整条命令即失败）——
+// 调用方据此临时跳过校验重试（dsh-cost-meter@1.7.14 实证形态）。
+func TestSupplyChainViolation(t *testing.T) {
+	real := `✗ Lockfile failed supply-chain policy check (13 entries in 2s)
+[ERR_PNPM_MINIMUM_RELEASE_AGE_VIOLATION] 1 lockfile entries failed verification:
+  dsh-cost-meter@1.7.14 was published at 2026-09-08T06:09:08.540Z, within the minimumReleaseAge cutoff (2026-09-08T05:38:37.604Z)`
+	if !supplyChainViolation(real) {
+		t.Error("real pnpm supply-chain output should be detected")
+	}
+	cases := map[string]bool{
+		"":                               false,
+		"pnpm add done, added 1 package": false,
+		"ERR_PNPM_NO_MATCHING_VERSION for foo@1.0.0":        false,
+		"UM_RELEASE_AGE_VIOLATION umbrella":                 true,
+		"error: package too fresh, minimum release age hit": true,
+		"Progress: resolved 3, reused 1, downloaded 0":      false,
+	}
+	for in, want := range cases {
+		if got := supplyChainViolation(in); got != want {
+			t.Errorf("supplyChainViolation(%q) = %v, want %v", in, got, want)
+		}
+	}
+}
+
+// TestDisabledNames 禁用名单 → 连接文案（弹窗与 plugin:op:done 事件 reason 共用）。
+func TestDisabledNames(t *testing.T) {
+	got := disabledNames([]PluginRow{{Name: "dsh-cost-meter"}, {Name: "restrict-discipline"}})
+	if got != "dsh-cost-meter、restrict-discipline" {
+		t.Errorf("disabledNames = %q", got)
+	}
+	if s := disabledNames(nil); s != "" {
+		t.Errorf("empty disabledNames = %q, want empty", s)
+	}
+}

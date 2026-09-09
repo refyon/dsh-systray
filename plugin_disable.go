@@ -258,6 +258,15 @@ func userSuspectPlugins() []PluginRow {
 // dirs：调用方认为「受影响」的 profile（如导入目标、插件所在目录）；备份范围取 dirs ∪ 嫌疑
 // 插件声明目录，确保任何情况都能还原。
 func disableBootSuspects(dirs []string) (disabled []PluginRow, healthy bool) {
+	return disableSuspectsExcept(dirs, nil)
+}
+
+// disableSuspectsExcept 与 disableBootSuspects 相同，但跳过 exclude 名单中的插件（不备份其
+// 目录时也跳过禁用动作与重启验证范围）——用于「启动失败点名的嫌疑不含本次操作的目标插件」时
+// 的分层自愈：先禁其它嫌疑换取启动，避免把无辜的目标插件更新整体回退。exclude 同时作用于
+// bundleOnly 幽灵名单与 backupProfilePkgJSON 的备份范围（被排除插件的目录不参与本次禁用事务）。
+func disableSuspectsExcept(dirs []string, exclude map[string]bool) (disabled []PluginRow, healthy bool) {
+	ex := func(n string) bool { return exclude != nil && exclude[n] }
 	suspects := userSuspectPlugins() // boot 点名 ∩ 插件行（可记录禁用原因）
 	// boot 点名但无插件行的（依赖已摘除/从未声明、仅 bundle 激活残留，如历史中断恢复
 	// 遗留的 codegraph-*）——直接摘除其 bundle 激活声明即可让启动不再加载（new_device.log
@@ -270,7 +279,7 @@ func disableBootSuspects(dirs []string) (disabled []PluginRow, healthy bool) {
 			rowSet[s.Name] = true
 		}
 		for _, n := range bootNames {
-			if n == "" || isOfficialHarnessPkg(n) || rowSet[n] {
+			if n == "" || isOfficialHarnessPkg(n) || rowSet[n] || ex(n) {
 				continue
 			}
 			for _, pf := range enumeratePluginProfiles() {
@@ -281,6 +290,13 @@ func disableBootSuspects(dirs []string) (disabled []PluginRow, healthy bool) {
 			}
 		}
 	}
+	var filtered []PluginRow
+	for _, s := range suspects {
+		if !ex(s.Name) {
+			filtered = append(filtered, s)
+		}
+	}
+	suspects = filtered
 	if len(suspects) == 0 && len(bundleOnly) == 0 {
 		log.Printf("disable: no user-plugin suspects, keep existing rollback path")
 		return nil, false
