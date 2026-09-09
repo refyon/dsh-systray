@@ -687,8 +687,8 @@ func (a *App) GetResetStats() ResetStats {
 }
 
 // ResetHarness 重置 DeepSeek Harness（前端勾选弹窗确认后调用）：
-// harness 版本回退始终执行（必选项）；targetVersion 为用户从「重置目标版本」下拉选择的、
-// 早于当前运行版本的官方版本（空 = 边界降级放行，按官方默认目标执行）；
+// harness 全新安装始终执行（必选项）；targetVersion 为用户从「重置目标版本」下拉选择的
+// 任意官方 npm 已发布版本（含高于当前版本=升级重装与预发布；默认当前版本=同版本重装）；
 // clearSessions / clearPlugins 按勾选物理删除对应数据（会话记录 / 已安装插件）。
 // 异步执行：进度走 splash 事件，完成/失败以弹窗提示。
 func (a *App) ResetHarness(clearSessions, clearPlugins bool, targetVersion string) {
@@ -700,7 +700,8 @@ func (a *App) ResetHarness(clearSessions, clearPlugins bool, targetVersion strin
 }
 
 // GetResetVersions 返回重置弹窗「重置目标版本」下拉所需数据：当前已装版本、全部候选
-// （不高于当前版本的官方 npm 版本，含当前版本=同版本重装；按新→旧）、默认选中与边界说明。
+// （npm 已发布版本全量：含高于当前版本与预发布；按新→旧）、默认选中（优先当前版本=
+// 同版本重装，其次最近可用稳定版）与边界说明。
 // 无候选时 Default 仍给出具体降级目标（官方最新稳定版语义），保证执行期不再触网查版本。
 // 源码形态不支持重置；查询失败（网络/registry）时 Options 为空、Note 携带原因，前端据此禁用确认。
 func (a *App) GetResetVersions() ResetVersionInfo {
@@ -719,20 +720,12 @@ func (a *App) GetResetVersions() ResetVersionInfo {
 		return ResetVersionInfo{Form: "npm", Current: cur, Note: "查询 npm 已发布版本失败：" + err.Error()}
 	}
 	opts, def := buildResetVersionOptions(versions, cur)
-	if def == "" && len(versions) > 0 {
-		// 无「不高于当前版本」的候选（当前版本是最新/未被列出且无同版本可重装）：
-		// 降级放行——默认目标取官方最新稳定版（无稳定取最新发布），与旧「官方默认目标」语义一致。
-		def = pickHarnessVersion(versions, false)
-		if def == "" {
-			def = pickHarnessVersion(versions, true)
-		}
-	}
 	info := ResetVersionInfo{Form: "npm", Current: cur, Options: opts, Default: def}
 	switch {
 	case cur == "":
-		info.Note = "未能识别当前已装版本，已列出全部官方版本供选择（默认按官方最新稳定版）。"
-	case len(opts) == 0 && def != "":
-		info.Note = "没有不高于当前运行版本的候选版本，将按官方默认目标 " + withV(def) + " 执行重置。"
+		info.Note = "未能识别当前已装版本，已列出全部官方版本供选择（默认取最新稳定版）。"
+	case def != "" && def != cur:
+		info.Note = "当前版本不在 npm 已发布列表中，默认选中最近可用稳定版 " + withV(def) + "；选择更高版本可升级重装。"
 	}
 	return info
 }

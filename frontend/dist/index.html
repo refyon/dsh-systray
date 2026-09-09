@@ -238,7 +238,7 @@
     <div class="modal-mask"></div>
     <div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="reset-title">
       <div class="modal-title" id="reset-title" data-i18n="rstTitle">重置 DeepSeek Harness</div>
-      <div class="modal-msg" data-i18n="rstMsg">重置会停止后台服务并清空 harness 目录，然后全新安装所选官方版本（下拉提供不高于当前运行版本的版本，可选当前版本进行同版本重装；默认取其中最新的稳定版）。被清除的数据不可恢复。</div>
+      <div class="modal-msg" data-i18n="rstMsg">重置会停止后台服务并清空 harness 目录，然后全新安装所选官方版本（下拉列出全部已发布版本：默认选中当前版本进行同版本重装；选择更高版本为升级重装，预发布版本可能不兼容已装插件）。被清除的数据不可恢复。</div>
       <div class="reset-target">
         <div class="reset-target-head">
           <label for="reset-target" class="reset-target-label" data-i18n="rstTargetLabel">重置目标版本</label>
@@ -254,7 +254,7 @@
           <input type="checkbox" id="reset-c-harness" checked disabled>
           <span class="reset-opt-main">
             <span class="reset-opt-title" data-i18n="rstOptHarness">Harness 服务 <em>（必选）</em></span>
-            <span class="row-sub" data-i18n="rstOptHarnessSub">全新安装下拉选择的版本（默认不高于当前版本的最新稳定版）并重启服务</span>
+            <span class="row-sub" data-i18n="rstOptHarnessSub">全新安装下拉选择的版本（默认当前版本同版本重装，可任选更低或更高版本）并重启服务</span>
           </span>
         </label>
         <label class="reset-opt">

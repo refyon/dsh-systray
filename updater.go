@@ -799,11 +799,15 @@ func writeHarnessWorkspaceOverrides(dir, ver string) error {
 // harnessBackupSuffix 更新前快照文件后缀（更新失败时用于回退到上一可运行版本）。
 const harnessBackupSuffix = ".dshbak"
 
-// snapshotHarness 快照当前可运行版本：备份 package.json / pnpm-lock.yaml，并把 node_modules 整体改名备份
-// （同盘 rename，秒级完成；更新失败可本地直接移回，不依赖网络）。返回是否成功备份了 node_modules。
-// 注意：调用前必须先 killServer()，否则运行中的服务会占用 node_modules 内文件导致改名失败。
+// snapshotHarness 快照当前可运行版本：备份 package.json / pnpm-lock.yaml / pnpm-workspace.yaml，
+// 并把 node_modules 整体改名备份（同盘 rename，秒级完成；更新失败可本地直接移回，不依赖网络）。
+// 返回是否成功备份了 node_modules。
+// 注意：pnpm-workspace.yaml 必须纳入备份——pnpm ≥ v10 的 setHarnessOverrides 在更新期把
+// "@deepseek-ai/*" overrides 与 minimumReleaseAgeExclude 写入该文件，快照不覆盖它则回滚后
+// 残留坏版本的 overrides，下次任何 pnpm install 会把可用树再次拉向失败版本。
+// 调用前必须先 killServer()，否则运行中的服务会占用 node_modules 内文件导致改名失败。
 func snapshotHarness() (nodeModulesBacked bool) {
-	for _, name := range []string{"package.json", "pnpm-lock.yaml"} {
+	for _, name := range []string{"package.json", "pnpm-lock.yaml", "pnpm-workspace.yaml"} {
 		src := filepath.Join(harnessDir, name)
 		if data, err := os.ReadFile(src); err == nil {
 			_ = os.WriteFile(src+harnessBackupSuffix, data, 0o644)
@@ -818,13 +822,17 @@ func snapshotHarness() (nodeModulesBacked bool) {
 	return os.Rename(nm, bak) == nil
 }
 
-// restoreHarnessSnapshot 回退到快照版本：还原 package.json / pnpm-lock.yaml；
+// restoreHarnessSnapshot 回退到快照版本：还原 package.json / pnpm-lock.yaml / pnpm-workspace.yaml；
 // 有 node_modules 备份直接移回（秒级），否则按还原后的锁文件重装。
+// pnpm-workspace.yaml 无快照时（更新前不存在、更新期由 setHarnessOverrides 新建）删除其残留——
+// 否则失败版本写入的 overrides / minimumReleaseAgeExclude 会污染回退后的可用树。
 func restoreHarnessSnapshot(hadNodeModulesBackup bool) {
-	for _, name := range []string{"package.json", "pnpm-lock.yaml"} {
+	for _, name := range []string{"package.json", "pnpm-lock.yaml", "pnpm-workspace.yaml"} {
 		src := filepath.Join(harnessDir, name+harnessBackupSuffix)
 		if data, err := os.ReadFile(src); err == nil {
 			_ = os.WriteFile(filepath.Join(harnessDir, name), data, 0o644)
+		} else if name == "pnpm-workspace.yaml" {
+			_ = os.Remove(filepath.Join(harnessDir, name))
 		}
 	}
 	nm := filepath.Join(harnessDir, "node_modules")
@@ -840,7 +848,7 @@ func restoreHarnessSnapshot(hadNodeModulesBackup bool) {
 
 // cleanupHarnessSnapshot 更新成功：删除更新前的快照备份。
 func cleanupHarnessSnapshot() {
-	for _, name := range []string{"package.json", "pnpm-lock.yaml"} {
+	for _, name := range []string{"package.json", "pnpm-lock.yaml", "pnpm-workspace.yaml"} {
 		_ = os.Remove(filepath.Join(harnessDir, name+harnessBackupSuffix))
 	}
 	_ = os.RemoveAll(filepath.Join(harnessDir, "node_modules"+harnessBackupSuffix))
@@ -1081,7 +1089,7 @@ func runHarnessUpdate(latest string) {
 		disabled, ok := disableBootSuspects(profileDirs)
 		allDisabled := false
 		if !ok {
-			splash.Update(T("仍无法启动，正在禁用其余用户插件…"), 0.93)
+			splash.Update(T("服务启动受阻，正在尝试禁用部分插件…"), 0.93)
 			disabled, ok = disableAllUserPlugins(profileDirs)
 			allDisabled = ok
 		}
@@ -1107,8 +1115,11 @@ func runHarnessUpdate(latest string) {
 			emitUpdateDone(true, false, "")
 			return
 		}
-		rollbackUpdate(splash, prev, hadNMBackup, "新版本启动失败")
-		emitUpdateDone(false, false, "新版本启动失败，已回退")
+		// 两级禁用均未能换取启动（核心故障）→ 整体回退，原因需写明已尝试禁用插件，
+		// 避免用户误以为「直接回退、未尝试保留新版本」。
+		rbReason := "新版本启动失败（已尝试排查并禁用不兼容插件，仍无法启动——疑为核心故障）"
+		rollbackUpdate(splash, prev, hadNMBackup, rbReason)
+		emitUpdateDone(false, false, rbReason+"，已回退")
 		return
 	}
 

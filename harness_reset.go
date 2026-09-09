@@ -13,9 +13,11 @@ import (
 
 // ==================== 重置 DeepSeek Harness ====================
 // 常规页「重置 DeepSeek Harness」：停服后全新安装到用户从「重置目标版本」下拉选择的、
-// 不高于当前运行版本的官方版本（含当前版本=同版本重装；弹窗勾选清除会话/插件）。
+// 任意官方 npm 已发布版本（高于当前版本=升级重装、低于=降级回退，默认选中当前版本=
+// 同版本重装；弹窗勾选清除会话/插件）。
 // 弹窗打开时一次查证候选与默认目标，执行期不再触网查版本。弹窗警告后执行，
-// 全程 splash 进度，失败自动回滚版本快照。
+// 全程 splash 进度；重置后启动受阻时优先自动禁用不兼容用户插件换取新版启动，
+// 仅核心故障才还原重置前的目录快照。
 
 // removeInstalledPlugins 物理删除用户安装的插件（profiles 下各 profile）：
 //  1. package.json：dependencies 与 dsh.profile.bundles 移除非 @deepseek-ai/* 的条目
@@ -183,11 +185,13 @@ func harnessGitTagForVersion(version string) (string, error) {
 }
 
 // runHarnessReset 重置 DeepSeek Harness：停服务 →（可选）清会话/清插件 →
-// 全新安装 reqTarget（前端从「重置目标版本」下拉选择的、不高于当前运行版本的官方版本，
-// 含当前版本=同版本重装）→ 重启校验。reqTarget 为空或格式非法为防御性失败（前端已保证
-// 传具体版本：候选与默认目标均在弹窗打开时由 GetResetVersions 一次查证，这里不再触网查询）。
-// clearSessions / clearPlugins 由前端勾选弹窗传入（版本回退始终执行，必选项）。
-// 失败自动回退到重置前的可运行快照并弹窗报告。异步执行（按钮触发后 go 调用）。
+// 全新安装 reqTarget（前端从「重置目标版本」下拉选择的任意官方 npm 版本，含更高版本与
+// 预发布；默认选中当前版本=同版本重装）→ 重启校验。reqTarget 为空或格式非法为防御性
+// 失败（前端已保证传具体版本：候选与默认目标均在弹窗打开时由 GetResetVersions 一次查证，
+// 这里不再触网查询）。clearSessions / clearPlugins 由前端勾选弹窗传入（版本回退始终执行，
+// 必选项）。重置后启动受阻时按「不回滚优先」处置：先禁用点名嫌疑用户插件，仍失败再禁用
+// 全部用户插件，任一成功即保留新版本；两级都失败（核心故障）才还原备份目录。
+// 异步执行（按钮触发后 go 调用）。
 func runHarnessReset(clearSessions, clearPlugins bool, reqTarget string) {
 	splash := startSplash(T("正在重置 DeepSeek Harness…"))
 	defer splash.Close()
@@ -255,8 +259,10 @@ func runHarnessReset(clearSessions, clearPlugins bool, reqTarget string) {
 		showMessageBox("重置失败：全新安装未能完成，已还原原目录。\n"+rerr.Error()+"\n\n日志："+unifiedLogPath(), appName)
 		return
 	}
-	_ = os.RemoveAll(bakDir) // 全新安装成功：旧目录备份不再需要
-	log.Printf("reset: clean reinstall done at %s", harnessDir)
+	// 旧目录备份保留到「重启健康校验通过」后再删除：重置后新版启动受阻（插件不兼容/核心
+	// 故障）时可整体还原到重置前的可运行目录；备份在下方「校验通过 / 自愈成功 / 核心故障还原」
+	// 三处收敛删除或还原。
+	log.Printf("reset: clean reinstall done at %s (backup kept at %s)", harnessDir, bakDir)
 
 	// 3) 可选清理（版本已回退成功；清理失败不阻断重启，仅记录并提示）
 	cleanupNotes := ""
@@ -275,14 +281,59 @@ func runHarnessReset(clearSessions, clearPlugins bool, reqTarget string) {
 		}
 	}
 
-	// 4) 重启并健康校验（就绪 + 启动日志无加载报错）
+	// 4) 重启并健康校验（就绪 + 启动日志无加载报错）。
+	//    失败时优先不回滚（与「更新 Harness」同策略）：先禁用启动日志点名的用户插件
+	//    （disableBootSuspects），仍失败再兜底禁用全部已激活用户插件（disableAllUserPlugins）
+	//    换取新版可启动——任一成功即保留新版本并弹窗列出禁用清单；两级都失败（核心故障，
+	//    官方包加载错误等禁用用户插件无法解决）才还原备份目录。
 	splash.Update(T("正在重启服务…"), 0.9)
 	if !restartAndVerifyServer() {
+		splash.Update(T("启动校验失败，正在排查不兼容插件…"), 0.92)
+		var profileDirs []string
+		for _, pf := range enumeratePluginProfiles() {
+			profileDirs = append(profileDirs, pf.dir)
+		}
+		disabled, ok := disableBootSuspects(profileDirs)
+		allDisabled := false
+		if !ok {
+			splash.Update(T("服务启动受阻，正在尝试禁用部分插件…"), 0.94)
+			disabled, ok = disableAllUserPlugins(profileDirs)
+			allDisabled = ok
+		}
+		if !ok {
+			// 核心故障：还原重置前目录，不留半成品（备份此前一直保留）
+			restoreBackup()
+			splash.Close()
+			showMessageBox("重置未能完成：已尝试自动禁用不兼容插件，服务仍无法启动（核心故障），已还原重置前的版本。\n\n日志："+unifiedLogPath()+cleanupNotes, appName)
+			return
+		}
+		// 自愈成功：保留新版本（禁用清单可于「关于页 → 已安装插件」检查更新/重新启用）
+		_ = os.RemoveAll(bakDir)
+		clearAllLkg()
 		splash.Close()
-		showMessageBox("重置后服务未能正常启动，请查看日志：\n"+unifiedLogPath()+cleanupNotes, appName)
+		names := make([]string, 0, len(disabled))
+		for _, d := range disabled {
+			names = append(names, d.Name)
+		}
+		logUI("重置服务完成（含不兼容插件自动禁用）",
+			fmt.Sprintf("v%s | 禁用 %s", target, strings.Join(names, "、")))
+		detail := fmt.Sprintf("DeepSeek Harness 已重置到 %s，服务已重启。\n\n以下插件与新版本不兼容，已自动禁用（保留记录，可在「关于页 → 已安装插件」中检查更新后重新启用）：\n· %s",
+			withV(target), strings.Join(names, "、"))
+		if allDisabled {
+			detail = fmt.Sprintf("DeepSeek Harness 已重置到 %s，服务已重启。\n\n未能定位到具体的不兼容插件，已禁用全部已激活的用户插件以保证新版启动（保留记录，可在「关于页 → 已安装插件」中逐个重新启用）：\n· %s",
+				withV(target), strings.Join(names, "、"))
+		}
+		if clearSessions {
+			detail += "\n· 会话记录已清除"
+		}
+		if clearPlugins {
+			detail += "\n· 已安装插件已清除"
+		}
+		showMessageBox(detail+cleanupNotes, appName)
 		return
 	}
-	// 重置成功：回退后的状态即新的良好基线，旧 LKG 不应再用于回退
+	// 校验通过：备份不再需要，回退后的状态即新的良好基线，旧 LKG 不应再用于回退
+	_ = os.RemoveAll(bakDir)
 	clearAllLkg()
 	splash.Close()
 	detail := T("DeepSeek Harness 已重置：\n")
@@ -401,17 +452,16 @@ type ResetVersionOption struct {
 type ResetVersionInfo struct {
 	Form    string               `json:"form"`    // "npm" | "source"（源码形态不支持自动重置）
 	Current string               `json:"current"` // 当前已装版本（识别失败为空）
-	Options []ResetVersionOption `json:"options"` // 不高于当前版本的候选（按新→旧；当前未知=识别失败时列出全部）
-	Default string               `json:"default"` // 默认选中版本（无候选时=降级放行的官方默认目标，具体版本）
-	Note    string               `json:"note"`    // 边界/降级说明或错误原因（面向用户）
+	Options []ResetVersionOption `json:"options"` // npm 全部已发布版本（按新→旧；含高于当前版本与预发布）
+	Default string               `json:"default"` // 默认选中版本（优先当前版本=同版本重装；其次最近可用稳定版）
+	Note    string               `json:"note"`    // 边界说明或错误原因（面向用户）
 }
 
-// buildResetVersionOptions 由 npm 已发布版本与当前已装版本构建重置目标候选：
-//   - 只保留不高于 current 的版本（compareVersions <= 0：早于或等于当前版本——允许重置到
-//     当前版本进行同版本重装；更高版本不提供）；current 为空（当前版本识别失败）时为降级
-//     放行列出全部版本；
-//   - 去重并按新→旧排序；
-//   - Default = 最靠前的稳定版（即最新稳定版）；全部为预发布时取最新的预发布。
+// buildResetVersionOptions 由 npm 已发布版本构建重置目标候选（任意版本均可选，不限 ≤ 当前）：
+//   - 列出全部已发布版本（去重、去 dsh-/v 前缀，按新→旧排序，预发布标注）；
+//   - Default = 优先当前版本（同版本重装，重置语义下最安全）；当前不在列表时取「不高于当前的
+//     最近稳定版」；再取最新稳定版；全部为预发布时取最新发布；
+//   - current 为空（当前版本识别失败）时列出全部版本、默认最新稳定版。
 func buildResetVersionOptions(versions []string, current string) (opts []ResetVersionOption, def string) {
 	seen := map[string]bool{}
 	for _, v := range versions {
@@ -419,21 +469,37 @@ func buildResetVersionOptions(versions []string, current string) (opts []ResetVe
 		if v == "" || seen[v] {
 			continue
 		}
-		if current != "" && compareVersions(v, current) > 0 {
-			continue
-		}
 		seen[v] = true
 		opts = append(opts, ResetVersionOption{Version: v, Prerelease: !isStableVersion(v)})
 	}
 	sort.Slice(opts, func(i, j int) bool { return compareVersions(opts[i].Version, opts[j].Version) > 0 })
-	for _, o := range opts {
-		if !o.Prerelease {
-			def = o.Version
-			break
+	if current != "" {
+		for _, o := range opts {
+			if o.Version == current {
+				def = current
+				break
+			}
+		}
+	}
+	if def == "" && current != "" {
+		// 当前版本不在已发布列表：取「不高于当前的最近稳定版」（列表新→旧，首个命中即最近）
+		for _, o := range opts {
+			if !o.Prerelease && compareVersions(o.Version, current) <= 0 {
+				def = o.Version
+				break
+			}
+		}
+	}
+	if def == "" {
+		for _, o := range opts {
+			if !o.Prerelease {
+				def = o.Version
+				break
+			}
 		}
 	}
 	if def == "" && len(opts) > 0 {
-		def = opts[0].Version // 仅预发布可回退时：最新预发布
+		def = opts[0].Version // 全部为预发布：最新发布
 	}
 	return opts, def
 }

@@ -6,41 +6,58 @@ import (
 )
 
 // TestBuildResetVersionOptions 重置目标版本候选构建（纯函数，不触达网络/配置）：
-// 只列不高于 current 的版本（含当前版本=同版本重装）、按新→旧排序、
-// 默认选最新稳定版、边界（无候选/当前未知）行为。
+// 列出 npm 全部已发布版本（含高于当前版本与预发布——不再按「不高于当前」过滤，支持升级重装）、
+// 按新→旧排序、预发布标注；默认选中当前版本（同版本重装）；当前不在列表时取「不高于当前的
+// 最近稳定版」，再取最新稳定版，全部为预发布时取最新发布；current 为空时默认最新稳定版。
 func TestBuildResetVersionOptions(t *testing.T) {
-	t.Run("at-or-below-current-desc-default-stable", func(t *testing.T) {
-		versions := []string{"0.1.1", "0.1.2-rc.1", "0.1.2-alpha.1", "0.1.1-rc.2", "0.1.0"}
+	t.Run("all-versions-incl-newer-sorted-default-current", func(t *testing.T) {
+		versions := []string{"0.1.1", "0.1.2-rc.1", "0.1.2", "0.1.2-alpha.1", "0.1.1-rc.2", "0.1.0"}
 		opts, def := buildResetVersionOptions(versions, "0.1.2-rc.1")
-		got := versionSeq(opts)
-		// 当前版本 0.1.2-rc.1 本身可入选（同版本重装）；0.1.2 稳定版高于 rc 不提供
-		want := []string{"0.1.2-rc.1", "0.1.2-alpha.1", "0.1.1", "0.1.1-rc.2", "0.1.0"}
-		if len(got) != len(want) {
-			t.Fatalf("len=%d want %d: %v", len(got), len(want), got)
+		// 稳定版 0.1.2 高于当前 rc 也列入（升级重装候选）；整体按版本号新→旧排序
+		want := []string{"0.1.2", "0.1.2-rc.1", "0.1.2-alpha.1", "0.1.1", "0.1.1-rc.2", "0.1.0"}
+		if got := versionSeq(opts); !sameStrings(got, want) {
+			t.Fatalf("opts=%v want %v", got, want)
 		}
-		for i := range want {
-			if got[i] != want[i] {
-				t.Fatalf("order[%d]=%s want %s (full %v)", i, got[i], want[i], got)
-			}
+		if def != "0.1.2-rc.1" {
+			t.Errorf("default=%s want current 0.1.2-rc.1（同版本重装）", def)
 		}
-		if def != "0.1.1" {
-			t.Errorf("default=%s want 0.1.1", def)
-		}
-		if !opts[0].Prerelease || !opts[1].Prerelease || opts[2].Prerelease || !opts[3].Prerelease || opts[4].Prerelease {
+		if opts[0].Prerelease || !opts[1].Prerelease || !opts[2].Prerelease || opts[3].Prerelease || !opts[4].Prerelease || opts[5].Prerelease {
 			t.Errorf("prerelease flags wrong: %+v", opts)
 		}
 	})
-	t.Run("equal-current-stable-included-as-default", func(t *testing.T) {
-		versions := []string{"0.1.0", "0.1.1", "0.1.1-rc.2"}
+	t.Run("newest-stable-listed-first-current-stable-default-current", func(t *testing.T) {
+		versions := []string{"0.1.0", "0.1.1", "0.1.1-rc.2", "0.1.2"}
 		opts, def := buildResetVersionOptions(versions, "0.1.1")
+		if len(opts) != 4 {
+			t.Fatalf("len=%d want 4: %v", len(opts), opts)
+		}
+		if opts[0].Version != "0.1.2" || def != "0.1.1" {
+			t.Errorf("opts=%v def=%s want newest-first options and current as default", opts, def)
+		}
+	})
+	t.Run("current-absent-default-nearest-stable-not-newer", func(t *testing.T) {
+		versions := []string{"0.1.1", "0.1.2-rc.1", "0.1.0"}
+		opts, def := buildResetVersionOptions(versions, "0.1.2-rc.2") // 该 rc 未发布
 		if len(opts) != 3 {
 			t.Fatalf("len=%d want 3: %v", len(opts), opts)
 		}
-		if opts[0].Version != "0.1.1" || def != "0.1.1" {
-			t.Errorf("opts=%v def=%s want current 0.1.1 as default", opts, def)
+		// 0.1.2-rc.1 高于 0.1.2-rc.2？否——rc.2 更新，故其不高于当前；0.1.1 稳定且不高于当前 → 默认 0.1.1
+		if def != "0.1.1" {
+			t.Errorf("default=%s want 0.1.1", def)
 		}
 	})
-	t.Run("prerelease-only-fallback-newest", func(t *testing.T) {
+	t.Run("current-older-than-all-defaults-newest-stable", func(t *testing.T) {
+		versions := []string{"0.1.0", "0.1.1"}
+		opts, def := buildResetVersionOptions(versions, "0.0.9")
+		if len(opts) != 2 {
+			t.Fatalf("len=%d want 2: %v", len(opts), opts)
+		}
+		// 无不高于当前的稳定版 → 取最新稳定版（0.1.1，即升级重装）
+		if opts[0].Version != "0.1.1" || def != "0.1.1" {
+			t.Errorf("opts=%v def=%s", opts, def)
+		}
+	})
+	t.Run("prerelease-only-default-newest", func(t *testing.T) {
 		versions := []string{"0.1.2-alpha.1", "0.1.2-alpha.3", "0.1.2-alpha.2"}
 		opts, def := buildResetVersionOptions(versions, "0.1.2-rc.1")
 		if len(opts) != 3 {
@@ -50,17 +67,7 @@ func TestBuildResetVersionOptions(t *testing.T) {
 			t.Errorf("opts=%v def=%s", opts, def)
 		}
 	})
-	t.Run("no-candidate-current-older-than-all", func(t *testing.T) {
-		versions := []string{"0.1.0", "0.1.1"}
-		opts, def := buildResetVersionOptions(versions, "0.0.9")
-		if len(opts) != 0 {
-			t.Errorf("len=%d want 0: %v", len(opts), opts)
-		}
-		if def != "" {
-			t.Errorf("default=%s want empty", def)
-		}
-	})
-	t.Run("current-unknown-lists-all", func(t *testing.T) {
+	t.Run("current-unknown-lists-all-default-newest-stable", func(t *testing.T) {
 		versions := []string{"0.1.1-rc.1", "0.1.1", "0.1.2-alpha.1", "0.1.0"}
 		opts, def := buildResetVersionOptions(versions, "")
 		if len(opts) != 4 {
@@ -70,18 +77,18 @@ func TestBuildResetVersionOptions(t *testing.T) {
 			t.Errorf("first=%s want 0.1.2-alpha.1", opts[0].Version)
 		}
 		if def != "0.1.1" {
-			t.Errorf("default=%s want 0.1.1", def)
+			t.Errorf("default=%s want newest stable 0.1.1", def)
 		}
 	})
 	t.Run("dedupe-and-prefix-strip", func(t *testing.T) {
-		versions := []string{"0.1.1", "v0.1.1", "dsh-0.1.1", "0.1.2", "0.1.0"}
+		versions := []string{"0.1.1", "v0.1.1", "dsh-0.1.1", "0.1.2", "0.1.2-rc.1", "0.1.0"}
 		opts, def := buildResetVersionOptions(versions, "0.1.2-rc.1")
-		// 0.1.2 稳定版高于 0.1.2-rc.1 → 不提供；v/dsh- 前缀重复项去重。
-		if len(opts) != 2 {
-			t.Fatalf("len=%d want 2: %v", len(opts), opts)
+		want := []string{"0.1.2", "0.1.2-rc.1", "0.1.1", "0.1.0"}
+		if got := versionSeq(opts); !sameStrings(got, want) {
+			t.Fatalf("opts=%v want %v", got, want)
 		}
-		if opts[0].Version != "0.1.1" || opts[1].Version != "0.1.0" || def != "0.1.1" {
-			t.Errorf("opts=%v def=%s", opts, def)
+		if def != "0.1.2-rc.1" {
+			t.Errorf("default=%s want current 0.1.2-rc.1", def)
 		}
 	})
 }
@@ -110,4 +117,17 @@ func versionSeq(opts []ResetVersionOption) []string {
 		out = append(out, o.Version)
 	}
 	return out
+}
+
+// sameStrings 逐元素比较两个字符串切片。
+func sameStrings(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
 }

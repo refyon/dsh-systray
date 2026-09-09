@@ -78,10 +78,10 @@ const I18N_EN = {
   dlgConfirm: "Confirm", btnCancel: "Cancel", btnSkip: "Skip", btnOk: "OK",
   expModalTitle: "Exporting", expModalText: "Preparing export…", btnDone: "Done",
   rstTitle: "Reset DeepSeek Harness",
-  rstMsg: "Resetting stops the background service and clears the harness directory, then performs a fresh install of the chosen official version (dropdown lists versions not newer than the running one; same-version reinstall allowed; newest stable is the default). Cleared data cannot be recovered.",
+  rstMsg: "Resetting stops the background service and clears the harness directory, then performs a fresh install of the chosen official version (the dropdown lists every published version: the current one is preselected for a same-version reinstall; picking a higher version upgrades, and prereleases may be incompatible with installed plugins). Cleared data cannot be recovered.",
   rstTargetLabel: "Reset target version", rstLoading: "Querying available versions…",
   rstOptHarness: "Harness service <em>(required)</em>",
-  rstOptHarnessSub: "Freshly install the selected version (default: newest stable not newer than current) and restart the service",
+  rstOptHarnessSub: "Freshly install the selected version (default: reinstall the current version; any lower or higher version selectable) and restart the service",
   rstOptSessions: "Sessions", rstOptPlugins: "Installed plugins",
   rstSessionsSub: "Will clear 0 sessions", rstPluginsSub: "Will clear 0 plugins",
   btnStartReset: "Start reset",
@@ -453,10 +453,11 @@ function wireGeneral() {
 }
 
 /**
- * 填充「重置目标版本」下拉。候选来自 GetResetVersions（仅早于当前运行版本的官方版本，
- * 预发布带“（预发布）”文本标记 + 警示色 class）。边界降级语义：
+ * 填充「重置目标版本」下拉。候选来自 GetResetVersions（npm 全部已发布版本：含高于当前版本
+ * 与预发布，按新→旧；默认选中当前版本=同版本重装）。边界语义：
  *  - 查询失败 → 说明原因并保持「开始重置」禁用（无法确定目标，勿盲目重置）；
- *  - 源码形态 / 无可更早版本 → 说明并放行（空 target = 官方默认目标，Go 侧按旧语义执行）。
+ *  - 源码形态 → 说明并禁用（Go 侧会拦截执行）；
+ *  - 无候选（registry 返回空）→ 按 Go 侧 Default 放行。
  */
 async function loadResetVersions() {
   const tok = (state.resetVersionToken = (state.resetVersionToken || 0) + 1); // 防连点/快速重开时的过期响应覆盖
