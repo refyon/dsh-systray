@@ -4,6 +4,26 @@
 > `## vX.Y.Z` 区块（最新在上）。CI 推送 `v*` tag 后会自动把该区块作为 GitHub Release 正文；
 > 找不到对应区块时回退为 GitHub 自动生成（提交列表）。
 
+## v0.8.12
+
+自 v0.8.11 起（重置/更新失败不再留下停机与混装；依据 2026-09-10 macOS 日志复盘）：
+
+### 修复
+
+- **重置失败后服务停摆**：重置流程第 0 步就停服务，而各失败分支只弹窗返回（还原目录、不重新拉起），用户同时面对「重置失败」与「服务起不来」。2026-09-10 实证：22:29:47 重置安装失败还原目录后服务一直停着，直到 22:38:13 被后续更新拉起。现所有失败分支（形态不支持、目标缺失/非法、备份或建目录失败、安装失败、核心故障还原）统一走 `failReset`：先把服务拉回可用并校验，再弹窗报告；恢复失败时附「请点击重启服务」提示。
+- **更新 harness 装出「新版插件 + 旧版核心包」混装树**：`snapshotHarness` 只把 `node_modules` 改名备份、`pnpm-lock.yaml` 仍留在原地，`pnpm add` 复用旧解析，家族核心包（只作为插件的 peer、未在根 `package.json` 声明）停在旧版本 → 启动时插件树 ESM 缺导出（`does not provide an export named assertNever / deepFreeze / snapshotJsonValue / requestImageDimensions …`）。现更新前丢弃旧锁文件（快照 `.dshbak` 仍可还原），强制全新解析。
+- **家族钉版此前形同虚设**：旧的 `pnpm.overrides["@deepseek-ai/*"]` 名字通配在 pnpm 10.34.5 上实测不生效（同一份 `package.json` + `pnpm-workspace.yaml` 下家族仍解析到旧版本），且通配即便生效也会把同 scope 的 `@deepseek-ai/cordis`(4.x)、`schemastery`(3.x) 钉成 harness 版本而直接失败。现改为**逐包精确包名**钉版（包名取自锁文件 / `.pnpm` 目录名，含只作 peer 出现的核心包），更新与重置两条路径都钉整族到目标版本；钉版解析失败自动去掉钉版重试一次。
+- **上游分批发布期间重置/更新必然失败**：家族依赖是 caret 范围（`^0.1.5-rc.1` 允许 `0.1.5-rc.2`），官方先发布一部分包时全新解析会选中半发布的新版本，随后在其缺失依赖上报 `ERR_PNPM_NO_MATCHING_VERSION`（2026-09-10 22:49 实测：`@deepseek-ai/dsh-chunked-list@^0.1.5-rc.2` 尚无对应包，数分钟后才发布；`dsh-sandbox-windows-acl` 同类）。逐包钉版把整族锁在目标版本，重置选「当前已装版本」时不再被上游半发布带崩。
+- **改版后健康校验窗口过短**：混装树实测 22:38:13 启动、22:38:32 被 10s 窗口判成功并提升 LKG、22:38:58（启动后 45s）才刷出 `plugin tree failed to load` —— 短窗口不仅误判成功，还把唯一可回退的 LKG 当成已验证状态。现改版路径（harness 更新/重置/LKG 回退）健康校验窗口为 60s；冷启动仅在存在 LKG（上次改版尚未经冷启动验证）时用加长窗口，常规启动仍为 10s。
+
+### 变更
+
+- 安装失败提示按输出归类给出可执行原因：`ERR_PNPM_NO_MATCHING_VERSION`（上游未发布完整/目标版本不存在，稍后重试）与 `ERR_PNPM_META_FETCH_FAIL` / `Socket timeout` / `ECONNRESET`（registry 抖动）分别提示，并附 pnpm 输出尾部，不再只有 `exit status 1`。
+
+### 移除
+
+- 无。
+
 ## v0.8.11
 
 自 v0.8.10 起（插件操作前置守卫 + 插件树确定性预检）：
