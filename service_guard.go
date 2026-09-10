@@ -235,6 +235,10 @@ func trimHintLine(s string) string {
 // `pnpm dsh plugin remove/add` 时 pnpm 完成的 reconcile）。网络失败时返回错误，
 // 由调用方按「降级为未对齐提示」或「回退」处理。
 func reconcileProfileDeps(dir string) error {
+	// 悬空的本地依赖会让 pnpm install 整条失败：先消毒再对齐
+	for _, n := range guardProfileLocalDeps(dir) {
+		log.Printf("reconcile: sanitized local dep before install (%s): %s", dir, n)
+	}
 	log.Printf("reconciling profile deps: pnpm install (dir=%s)", dir)
 	if err := runProfileCmd(dir, pnpmCmd(), "install"); err != nil {
 		return fmt.Errorf("pnpm install 对齐失败（%s）：%v", dir, err)
@@ -319,6 +323,47 @@ var noMatchingVersionRe = regexp.MustCompile(`No matching version found for\s+([
 // 捕获 <pkg>（registry 布局中「/-/」前的包名文件夹段），用于把失败归因到具体依赖。
 var fetchTgzFolderRe = regexp.MustCompile(`(?i)(?:GET|fetch)[^\n]*?/([^\s/]+)/-/`)
 
+// scandirErrRe pnpm 解析本地目录依赖失败：`ENOENT: no such file or directory, scandir '<path>'`。
+// 工作区改名/移动后 file:/link: 指向的目录不存在即命中（2026-09-10 删除 dsh-codegraph 实证）。
+var scandirErrRe = regexp.MustCompile(`scandir ['"]([^'"]+)['"]`)
+
+// localDepByPath 在 dir 的 package.json 里找「本地 spec 解析后指向 path（或为其父/子目录）」的
+// 依赖名，用于把 pnpm 的 scandir 报错归因到具体插件。
+func localDepByPath(dir, path string) string {
+	data, err := os.ReadFile(filepath.Join(dir, "package.json"))
+	if err != nil {
+		return ""
+	}
+	var m struct {
+		Dependencies map[string]string `json:"dependencies"`
+	}
+	if json.Unmarshal(data, &m) != nil {
+		return ""
+	}
+	want := filepath.Clean(path)
+	names := make([]string, 0, len(m.Dependencies))
+	for n := range m.Dependencies {
+		names = append(names, n)
+	}
+	sort.Strings(names)
+	for _, n := range names {
+		raw, ok := localSpecPath(m.Dependencies[n])
+		if !ok {
+			continue
+		}
+		target := raw
+		if !filepath.IsAbs(target) {
+			target = filepath.Join(dir, filepath.FromSlash(target))
+		}
+		clean := filepath.Clean(target)
+		sep := string(filepath.Separator)
+		if clean == want || strings.HasPrefix(want, clean+sep) || strings.HasPrefix(clean, want+sep) {
+			return n
+		}
+	}
+	return ""
+}
+
 // reconcileProfileDepsRepair 对齐 profile 依赖树；pnpm install 失败时解析输出定位失败依赖，
 // 从 package.json 摘除后重试——可连续摘除多个下载失败的依赖（一个坏网络包不阻塞其它插件），
 // 覆盖跨机恢复的三类确定性失败：ERR_PNPM_LINKED_PKG_DIR_NOT_FOUND（本地链接目录不存在）、
@@ -331,6 +376,10 @@ func reconcileProfileDepsRepair(dir string) ([]string, error) {
 // reconcileProfileDepsRepairWatch 同 reconcileProfileDepsRepair，但 watch 置位（用户取消）时
 // 立即终止正在运行的 pnpm 并快速返回——不再做「摘除依赖重试」，由调用方走取消收尾。
 func reconcileProfileDepsRepairWatch(dir string, watch func() bool) ([]string, error) {
+	// 自愈同样先消毒悬空本地依赖：否则 pnpm install 必失败，摘除重试也无从归因
+	for _, n := range guardProfileLocalDeps(dir) {
+		log.Printf("reconcile repair: sanitized local dep before install (%s): %s", dir, n)
+	}
 	log.Printf("reconciling profile deps (repair): pnpm install (dir=%s)", dir)
 	const maxDrops = 10 // 单轮对齐最多自动摘除数，防失控循环
 	var dropped []string
@@ -389,6 +438,12 @@ func failingPnpmDep(out, dir string) string {
 			if _, ok := localSpecPath(m.Dependencies[n]); ok {
 				return n
 			}
+		}
+	}
+	// 本地目录依赖悬空：pnpm 只报缺失路径不点名依赖（工作区移动 / 目录被删）→ 回查 package.json
+	if m := scandirErrRe.FindStringSubmatch(out); len(m) > 1 {
+		if name := localDepByPath(dir, m[1]); name != "" {
+			return name
 		}
 	}
 	// 下载失败：pnpm 输出形如 GET https://registry…/<name>/-/<name>-<ver>.tgz error (23)

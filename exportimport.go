@@ -1706,13 +1706,22 @@ func promoteImportProfilesToLkg(dirs []string) {
 // 返回 (note, error)：note 为成功路径的附加说明（如被自动禁用的插件），error 失败时
 // 为面向用户的说明文案（含可疑插件与回退结果）。
 func finishPluginImport(dirs []string, hadNM []bool) (string, error) {
+	// 确定性预检（对齐之后、拉起服务之前）：逐个 import 插件入口，把「启动必然失败」提前成
+	// 「精确点名 + 自动禁用」。不依赖启动日志时序——2026-09-10 实证：导入 16:54:20 报
+	// `plugins restored and service verified healthy`，16:54:28 进程即死于
+	// `does not provide an export named 'assertNever'`（日志健康窗口早于加载错误数秒关闭）。
+	pfDisabled, pfNotes := preflightTreeCompatibility(dirs)
+	pfNote := strings.Join(pfNotes, "；")
+	if len(pfDisabled) > 0 {
+		log.Printf("import: preflight disabled incompatible plugins: %s", strings.Join(pfDisabled, "、"))
+	}
 	healthy, suspects := restartAndVerifyHealing(dirs)
 	if healthy {
 		promoteImportProfilesToLkg(dirs)
 		cleanupImportProfiles(dirs)
 		markServiceResumed()
 		log.Printf("import: plugins restored and service verified healthy")
-		return "", nil
+		return pfNote, nil
 	}
 	reason := "启动日志存在加载错误（版本/插件不兼容）"
 	if len(suspects) > 0 {
@@ -1737,11 +1746,11 @@ func finishPluginImport(dirs []string, hadNM []bool) (string, error) {
 		}
 		log.Printf("import: plugins restored with incompatible ones disabled: %s", strings.Join(names, "、"))
 		if allDisabled {
-			return "已恢复导入，但服务启动失败且未能定位具体的不兼容插件，已自动禁用全部已激活的用户插件以保证服务启动" +
-				"（保留记录，可在关于页逐个检查更新或重新启用）：" + strings.Join(names, "、"), nil
+			return appendNote(pfNote, "已恢复导入，但服务启动失败且未能定位具体的不兼容插件，已自动禁用全部已激活的用户插件以保证服务启动"+
+				"（保留记录，可在关于页逐个检查更新或重新启用）："+strings.Join(names, "、")), nil
 		}
-		return "已恢复导入，但以下插件与当前版本不兼容，已自动禁用（可在关于页检查更新，或确认修复后点击「启用」重试）：" +
-			strings.Join(names, "、"), nil
+		return appendNote(pfNote, "已恢复导入，但以下插件与当前版本不兼容，已自动禁用（可在关于页检查更新，或确认修复后点击「启用」重试）："+
+			strings.Join(names, "、")), nil
 	}
 	log.Printf("import: service not healthy after restore heal (%s), rolling back", reason)
 	killServer()

@@ -67,6 +67,7 @@ var i18nEnMap = map[string]string{
 	"正在更新本地插件 %s…":                "Updating local plugin %s…",
 	"正在备份当前版本…":                   "Backing up current version…",
 	"正在备份当前状态…":                   "Backing up current state…",
+	"正在检查本地插件依赖…":                 "Checking local plugin dependencies…",
 	"正在重启服务…":                     "Restarting service…",
 	"正在尝试重新启用插件…":                 "Trying to re-enable plugin…",
 	"更新失败，正在回退插件版本…":              "Update failed — rolling back plugin version…",

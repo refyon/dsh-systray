@@ -1000,6 +1000,13 @@ func runPluginUpdate(id string) {
 	//    供应链策略失败（minimumReleaseAge：lockfile 中其它插件新发布未满年龄，如
 	//    dsh-cost-meter@1.7.14 案例）会卡死整条命令——与目标插件无关，自动以
 	//    --config.minimumReleaseAge=0 临时跳过年龄校验重试一次（仅本次；不动 profile 配置）。
+	//
+	// 先消毒悬空的本地依赖（同删除路径）：pnpm 要解析整张依赖图，别的插件的 file:/link:
+	// 路径失效会让本次更新整条命令失败，与目标插件无关。
+	splash.Update(T("正在检查本地插件依赖…"), 0.22)
+	for _, n := range guardProfileLocalDeps(row.Locs...) {
+		logUI("本地依赖消毒", n)
+	}
 	var perr error
 	retried := false
 	for attempt := 1; attempt <= 2; attempt++ {
@@ -1342,6 +1349,14 @@ func runPluginRemove(id string) {
 		hadNM[i] = snapshotPluginProfile(dir)
 	}
 
+	// 先消毒悬空的本地依赖，再执行 pnpm remove：pnpm 必须解析整张依赖图，**别的**插件的
+	// file:/link: 路径失效会让本次删除整条命令失败（2026-09-10 实证：删除 dsh-codegraph 被
+	// 已随工作区移动而失效的 dsh-ui-taste 本地路径打成 exit status 0xfffff026，与被删插件无关）。
+	splash.Update(T("正在检查本地插件依赖…"), 0.18)
+	for _, n := range guardProfileLocalDeps(row.Locs...) {
+		logUI("本地依赖消毒", n)
+	}
+
 	// 2) pnpm remove（逐目录执行）；pnpm 不感知 dsh.profile.bundles，删除必须同步摘除
 	// bundle 激活声明——残留会导致服务启动报「cannot resolve profile bundle」硬失败
 	// （本机删除 deepseek-idesign 实证，健康校验失败后整体回退、删除永远不生效）。
@@ -1349,13 +1364,14 @@ func runPluginRemove(id string) {
 	// 自动临时跳过年龄校验重试一次。
 	var perr error
 	retried := false
+	var failOut string // 归因用：pnpm 原文（此前只报 exit status，真实原因只进日志）
 	for attempt := 1; attempt <= 2; attempt++ {
 		if attempt == 2 {
 			splash.Update("供应链策略拦截（发布年龄校验），正在以临时跳过校验重试…", 0.55)
 			retried = true
 		}
 		perr = nil
-		var failOut string
+		failOut = ""
 		for i, dir := range row.Locs {
 			splash.Update(fmt.Sprintf("正在移除 %s（%d/%d）…", row.Name, i+1, len(row.Locs)),
 				0.25+0.4*float64(i)/float64(len(row.Locs)))
@@ -1367,6 +1383,8 @@ func runPluginRemove(id string) {
 			out, perr = runProfileCmdCapture(dir, pnpmCmd(), cmdArgs...)
 			if perr != nil {
 				failOut = out
+				// 附带 pnpm 原文尾部：exit status 0xfffff026 这类编号无法定位根因
+				perr = profileInstallErr(perr, out)
 				break
 			}
 			if err := stripProfileBundleEntry(dir, row.Name); err != nil {
@@ -1769,6 +1787,10 @@ func runLocalPluginUpdate(row PluginRow, srcDir string) {
 		if perr = setProfileDepSpec(dir, row.Name, spec); perr != nil {
 			break
 		}
+	}
+	// 目标插件的 spec 已改写为可用路径，再消毒其余悬空本地依赖，最后 pnpm install。
+	for _, n := range guardProfileLocalDeps(row.Locs...) {
+		logUI("本地依赖消毒", n)
 	}
 	for attempt := 1; attempt <= 2; attempt++ {
 		if attempt == 2 {
