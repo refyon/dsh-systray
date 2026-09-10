@@ -184,6 +184,22 @@ func harnessGitTagForVersion(version string) (string, error) {
 	return "", fmt.Errorf("harness 仓库中未找到版本 %s 对应的 tag（dsh-v%s / dsh-%s）", version, version, version)
 }
 
+// failReset 重置失败统一收尾：尽力把服务拉回可用后弹窗报告。
+// runHarnessReset 在第 0 步就 killServer 了，各失败分支若只弹窗返回，用户会同时面对
+// 「重置失败」与「服务停摆」——2026-09-10 mac 实证：重置安装失败虽已还原目录，服务却一直
+// 停着（22:29:47 停 → 22:38:13 才被后续更新拉起），只能手动点重启。
+func failReset(splash *SplashState, msg string) {
+	recovered := true
+	if !serverResponding(webURL) {
+		recovered = restartAndVerifyServer()
+	}
+	if !recovered {
+		msg += "\n\n服务未能自动恢复，请点击「重启服务」后重试。"
+	}
+	splash.Close()
+	showMessageBox(msg, appName)
+}
+
 // runHarnessReset 重置 DeepSeek Harness：停服务 →（可选）清会话/清插件 →
 // 全新安装 reqTarget（前端从「重置目标版本」下拉选择的任意官方 npm 版本，含更高版本与
 // 预发布；默认选中当前版本=同版本重装）→ 重启校验。reqTarget 为空或格式非法为防御性
@@ -203,9 +219,8 @@ func runHarnessReset(clearSessions, clearPlugins bool, reqTarget string) {
 
 	// 0.5) 形态判定：npm 预构建 / 缺失 → npm 全新安装；源码 checkout → 暂不支持自动清空重装。
 	if isSourceHarnessDir() {
-		splash.Close()
-		showMessageBox("重置失败：当前为源码 checkout 形态，暂不支持自动清空目录重装。\n"+
-			"请先在 Web UI 切换到 npm 预构建形态后再重置，或手动处理源码目录。\n\n日志："+unifiedLogPath(), appName)
+		failReset(splash, "重置失败：当前为源码 checkout 形态，暂不支持自动清空目录重装。\n"+
+			"请先在 Web UI 切换到 npm 预构建形态后再重置，或手动处理源码目录。\n\n日志："+unifiedLogPath())
 		return
 	}
 
@@ -215,13 +230,12 @@ func runHarnessReset(clearSessions, clearPlugins bool, reqTarget string) {
 	splash.Update(T("正在准备全新安装…"), 0.2)
 	target := reqTarget
 	if target == "" {
-		splash.Close()
-		showMessageBox("重置失败：未选择重置目标版本，请重新打开弹窗选择后再试。", appName)
+		failReset(splash, "重置失败：未选择重置目标版本，请重新打开弹窗选择后再试。\n\n日志："+unifiedLogPath())
 		return
 	}
 	if !validResetTarget(target) {
-		splash.Close()
-		showMessageBox(fmt.Sprintf("重置失败：目标版本 %q 格式非法，请重新打开弹窗选择。", target), appName)
+		failReset(splash, fmt.Sprintf("重置失败：目标版本 %q 格式非法，请重新打开弹窗选择。\n\n日志：%s",
+			target, unifiedLogPath()))
 		return
 	}
 	log.Printf("reset: clean reinstall to %s (shape=npm) clearSessions=%v clearPlugins=%v explicitTarget=%v",
@@ -234,15 +248,13 @@ func runHarnessReset(clearSessions, clearPlugins bool, reqTarget string) {
 	if _, serr := os.Stat(harnessDir); serr == nil {
 		splash.Update(T("正在清空原 harness 目录…"), 0.35)
 		if rerr := os.Rename(harnessDir, bakDir); rerr != nil {
-			splash.Close()
-			showMessageBox("重置失败：无法备份原目录（"+rerr.Error()+"）。\n\n请检查文件占用后重试。", appName)
+			failReset(splash, "重置失败：无法备份原目录（"+rerr.Error()+"）。\n\n请检查文件占用后重试。\n\n日志："+unifiedLogPath())
 			return
 		}
 	}
 	if err := os.MkdirAll(harnessDir, 0o755); err != nil {
 		_ = os.Rename(bakDir, harnessDir) // 尽力还原
-		splash.Close()
-		showMessageBox("重置失败：无法创建新目录（"+err.Error()+"）。", appName)
+		failReset(splash, "重置失败：无法创建新目录（"+err.Error()+"）。\n\n日志："+unifiedLogPath())
 		return
 	}
 	restoreBackup := func() {
@@ -252,11 +264,13 @@ func runHarnessReset(clearSessions, clearPlugins bool, reqTarget string) {
 		}
 	}
 	splash.Update(fmt.Sprintf("正在全新安装 %s…（原目录文件已清空）", withV(target)), 0.55)
-	rerr := ensureNpmHarnessVersion(target)
+	// 整族钉版：家族包名取自被替换下来的原目录（锁文件/已装包），把整族锁到目标版本——只钉
+	// 根包时 pnpm 会顺着 caret 范围选中上游半发布的新版本，随后在其缺失依赖上整次失败。
+	family := harnessFamilyNames(bakDir)
+	rerr := ensureNpmHarnessVersionPinned(target, family)
 	if rerr != nil {
 		restoreBackup()
-		splash.Close()
-		showMessageBox("重置失败：全新安装未能完成，已还原原目录。\n"+rerr.Error()+"\n\n日志："+unifiedLogPath(), appName)
+		failReset(splash, "重置失败：全新安装未能完成，已还原原目录。\n"+rerr.Error())
 		return
 	}
 	// 旧目录备份保留到「重启健康校验通过」后再删除：重置后新版启动受阻（插件不兼容/核心
@@ -281,13 +295,14 @@ func runHarnessReset(clearSessions, clearPlugins bool, reqTarget string) {
 		}
 	}
 
-	// 4) 重启并健康校验（就绪 + 启动日志无加载报错）。
+	// 4) 重启并健康校验（就绪 + 启动日志无加载报错）；重置属于改版路径，用加长校验窗口——
+	//    混装/接口不兼容的加载错误可能迟至启动后 45s 才刷出（0.1.5-rc.1 实测）。
 	//    失败时优先不回滚（与「更新 Harness」同策略）：先禁用启动日志点名的用户插件
 	//    （disableBootSuspects），仍失败再兜底禁用全部已激活用户插件（disableAllUserPlugins）
 	//    换取新版可启动——任一成功即保留新版本并弹窗列出禁用清单；两级都失败（核心故障，
 	//    官方包加载错误等禁用用户插件无法解决）才还原备份目录。
 	splash.Update(T("正在重启服务…"), 0.9)
-	if !restartAndVerifyServer() {
+	if !restartAndVerifyServerAfterChange() {
 		splash.Update(T("启动校验失败，正在排查不兼容插件…"), 0.92)
 		var profileDirs []string
 		for _, pf := range enumeratePluginProfiles() {
@@ -301,10 +316,10 @@ func runHarnessReset(clearSessions, clearPlugins bool, reqTarget string) {
 			allDisabled = ok
 		}
 		if !ok {
-			// 核心故障：还原重置前目录，不留半成品（备份此前一直保留）
+			// 核心故障：还原重置前目录，不留半成品（备份此前一直保留）。还原后必须把服务拉回
+			// 可用状态，否则用户同时面对「重置失败」与「服务停摆」（failReset 负责收尾弹窗）。
 			restoreBackup()
-			splash.Close()
-			showMessageBox("重置未能完成：已尝试自动禁用不兼容插件，服务仍无法启动（核心故障），已还原重置前的版本。\n\n日志："+unifiedLogPath()+cleanupNotes, appName)
+			failReset(splash, "重置未能完成：已尝试自动禁用不兼容插件，服务仍无法启动（核心故障），已还原重置前的版本。\n\n日志："+unifiedLogPath()+cleanupNotes)
 			return
 		}
 		// 自愈成功：保留新版本（禁用清单可于「关于页 → 已安装插件」检查更新/重新启用）

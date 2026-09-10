@@ -1237,10 +1237,7 @@ func profileInstallErr(err error, out string) error {
 	if err == nil {
 		return nil
 	}
-	tail := strings.TrimSpace(out)
-	if len(tail) > 600 {
-		tail = "…" + tail[len(tail)-600:]
-	}
+	tail := outputTail(out, 600)
 	if tail == "" {
 		return err
 	}

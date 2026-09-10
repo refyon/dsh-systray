@@ -270,8 +270,9 @@ func tryBootRollback(why string) (kept, rolled bool, prev string, disabledNames 
 		log.Printf("lkg: rollback restart failed: %s", msg)
 		return false, false, prevMarker.HarnessVersion, nil
 	}
-	// 健康窗口校验（错误可能迟于就绪数秒出现；直接短窗口扫描会漏判并把回退当成功）
-	if !verifyServerBoot(before, exitCh) {
+	// 健康窗口校验（错误可能迟于就绪数十秒才出现；回退同属改版路径，用加长窗口，否则短窗口
+	// 会把异常启动当成功、把这次回退误记为新的良好基线）
+	if !verifyServerBootAfterChange(before, exitCh) {
 		log.Printf("lkg: rollback restart has boot errors")
 		return false, false, prevMarker.HarnessVersion, nil
 	}

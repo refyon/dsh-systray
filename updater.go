@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -12,7 +13,9 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"runtime"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -594,6 +597,22 @@ func runHarnessCmd(name string, args ...string) error {
 	return err
 }
 
+// runHarnessCmdTail 同 runHarnessCmd，另返回输出尾部（供失败归类——例如
+// ERR_PNPM_NO_MATCHING_VERSION 需区别「上游分批发布」与普通网络失败）。日志仍完整落盘。
+func runHarnessCmdTail(name string, args ...string) (string, error) {
+	cmd := exec.Command(name, args...)
+	cmd.Dir = harnessDir
+	hideCmdWindow(cmd)
+	var buf bytes.Buffer
+	w := newModuleLogWriter("harness")
+	_, _ = fmt.Fprintf(w, "\n===== %s %s =====\n", name, strings.Join(args, " "))
+	cmd.Stdout = io.MultiWriter(w, &buf)
+	cmd.Stderr = io.MultiWriter(w, &buf)
+	err := cmd.Run()
+	w.Flush()
+	return buf.String(), err
+}
+
 // isGitHarnessDir harness 目录是否为 git 仓库（源码形态更新/回退的前置条件；
 // npm 预构建形态目录没有 .git，必须阻止 git 命令进入，否则就是“fatal: not a git repository”）。
 func isGitHarnessDir() bool {
@@ -702,19 +721,69 @@ func harnessNpmPreOnlyNote(newest string) string {
 	return fmt.Sprintf("npm 上暂无稳定版本，最新发布为 %s（预发布）；开启「预发布通道」后可更新", withV(newest))
 }
 
-// setHarnessOverrides 向 harness 目录注入 pnpm.overrides["@deepseek-ai/*"] = <ver>，
-// 使 pnpm install 把全部 @deepseek-ai/* 家族强制到同一版本。修复“只 pnpm add
-// @deepseek-ai/dsh 升级根包、其余 @deepseek-ai/* 停在锁文件旧版 → 新旧混装 ESM 加载失败”
-// 的根因（0.1.2-rc.1 曾因此炸）。
+// harnessFamilyPrefix harness 家族包名前缀。只钉 @deepseek-ai/dsh*：@deepseek-ai/cordis(4.x)、
+// @deepseek-ai/schemastery(3.x)、@deepseek-ai/cordis-plugin-*(1.x) 与 harness 同 scope 却是
+// 各自独立的版本线，钉到 harness 版本会让 pnpm 直接 ERR_PNPM_NO_MATCHING_VERSION。
+const harnessFamilyPrefix = "@deepseek-ai/dsh"
+
+// harnessPkgNameRe 从 pnpm-lock.yaml 抓家族包名（快照键形如 '@deepseek-ai/dsh-llm@0.1.5-rc.1':）。
+var harnessPkgNameRe = regexp.MustCompile(`@deepseek-ai/(dsh[a-z0-9.-]*)@`)
+
+// harnessFamilyNames 枚举目录现状里的 harness 家族包名（@deepseek-ai/dsh*），供整族钉版使用。
+// 数据源优先 pnpm-lock.yaml（连只作为 peer 出现、未在根 package.json 声明的核心包一并覆盖），
+// 回退 node_modules/.pnpm 目录名；两处都读不到时返回 nil（调用方退化为「不钉版」）。
+func harnessFamilyNames(dir string) []string {
+	seen := map[string]bool{}
+	if data, err := os.ReadFile(filepath.Join(dir, "pnpm-lock.yaml")); err == nil {
+		for _, m := range harnessPkgNameRe.FindAllStringSubmatch(string(data), -1) {
+			name := "@deepseek-ai/" + m[1]
+			if strings.HasPrefix(name, harnessFamilyPrefix) {
+				seen[name] = true
+			}
+		}
+	}
+	if entries, err := os.ReadDir(filepath.Join(dir, "node_modules", ".pnpm")); err == nil {
+		for _, e := range entries {
+			// 目录名形如 @deepseek-ai+dsh-llm@0.1.5-rc.1_@deepseek-ai+cordis@4.0.2
+			rest, ok := strings.CutPrefix(e.Name(), "@deepseek-ai+")
+			if !ok {
+				continue
+			}
+			i := strings.IndexByte(rest, '@')
+			if i <= 0 {
+				continue
+			}
+			name := "@deepseek-ai/" + rest[:i]
+			if strings.HasPrefix(name, harnessFamilyPrefix) {
+				seen[name] = true
+			}
+		}
+	}
+	names := make([]string, 0, len(seen))
+	for n := range seen {
+		names = append(names, n)
+	}
+	sort.Strings(names)
+	return names
+}
+
+// setHarnessFamilyOverrides 把 harness 家族包**逐个**钉到 ver，使 pnpm 解析出的家族版本单一
+// （修复“只 pnpm add @deepseek-ai/dsh 升级根包、其余家族包停在锁文件旧版 → 新旧混装 ESM 加载
+// 失败”，0.1.2-rc.1 与 0.1.5-rc.1 都因此炸过）。两个通道各写一份：package.json 的
+// "pnpm.overrides"（旧版 pnpm 读）与 pnpm-workspace.yaml 顶层 overrides（pnpm ≥ v10 读）。
 //
-// 两个写入通道：
-//  1. package.json 的 "pnpm.overrides"（旧版 pnpm 读取）；
-//  2. pnpm-workspace.yaml 顶层的 overrides（pnpm ≥ v10 起 settings/overrides 统一迁移到
-//     pnpm-workspace.yaml，package.json 的 pnpm.* 字段不再读取——2026-09 实测 v11.7.0：
-//     package.json 通道被忽略、workspace 通道生效）。
+// 为什么不再用 "@deepseek-ai/*" 名字通配（上一版实现的写法）：
+//  1. 2026-09-10 本机实测（pnpm 10.34.5，同一份 package.json + pnpm-workspace.yaml）：通配
+//     不生效——家族仍解析到 0.1.1-rc.2（混装）与半发布的 0.1.5-rc.2；换成精确包名立即生效。
+//     即“防混装补丁”此前一直空转，混装树照旧被装出来。
+//  2. 通配即便生效也不安全：会连 @deepseek-ai/cordis(4.x)、schemastery(3.x)、
+//     cordis-plugin-*(1.x) 一起钉成 harness 版本（那些包没有该版本）→ 安装直接失败。
 //
-// ver 为空时移除该 override。返回写回是否成功。
-func setHarnessOverrides(dir, ver string) error {
+// 逐包钉版还兜住「上游分批发布」窗口：家族依赖是 caret 范围（^0.1.5-rc.1 允许 0.1.5-rc.2），
+// 上游先发一部分包时，全新解析会选中半发布的新版本、随后在其缺失依赖上
+// ERR_PNPM_NO_MATCHING_VERSION 整次失败（2026-09-10 22:49 实测）；钉死后整族锁在目标版本。
+// names 为空或 ver 为空时只清理历史条目、不写新条目。返回写回是否成功。
+func setHarnessFamilyOverrides(dir, ver string, names []string) error {
 	p := filepath.Join(dir, "package.json")
 	data, err := os.ReadFile(p)
 	if err != nil {
@@ -728,16 +797,17 @@ func setHarnessOverrides(dir, ver string) error {
 	if pnpm == nil {
 		pnpm = map[string]interface{}{}
 	}
-	ov, _ := pnpm["overrides"].(map[string]interface{})
-	if ov == nil {
-		ov = map[string]interface{}{}
+	ov := map[string]interface{}{}
+	if ver != "" {
+		for _, n := range names {
+			ov[n] = ver
+		}
 	}
-	if ver == "" {
-		delete(ov, "@deepseek-ai/*")
+	if len(ov) == 0 {
+		delete(pnpm, "overrides") // 整体重建：历史 "@deepseek-ai/*" 通配条目一并清除
 	} else {
-		ov["@deepseek-ai/*"] = ver
+		pnpm["overrides"] = ov
 	}
-	pnpm["overrides"] = ov
 	root["pnpm"] = pnpm
 	out, err := json.MarshalIndent(root, "", "  ")
 	if err != nil {
@@ -746,13 +816,12 @@ func setHarnessOverrides(dir, ver string) error {
 	if err := os.WriteFile(p, append(out, '\n'), 0o644); err != nil {
 		return err
 	}
-	return writeHarnessWorkspaceOverrides(dir, ver)
+	return writeHarnessWorkspaceOverrides(dir, ov)
 }
 
-// writeHarnessWorkspaceOverrides 维护 harness 目录 pnpm-workspace.yaml 的 overrides 块：
-// 只增删 "@deepseek-ai/*" 一行（保留文件内其它既有设置/键）。ver 为空时移除该块，
-// 文件无其它内容则整体删除。pnpm ≥ v10 依赖该文件生效家族钉版（见 setHarnessOverrides）。
-func writeHarnessWorkspaceOverrides(dir, ver string) error {
+// writeHarnessWorkspaceOverrides 重建 pnpm-workspace.yaml 顶层 overrides 块，内容完全由 ov
+// 决定（顺带清掉历史通配与已失效包名）；文件内其它键原样保留，无内容则删除文件。
+func writeHarnessWorkspaceOverrides(dir string, ov map[string]interface{}) error {
 	p := filepath.Join(dir, "pnpm-workspace.yaml")
 	raw := ""
 	if data, err := os.ReadFile(p); err == nil {
@@ -783,12 +852,20 @@ func writeHarnessWorkspaceOverrides(dir, ver string) error {
 		}
 		out = append(out, strings.TrimRight(lines[i], " \t"))
 	}
-	if ver != "" {
-		out = append(out, "overrides:", `  "@deepseek-ai/*": "`+ver+`"`)
+	if len(ov) > 0 {
+		keys := make([]string, 0, len(ov))
+		for k := range ov {
+			keys = append(keys, k)
+		}
+		sort.Strings(keys)
+		out = append(out, "overrides:")
+		for _, k := range keys {
+			out = append(out, fmt.Sprintf("  %q: %q", k, ov[k]))
+		}
 	}
 	body := strings.TrimRight(strings.Join(out, "\n"), "\n")
 	if strings.TrimSpace(body) == "" {
-		if removed || ver == "" {
+		if removed || len(ov) == 0 {
 			_ = os.Remove(p)
 		}
 		return nil
@@ -802,8 +879,8 @@ const harnessBackupSuffix = ".dshbak"
 // snapshotHarness 快照当前可运行版本：备份 package.json / pnpm-lock.yaml / pnpm-workspace.yaml，
 // 并把 node_modules 整体改名备份（同盘 rename，秒级完成；更新失败可本地直接移回，不依赖网络）。
 // 返回是否成功备份了 node_modules。
-// 注意：pnpm-workspace.yaml 必须纳入备份——pnpm ≥ v10 的 setHarnessOverrides 在更新期把
-// "@deepseek-ai/*" overrides 与 minimumReleaseAgeExclude 写入该文件，快照不覆盖它则回滚后
+// 注意：pnpm-workspace.yaml 必须纳入备份——pnpm ≥ v10 的 setHarnessFamilyOverrides 在更新期把
+// 家族逐包 overrides 与 minimumReleaseAgeExclude 写入该文件，快照不覆盖它则回滚后
 // 残留坏版本的 overrides，下次任何 pnpm install 会把可用树再次拉向失败版本。
 // 调用前必须先 killServer()，否则运行中的服务会占用 node_modules 内文件导致改名失败。
 func snapshotHarness() (nodeModulesBacked bool) {
@@ -822,9 +899,51 @@ func snapshotHarness() (nodeModulesBacked bool) {
 	return os.Rename(nm, bak) == nil
 }
 
+// dropHarnessLockfile 删除 harness 目录的 pnpm-lock.yaml（回退路径由 snapshotHarness 留下的
+// .dshbak 副本还原），使随后的 pnpm add/install 不再复用旧解析。
+//
+// 旧锁文件是「新旧混装」的另一半根因：家族核心包只是插件的 peer、未在根 package.json 声明，
+// pnpm 会沿用锁文件里已钉死的旧条目（2026-09-10 实证：node_modules 已被改名备份、锁文件仍在，
+// pnpm add 0.1.5-rc.1 之后家族核心包仍是 0.1.1-rc.2 → 启动时插件树 ESM 缺导出）。
+func dropHarnessLockfile() {
+	p := filepath.Join(harnessDir, "pnpm-lock.yaml")
+	if err := os.Remove(p); err != nil && !os.IsNotExist(err) {
+		log.Printf("harness update: remove stale pnpm-lock.yaml failed: %v", err)
+		return
+	}
+	log.Printf("harness update: dropped stale pnpm-lock.yaml (force fresh resolution)")
+}
+
+// harnessInstallHint 把 pnpm 安装失败输出归类为可执行的中文提示（未命中返回空串）。
+// 依据 2026-09-10 实测：上游 @deepseek-ai 家族分批发布时，全新解析会选中半发布的新版本、
+// 再在其缺失依赖上报 ERR_PNPM_NO_MATCHING_VERSION（^0.1.5-rc.2 尚无对应包）；
+// registry 抖动则表现为 Socket timeout / ECONNRESET（本机 pnpm 设了 fetch-retries=0，
+// 坏网络下一次失败即放弃）。
+func harnessInstallHint(out string) string {
+	switch {
+	case strings.Contains(out, "ERR_PNPM_NO_MATCHING_VERSION"):
+		return "原因判断：registry 上该版本家族尚未发布完整（或目标版本不存在）。官方分批发布时会出现，稍后重试即可。"
+	case strings.Contains(out, "ERR_PNPM_META_FETCH_FAIL"),
+		strings.Contains(out, "ETIMEDOUT"),
+		strings.Contains(out, "ECONNRESET"),
+		strings.Contains(out, "Socket timeout"):
+		return "原因判断：registry 请求超时/连接被重置（网络或官方源不稳），稍后重试即可。"
+	}
+	return ""
+}
+
+// outputTail 取命令输出尾部（最多 n 字节，超出部分以 … 标记），供失败弹窗直接给出根因。
+func outputTail(out string, n int) string {
+	tail := strings.TrimSpace(out)
+	if len(tail) > n {
+		tail = "…" + tail[len(tail)-n:]
+	}
+	return tail
+}
+
 // restoreHarnessSnapshot 回退到快照版本：还原 package.json / pnpm-lock.yaml / pnpm-workspace.yaml；
 // 有 node_modules 备份直接移回（秒级），否则按还原后的锁文件重装。
-// pnpm-workspace.yaml 无快照时（更新前不存在、更新期由 setHarnessOverrides 新建）删除其残留——
+// pnpm-workspace.yaml 无快照时（更新前不存在、更新期由 setHarnessFamilyOverrides 新建）删除其残留——
 // 否则失败版本写入的 overrides / minimumReleaseAgeExclude 会污染回退后的可用树。
 func restoreHarnessSnapshot(hadNodeModulesBackup bool) {
 	for _, name := range []string{"package.json", "pnpm-lock.yaml", "pnpm-workspace.yaml"} {
@@ -898,11 +1017,38 @@ func serverLogHasBootErrors(offset int64) bool {
 	return false
 }
 
+// 健康校验窗口。常规重启 10s 足够（加载错误通常数秒内刷出）；但**改版后**（harness 更新/
+// 重置/回退，或上一次改版尚未经冷启动验证）留 60s：0.1.5-rc.1 混装树实测 22:38:13 启动、
+// 22:38:32 被 10s 窗口判成功并提升 LKG、22:38:58（启动后 45s）才刷出 plugin tree failed to
+// load —— 短窗口不仅误判成功，还把「唯一可回退的 LKG」当成已验证状态，事后服务直接停摆。
+const (
+	bootVerifySettle                   = 10 * time.Second
+	bootVerifySettleAfterHarnessChange = 60 * time.Second
+)
+
 // verifyServerBoot 就绪后的健康校验：周期扫描 server.log 从 before 起的追加段，并监听进程退出。
 // 覆盖“HTTP 已就绪但插件/依赖加载错误更晚刷出”的漏判（错误常迟于就绪数秒出现，曾导致
 // 混装版本的异常启动被当作成功、甚至把 LKG 误清）。任一命中立即判失败；窗口结束仍未命中为健康。
 func verifyServerBoot(before int64, exited <-chan error) bool {
-	const settle = 10 * time.Second // 总等待窗口：给慢刷错误留足时间
+	return verifyServerBootWithin(before, exited, bootVerifySettle)
+}
+
+// verifyServerBootAfterChange 改版路径（harness 更新/重置/回退）的健康校验：用加长窗口。
+func verifyServerBootAfterChange(before int64, exited <-chan error) bool {
+	return verifyServerBootWithin(before, exited, bootVerifySettleAfterHarnessChange)
+}
+
+// verifyServerBootOnColdStart 冷启动（双击拉起）健康校验：仅当存在 LKG（= 上次改版尚未经
+// 冷启动验证通过）时用加长窗口，常规启动仍走短窗口——不为此让每次启动多等一分钟。
+func verifyServerBootOnColdStart(before int64, exited <-chan error) bool {
+	if hasAnyLkg() {
+		return verifyServerBootWithin(before, exited, bootVerifySettleAfterHarnessChange)
+	}
+	return verifyServerBootWithin(before, exited, bootVerifySettle)
+}
+
+// verifyServerBootWithin 健康校验实现：窗口内轮询「追加段加载错误 / 进程退出」，任一命中即失败。
+func verifyServerBootWithin(before int64, exited <-chan error, settle time.Duration) bool {
 	deadline := time.Now().Add(settle)
 	for {
 		if serverLogHasBootErrors(before) {
@@ -931,6 +1077,17 @@ func verifyServerBoot(before int64, exited <-chan error) bool {
 // 就绪后进入 verifyServerBoot 健康窗口（追加段扫描 + 进程退出侦听）。全部通过返回 true。
 // 拉起前先轮转 server.log（rotateServerLog），保证本次启动的现场独立成档、校验只扫本次段。
 func restartAndVerifyServer() bool {
+	return restartAndVerifyServerWithin(bootVerifySettle)
+}
+
+// restartAndVerifyServerAfterChange 改版路径（harness 更新/重置/回退）的重启校验：用加长窗口，
+// 覆盖迟至启动后 45s 才刷出的加载错误（见 bootVerifySettleAfterHarnessChange 说明）。
+func restartAndVerifyServerAfterChange() bool {
+	return restartAndVerifyServerWithin(bootVerifySettleAfterHarnessChange)
+}
+
+// restartAndVerifyServerWithin 重启并健康校验（窗口由调用方指定）。
+func restartAndVerifyServerWithin(settle time.Duration) bool {
 	killServer()
 	time.Sleep(1 * time.Second)
 	if serverResponding(webURL) {
@@ -944,7 +1101,7 @@ func restartAndVerifyServer() bool {
 	if ok, _ := waitForServerReady(webURL, exitCh, startupTimeout); !ok {
 		return false
 	}
-	return verifyServerBoot(before, exitCh)
+	return verifyServerBootWithin(before, exitCh, settle)
 }
 
 // rollbackUpdate 更新失败处理：停止服务 → 回退快照 → 重启校验 → 弹窗报告。
@@ -953,7 +1110,7 @@ func rollbackUpdate(splash *SplashState, prev string, hadNMBackup bool, reason s
 	killServer()
 	restoreHarnessSnapshot(hadNMBackup)
 	splash.Update(T("正在重启服务…"), 0.85)
-	restartAndVerifyServer()
+	restartAndVerifyServerAfterChange()
 	splash.Close()
 	msg := "DeepSeek Harness 更新失败（" + reason + "），已回退到"
 	if prev != "" {
@@ -1026,11 +1183,29 @@ func runHarnessUpdate(latest string) {
 		if ver == "" {
 			ver = "latest"
 		}
-		// 全家族 overrides 钉到目标版本：仅 pnpm add dsh 会把其余 @deepseek-ai/* 留在锁文件旧版，
-		// 造成新旧混装（ESM 加载失败、服务“假启动”）。overrides 让 install 把整个家族拉齐。
-		err = setHarnessOverrides(harnessDir, ver)
+		// 整族钉到目标版本 + 丢掉旧锁文件，二者缺一都会留下「新版插件 + 旧版核心包」的混装树：
+		//   - 家族核心包只是插件的 peer、未在根 package.json 声明，旧锁文件会把它们钉在旧版；
+		//   - 只 pnpm add 根包时 pnpm 复用旧解析，同样停在旧版（2026-09-10 实证 0.1.1-rc.2 混装）。
+		// 精确包名钉版同时兜住「上游分批发布」窗口（caret 范围会选中半发布的新版本）。ver 为
+		// 非具体版本（"latest"）时不钉版——"latest" 会指向家族里各包自己的 latest 标签。
+		family := []string(nil)
+		if ver != "latest" {
+			family = harnessFamilyNames(harnessDir)
+		}
+		dropHarnessLockfile()
+		log.Printf("harness update: pin family to %s (%d packages)", ver, len(family))
+		err = setHarnessFamilyOverrides(harnessDir, ver, family)
+		var addOut string
 		if err == nil {
-			err = runHarnessCmd(pnpmCmd(), "add", "@deepseek-ai/dsh@"+ver, "--save-exact")
+			addOut, err = runHarnessCmdTail(pnpmCmd(), "add", "@deepseek-ai/dsh@"+ver, "--save-exact")
+			if err != nil && len(family) > 0 && strings.Contains(addOut, "ERR_PNPM_NO_MATCHING_VERSION") {
+				// 钉版把某个家族包钉到目标版本不存在的组合（目标版本家族未发全/包已改名）：
+				// 去掉钉版重试一次，让 pnpm 自行解析。
+				log.Printf("harness update: pinned resolution failed, retrying without family pin")
+				if cerr := setHarnessFamilyOverrides(harnessDir, ver, nil); cerr == nil {
+					addOut, err = runHarnessCmdTail(pnpmCmd(), "add", "@deepseek-ai/dsh@"+ver, "--save-exact")
+				}
+			}
 		}
 		if err == nil {
 			// 全量 install 重新 reconcile 整个依赖树，避免只改根依赖导致的新旧版本混装
@@ -1041,6 +1216,9 @@ func runHarnessUpdate(latest string) {
 			}
 		} else {
 			reason = "安装指定版本失败（详见日志末尾）"
+			if hint := harnessInstallHint(addOut); hint != "" {
+				reason = hint
+			}
 		}
 	} else {
 		prevHead := runHarnessCmdCapture("git", "rev-parse", "HEAD")
@@ -1080,7 +1258,7 @@ func runHarnessUpdate(latest string) {
 	//    点名禁用未奏效或无点名嫌疑时，按用户决策（尽量保留新版本、不回退）禁用全部
 	//    已激活的用户插件再试；仍失败（核心故障）→ 整体回退到上一版本。
 	splash.Update(T("正在重启服务…"), 0.85)
-	if !restartAndVerifyServer() {
+	if !restartAndVerifyServerAfterChange() {
 		splash.Update(T("启动校验失败，正在排查不兼容插件…"), 0.9)
 		var profileDirs []string
 		for _, pf := range enumeratePluginProfiles() {

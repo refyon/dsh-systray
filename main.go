@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"embed"
 	"encoding/binary"
@@ -780,7 +781,7 @@ func bootstrapService() {
 		// 且错误常迟于就绪数秒刷出——必须用覆盖窗口的 verifyServerBoot，否则会把异常当成功并误清 LKG）
 		bootError := ""
 		if ready && startedByUs {
-			if !verifyServerBoot(serverLogBefore, serverExitCh) {
+			if !verifyServerBootOnColdStart(serverLogBefore, serverExitCh) {
 				ready = false
 				bootError = "启动日志存在加载错误（版本/插件不兼容）"
 			}
@@ -1145,6 +1146,15 @@ func ensureNpmHarness() error {
 // ensureNpmHarnessVersion 在 harnessDir 安装 npm 预构建产物 @deepseek-ai/dsh@ver
 // （脚手架与白名单复刻 ensureNpmHarness 的历史语义；用于「重置=清空目录后全新安装最新版」）。
 func ensureNpmHarnessVersion(ver string) error {
+	return ensureNpmHarnessVersionPinned(ver, nil)
+}
+
+// ensureNpmHarnessVersionPinned 同 ensureNpmHarnessVersion，另把 familyNames 里的家族包逐个钉到
+// ver（见 setHarnessFamilyOverrides）：重置场景下包名取自被替换下来的原目录，把整族锁在目标
+// 版本——否则 caret 范围（^0.1.5-rc.1 允许 0.1.5-rc.2）会在官方分批发布时选中半发布的新版本，
+// 随后在其缺失依赖上 ERR_PNPM_NO_MATCHING_VERSION 整次安装失败（2026-09-10 实测）。
+// 钉版导致解析失败（目标版本家族未发全 / 包已改名）时自动去掉钉版重试一次。
+func ensureNpmHarnessVersionPinned(ver string, familyNames []string) error {
 	if err := os.MkdirAll(harnessDir, 0o755); err != nil {
 		return err
 	}
@@ -1176,30 +1186,62 @@ func ensureNpmHarnessVersion(ver string) error {
 			return err
 		}
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Minute)
-	defer cancel()
-	cmd := exec.CommandContext(ctx, pnpmCmd(), "add", "@deepseek-ai/dsh@"+ver, "--save-exact")
-	cmd.Dir = harnessDir
-	cmd.Env = append(os.Environ(), pnpmTunedEnv()...)
-	hideCmdWindow(cmd)
-	w := newModuleLogWriter("install")
-	cmd.Stdout = w
-	cmd.Stderr = w
-	if err := cmd.Run(); err != nil {
-		w.Flush()
+	if ver != "latest" {
+		if err := setHarnessFamilyOverrides(harnessDir, ver, familyNames); err != nil {
+			// 钉版写失败不阻断：退化为普通安装（旧锁文件已被重置流程清空，仍能装出单一版本）
+			log.Printf("install: write family overrides failed: %v", err)
+		} else if len(familyNames) > 0 {
+			log.Printf("install: pinned %d family packages to %s", len(familyNames), ver)
+		}
+	}
+	out, err := runNpmHarnessAdd(ver)
+	if err != nil {
+		if len(familyNames) > 0 && strings.Contains(out, "ERR_PNPM_NO_MATCHING_VERSION") {
+			// 钉版把某个家族包钉到了目标版本不存在的组合（目标版本家族未发全/包已改名）：
+			// 去掉钉版原样重试一次，让 pnpm 自行解析。
+			log.Printf("install: pinned resolution failed, retrying without family pin")
+			if cerr := setHarnessFamilyOverrides(harnessDir, ver, nil); cerr == nil {
+				out, err = runNpmHarnessAdd(ver)
+			}
+		}
+	}
+	if err != nil {
 		if isNpmHarnessReady() {
 			log.Printf("npm harness installed (pnpm reported: %v)", err)
 		} else {
-			return fmt.Errorf("安装 @deepseek-ai/dsh@%s 失败：%w（日志：%s）", ver, err, unifiedLogPath())
+			msg := fmt.Sprintf("安装 @deepseek-ai/dsh@%s 失败：%v", ver, err)
+			if hint := harnessInstallHint(out); hint != "" {
+				msg += "\n" + hint
+			}
+			if tail := outputTail(out, 600); tail != "" {
+				msg += "\n\n输出尾部：\n" + tail
+			}
+			return fmt.Errorf("%s\n\n日志：%s", msg, unifiedLogPath())
 		}
-	} else {
-		w.Flush()
 	}
 	if !isNpmHarnessReady() {
 		return fmt.Errorf("安装后未找到 dsh 入口：%s", filepath.Join(harnessDir, "node_modules", "@deepseek-ai", "dsh", "lib", "bin.js"))
 	}
 	log.Printf("npm harness %s installed at %s", ver, harnessDir)
 	return nil
+}
+
+// runNpmHarnessAdd 执行 pnpm add @deepseek-ai/dsh@ver --save-exact（输出进统一日志，同时保留
+// 尾部供失败归类与弹窗展示）。
+func runNpmHarnessAdd(ver string) (string, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Minute)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, pnpmCmd(), "add", "@deepseek-ai/dsh@"+ver, "--save-exact")
+	cmd.Dir = harnessDir
+	cmd.Env = append(os.Environ(), pnpmTunedEnv()...)
+	hideCmdWindow(cmd)
+	var buf bytes.Buffer
+	w := newModuleLogWriter("install")
+	cmd.Stdout = io.MultiWriter(w, &buf)
+	cmd.Stderr = io.MultiWriter(w, &buf)
+	err := cmd.Run()
+	w.Flush()
+	return buf.String(), err
 }
 
 // waitForServerReady 等待服务就绪：ready=true 表示已响应；
