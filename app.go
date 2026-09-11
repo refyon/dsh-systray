@@ -714,12 +714,21 @@ func (a *App) ApplyPendingPluginChanges() bool {
 	return ok
 }
 
-// DiscardPendingPluginChange 撤销一条待应用变更（行内「撤销」）。
+// DiscardPendingPluginChange 撤销一条待应用变更（行内 / 提示区「撤销」）。
 func (a *App) DiscardPendingPluginChange(id string) bool {
 	if shotMode {
 		return false
 	}
 	return pluginOpDiscard(id)
+}
+
+// DiscardAllPendingPluginChanges 撤销全部待应用变更（提示区「全部撤销」）。返回撤销条数
+// （0 = 无待应用变更）。
+func (a *App) DiscardAllPendingPluginChanges() int {
+	if shotMode {
+		return 0
+	}
+	return pluginOpDiscardAll()
 }
 
 // GetPendingPluginChanges 返回待应用变更列表（关于页横幅：提示「变更未生效」）。

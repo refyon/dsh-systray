@@ -305,6 +305,24 @@ func pluginPendingHasPackageOps() bool {
 	return false
 }
 
+// pluginOpDiscardAll 撤销全部待应用变更（关于页提示区「全部撤销」）。返回被撤销的条数。
+func pluginOpDiscardAll() int {
+	pluginQMu.Lock()
+	n := len(pluginPending)
+	pluginPending = nil
+	pluginQMu.Unlock()
+	if n == 0 {
+		return 0
+	}
+	saveCurrentConfig()
+	logUI("撤销全部待应用变更", fmt.Sprintf("%d 项", n))
+	emitPluginPendingChanged()
+	if appCtx != nil {
+		wruntime.EventsEmit(appCtx, "plugins:changed", nil)
+	}
+	return n
+}
+
 // pluginOpApplyPending 应用全部待应用变更：移入执行队列并启动批处理（整批一次重启校验）。
 // 返回 (是否受理, 拒绝原因)。
 func pluginOpApplyPending() (bool, string) {

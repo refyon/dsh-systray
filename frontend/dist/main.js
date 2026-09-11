@@ -138,6 +138,16 @@ const I18N_DYN = {
   "登记更新并启用？": "Register update and enable?",
   "登记插件删除？": "Register plugin removal?",
   "立即应用": "Apply now",
+  "全部撤销": "Undo all",
+  "撤销全部待应用变更？": "Undo all pending changes?",
+  "将撤销 {0} 项尚未生效的变更（更新/删除），已安装的插件不受影响。确认撤销吗？":
+    "This undoes {0} pending change(s) (updates/removals). Installed plugins are not affected. Undo them all?",
+  "有 {0} 项变更尚未生效（{1}）": "{0} change(s) not applied yet ({1})",
+  "{0} 项更新": "{0} update(s)",
+  "{0} 项删除": "{0} removal(s)",
+  "已登记：更新到 {0}（重启服务后生效）": "Registered: update to {0} (takes effect after the service restarts)",
+  "已登记：删除该插件（重启服务后生效）": "Registered: remove this plugin (takes effect after the service restarts)",
+  "已登记：移除「待重指定」记录": "Registered: drop the pending-respec record",
   "（更新）": " (update)",
   "（删除）": " (remove)",
   "删除该插件": "remove this plugin",
@@ -754,20 +764,50 @@ async function loadPendingChanges() {
   renderPendingBanner();
 }
 
-/** 关于页「待应用变更」提示条：列出来不及生效的更新/删除 + 「立即应用」入口。 */
+/**
+ * 关于页「待应用变更」提示区：列出全部尚未生效的更新/删除 + 「立即应用」/「全部撤销」。
+ * 条目全量渲染（限高内滚，见 .plug-pending-list）——批量增删上百个插件时既看得到全部条目，
+ * 也不撑破卡片布局；单条「撤销」用事件委托（一个监听器，不为每行挂 handler）。
+ */
 function renderPendingBanner() {
   const box = $("plug-pending");
   const text = $("plug-pending-text");
-  if (!box || !text) return;
-  const list = state.plugPending || [];
-  if (!list.length) {
+  const list = $("plug-pending-list");
+  if (!box || !text || !list) return;
+  const items = state.plugPending || [];
+  if (!items.length) {
     box.classList.add("hidden");
     text.textContent = "";
+    list.textContent = "";
     return;
   }
-  const items = list.slice(0, 4).map((p) => p.name + (p.op === "remove" ? tr("（删除）") : tr("（更新）"))).join("、");
-  const more = list.length > 4 ? fmt("等 {0} 项", list.length) : "";
-  text.textContent = fmt("有 {0} 项变更尚未生效：{1}{2}", list.length, items, more) + " " + tr("重启服务后生效");
+  const updates = items.filter((p) => p.op !== "remove").length;
+  const removes = items.length - updates;
+  const parts = [];
+  if (updates) parts.push(fmt("{0} 项更新", updates));
+  if (removes) parts.push(fmt("{0} 项删除", removes));
+  text.textContent = fmt("有 {0} 项变更尚未生效（{1}）", items.length, parts.join(" · ")) + " " + tr("重启服务后生效");
+
+  list.textContent = "";
+  const frag = document.createDocumentFragment();
+  for (const it of items) {
+    const row = document.createElement("div");
+    row.className = "plug-pending-item";
+    const name = document.createElement("span");
+    name.className = "plug-pending-name";
+    name.textContent = it.name;
+    name.title = it.name; // 长包名截断后仍可悬停看全名
+    const op = document.createElement("span");
+    op.className = "plug-pending-op";
+    op.textContent = it.op === "remove" ? tr("删除") : tr("更新");
+    const undo = document.createElement("button");
+    undo.className = "btn btn-outline btn-xs";
+    undo.textContent = tr("撤销");
+    undo.dataset.discardId = it.id;
+    row.append(name, op, undo);
+    frag.appendChild(row);
+  }
+  list.appendChild(frag);
   box.classList.remove("hidden");
 }
 
@@ -974,26 +1014,16 @@ async function doPluginCheck(p, item, btn) {
   await loadPlugins();
 }
 
-/** 单插件更新（确认后交给 Go 端执行，splash 进度，完成/失败弹窗）。 */
-async function doPluginUpdate(p, item, upBtn) {
-  const ver = (state.plugState[p.name] || {}).upLatest || "";
-  let msg = "将把插件 " + p.name + " 登记为「更新到" + (ver ? " " + vtag(ver) : "最新版本") + "」。\n\n" +
-    "登记后不会立即执行：可与其它插件一起登记，关闭设置窗口或点关于页「立即应用」时统一执行，多项变更合并为一次服务重启。确认登记吗？";
-  if (p.disabled) {
-    msg = "插件 " + p.name + " 当前为禁用状态（与当前版本不兼容）。\n\n将把它登记为「更新到" +
-      (ver ? " " + vtag(ver) : "最新版本") +
-      "」，应用后若仍不兼容则继续保持禁用。确认登记吗？";
-  }
-  const ok = await confirmDialog(
-    p.disabled ? "登记更新并启用？" : "登记插件更新？",
-    msg,
-    "登记变更"
-  );
-  if (!ok) return;
+/**
+ * 单插件更新：点击即登记为待应用变更（**不弹确认框**——登记不执行、可随时「撤销」，
+ * 连续登记多个插件再统一应用，弹窗确认纯属多余）。
+ */
+function doPluginUpdate(p, item, upBtn) {
   item.querySelectorAll("button").forEach((b) => { b.disabled = true; });
+  const ver = (state.plugState[p.name] || {}).upLatest || "";
   // 只登记、不执行：变更进入待应用区（多项合并为一次服务重启），由关闭设置窗口时确认或
   // 关于页「立即应用」统一执行。行状态由 Go 端 plugins:changed 重渲染（含「撤销」按钮）。
-  setNote(item, tr("已登记为待应用变更（重启服务后生效）"), "muted");
+  setNote(item, ver ? fmt("已登记：更新到 {0}（重启服务后生效）", vtag(ver)) : tr("已登记为待应用变更（重启服务后生效）"), "muted");
   bindings().StartPluginUpdate(p.name);
 }
 
@@ -1047,23 +1077,14 @@ async function doLocalPluginUpdate(p, item, upBtn) {
   }
 }
 
-/** 单插件删除（确认后交给 Go 端执行，splash 进度，失败自动回退）。 */
-async function doPluginRemove(p, item, delBtn) {
-  let msg = "将把插件 " + p.name +
-    (p.profile ? "（环境 " + p.profile + "）" : "") +
-    " 登记为「删除」（含其依赖，不可恢复）。\n\n登记后不会立即执行：可与其它插件一起登记，关闭设置窗口或点关于页「立即应用」时统一执行，多项变更合并为一次服务重启。确认登记吗？";
-  if (p.pendingLocal) {
-    msg = "将移除本地插件 " + p.name + " 的「待重指定」记录" +
-      "（原依赖路径在本机不存在，插件未安装，删除不会影响服务）。确定移除吗？";
-  }
-  const ok = await confirmDialog(
-    p.pendingLocal ? "移除待重指定插件？" : "登记插件删除？",
-    msg,
-    p.pendingLocal ? "移除" : "登记变更"
-  );
-  if (!ok) return;
+/**
+ * 单插件删除：点击即登记为待应用变更（**不弹确认框**——登记不执行、可随时「撤销」，
+ * 真正不可逆的是「立即应用」，那一步仍有服务重启与回退兜底）。
+ */
+function doPluginRemove(p, item, delBtn) {
   item.querySelectorAll("button").forEach((b) => { b.disabled = true; });
-  setNote(item, tr("已登记为待应用变更（重启服务后生效）"), "muted");
+  const label = p.pendingLocal ? tr("已登记：移除「待重指定」记录") : tr("已登记：删除该插件（重启服务后生效）");
+  setNote(item, label, "muted");
   bindings().RemovePlugin(p.id); // 结果由 Go 端 plugins:changed / plugin:op:done 刷新行状态
 }
 
@@ -1735,6 +1756,33 @@ function wireEvents() {
       applyPending.disabled = true;
       bindings().ApplyPendingPluginChanges();
       setTimeout(() => { applyPending.disabled = false; }, 1500);
+    });
+  }
+
+  // 「全部撤销」：批量增删上百个插件时不必逐条点；带二次确认（撤销不改动已安装内容，
+  // 仅清空待应用清单）。
+  const discardAll = $("btn-discard-all-pending");
+  if (discardAll) {
+    discardAll.addEventListener("click", async () => {
+      const n = (state.plugPending || []).length;
+      if (!n) return;
+      const ok = await confirmDialog("撤销全部待应用变更？",
+        fmt("将撤销 {0} 项尚未生效的变更（更新/删除），已安装的插件不受影响。确认撤销吗？", n), "全部撤销");
+      if (!ok) return;
+      discardAll.disabled = true;
+      bindings().DiscardAllPendingPluginChanges();
+      setTimeout(() => { discardAll.disabled = false; }, 1500);
+    });
+  }
+
+  // 待应用条目的「撤销」：事件委托（条目可能上百条，不为每行挂 handler）。
+  const pendingList = $("plug-pending-list");
+  if (pendingList) {
+    pendingList.addEventListener("click", (e) => {
+      const undo = e.target.closest("button[data-discard-id]");
+      if (!undo) return;
+      undo.disabled = true;
+      bindings().DiscardPendingPluginChange(undo.dataset.discardId);
     });
   }
 
