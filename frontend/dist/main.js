@@ -907,8 +907,7 @@ function renderPluginRow(p, idx) {
   // 但「待重指定」的本地行（pendingLocal，原依赖路径不存在）需显示重新指定指引
   if (!p.canUpdate && p.reason && (p.source !== "file" || p.pendingLocal)) setNote(item, p.reason, "muted");
   // 重渲染后恢复行内状态（检查结果 / 更新可用性），避免过滤/刷新丢失
-  const st = state.plugState[p.name];
-  if (st) applyPlugState(item, st);
+  const st = applyPlugState(item, state.plugState[p.name], p);
   // 待应用变更：常驻提示「需重启服务生效」（优先于检查/禁用等行内状态）
   if (p.pendingOp) {
     setNote(item, fmt("待应用：{0}（重启服务后生效）",
@@ -920,8 +919,19 @@ function renderPluginRow(p, idx) {
   return item;
 }
 
-/** 恢复一行在检查/更新后留下的状态：note 文案语气 + 更新按钮可用性。 */
-function applyPlugState(item, st) {
+/**
+ * 恢复一行在检查/更新后留下的状态：note 文案语气 + 更新按钮可用性。
+ * 过期清理：行内状态记录的是「产生时的版本」（atVersion），当前行版本已变（外部更新、重新导入、
+ * 回滚、删除后又装回）时旧结论不再成立——丢弃整条缓存，避免行内长期停留在「已删除」「已更新 vX」
+ * 这类与现状不符的提示。删除类结论以 atVersion="" 记录（只有该行不存在时才成立）。
+ * 返回实际生效的状态（无=null）。
+ */
+function applyPlugState(item, st, p) {
+  if (st && st.atVersion !== undefined && (p ? p.version || "" : "") !== st.atVersion) {
+    if (p) delete state.plugState[p.name];
+    st = null;
+  }
+  if (!st) return null;
   if (st.note) setNote(item, st.note, st.noteTone || "muted");
   const upBtn = item.querySelector("button[data-update]");
   if (upBtn) {
@@ -943,6 +953,7 @@ async function doPluginCheck(p, item, btn) {
   btn.disabled = true;
   setNote(item, "正在检查更新…", "muted");
   const st = state.plugState[p.name] || (state.plugState[p.name] = {});
+  st.atVersion = p.version || ""; // 检查结论对应「当时版本」：版本变化即过期（见 applyPlugState）
   try {
     const r = await a.CheckPluginUpdate(p.name);
     if (r.error) {
@@ -1687,7 +1698,13 @@ function wireEvents() {
     }
     impRowBusy(d.kind, false, "", 0);
     impRowText(d.kind, msg, tone);
-    if (d.kind === "plugins") loadPlugins(); // 导入改变插件安装/版本（adopt 副本/待重指定等），刷新关于页列表
+    if (d.kind === "plugins") {
+      // 导入会改变插件的安装/版本/激活状态（adopt 副本、待重指定、重新装回等），此前缓存的
+      // 行内结论（如「已删除」「已更新 v1.7.17」「有新版本」）一律过期——整体清空后重载，
+      // 避免重新导入的插件仍显示「已删除」这类与现状不符的状态。
+      state.plugState = {};
+      loadPlugins();
+    }
   });
 
   EventsOn("service:restart", (d) => {
@@ -1724,10 +1741,14 @@ function wireEvents() {
   // 单插件操作收尾（更新/删除/启用）：结果事件驱动行状态刷新——
   //  - 成功：清除 plugState 残留的「有新版本」提示（否则更新后行内仍假提示可更新），显示已更新版本；
   //  - 失败：行内显示失败原因（此前失败路径无任何事件，行永久停留「正在更新插件…」且无原因）。
-  // loadPlugins 重渲染时由 applyPlugState 恢复本事件写入的行状态。
+  // loadPlugins 重渲染时由 applyPlugState 恢复本事件写入的行状态；同时记录 atVersion，
+  // 使结论在该插件版本再次变化（外部更新 / 重新导入 / 回滚）时自动过期，不再残留「已删除」等旧状态。
   EventsOn("plugin:op:done", (d) => {
     if (!d || !d.name) return;
     const st = state.plugState[d.name] || (state.plugState[d.name] = {});
+    const row = (state.plugRows || []).find((r) => r.name === d.name);
+    // 删除类结论只有「该行不存在」时才成立 → atVersion 记 ""（行被重新装回/导入即过期）
+    st.atVersion = d.op === "remove" ? "" : (d.version || (row && row.version) || "");
     if (d.ok) {
       let label = d.op === "remove" ? "已删除" : (d.op === "enable" ? "已启用" : "已更新");
       if (d.version) label += " " + vtag(d.version);
