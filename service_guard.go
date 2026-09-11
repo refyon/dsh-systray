@@ -246,6 +246,29 @@ func reconcileProfileDeps(dir string) error {
 	return nil
 }
 
+// profileHasUserPlugins profile 的 package.json 是否声明了非官方（用户）插件依赖。
+func profileHasUserPlugins(dir string) bool {
+	deps, _ := readProfileRoot(dir)["dependencies"].(map[string]interface{})
+	for name := range deps {
+		if !isOfficialHarnessPkg(name) {
+			return true
+		}
+	}
+	return false
+}
+
+// pluginProfileDirsWithDeps 罗列声明了用户插件的 profile 目录。harness 更新后的依赖对齐只对
+// 这些环境有意义——空 profile 跑一次 pnpm install 只会拖慢更新。
+func pluginProfileDirsWithDeps() []string {
+	var out []string
+	for _, pf := range enumeratePluginProfiles() {
+		if profileHasUserPlugins(pf.dir) {
+			out = append(out, pf.dir)
+		}
+	}
+	return out
+}
+
 // runProfileCmdCapture 在 profile 目录执行命令并捕获输出（运行环境与 runProfileCmd 相同；
 // 输出同时写入统一日志与返回值，供失败归因解析——pnpm 报错需要原文才能定位依赖名）。
 func runProfileCmdCapture(dir, name string, args ...string) (string, error) {

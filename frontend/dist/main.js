@@ -63,7 +63,7 @@ const I18N_EN = {
   abPreTitle: "Enable prerelease channel", abPreSub: "alpha / beta / rc builds",
   btnCheckUpdate: "Check for updates",
   btnUpdateApp: "Update dsh-systray", btnUpdateHarness: "Update Harness",
-  abPluginsTitle: "Installed plugins", abPluginsSub: "Installed via dsh add · check each row individually",
+  abPluginsTitle: "Installed plugins", abPluginsSub: "Installed via dsh add · click several updates/removals in a row — they are batched into one service restart",
   plugFilterPh: "Filter plugins (name / source / version)…",
   plugEmpty: "No user plugins installed (install via dsh add in the Web UI)",
   btnRefresh: "Refresh", btnClear: "Clear",
@@ -129,6 +129,7 @@ const I18N_DYN = {
   "将清除 {0} 个已安装插件": "Will clear {0} plugins",
   "正在查询可用版本…": "Querying available versions…",
   "正在更新插件…": "Updating plugin…",
+  "已加入批量队列，等待执行…": "Queued — waiting for the batch to run…",
   "正在尝试启用插件…": "Trying to enable plugin…",
   "正在删除插件…": "Removing plugin…",
   "无法更新：{0}": "Update failed: {0}",
@@ -904,11 +905,11 @@ async function doPluginCheck(p, item, btn) {
 async function doPluginUpdate(p, item, upBtn) {
   const ver = (state.plugState[p.name] || {}).upLatest || "";
   let msg = "将把插件 " + p.name + " 更新到" + (ver ? " " + vtag(ver) : "最新版本") +
-    "。更新期间服务会短暂重启，失败会自动回退到更新前版本。确认开始更新吗？";
+    "。可与其它插件一起排队——多项操作合并为一次服务重启；失败项自动回退到更新前版本。确认加入吗？";
   if (p.disabled) {
     msg = "插件 " + p.name + " 当前为禁用状态（与当前版本不兼容）。\n\n将把它更新到" +
       (ver ? " " + vtag(ver) : "最新版本") +
-      "。更新成功且兼容后将自动重新启用；若仍不兼容则继续保持禁用。确认开始更新吗？";
+      "。更新成功且兼容后将自动重新启用；若仍不兼容则继续保持禁用。确认加入吗？";
   }
   const ok = await confirmDialog(
     p.disabled ? "更新并启用插件？" : "更新插件？",
@@ -917,8 +918,13 @@ async function doPluginUpdate(p, item, upBtn) {
   );
   if (!ok) return;
   item.querySelectorAll("button").forEach((b) => { b.disabled = true; });
-  setNote(item, tr("正在更新插件…"), "muted");
-  bindings().StartPluginUpdate(p.name); // 完成后 Go 端发 plugins:changed 刷新列表
+  // 批处理队列：连续点击多个插件会并入同一批（整批只停一次服务、只做一次启动校验），
+  // 行内先显示排队态，结果由 Go 端 plugin:op:done 事件逐行回报。
+  const st = state.plugState[p.name] || (state.plugState[p.name] = {});
+  st.note = tr("已加入批量队列，等待执行…");
+  st.noteTone = "muted";
+  setNote(item, st.note, "muted");
+  bindings().StartPluginUpdate(p.name);
 }
 
 /** 手动启用被禁用的插件（尝试 → 失败自动重新禁用并重启，由 Go 弹窗提示结果）。 */
@@ -975,7 +981,7 @@ async function doLocalPluginUpdate(p, item, upBtn) {
 async function doPluginRemove(p, item, delBtn) {
   let msg = "将物理删除插件 " + p.name +
     (p.profile ? "（环境 " + p.profile + "）" : "") +
-    " 及其依赖，不可恢复。删除期间服务会短暂重启，失败会自动回退到删除前状态。确定删除吗？";
+    " 及其依赖，不可恢复。可与其它插件一起排队——多项操作合并为一次服务重启；失败项自动回退到删除前状态。确定删除吗？";
   if (p.pendingLocal) {
     msg = "将移除本地插件 " + p.name + " 的「待重指定」记录" +
       "（原依赖路径在本机不存在，插件未安装，删除不会影响服务）。确定移除吗？";
@@ -987,8 +993,11 @@ async function doPluginRemove(p, item, delBtn) {
   );
   if (!ok) return;
   item.querySelectorAll("button").forEach((b) => { b.disabled = true; });
-  setNote(item, tr("正在删除插件…"), "muted");
-  bindings().RemovePlugin(p.id); // 完成后 Go 端发 plugins:changed 刷新列表
+  const st = state.plugState[p.name] || (state.plugState[p.name] = {});
+  st.note = tr("已加入批量队列，等待执行…");
+  st.noteTone = "muted";
+  setNote(item, st.note, "muted");
+  bindings().RemovePlugin(p.id); // 结果由 Go 端 plugin:op:done 事件逐行回报
 }
 
 // ==================== 日志页 ====================

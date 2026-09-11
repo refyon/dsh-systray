@@ -211,6 +211,8 @@ func failReset(splash *SplashState, msg string) {
 func runHarnessReset(clearSessions, clearPlugins bool, reqTarget string) {
 	splash := startSplash(T("正在重置 DeepSeek Harness…"))
 	defer splash.Close()
+	harnessOpBusy.Store(true) // 与插件操作批处理互斥（两者都会停服 + 跑 pnpm）
+	defer harnessOpBusy.Store(false)
 
 	// 0) 先停止服务（否则运行中的 node 占用文件，清空/重装会失败）
 	splash.Update(T("正在停止后台服务…"), 0.1)

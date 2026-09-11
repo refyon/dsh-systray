@@ -477,6 +477,10 @@ func orDash(s string) string {
 
 // StartHarnessUpdate 按最新版更新 DeepSeek Harness（快照/回滚/重启校验，进度走 splash）。
 func (a *App) StartHarnessUpdate() {
+	if pluginBatchRunning() {
+		showMessageBox("正在批量处理插件（更新/删除），请等待完成后再更新 DeepSeek Harness。", appName)
+		return
+	}
 	latest, _, newer, _ := queryHarnessUpdate()
 	if !newer || latest == "" {
 		return
@@ -554,13 +558,15 @@ func (a *App) CheckPluginUpdate(id string) PluginCheckResult {
 	return res
 }
 
-// StartPluginUpdate 更新指定插件到最新版（splash 进度，完成/失败弹窗，失败自动回退）。
+// StartPluginUpdate 更新指定插件到最新版：入队后由批处理 worker 顺序执行——连续点击多个插件的
+// 更新/删除会并入同一批（整批只停一次服务、只做一次启动校验），失败项各自回退。
+// 拒绝（harness 更新中 / 已在队列 / 无远程来源等）以 plugin:op:done 事件回报行内原因。
 func (a *App) StartPluginUpdate(id string) {
 	logUI("更新插件", id)
 	if appCtx != nil {
 		wruntime.WindowShow(appCtx)
 	}
-	go runPluginUpdate(id)
+	pluginOpEnqueue(id, "update")
 }
 
 // PickLocalPluginPath 本地插件「选择目录更新」第一步：目录选择框 → 校验为同一插件 →
@@ -659,8 +665,8 @@ func runPluginEnable(row PluginRow) {
 	}
 }
 
-// RemovePlugin 删除指定插件（前端确认后调用）：物理移除依赖与文件，失败自动回退。
-// 覆盖该插件声明的全部环境/profile。截图模式不执行真实删除。
+// RemovePlugin 删除指定插件（前端确认后调用）：入队后由批处理 worker 执行，物理移除依赖与文件，
+// 失败自动回退；与批量更新共用同一队列（连续点击即可攒批，服务只停一次）。
 func (a *App) RemovePlugin(id string) {
 	if shotMode {
 		return
@@ -669,7 +675,7 @@ func (a *App) RemovePlugin(id string) {
 	if appCtx != nil {
 		wruntime.WindowShow(appCtx)
 	}
-	go runPluginRemove(id)
+	pluginOpEnqueue(id, "remove")
 }
 
 // ResetStats 重置弹窗展示的将清除内容数量（供用户勾选前参考）。
@@ -692,6 +698,10 @@ func (a *App) GetResetStats() ResetStats {
 // clearSessions / clearPlugins 按勾选物理删除对应数据（会话记录 / 已安装插件）。
 // 异步执行：进度走 splash 事件，完成/失败以弹窗提示。
 func (a *App) ResetHarness(clearSessions, clearPlugins bool, targetVersion string) {
+	if pluginBatchRunning() {
+		showMessageBox("正在批量处理插件（更新/删除），请等待完成后再重置 DeepSeek Harness。", appName)
+		return
+	}
 	logUI("重置服务", fmt.Sprintf("clearSessions=%v clearPlugins=%v target=%s", clearSessions, clearPlugins, orDash(targetVersion)))
 	if appCtx != nil {
 		wruntime.WindowShow(appCtx)

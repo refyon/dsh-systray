@@ -100,6 +100,10 @@ var (
 // 启动 30 秒的自动检查发现新版本时，若已存在检查/更新窗口则不再重复弹窗。
 var updateCheckWindows atomic.Int32
 
+// harnessOpBusy 是否有 harness 更新/重置流程在跑：与插件操作批处理互斥——两者都会
+// killServer + 在各自目录跑 pnpm，并发执行会互相踩踏（停服中断对方、pnpm 抢占同一 profile）。
+var harnessOpBusy atomic.Bool
+
 func openUpdateCheckFlow()  { updateCheckWindows.Add(1) }
 func closeUpdateCheckFlow() { updateCheckWindows.Add(-1) }
 
@@ -932,6 +936,57 @@ func harnessInstallHint(out string) string {
 	return ""
 }
 
+// harnessFamilyMismatches 列出 node_modules 顶层中版本与 ver 不一致的 harness 家族包
+// （@deepseek-ai/dsh*），用于 pnpm install 步骤失败时判定「树是否真的不可用」。
+//
+// 只把「顶层已安装」的包当作不一致证据：锁文件里出现但未在顶层安装的家族包（纯传递依赖）
+// 属正常形态，不计入。@deepseek-ai/dsh 入口包例外——它必须存在，否则树不可用。
+// ver 非具体版本（空 / "latest"）时返回 nil：@latest 由各包自行解析，无可比对目标。
+func harnessFamilyMismatches(dir, ver string) []string {
+	ver = strings.TrimPrefix(strings.TrimSpace(ver), "v")
+	if ver == "" || ver == "latest" {
+		return nil
+	}
+	names := append([]string{"@deepseek-ai/dsh"}, harnessFamilyNames(dir)...)
+	// 顶层实际安装的家族包同样纳入（锁文件/`.pnpm` 可能缺失或不完整——如安装中断、
+	// 或包只作为 peer 被提升到顶层；一致性判定必须覆盖看得见的每一个）。
+	if entries, err := os.ReadDir(filepath.Join(dir, "node_modules", "@deepseek-ai")); err == nil {
+		for _, e := range entries {
+			name := "@deepseek-ai/" + e.Name()
+			if strings.HasPrefix(name, harnessFamilyPrefix) {
+				names = append(names, name)
+			}
+		}
+	}
+	sort.Strings(names)
+	var bad []string
+	prev := ""
+	for _, name := range names {
+		if name == prev {
+			continue
+		}
+		prev = name
+		data, err := os.ReadFile(filepath.Join(dir, "node_modules", filepath.FromSlash(name), "package.json"))
+		if err != nil {
+			if name == "@deepseek-ai/dsh" {
+				bad = append(bad, name+"（未安装）")
+			}
+			continue
+		}
+		var m struct {
+			Version string `json:"version"`
+		}
+		if json.Unmarshal(data, &m) != nil {
+			bad = append(bad, name+"（版本不可读）")
+			continue
+		}
+		if got := strings.TrimPrefix(strings.TrimSpace(m.Version), "v"); got != ver {
+			bad = append(bad, fmt.Sprintf("%s@%s", name, got))
+		}
+	}
+	return bad
+}
+
 // outputTail 取命令输出尾部（最多 n 字节，超出部分以 … 标记），供失败弹窗直接给出根因。
 func outputTail(out string, n int) string {
 	tail := strings.TrimSpace(out)
@@ -1126,6 +1181,8 @@ func rollbackUpdate(splash *SplashState, prev string, hadNMBackup bool, reason s
 // 完成后重启服务并校验；失败自动回退到上一可运行版本。异步执行，带进度窗口。
 func runHarnessUpdate(latest string) {
 	splash := startSplash(T("正在更新 DeepSeek Harness…"))
+	harnessOpBusy.Store(true) // 与插件操作批处理互斥（两者都会停服 + 跑 pnpm）
+	defer harnessOpBusy.Store(false)
 	prev := installedHarnessVersion()
 
 	// 0) 先判定安装形态——必须在快照之前：快照会把 node_modules 改名备份，而 npm 形态判定
@@ -1175,6 +1232,7 @@ func runHarnessUpdate(latest string) {
 	// 3) 安装新版本（失败原因按分支细化，供回退弹窗明确展示）
 	var err error
 	reason := "安装失败"
+	installNote := "" // 安装阶段的非致命说明（供应链策略复核等），并入成功文案
 	if npmMode {
 		splash.Update(T("正在更新 DeepSeek Harness 依赖…"), 0.35)
 		// 安装检查到的新版本而非 @latest：npm 的 prerelease（如 0.1.2-alpha.2）不会成为 latest 标签，
@@ -1208,11 +1266,41 @@ func runHarnessUpdate(latest string) {
 			}
 		}
 		if err == nil {
-			// 全量 install 重新 reconcile 整个依赖树，避免只改根依赖导致的新旧版本混装
+			// 全量 install 重新 reconcile 整个依赖树，避免只改根依赖导致的新旧版本混装。
+			// 注意：本步失败不必然等于「树不可用」——先看是否为供应链策略复核拦截（下方分支）。
 			splash.Update(T("正在安装依赖…"), 0.55)
-			err = runHarnessCmd(pnpmCmd(), "install")
+			var instOut string
+			instOut, err = runHarnessCmdTail(pnpmCmd(), "install")
+			if err != nil && supplyChainViolation(instOut) {
+				// 供应链发布年龄校验（minimumReleaseAge）：pnpm add 在解析期已把整族写入
+				// minimumReleaseAgeExclude 并装好（实测 add 成功装 497 包），随后的 install
+				// 复核仍会拒绝这些 lockfile 条目——是「策略复核」失败，不是「安装」失败。
+				// 2026-09-11 实证：旧代码据 exit status 判定依赖安装失败并整体回退，而「重置」
+				// 路径只跑 add、不跑 install，所以重置能成功、检查更新不能——用户只能绕道重置。
+				log.Printf("harness update: install blocked by supply-chain age policy, retrying with bypass")
+				splash.Update(T("依赖校验被供应链策略拦截，正在跳过校验重试…"), 0.6)
+				instOut, err = runHarnessCmdTail(pnpmCmd(), "install", "--config.minimumReleaseAge=0")
+			}
 			if err != nil {
-				reason = "依赖安装失败（详见日志末尾）"
+				// 仍失败：判定以「家族版本一致性」为准，而非 exit status——策略复核失败但整族
+				// 已装到目标版本的树可用（随后的启动健康校验才是真正的验收关口，失败仍会回退）。
+				bad := harnessFamilyMismatches(harnessDir, ver)
+				if supplyChainViolation(instOut) && len(bad) == 0 && isNpmHarnessReady() {
+					log.Printf("harness update: install policy check failed but family is consistent at %s, continue", ver)
+					installNote = "（依赖复核被供应链策略拦截，已按家族版本一致性确认安装结果）"
+					err = nil
+				} else {
+					reason = "依赖安装失败（详见日志末尾）"
+					if hint := harnessInstallHint(instOut); hint != "" {
+						reason = hint
+					}
+					if len(bad) > 0 {
+						if len(bad) > 6 {
+							bad = append(bad[:6], fmt.Sprintf("等 %d 个", len(bad)))
+						}
+						reason += "；家族版本不一致：" + strings.Join(bad, "、")
+					}
+				}
 			}
 		} else {
 			reason = "安装指定版本失败（详见日志末尾）"
@@ -1253,6 +1341,24 @@ func runHarnessUpdate(latest string) {
 		return
 	}
 
+	// 3.5) 与「重置后重新导入插件」等价的一步：harness 换版后，各 profile 的插件树仍按旧
+	//      harness 解析（pnpm 的 .modules.yaml / junction / 虚拟商店都是旧一代），必须重新
+	//      pnpm install 对齐——这正是「重新导入插件」在批末做的事（reconcileProfileDeps）。
+	//      用户实证：更新后直接启动会失败，重置+清插件+重新导入才能跑起来；差异就在这一步。
+	//      对齐失败不阻断更新：记录后交由启动健康校验与插件自愈兜底（离线 / 本地链接失效时
+	//      不让整个更新白跑）。
+	alignNote := ""
+	if npmMode {
+		dirs := pluginProfileDirsWithDeps()
+		for i, dir := range dirs {
+			splash.Update(fmt.Sprintf("正在对齐插件依赖（%d/%d）…", i+1, len(dirs)), 0.78)
+			if derr := reconcileProfileDeps(dir); derr != nil {
+				log.Printf("harness update: profile reconcile failed (%s): %v", dir, derr)
+				alignNote += "\n· 环境 " + filepath.Base(dir) + " 的插件依赖未对齐（已由启动校验兜底）"
+			}
+		}
+	}
+
 	// 4) 重启并健康校验（就绪 + 启动日志无报错）。
 	//    失败时先尝试「禁用启动日志点名的用户插件」换取新版本可启动（不兼容自愈）；
 	//    点名禁用未奏效或无点名嫌疑时，按用户决策（尽量保留新版本、不回退）禁用全部
@@ -1289,6 +1395,7 @@ func runHarnessUpdate(latest string) {
 					"已禁用全部已激活的用户插件以保证新版启动（保留记录，可在「关于页 → 已安装插件」中逐个重新启用）：\n· %s",
 					withV(latest), strings.Join(names, "、"))
 			}
+			msg += installNote + alignNote
 			showMessageBox(msg, appName)
 			emitUpdateDone(true, false, "")
 			return
@@ -1308,7 +1415,7 @@ func runHarnessUpdate(latest string) {
 	if !isStableVersion(strings.TrimPrefix(latest, "v")) {
 		msg += "\n\n提示：预发布版本可能与已装插件不兼容；如遇异常，可用「重置服务」回退到上一个正常运行的版本。"
 	}
-	showMessageBox(msg, appName)
+	showMessageBox(msg+installNote+alignNote, appName)
 	emitUpdateDone(true, false, "")
 }
 
