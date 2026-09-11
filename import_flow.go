@@ -391,9 +391,9 @@ func finalizeTask(t *importTask, healRan bool, healNote string, healErr error) {
 	res := t.res
 	importQMu.Unlock()
 	if t.settle && res == nil {
-		// 终态取决于共享自愈
+		// 终态取决于批末共享收尾（启动校验 → 不兼容则自动禁用 → 仍失败回退）
 		if healErr != nil {
-			t.notes = append(t.notes, "自愈未通过并已自动回退："+healErr.Error())
+			t.notes = append(t.notes, "启动校验未通过并已自动回退："+healErr.Error())
 			res = map[string]interface{}{"kind": t.kind, "error": healErr.Error(), "note": strings.Join(t.notes, "；")}
 		} else {
 			if healNote != "" {

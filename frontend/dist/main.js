@@ -161,6 +161,7 @@ const I18N_DYN = {
   "无法更新：{0}": "Update failed: {0}",
   "更新失败：{0}": "Update failed: {0}",
   "取消恢复": "Cancel restore",
+  "更新中不可取消": "Update in progress — cannot cancel",
   "确认操作": "Confirm",
   "确定": "OK",
   "更新并启用插件？": "Update and enable plugin?",
@@ -1430,7 +1431,7 @@ function syncImpRow(kind) {
     if (st.busy && !done) {
       cancelBtn.classList.remove("hidden");
       cancelBtn.disabled = !!state.impHealAll;
-      cancelBtn.textContent = state.impHealAll ? tr("自愈中不可取消") : tr("取消恢复");
+      cancelBtn.textContent = state.impHealAll ? tr("更新中不可取消") : tr("取消恢复");
     } else {
       cancelBtn.classList.add("hidden");
     }

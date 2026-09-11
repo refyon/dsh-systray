@@ -731,8 +731,12 @@ func (a *App) DiscardAllPendingPluginChanges() int {
 	return pluginOpDiscardAll()
 }
 
-// GetPendingPluginChanges 返回待应用变更列表（关于页横幅：提示「变更未生效」）。
+// GetPendingPluginChanges 返回待应用变更列表（关于页提示条：只用于显示待生效数量）。
+// 截图/演示模式恒为空——提示条是否出现取决于用户当次登记状态，会让截图结果不确定。
 func (a *App) GetPendingPluginChanges() []PendingPluginChange {
+	if shotMode {
+		return nil
+	}
 	return pluginPendingList()
 }
 
