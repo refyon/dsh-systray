@@ -765,20 +765,17 @@ async function loadPendingChanges() {
 }
 
 /**
- * 关于页「待应用变更」提示区：列出全部尚未生效的更新/删除 + 「立即应用」/「全部撤销」。
- * 条目全量渲染（限高内滚，见 .plug-pending-list）——批量增删上百个插件时既看得到全部条目，
- * 也不撑破卡片布局；单条「撤销」用事件委托（一个监听器，不为每行挂 handler）。
+ * 关于页「待应用变更」提示条：只显示待生效数量（不列条目——大量增删时列表会挤占卡片高度，
+ * 逐条状态与「撤销」在下方插件行内看），右侧「全部撤销」/「立即应用」。
  */
 function renderPendingBanner() {
   const box = $("plug-pending");
   const text = $("plug-pending-text");
-  const list = $("plug-pending-list");
-  if (!box || !text || !list) return;
+  if (!box || !text) return;
   const items = state.plugPending || [];
   if (!items.length) {
     box.classList.add("hidden");
     text.textContent = "";
-    list.textContent = "";
     return;
   }
   const updates = items.filter((p) => p.op !== "remove").length;
@@ -787,27 +784,6 @@ function renderPendingBanner() {
   if (updates) parts.push(fmt("{0} 项更新", updates));
   if (removes) parts.push(fmt("{0} 项删除", removes));
   text.textContent = fmt("有 {0} 项变更尚未生效（{1}）", items.length, parts.join(" · ")) + " " + tr("重启服务后生效");
-
-  list.textContent = "";
-  const frag = document.createDocumentFragment();
-  for (const it of items) {
-    const row = document.createElement("div");
-    row.className = "plug-pending-item";
-    const name = document.createElement("span");
-    name.className = "plug-pending-name";
-    name.textContent = it.name;
-    name.title = it.name; // 长包名截断后仍可悬停看全名
-    const op = document.createElement("span");
-    op.className = "plug-pending-op";
-    op.textContent = it.op === "remove" ? tr("删除") : tr("更新");
-    const undo = document.createElement("button");
-    undo.className = "btn btn-outline btn-xs";
-    undo.textContent = tr("撤销");
-    undo.dataset.discardId = it.id;
-    row.append(name, op, undo);
-    frag.appendChild(row);
-  }
-  list.appendChild(frag);
   box.classList.remove("hidden");
 }
 
@@ -1772,17 +1748,6 @@ function wireEvents() {
       discardAll.disabled = true;
       bindings().DiscardAllPendingPluginChanges();
       setTimeout(() => { discardAll.disabled = false; }, 1500);
-    });
-  }
-
-  // 待应用条目的「撤销」：事件委托（条目可能上百条，不为每行挂 handler）。
-  const pendingList = $("plug-pending-list");
-  if (pendingList) {
-    pendingList.addEventListener("click", (e) => {
-      const undo = e.target.closest("button[data-discard-id]");
-      if (!undo) return;
-      undo.disabled = true;
-      bindings().DiscardPendingPluginChange(undo.dataset.discardId);
     });
   }
 

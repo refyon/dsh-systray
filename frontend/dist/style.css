@@ -412,41 +412,21 @@ input { font-family: inherit; }
 .plug-filter::placeholder { color: var(--muted); }
 .plug-filter:focus-visible { outline: 2px solid var(--focus); outline-offset: -1px; }
 
-/* 待应用变更提示区（关于页）：变更已登记但未执行，需重启服务生效；一直不应用则常驻提示。
-   条目列表限高内滚（每条一行），支撑「一次性增删上百个插件」也不撑破卡片布局。 */
+/* 待应用变更提示条（关于页）：只显示待生效数量 + 「全部撤销」/「立即应用」，单行不占高度；
+   变更条目本身在下方插件列表里（行内显示「待应用」与逐条「撤销」）。 */
 .plug-pending {
   display: flex;
-  flex-direction: column;
-  gap: var(--sp-2);
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-3);
   margin-top: var(--sp-3);
   padding: var(--sp-2) var(--sp-3);
   border: 1px solid var(--warn);
   border-radius: var(--radius-sm);
   background: var(--surface-2);
 }
-.plug-pending-head { display: flex; align-items: center; justify-content: space-between; gap: var(--sp-3); }
 .plug-pending-actions { display: flex; gap: var(--sp-2); flex-shrink: 0; }
 .plug-pending-text { font-size: var(--fs-xs); color: var(--warn); line-height: 1.5; min-width: 0; }
-.plug-pending-list {
-  display: flex;
-  flex-direction: column;
-  gap: var(--sp-1);
-  max-height: min(38vh, 280px);
-  overflow-y: auto;
-  overscroll-behavior: contain;
-  padding-right: var(--sp-1);
-  scrollbar-gutter: stable;
-}
-.plug-pending-item { display: flex; align-items: center; gap: var(--sp-2); font-size: var(--fs-xs); min-height: 24px; }
-.plug-pending-name {
-  flex: 1;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  color: var(--text);
-}
-.plug-pending-op { flex-shrink: 0; color: var(--muted); }
 
 /* 列表容器：大量插件（数十~上百）时限高内滚，头部（标题/计数/过滤框）保持可见 */
 .plug-list {
