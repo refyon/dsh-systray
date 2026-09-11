@@ -109,6 +109,15 @@ type appConfig struct {
 	HarnessPrerelease bool `json:"harnessPrerelease"`
 	// Language 界面语言偏好：auto（跟随系统）| zh | en；缺省 auto。运行时解析见 i18n.go。
 	Language string `json:"language"`
+	// PendingPluginOps 待应用的插件变更（更新/删除）：点击后只登记，等用户在关闭设置窗口时
+	// 确认、或在关于页点「立即应用」才执行（整批一次重启）。跨托盘重启保留，见 plugin_batch.go。
+	PendingPluginOps []pendingPluginOp `json:"pendingPluginOps,omitempty"`
+}
+
+// pendingPluginOp 一条待应用插件变更的持久化形态（config.json）。
+type pendingPluginOp struct {
+	ID string `json:"id"` // 插件行稳定标识（PluginRow.ID）
+	Op string `json:"op"` // update | remove
 }
 
 // configFilePath 用户配置目录下的 config.json（Windows: %APPDATA%\dsh-systray；macOS: ~/Library/Application Support/dsh-systray）。
@@ -157,6 +166,9 @@ func applyConfigFile(cfg *appConfig, path string) {
 	}
 	if l := normalizeLang(f.Language); l != "auto" {
 		cfg.Language = l
+	}
+	if len(f.PendingPluginOps) > 0 {
+		cfg.PendingPluginOps = f.PendingPluginOps
 	}
 }
 
@@ -387,6 +399,8 @@ func main() {
 	}
 	curLang = resolveLang(langPref)
 	log.Printf("[i18n] language pref=%q system=%s → curLang=%s", cfg.Language, detectSystemLang(), curLang)
+	// 待应用的插件变更随 config 持久化：先存下，等插件列表可用（onStartup）时逐条校验载入。
+	pendingPluginOpsFromConfig = cfg.PendingPluginOps
 
 	// 自愈历史自启动项：旧版本注册的自启动条目未带 --autostart 参数，或残留
 	// 「裸二进制直接 exec」形态（macOS 上因缺 bundle 上下文导致开机自启失效），
@@ -484,6 +498,7 @@ func main() {
 // onStartup Wails 应用启动回调：建立上下文、启动 macOS 托盘、开始后台服务编排。
 func onStartup(ctx context.Context) {
 	appCtx = ctx
+	loadStartupPendingPluginOps() // 跨托盘重启保留「待应用变更未生效」提示（逐条校验后载入）
 	if runtime.GOOS == "darwin" {
 		// 系统关机/注销/重启回调须在托盘启动前注册，避免通知竞态丢失。
 		// true=关机/注销开始（跳过停服询问直接放行）；false=会话恢复（FUS 切回，复位）。
@@ -500,7 +515,22 @@ func onStartup(ctx context.Context) {
 		start, _ := systray.RunWithExternalLoop(onReady, onExit)
 		start()
 	}
-	go bootstrapService()
+		go bootstrapService()
+}
+
+// pendingPluginOpsFromConfig 启动时从 config.json 读到的待应用插件变更（onStartup 逐条校验载入）。
+var pendingPluginOpsFromConfig []pendingPluginOp
+
+// loadStartupPendingPluginOps 载入上次运行登记的待应用插件变更（跨托盘重启保留「变更未生效」提示）：
+// 逐条按当前插件列表校验，失效条目录入后丢弃并回写配置。
+func loadStartupPendingPluginOps() {
+	if shotMode || len(pendingPluginOpsFromConfig) == 0 {
+		return
+	}
+	if dropped := loadPendingPluginOps(pendingPluginOpsFromConfig); dropped > 0 {
+		saveCurrentConfig()
+		log.Printf("startup: dropped %d stale pending plugin op(s)", dropped)
+	}
 }
 
 // signalShotReady 截图/预览模式：设置页切换完成后写入标记文件，供截图脚本同步等待，
@@ -570,6 +600,11 @@ func onBeforeClose(ctx context.Context) bool {
 		keepServerRunning.Store(choice == 1)
 		quitRequested.Store(true)
 		return false
+	}
+	// 关闭设置窗口：存在待应用插件变更时先询问是否立即应用并重启（用户选「稍后」则照常隐藏，
+	// 变更保留在待应用区、关于页持续提示；应用流程的 splash 收尾会自行隐藏窗口）。
+	if askApplyPendingBeforeHide() {
+		return true
 	}
 	wruntime.WindowHide(ctx)
 	return true

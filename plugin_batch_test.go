@@ -1,6 +1,7 @@
 package main
 
 import (
+	"archive/zip"
 	"os"
 	"path/filepath"
 	"testing"
@@ -105,6 +106,96 @@ func TestBatchTaskDirs(t *testing.T) {
 		if got[i] != want[i] {
 			t.Fatalf("batchTaskDirs = %v, want %v", got, want)
 		}
+	}
+}
+
+// ==================== 待应用变更（登记 → 应用） ====================
+
+// TestPendingUpsertLastWins 同一插件重复登记按最后操作生效：同操作幂等、换操作覆盖。
+func TestPendingUpsertLastWins(t *testing.T) {
+	upd := &pluginOpTask{id: "a", name: "dsh-x", op: "update"}
+	list, replaced := pendingUpsertTask(nil, upd)
+	if len(list) != 1 || replaced {
+		t.Fatalf("首次登记应新增，got len=%d replaced=%v", len(list), replaced)
+	}
+	// 同操作重复登记：幂等（列表不变、不覆盖）
+	list, replaced = pendingUpsertTask(list, &pluginOpTask{id: "a", name: "dsh-x", op: "update"})
+	if len(list) != 1 || replaced {
+		t.Fatalf("同操作重复登记应幂等，got len=%d replaced=%v", len(list), replaced)
+	}
+	// 换操作：覆盖原条目（最后操作生效）
+	list, replaced = pendingUpsertTask(list, &pluginOpTask{id: "a", name: "dsh-x", op: "remove"})
+	if len(list) != 1 || !replaced || list[0].op != "remove" {
+		t.Fatalf("换操作应覆盖为 remove，got len=%d replaced=%v op=%s", len(list), replaced, list[0].op)
+	}
+	// 不同插件：各自独立
+	list, _ = pendingUpsertTask(list, &pluginOpTask{id: "b", name: "dsh-y", op: "update"})
+	if len(list) != 2 {
+		t.Fatalf("不同插件应各自保留，got len=%d", len(list))
+	}
+}
+
+// TestPendingDropNames 导入恢复对账：本次恢复到的插件，其先前登记的变更一律作废（按最后操作
+// 生效——先登记删除、随后又导回来，则不应再删）；其它插件不受影响。
+func TestPendingDropNames(t *testing.T) {
+	list := []*pluginOpTask{
+		{id: "a", name: "dsh-x", op: "remove"},
+		{id: "b", name: "dsh-y", op: "update"},
+		{id: "c", name: "dsh-x", op: "update"},
+	}
+	kept, dropped := pendingDropNames(list, []string{"dsh-x"})
+	if len(kept) != 1 || kept[0].name != "dsh-y" {
+		t.Fatalf("只应保留未重新导入的插件，got %v", len(kept))
+	}
+	if len(dropped) != 2 {
+		t.Fatalf("应作废 dsh-x 的两条登记，got %v", dropped)
+	}
+	if dropped[0] != "dsh-x（删除）" || dropped[1] != "dsh-x（更新）" {
+		t.Fatalf("作废文案应含操作类型，got %v", dropped)
+	}
+	if kept2, dropped2 := pendingDropNames(list, nil); len(kept2) != 3 || len(dropped2) != 0 {
+		t.Fatalf("空名单不应改动列表，got kept=%d dropped=%d", len(kept2), len(dropped2))
+	}
+}
+
+// TestRestoredPluginNames 从导入包 manifest 取本次恢复的插件名：dependencies 与 bundles 并集、
+// 去重、去除 name@version 变体、过滤官方包。
+func TestRestoredPluginNames(t *testing.T) {
+	dir := t.TempDir()
+	zipPath := filepath.Join(dir, "master.zip")
+	f, err := os.Create(zipPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	zw := zip.NewWriter(f)
+	w, err := zw.Create("manifest.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	manifest := `{"format":"dsh-systray-export","version":1,"plugins":{"profile":"web",` +
+		`"dependencies":{"dsh-x":"^1.0.0","dsh-y":"github:o/r","@deepseek-ai/dsh-base":"0.1.5-rc.2"},` +
+		`"bundles":["dsh-x@1.0.0","dsh-z"]}}`
+	if _, err := w.Write([]byte(manifest)); err != nil {
+		t.Fatal(err)
+	}
+	if err := zw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.Close(); err != nil {
+		t.Fatal(err)
+	}
+	got := restoredPluginNames(zipPath)
+	want := []string{"dsh-x", "dsh-y", "dsh-z"}
+	if len(got) != len(want) {
+		t.Fatalf("restoredPluginNames = %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("restoredPluginNames = %v, want %v", got, want)
+		}
+	}
+	if names := restoredPluginNames(filepath.Join(dir, "missing.zip")); names != nil {
+		t.Fatalf("缺失包应返回 nil，got %v", names)
 	}
 }
 

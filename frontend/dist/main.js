@@ -35,6 +35,7 @@ const state = {
   plugRows: [],         // 全量插件（Go PluginRow），供过滤渲染与事件委托按索引取用
   plugFilter: "",       // 插件过滤关键字（输入防抖后）
   plugState: {},        // name → {note,noteTone,upLatest,upShow}：滚动/过滤重渲染后恢复行内状态
+  plugPending: [],      // [{id,name,op}]：已登记待应用的插件变更（需重启服务才生效）
   plugTimer: null,      // 过滤防抖计时器
   updateProgress: null, // {text, pct} 更新进度
   splashMode: "startup", // startup | update
@@ -63,7 +64,7 @@ const I18N_EN = {
   abPreTitle: "Enable prerelease channel", abPreSub: "alpha / beta / rc builds",
   btnCheckUpdate: "Check for updates",
   btnUpdateApp: "Update dsh-systray", btnUpdateHarness: "Update Harness",
-  abPluginsTitle: "Installed plugins", abPluginsSub: "Installed via dsh add · click several updates/removals in a row — they are batched into one service restart",
+  abPluginsTitle: "Installed plugins", abPluginsSub: "Installed via dsh add · update/remove only registers a change; apply them together with a single service restart",
   plugFilterPh: "Filter plugins (name / source / version)…",
   plugEmpty: "No user plugins installed (install via dsh add in the Web UI)",
   btnRefresh: "Refresh", btnClear: "Clear",
@@ -130,6 +131,21 @@ const I18N_DYN = {
   "正在查询可用版本…": "Querying available versions…",
   "正在更新插件…": "Updating plugin…",
   "已加入批量队列，等待执行…": "Queued — waiting for the batch to run…",
+  "已登记为待应用变更（重启服务后生效）": "Registered as a pending change (takes effect after the service restarts)",
+  "撤销": "Undo",
+  "登记变更": "Register change",
+  "登记插件更新？": "Register plugin update?",
+  "登记更新并启用？": "Register update and enable?",
+  "登记插件删除？": "Register plugin removal?",
+  "立即应用": "Apply now",
+  "（更新）": " (update)",
+  "（删除）": " (remove)",
+  "删除该插件": "remove this plugin",
+  "更新到最新版本": "update to the latest version",
+  "重启服务后生效": "— takes effect after the service restarts",
+  "有 {0} 项变更尚未生效：{1}{2}": "{0} change(s) not applied yet: {1}{2}",
+  "等 {0} 项": " and {0} in total",
+  "待应用：{0}（重启服务后生效）": "Pending: {0} (takes effect after the service restarts)",
   "正在尝试启用插件…": "Trying to enable plugin…",
   "正在删除插件…": "Removing plugin…",
   "无法更新：{0}": "Update failed: {0}",
@@ -685,6 +701,7 @@ function wireAbout() {
       if (btn.dataset.check !== undefined) doPluginCheck(p, item, btn);
       else if (btn.dataset.localupdate !== undefined) doLocalPluginUpdate(p, item, btn);
       else if (btn.dataset.enable !== undefined) doPluginEnable(p, item, btn);
+      else if (btn.dataset.discard !== undefined) doPluginDiscard(p, item, btn);
       else if (btn.dataset.update !== undefined) doPluginUpdate(p, item, btn);
       else if (btn.dataset.del !== undefined) doPluginRemove(p, item, btn);
     });
@@ -722,6 +739,36 @@ async function loadPlugins() {
   }
   state.plugRows = rows;
   renderPlugins();
+  loadPendingChanges();
+}
+
+/** 拉取待应用变更并刷新提示条（变更需重启服务才生效，未应用则常驻提示）。 */
+async function loadPendingChanges() {
+  const a = bindings();
+  if (!a) return;
+  try {
+    state.plugPending = (await a.GetPendingPluginChanges()) || [];
+  } catch (e) {
+    state.plugPending = [];
+  }
+  renderPendingBanner();
+}
+
+/** 关于页「待应用变更」提示条：列出来不及生效的更新/删除 + 「立即应用」入口。 */
+function renderPendingBanner() {
+  const box = $("plug-pending");
+  const text = $("plug-pending-text");
+  if (!box || !text) return;
+  const list = state.plugPending || [];
+  if (!list.length) {
+    box.classList.add("hidden");
+    text.textContent = "";
+    return;
+  }
+  const items = list.slice(0, 4).map((p) => p.name + (p.op === "remove" ? tr("（删除）") : tr("（更新）"))).join("、");
+  const more = list.length > 4 ? fmt("等 {0} 项", list.length) : "";
+  text.textContent = fmt("有 {0} 项变更尚未生效：{1}{2}", list.length, items, more) + " " + tr("重启服务后生效");
+  box.classList.remove("hidden");
 }
 
 /**
@@ -844,6 +891,17 @@ function renderPluginRow(p, idx) {
   delBtn.dataset.del = "";
   actions.appendChild(delBtn);
 
+  // 待应用变更行：隐藏变更类按钮，只留「撤销」——变更已登记但未执行（需重启服务生效），
+  // 重复点击更新/删除会造成「已登记还想再登记」的困惑与并发登记。
+  if (p.pendingOp) {
+    for (const b of [upBtn, delBtn]) b.classList.add("hidden");
+    const undoBtn = document.createElement("button");
+    undoBtn.className = "btn btn-outline btn-xs";
+    undoBtn.textContent = tr("撤销");
+    undoBtn.dataset.discard = "";
+    actions.appendChild(undoBtn);
+  }
+
   item.append(main, actions);
   // 不可更新行的小号原因：本地来源已有「更新…」选目录入口，不再显示旧的“无远程来源”说明；
   // 但「待重指定」的本地行（pendingLocal，原依赖路径不存在）需显示重新指定指引
@@ -851,8 +909,12 @@ function renderPluginRow(p, idx) {
   // 重渲染后恢复行内状态（检查结果 / 更新可用性），避免过滤/刷新丢失
   const st = state.plugState[p.name];
   if (st) applyPlugState(item, st);
-  // 禁用行默认原因行（无动态检查状态时显示）
-  if (p.disabled && !(st && st.note)) {
+  // 待应用变更：常驻提示「需重启服务生效」（优先于检查/禁用等行内状态）
+  if (p.pendingOp) {
+    setNote(item, fmt("待应用：{0}（重启服务后生效）",
+      p.pendingOp === "remove" ? tr("删除该插件") : tr("更新到最新版本")), "muted");
+  } else if (p.disabled && !(st && st.note)) {
+    // 禁用行默认原因行（无动态检查状态时显示）
     setNote(item, fmt("已禁用（{0}）", p.disabledReason || tr("与当前版本不兼容")), "err");
   }
   return item;
@@ -904,26 +966,23 @@ async function doPluginCheck(p, item, btn) {
 /** 单插件更新（确认后交给 Go 端执行，splash 进度，完成/失败弹窗）。 */
 async function doPluginUpdate(p, item, upBtn) {
   const ver = (state.plugState[p.name] || {}).upLatest || "";
-  let msg = "将把插件 " + p.name + " 更新到" + (ver ? " " + vtag(ver) : "最新版本") +
-    "。可与其它插件一起排队——多项操作合并为一次服务重启；失败项自动回退到更新前版本。确认加入吗？";
+  let msg = "将把插件 " + p.name + " 登记为「更新到" + (ver ? " " + vtag(ver) : "最新版本") + "」。\n\n" +
+    "登记后不会立即执行：可与其它插件一起登记，关闭设置窗口或点关于页「立即应用」时统一执行，多项变更合并为一次服务重启。确认登记吗？";
   if (p.disabled) {
-    msg = "插件 " + p.name + " 当前为禁用状态（与当前版本不兼容）。\n\n将把它更新到" +
+    msg = "插件 " + p.name + " 当前为禁用状态（与当前版本不兼容）。\n\n将把它登记为「更新到" +
       (ver ? " " + vtag(ver) : "最新版本") +
-      "。更新成功且兼容后将自动重新启用；若仍不兼容则继续保持禁用。确认加入吗？";
+      "」，应用后若仍不兼容则继续保持禁用。确认登记吗？";
   }
   const ok = await confirmDialog(
-    p.disabled ? "更新并启用插件？" : "更新插件？",
+    p.disabled ? "登记更新并启用？" : "登记插件更新？",
     msg,
-    "开始更新"
+    "登记变更"
   );
   if (!ok) return;
   item.querySelectorAll("button").forEach((b) => { b.disabled = true; });
-  // 批处理队列：连续点击多个插件会并入同一批（整批只停一次服务、只做一次启动校验），
-  // 行内先显示排队态，结果由 Go 端 plugin:op:done 事件逐行回报。
-  const st = state.plugState[p.name] || (state.plugState[p.name] = {});
-  st.note = tr("已加入批量队列，等待执行…");
-  st.noteTone = "muted";
-  setNote(item, st.note, "muted");
+  // 只登记、不执行：变更进入待应用区（多项合并为一次服务重启），由关闭设置窗口时确认或
+  // 关于页「立即应用」统一执行。行状态由 Go 端 plugins:changed 重渲染（含「撤销」按钮）。
+  setNote(item, tr("已登记为待应用变更（重启服务后生效）"), "muted");
   bindings().StartPluginUpdate(p.name);
 }
 
@@ -979,25 +1038,29 @@ async function doLocalPluginUpdate(p, item, upBtn) {
 
 /** 单插件删除（确认后交给 Go 端执行，splash 进度，失败自动回退）。 */
 async function doPluginRemove(p, item, delBtn) {
-  let msg = "将物理删除插件 " + p.name +
+  let msg = "将把插件 " + p.name +
     (p.profile ? "（环境 " + p.profile + "）" : "") +
-    " 及其依赖，不可恢复。可与其它插件一起排队——多项操作合并为一次服务重启；失败项自动回退到删除前状态。确定删除吗？";
+    " 登记为「删除」（含其依赖，不可恢复）。\n\n登记后不会立即执行：可与其它插件一起登记，关闭设置窗口或点关于页「立即应用」时统一执行，多项变更合并为一次服务重启。确认登记吗？";
   if (p.pendingLocal) {
     msg = "将移除本地插件 " + p.name + " 的「待重指定」记录" +
       "（原依赖路径在本机不存在，插件未安装，删除不会影响服务）。确定移除吗？";
   }
   const ok = await confirmDialog(
-    p.pendingLocal ? "移除待重指定插件？" : "删除插件？",
+    p.pendingLocal ? "移除待重指定插件？" : "登记插件删除？",
     msg,
-    p.pendingLocal ? "移除" : "删除"
+    p.pendingLocal ? "移除" : "登记变更"
   );
   if (!ok) return;
   item.querySelectorAll("button").forEach((b) => { b.disabled = true; });
-  const st = state.plugState[p.name] || (state.plugState[p.name] = {});
-  st.note = tr("已加入批量队列，等待执行…");
-  st.noteTone = "muted";
-  setNote(item, st.note, "muted");
-  bindings().RemovePlugin(p.id); // 结果由 Go 端 plugin:op:done 事件逐行回报
+  setNote(item, tr("已登记为待应用变更（重启服务后生效）"), "muted");
+  bindings().RemovePlugin(p.id); // 结果由 Go 端 plugins:changed / plugin:op:done 刷新行状态
+}
+
+/** 撤销一条待应用变更（行内「撤销」）：变更未执行，撤销即从待应用区移除。 */
+async function doPluginDiscard(p, item, btn) {
+  btn.disabled = true;
+  bindings().DiscardPendingPluginChange(p.id);
+  await loadPlugins();
 }
 
 // ==================== 日志页 ====================
@@ -1644,6 +1707,19 @@ function wireEvents() {
 
   // 插件更新完成：刷新插件列表（版本/来源状态可能变化）
   EventsOn("plugins:changed", () => loadPlugins());
+
+  // 待应用变更集合变化（登记/撤销/应用）：刷新提示条与行标记。
+  EventsOn("plugin:pending:changed", () => loadPendingChanges());
+
+  // 「立即应用」：把全部待应用变更交给 Go 端批处理（整批一次重启校验）。
+  const applyPending = $("btn-apply-pending");
+  if (applyPending) {
+    applyPending.addEventListener("click", () => {
+      applyPending.disabled = true;
+      bindings().ApplyPendingPluginChanges();
+      setTimeout(() => { applyPending.disabled = false; }, 1500);
+    });
+  }
 
   // 单插件操作收尾（更新/删除/启用）：结果事件驱动行状态刷新——
   //  - 成功：清除 plugState 残留的「有新版本」提示（否则更新后行内仍假提示可更新），显示已更新版本；

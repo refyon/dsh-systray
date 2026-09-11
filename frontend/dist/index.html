@@ -144,9 +144,15 @@
           <div class="card-row">
             <div class="row-text">
               <div class="row-title" data-i18n="abPluginsTitle">已安装插件</div>
-              <div class="row-sub" data-i18n="abPluginsSub">通过 dsh add 安装 · 可连续点击多个插件的更新/删除，自动合并为一次服务重启</div>
+              <div class="row-sub" data-i18n="abPluginsSub">通过 dsh add 安装 · 点击更新/删除只登记变更，可一次应用并只重启一次服务</div>
             </div>
             <span id="plug-count" class="plug-count"></span>
+          </div>
+          <!-- 待应用插件变更提示条：变更（更新/删除）已登记但尚未执行，需重启服务才生效；
+               用户一直不应用时本提示常驻（跨托盘重启保留），并提供「立即应用」入口。 -->
+          <div id="plug-pending" class="plug-pending hidden">
+            <span id="plug-pending-text" class="plug-pending-text"></span>
+            <button id="btn-apply-pending" class="btn btn-primary btn-xs" data-i18n="btnApplyPending">立即应用</button>
           </div>
           <div class="plug-filter-row">
             <input id="plug-filter" class="plug-filter" type="search" placeholder="过滤插件（名称 / 来源 / 版本）…" aria-label="过滤插件" autocomplete="off" data-i18n-ph="plugFilterPh" />

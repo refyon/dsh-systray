@@ -1699,6 +1699,55 @@ func promoteImportProfilesToLkg(dirs []string) {
 	}
 }
 
+// restoredPluginNames 从导入包 manifest 取本次恢复覆盖的插件名（dependencies 与 bundles 的
+// 并集，兼容 name@version 变体），供「按最后操作生效」对账待应用变更。
+func restoredPluginNames(masterZipPath string) []string {
+	data, err := zipReadFile(masterZipPath, "manifest.json")
+	if err != nil {
+		return nil
+	}
+	var m exportManifest
+	if json.Unmarshal(data, &m) != nil {
+		return nil
+	}
+	set := map[string]bool{}
+	add := func(s string) {
+		if s == "" {
+			return
+		}
+		base := s
+		if i := strings.IndexByte(base, '@'); i > 0 {
+			base = base[:i]
+		}
+		if !isOfficialHarnessPkg(base) {
+			set[base] = true
+		}
+	}
+	for name := range m.Plugins.Dependencies {
+		add(name)
+	}
+	for _, b := range m.Plugins.Bundles {
+		add(b)
+	}
+	out := make([]string, 0, len(set))
+	for n := range set {
+		out = append(out, n)
+	}
+	sort.Strings(out)
+	return out
+}
+
+// reconcilePendingAfterImport 导入恢复成功后对账待应用变更：本次恢复到的插件，其先前登记的
+// 更新/删除一律作废（按最后操作生效——重新导入是该插件最新的用户意图；典型场景：先登记删除、
+// 随后又把它导回来，则不应再删）。返回提示文案（空=无变更作废）。
+func reconcilePendingAfterImport(masterZipPath string) string {
+	dropped := pluginPendingDropRestored(restoredPluginNames(masterZipPath))
+	if len(dropped) == 0 {
+		return ""
+	}
+	return "已按最后一次操作作废先前的待应用变更（重新导入生效）：" + strings.Join(dropped, "、")
+}
+
 // finishPluginImport 插件导入收尾：拉起服务并健康校验（restartAndVerifyHealing，
 // 失败自动 pnpm 对齐重试一次）；仍失败且启动日志点名用户插件时，自动禁用这些插件换取
 // 「导入保留 + 服务可启动」（不兼容自愈，而非整体回退导入）；禁用后仍失败才回退导入前快照。
@@ -1721,7 +1770,8 @@ func finishPluginImport(dirs []string, hadNM []bool) (string, error) {
 		cleanupImportProfiles(dirs)
 		markServiceResumed()
 		log.Printf("import: plugins restored and service verified healthy")
-		return pfNote, nil
+		// 按最后操作生效：本次恢复到的插件，其先前登记的待应用变更（更新/删除）一并作废
+		return appendNote(pfNote, reconcilePendingAfterImport(importZipPath)), nil
 	}
 	reason := "启动日志存在加载错误（版本/插件不兼容）"
 	if len(suspects) > 0 {
@@ -1746,11 +1796,11 @@ func finishPluginImport(dirs []string, hadNM []bool) (string, error) {
 		}
 		log.Printf("import: plugins restored with incompatible ones disabled: %s", strings.Join(names, "、"))
 		if allDisabled {
-			return appendNote(pfNote, "已恢复导入，但服务启动失败且未能定位具体的不兼容插件，已自动禁用全部已激活的用户插件以保证服务启动"+
-				"（保留记录，可在关于页逐个检查更新或重新启用）："+strings.Join(names, "、")), nil
+			return appendNote(appendNote(pfNote, "已恢复导入，但服务启动失败且未能定位具体的不兼容插件，已自动禁用全部已激活的用户插件以保证服务启动"+
+				"（保留记录，可在关于页逐个检查更新或重新启用）："+strings.Join(names, "、")), reconcilePendingAfterImport(importZipPath)), nil
 		}
-		return appendNote(pfNote, "已恢复导入，但以下插件与当前版本不兼容，已自动禁用（可在关于页检查更新，或确认修复后点击「启用」重试）："+
-			strings.Join(names, "、")), nil
+		return appendNote(appendNote(pfNote, "已恢复导入，但以下插件与当前版本不兼容，已自动禁用（可在关于页检查更新，或确认修复后点击「启用」重试）："+
+			strings.Join(names, "、")), reconcilePendingAfterImport(importZipPath)), nil
 	}
 	log.Printf("import: service not healthy after restore heal (%s), rolling back", reason)
 	killServer()

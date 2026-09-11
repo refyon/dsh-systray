@@ -146,8 +146,14 @@ func (a *App) SetLanguage(l string) {
 	refreshTrayTexts() // 托盘菜单文案即时按新语言刷新（含服务状态行）
 }
 
-// saveCurrentConfig 把当前全局配置写回 config.json。
+// saveCfgMu 串行化 config.json 写入：待应用插件变更（每次登记都持久化）与设置页各项改动
+// 可能来自不同 Wails 绑定 goroutine，并发写会互相截断文件。
+var saveCfgMu sync.Mutex
+
+// saveCurrentConfig 把当前全局配置写回 config.json（含待应用插件变更：跨托盘重启保留）。
 func saveCurrentConfig() {
+	saveCfgMu.Lock()
+	defer saveCfgMu.Unlock()
 	saveConfig(appConfig{
 		Port:              port,
 		HarnessDir:        harnessDir,
@@ -155,6 +161,7 @@ func saveCurrentConfig() {
 		UpdateMirror:      updateMirrorOverride,
 		HarnessPrerelease: harnessPrereleaseOverride,
 		Language:          langPref,
+		PendingPluginOps:  pluginPendingOps(),
 	})
 }
 
@@ -534,7 +541,22 @@ func (a *App) GetInstalledPlugins() []PluginRow {
 	if shotMode {
 		return shotPlugins()
 	}
-	return buildPluginRows()
+	return markPendingPluginRows(buildPluginRows())
+}
+
+// markPendingPluginRows 给已登记待应用变更的插件行打标记（前端据此显示「待应用」与「撤销」，
+// 并隐藏该行的更新/删除按钮）。
+func markPendingPluginRows(rows []PluginRow) []PluginRow {
+	marks := pluginPendingMarks()
+	if len(marks) == 0 {
+		return rows
+	}
+	for i := range rows {
+		if op, ok := marks[rows[i].Name]; ok {
+			rows[i].PendingOp = op
+		}
+	}
+	return rows
 }
 
 // CheckPluginUpdate 检查单个插件是否有新版本（纯查询，结果交前端行内展示）：
@@ -558,15 +580,15 @@ func (a *App) CheckPluginUpdate(id string) PluginCheckResult {
 	return res
 }
 
-// StartPluginUpdate 更新指定插件到最新版：入队后由批处理 worker 顺序执行——连续点击多个插件的
-// 更新/删除会并入同一批（整批只停一次服务、只做一次启动校验），失败项各自回退。
-// 拒绝（harness 更新中 / 已在队列 / 无远程来源等）以 plugin:op:done 事件回报行内原因。
+// StartPluginUpdate 登记一条「更新到最新版」的待应用变更：**不立即执行、不停服、不切窗口**，
+// 只把变更放入待应用区并提示需要重启生效；用户在关闭设置窗口时确认、或在关于页点「立即应用」
+// 时整批执行（多项合并为一次服务重启）。拒绝原因经 plugin:op:done 事件回报行内。
 func (a *App) StartPluginUpdate(id string) {
-	logUI("更新插件", id)
-	if appCtx != nil {
-		wruntime.WindowShow(appCtx)
+	if shotMode {
+		return
 	}
-	pluginOpEnqueue(id, "update")
+	logUI("登记插件更新（待应用）", id)
+	pluginOpStage(id, "update")
 }
 
 // PickLocalPluginPath 本地插件「选择目录更新」第一步：目录选择框 → 校验为同一插件 →
@@ -665,17 +687,44 @@ func runPluginEnable(row PluginRow) {
 	}
 }
 
-// RemovePlugin 删除指定插件（前端确认后调用）：入队后由批处理 worker 执行，物理移除依赖与文件，
-// 失败自动回退；与批量更新共用同一队列（连续点击即可攒批，服务只停一次）。
+// RemovePlugin 登记一条「删除」的待应用变更（前端确认后调用）：不立即执行，与更新共用同一个
+// 待应用区，关闭设置窗口或点「立即应用」时整批执行（一次重启）。
 func (a *App) RemovePlugin(id string) {
 	if shotMode {
 		return
 	}
-	logUI("删除插件", id)
+	logUI("登记插件删除（待应用）", id)
+	pluginOpStage(id, "remove")
+}
+
+// ApplyPendingPluginChanges 应用全部待应用变更（关于页「立即应用」）：整批只停一次服务、
+// 只做一次启动校验，失败项各自回退。返回是否受理。
+func (a *App) ApplyPendingPluginChanges() bool {
+	if shotMode {
+		return false
+	}
+	logUI("应用待应用插件变更", fmt.Sprintf("%d 项", pluginPendingCount()))
 	if appCtx != nil {
 		wruntime.WindowShow(appCtx)
 	}
-	pluginOpEnqueue(id, "remove")
+	ok, why := pluginOpApplyPending()
+	if !ok && why != "" {
+		showMessageBox(why, appName)
+	}
+	return ok
+}
+
+// DiscardPendingPluginChange 撤销一条待应用变更（行内「撤销」）。
+func (a *App) DiscardPendingPluginChange(id string) bool {
+	if shotMode {
+		return false
+	}
+	return pluginOpDiscard(id)
+}
+
+// GetPendingPluginChanges 返回待应用变更列表（关于页横幅：提示「变更未生效」）。
+func (a *App) GetPendingPluginChanges() []PendingPluginChange {
+	return pluginPendingList()
 }
 
 // ResetStats 重置弹窗展示的将清除内容数量（供用户勾选前参考）。
@@ -1106,9 +1155,36 @@ func (a *App) OpenLogDir() {
 	openDir(logDir)
 }
 
-// HideWindow 前端请求隐藏窗口（如 splash 完成按钮）。
+// HideWindow 前端请求隐藏窗口（如 splash 完成按钮）。存在待应用插件变更时先询问是否立即应用
+// （与窗口 X 关闭同一语义，见 main.go onBeforeClose）。
 func (a *App) HideWindow() {
+	if askApplyPendingBeforeHide() {
+		return // 已受理应用：窗口由应用流程的 splash 收尾时隐藏
+	}
 	hideMainWindow()
+}
+
+// askApplyPendingBeforeHide 隐藏/关闭设置窗口前的「待应用变更」询问：返回 true 表示用户选择
+// 立即应用（调用方不要再隐藏窗口，交由批处理 splash 收尾时隐藏）。
+func askApplyPendingBeforeHide() bool {
+	if shotMode || appCtx == nil {
+		return false
+	}
+	n := pluginPendingCount()
+	if n == 0 || pluginBatchRunning() {
+		return false
+	}
+	if !askApplyPendingPlugins(n) {
+		return false
+	}
+	packageOps := pluginPendingHasPackageOps()
+	ok, why := pluginOpApplyPending()
+	if !ok && why != "" {
+		showMessageBox(why, appName)
+		return false
+	}
+	// 全为记录类变更：应用不产生进度窗口，直接隐藏即可（有包操作时由批处理 splash 收尾隐藏）。
+	return ok && packageOps
 }
 
 // GetShotPage 调试用：DSH_SYSTRAY_SHOT_PAGE 指定启动后直接显示的页面（截图/预览）。

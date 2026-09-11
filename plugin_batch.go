@@ -56,7 +56,8 @@ type pluginOpTask struct {
 var (
 	pluginQMu       sync.Mutex
 	pluginQueue     []*pluginOpTask
-	pluginActive    []*pluginOpTask // 已出队、正在本批执行/收尾的任务（重复入队判定范围）
+	pluginActive    []*pluginOpTask // 已出队、正在本批执行/收尾的任务（重复登记者判定范围）
+	pluginPending   []*pluginOpTask // 已登记但**尚未执行**的变更（等用户确认应用）
 	pluginQWorkerOn bool
 	pluginQSeq      atomic.Int64 // 任务序号：分配快照后缀，避免同环境多项快照互相覆盖
 )
@@ -68,10 +69,162 @@ func pluginBatchRunning() bool {
 	return pluginQWorkerOn
 }
 
-// pluginOpEnqueue 受理一次插件操作（更新/删除）：入队并在同一批里顺序执行。
-// 校验（前置条件/重复入队/其它流程占用）在入队时完成，拒绝原因以 plugin:op:done 事件回报，
-// 行内直接显示原因——与失败路径同一套呈现。
-func pluginOpEnqueue(id, op string) (bool, string) {
+// pluginPendingCount 待应用变更条数（关闭窗口询问 / 关于页横幅用）。
+func pluginPendingCount() int {
+	pluginQMu.Lock()
+	defer pluginQMu.Unlock()
+	return len(pluginPending)
+}
+
+// pluginPendingOps 待应用变更的持久化形态（写 config.json；跨托盘重启保留）。
+func pluginPendingOps() []pendingPluginOp {
+	pluginQMu.Lock()
+	defer pluginQMu.Unlock()
+	out := make([]pendingPluginOp, 0, len(pluginPending))
+	for _, t := range pluginPending {
+		out = append(out, pendingPluginOp{ID: t.id, Op: t.op})
+	}
+	return out
+}
+
+// pluginPendingMarks 待应用变更的「插件名 → 操作」，供插件行标记待应用状态。
+func pluginPendingMarks() map[string]string {
+	pluginQMu.Lock()
+	defer pluginQMu.Unlock()
+	out := make(map[string]string, len(pluginPending))
+	for _, t := range pluginPending {
+		out[t.name] = t.op
+	}
+	return out
+}
+
+// PendingPluginChange 关于页横幅展示的一条待应用变更。
+type PendingPluginChange struct {
+	ID   string `json:"id"`
+	Name string `json:"name"`
+	Op   string `json:"op"` // update | remove
+}
+
+// pluginPendingList 待应用变更列表（关于页横幅）。
+func pluginPendingList() []PendingPluginChange {
+	pluginQMu.Lock()
+	defer pluginQMu.Unlock()
+	out := make([]PendingPluginChange, 0, len(pluginPending))
+	for _, t := range pluginPending {
+		out = append(out, PendingPluginChange{ID: t.id, Name: t.name, Op: t.op})
+	}
+	return out
+}
+
+// loadPendingPluginOps 启动时载入持久化的待应用变更（跨托盘重启保留）。逐条按当前插件列表
+// 现场校验：插件已不存在 / 操作已不适用则丢弃，避免恢复出无法执行的条目；返回丢弃条数
+// （>0 时调用方回写配置）。
+func loadPendingPluginOps(ops []pendingPluginOp) int {
+	if len(ops) == 0 {
+		return 0
+	}
+	pluginQMu.Lock()
+	defer pluginQMu.Unlock()
+	dropped := 0
+	for _, o := range ops {
+		row, ok := findPluginRowByID(o.ID)
+		if !ok {
+			dropped++
+			continue
+		}
+		t, why := pluginOpPrepare(row, o.Op)
+		if why != "" {
+			dropped++
+			continue
+		}
+		dup := false
+		for _, q := range pluginPending {
+			if q.id == t.id {
+				dup = true
+				break
+			}
+		}
+		if dup {
+			continue
+		}
+		pluginPending = append(pluginPending, t)
+	}
+	if len(pluginPending) > 0 {
+		logUI("载入待应用插件变更", fmt.Sprintf("%d 项（上次运行登记，尚未生效）", len(pluginPending)))
+	}
+	return dropped
+}
+
+// pluginPendingDropRestored 导入恢复成功后对账：本次恢复到的插件，其先前登记的待应用变更一律
+// 作废——按「最后一次操作生效」，重新导入即用户对该插件的最新意图（典型：先登记删除、随后又把
+// 它导回来，则不应再删）。返回被作废变更的展示文案（供导入结果提示）。
+func pluginPendingDropRestored(names []string) []string {
+	if len(names) == 0 {
+		return nil
+	}
+	pluginQMu.Lock()
+	var dropped []string
+	pluginPending, dropped = pendingDropNames(pluginPending, names)
+	pluginQMu.Unlock()
+	if len(dropped) > 0 {
+		saveCurrentConfig() // 持久化：作废后不再跨重启提示
+		logUI("按最后操作生效，作废待应用变更", strings.Join(dropped, "、"))
+		emitPluginPendingChanged()
+	}
+	return dropped
+}
+
+// emitPluginPendingChanged 通知前端待应用集合变化（横幅/行标记刷新）。
+func emitPluginPendingChanged() {
+	if appCtx != nil {
+		wruntime.EventsEmit(appCtx, "plugin:pending:changed", map[string]interface{}{
+			"count": pluginPendingCount(),
+		})
+	}
+}
+
+// pendingUpsertTask 把一条变更并入待应用列表（纯函数，便于单测）：同一插件按「最后操作生效」
+// ——同操作幂等（原样返回），换操作则覆盖；返回新列表与是否发生覆盖。
+func pendingUpsertTask(list []*pluginOpTask, t *pluginOpTask) ([]*pluginOpTask, bool) {
+	for i, q := range list {
+		if q.id != t.id {
+			continue
+		}
+		if q.op == t.op {
+			return list, false
+		}
+		out := append([]*pluginOpTask{}, list...)
+		out[i] = t
+		return out, true
+	}
+	return append(append([]*pluginOpTask{}, list...), t), false
+}
+
+// pendingDropNames 从待应用列表移除指定插件名的条目（纯函数，便于单测）：返回保留列表与被移除
+// 条目的展示文案（如 "dsh-x（删除）"）。
+func pendingDropNames(list []*pluginOpTask, names []string) (kept []*pluginOpTask, dropped []string) {
+	if len(names) == 0 {
+		return list, nil
+	}
+	set := make(map[string]bool, len(names))
+	for _, n := range names {
+		set[n] = true
+	}
+	verbOf := map[string]string{"update": "（更新）", "remove": "（删除）"}
+	for _, t := range list {
+		if set[t.name] {
+			dropped = append(dropped, t.name+verbOf[t.op])
+			continue
+		}
+		kept = append(kept, t)
+	}
+	return kept, dropped
+}
+
+// pluginOpStage 登记一条插件变更（点击更新/删除时调用）：**不执行、不停服、不切窗口**，只把
+// 变更放进待应用区，由用户在关闭设置窗口时确认、或在关于页点「立即应用」时整批执行（一次重启）。
+// 同一插件重复登记按「最后操作生效」：同操作幂等，换操作则覆盖。拒绝原因经 plugin:op:done 回报。
+func pluginOpStage(id, op string) (bool, string) {
 	reject := func(reason string) (bool, string) {
 		name := id
 		if row, ok := findPluginRowByID(id); ok {
@@ -86,6 +239,9 @@ func pluginOpEnqueue(id, op string) (bool, string) {
 	if harnessOpBusy.Load() {
 		return reject("正在更新或重置 DeepSeek Harness，请等待完成后再操作插件。")
 	}
+	if pluginBatchRunning() {
+		return reject("正在应用已登记的插件变更，请等待完成后再操作。")
+	}
 	row, ok := findPluginRowByID(id)
 	if !ok {
 		return reject("未找到该插件，可能已被移除。")
@@ -94,23 +250,87 @@ func pluginOpEnqueue(id, op string) (bool, string) {
 	if why != "" {
 		return reject(why)
 	}
+	verb := map[string]string{"update": "更新", "remove": "删除"}[op]
 
 	pluginQMu.Lock()
-	for _, q := range append(append([]*pluginOpTask{}, pluginQueue...), pluginActive...) {
-		if q.id == id {
-			pluginQMu.Unlock()
-			return reject("该插件已在批处理队列中，请等待本次批量操作完成。")
+	pluginPending, _ = pendingUpsertTask(pluginPending, t)
+	n := len(pluginPending)
+	pluginQMu.Unlock()
+
+	saveCurrentConfig()
+	logUI("登记待应用变更", fmt.Sprintf("%s（%s）| 待应用共 %d 项", row.Name, verb, n))
+	emitPluginPendingChanged()
+	if appCtx != nil {
+		wruntime.EventsEmit(appCtx, "plugins:changed", nil)
+	}
+	return true, ""
+}
+
+// pluginOpDiscard 撤销一条待应用变更（行内「撤销」）。
+func pluginOpDiscard(id string) bool {
+	pluginQMu.Lock()
+	found := false
+	var kept []*pluginOpTask
+	for _, t := range pluginPending {
+		if t.id == id {
+			found = true
+			continue
+		}
+		kept = append(kept, t)
+	}
+	pluginPending = kept
+	pluginQMu.Unlock()
+	if !found {
+		return false
+	}
+	saveCurrentConfig()
+	logUI("撤销待应用变更", id)
+	emitPluginPendingChanged()
+	if appCtx != nil {
+		wruntime.EventsEmit(appCtx, "plugins:changed", nil)
+	}
+	return true
+}
+
+// pluginPendingHasPackageOps 待应用变更里是否有需要真实包操作（停服/pnpm）的条目。
+// 全为记录类（待重指定 / 无依赖的自动禁用行）时应用不产生进度窗口，调用方需自行隐藏窗口。
+func pluginPendingHasPackageOps() bool {
+	pluginQMu.Lock()
+	defer pluginQMu.Unlock()
+	for _, t := range pluginPending {
+		if !t.recordOnly {
+			return true
 		}
 	}
-	pluginQueue = append(pluginQueue, t)
-	run := !pluginQWorkerOn
-	if run {
-		pluginQWorkerOn = true
+	return false
+}
+
+// pluginOpApplyPending 应用全部待应用变更：移入执行队列并启动批处理（整批一次重启校验）。
+// 返回 (是否受理, 拒绝原因)。
+func pluginOpApplyPending() (bool, string) {
+	pluginQMu.Lock()
+	if len(pluginPending) == 0 {
+		pluginQMu.Unlock()
+		return false, ""
 	}
+	if pluginQWorkerOn {
+		pluginQMu.Unlock()
+		return false, "正在应用插件变更，请等待本次批量操作完成。"
+	}
+	batch := pluginPending
+	pluginPending = nil
+	for _, t := range batch {
+		t.ok, t.reason, t.note = false, "", ""
+		t.hadNM = nil
+	}
+	pluginQueue = append(pluginQueue, batch...)
+	pluginQWorkerOn = true
 	pluginQMu.Unlock()
-	if run {
-		go pluginBatchWorker()
-	}
+
+	saveCurrentConfig() // 已转入执行：清空持久化的待应用列表
+	logUI("应用待应用插件变更", fmt.Sprintf("%d 项", len(batch)))
+	emitPluginPendingChanged()
+	go pluginBatchWorker()
 	return true, ""
 }
 
@@ -179,6 +399,12 @@ func pluginBatchDrain() (tasks []*pluginOpTask, splash *SplashState, paused bool
 		pluginQMu.Unlock()
 		tasks = append(tasks, t)
 
+		// 执行前用当前插件状态刷新任务：待应用期间插件可能被重新导入、换版本或改了 spec；
+		// 已不存在则跳过本项（按最后操作生效，不误删/误更新其它来源装回来的插件）。
+		if !syncPluginTaskRow(t) {
+			t.fail("插件已不存在（可能已被删除或移除），本项已跳过")
+			continue
+		}
 		if t.recordOnly {
 			runPluginRecordOnly(t)
 			continue
@@ -195,6 +421,20 @@ func pluginBatchDrain() (tasks []*pluginOpTask, splash *SplashState, paused bool
 		runPluginPackagePhase(t, splash, len(tasks))
 	}
 	return tasks, splash, paused
+}
+
+// syncPluginTaskRow 执行前用当前插件状态刷新任务字段（待应用期间插件可能被重新导入、换版本或
+// 改了 spec）：返回 false 表示该插件已不在插件列表中，调用方跳过本项。
+func syncPluginTaskRow(t *pluginOpTask) bool {
+	row, ok := findPluginRowByID(t.id)
+	if !ok {
+		return false
+	}
+	t.row = row
+	t.locs = row.Locs
+	t.wasDisabled = row.Disabled
+	t.recordOnly = t.op == "remove" && (row.PendingLocal || row.GhostDisabled)
+	return true
 }
 
 // runPluginRecordOnly 只改记录的任务（待重指定行 / 无依赖声明的自动禁用行）：

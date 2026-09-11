@@ -123,6 +123,7 @@ type PluginRow struct {
 	GhostDisabled  bool     `json:"ghostDisabled"`  // 「已自动禁用且无依赖声明」：自愈禁用后保留展示，可删除/重装，不可直接启用
 	Disabled       bool     `json:"disabled"`       // 是否处于禁用状态（不兼容自愈：不在 bundles 激活清单）
 	DisabledReason string   `json:"disabledReason"` // 禁用原因（启动日志错误摘要）
+	PendingOp      string   `json:"pendingOp"`      // 待应用变更：update | remove（空=无）；需重启服务才生效
 }
 
 // PluginCheckResult 单个插件的检查结果。

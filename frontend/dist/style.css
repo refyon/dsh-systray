@@ -412,6 +412,20 @@ input { font-family: inherit; }
 .plug-filter::placeholder { color: var(--muted); }
 .plug-filter:focus-visible { outline: 2px solid var(--focus); outline-offset: -1px; }
 
+/* 待应用变更提示条（关于页）：变更已登记但未执行，需重启服务生效；一直不应用则常驻提示。 */
+.plug-pending {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-3);
+  margin-top: var(--sp-3);
+  padding: var(--sp-2) var(--sp-3);
+  border: 1px solid var(--warn);
+  border-radius: var(--radius-sm);
+  background: var(--surface-2);
+}
+.plug-pending-text { font-size: var(--fs-xs); color: var(--warn); line-height: 1.5; min-width: 0; }
+
 /* 列表容器：大量插件（数十~上百）时限高内滚，头部（标题/计数/过滤框）保持可见 */
 .plug-list {
   display: flex;
