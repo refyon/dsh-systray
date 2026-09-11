@@ -117,6 +117,21 @@ func updateFlowBusy() bool {
 	return activeCancel != nil
 }
 
+// updateProgressActive 是否处于「更新进行中」且界面上正显示更新进度：dsh-systray 自身更新
+// （下载/安装已登记取消句柄）或 harness 更新/重置进行中。
+// 用途：托盘「设置」此时只把窗口带到前台、**不切回设置页**——设置页会整块替换更新进度界面，
+// 用户既看不到下载/安装到哪一步，也看不到「取消更新」按钮（2026-09-11 用户反馈）。
+// 与 updateFlowBusy 的区别：后者含插件批处理/手动检查等也占用「检查窗口」的流程，那些流程
+// 的进度在各自页面里，不应阻止用户打开设置页。
+func updateProgressActive() bool {
+	if harnessOpBusy.Load() {
+		return true
+	}
+	updateMu.Lock()
+	defer updateMu.Unlock()
+	return activeCancel != nil
+}
+
 // 派生子进程登记表：托盘退出时除保留的后台服务外一并终止，避免孤儿进程。
 var (
 	childProcsMu sync.Mutex

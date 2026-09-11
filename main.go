@@ -912,6 +912,13 @@ func showMainWindow() {
 	}
 	wruntime.WindowShow(appCtx)
 	ensureMainWindowForeground() // 平台实现：把窗口真正置前（需求：所有弹窗/窗口自动前台）
+	// 更新进行中（自身更新下载/安装、harness 更新/重置）：保持更新进度界面置顶，不切回设置页——
+	// ui:show-settings 会让前端整块重载设置页内容（含刷新版本/插件），进度界面随之消失，
+	// 用户看不到下载/安装阶段与「取消更新」入口。
+	if updateProgressActive() {
+		log.Printf("settings view suppressed: update in progress")
+		return
+	}
 	wruntime.EventsEmit(appCtx, "ui:show-settings", nil)
 }
 
