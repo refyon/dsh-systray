@@ -64,7 +64,7 @@ const I18N_EN = {
   btnCheckUpdate: "Check for updates",
   btnUpdateApp: "Update dsh-systray", btnUpdateHarness: "Update Harness",
   abPluginsTitle: "Installed plugins",
-  plugFilterPh: "Filter plugins…",
+  plugFilterPh: "Filter plugins (name / source / version)…",
   plugEmpty: "No plugins installed",
   btnDiscardAllPending: "Undo all", btnApplyPending: "Apply now",
   btnRefresh: "Refresh", btnClear: "Clear",
