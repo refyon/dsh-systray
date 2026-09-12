@@ -40,6 +40,7 @@
           <div class="card-row">
             <div class="row-text">
               <div class="row-title" data-i18n="stAutoTitle">开机自启动</div>
+              <div class="row-sub" data-i18n="stAutoSub">登录后自动启动后台服务并常驻托盘</div>
             </div>
             <button id="sw-autostart" class="switch" role="switch" aria-checked="false" aria-label="开机自启动"></button>
           </div>
@@ -48,6 +49,7 @@
           <div class="card-row">
             <div class="row-text">
               <div class="row-title" data-i18n="stLangTitle">界面语言</div>
+              <div class="row-sub" data-i18n="stLangSub">托盘菜单与原生弹窗随之切换；跟随系统按当前系统语言自动选择</div>
             </div>
             <select id="sel-lang" class="input-select" aria-label="界面语言">
               <option value="auto" data-i18n="langAuto">跟随系统（自动检测）</option>
@@ -105,6 +107,7 @@
           <div class="card-row">
             <div class="row-text">
               <div class="row-title" data-i18n="abAppVerTitle">dsh-systray 版本号</div>
+              <div class="row-sub" data-i18n="abAppVerSub">桌面托盘设置程序</div>
             </div>
             <strong class="ver-lg" id="ver-app">—</strong>
           </div>
@@ -119,12 +122,14 @@
           <div class="card-row">
             <div class="row-text">
               <div class="row-title" data-i18n="abHarnessVerTitle">DeepSeek Harness 版本号</div>
+              <div class="row-sub" data-i18n="abHarnessVerSub">后台服务引擎</div>
             </div>
             <strong class="ver-lg" id="ver-harness">—</strong>
           </div>
           <div class="card-row">
             <div class="row-text">
               <div class="row-title" data-i18n="abPreTitle">开启预发布通道</div>
+              <div class="row-sub" data-i18n="abPreSub">alpha / beta / rc 预发布版</div>
             </div>
             <button id="sw-prerelease" class="switch" role="switch" aria-checked="false" aria-label="预发布通道"></button>
           </div>
@@ -192,6 +197,7 @@
         <div class="card imp-intro">
           <div class="imp-intro-main">
             <div class="row-title" data-i18n="impTitle">导入 dsh-systray 导出包</div>
+            <div class="row-sub" data-i18n="impSub">选择 dsh-systray-export-*.zip 压缩包，可恢复历史会话、已安装插件或文件目录。</div>
             <div id="imp-path" class="row-sub row-sub-path imp-path hidden"></div>
           </div>
           <button id="btn-import-pick" class="btn btn-primary btn-sm" data-i18n="btnAddZip">添加压缩包…</button>
