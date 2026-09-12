@@ -227,7 +227,8 @@ input { font-family: inherit; }
 
 .row-title { font-size: var(--fs-base); font-weight: 600; display: flex; align-items: center; gap: var(--sp-2); }
 .row-sub { color: var(--muted); font-size: var(--fs-xs); margin-top: var(--sp-1); line-height: 1.5; }
-.row-sub-path { max-width: 300px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; direction: rtl; text-align: left; }
+/* 路径类副标题：完整显示全路径（换行而非省略号截断，与日志页路径一致）——优先在分隔符/连字符处断行，超长无空格段按任意字符断行 */
+.row-sub-path { white-space: normal; overflow-wrap: anywhere; word-break: break-word; text-align: left; }
 
 /* 警示提示行（端口修改重启生效等） */
 .row-warn {
@@ -667,7 +668,7 @@ input { font-family: inherit; }
 }
 
 .imp-intro-main { flex: 1; min-width: 0; }
-.imp-path { margin-top: var(--sp-2); direction: rtl; text-align: left; }
+.imp-path { margin-top: var(--sp-2); }
 
 .imp-item {
   display: flex;
