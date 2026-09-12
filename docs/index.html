@@ -3,8 +3,8 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title id="doc-title">dsh-systray · 桌面托盘，静默启动</title>
-<meta name="description" id="doc-desc" content="dsh-systray — Windows / macOS 桌面托盘：双击后台启动 DeepSeek Harness 本地服务，托盘常驻、开机自启、自动更新、数据一键迁移。">
+<title id="doc-title">dsh-systray</title>
+<meta name="description" id="doc-desc" content="dsh-systray — DeepSeek Harness 桌面托盘（Windows / macOS）。">
 <style>
 :root{
   --bg:#f8fafc; --surface:#ffffff; --surface-2:#f1f5f9; --text:#0f172a; --muted:#64748b;
@@ -37,8 +37,7 @@ a{color:inherit;text-decoration:none}
 .hero{padding:80px 0 40px;text-align:center}
 .hero .logo{width:132px;height:132px;margin:0 auto 18px;display:block;filter:drop-shadow(0 14px 26px rgba(29,78,216,.28))}
 .hero h1{font-size:clamp(2.4rem,6vw,3.6rem);font-weight:700;line-height:1.05;letter-spacing:-.03em;margin:0 0 14px}
-.hero h1 .tint{color:var(--primary)}
-.hero .sub{max-width:560px;margin:0 auto;color:var(--muted);font-size:1.12rem;line-height:1.6}
+.hero .sub{max-width:620px;margin:0 auto;color:var(--muted);font-size:1.12rem;line-height:1.6}
 .actions{display:flex;gap:14px;justify-content:center;margin-top:30px;flex-wrap:wrap}
 .btn{border:0;border-radius:999px;padding:13px 26px;font-weight:600;font-size:15px;cursor:pointer;display:inline-flex;align-items:center;gap:8px}
 .btn .ico{width:18px;height:18px}
@@ -73,22 +72,6 @@ a{color:inherit;text-decoration:none}
 .car-dot:hover{background:#9aa4b2}
 .car-dot.active{width:22px;background:var(--primary)}
 
-/* features */
-.features{padding:74px 0 8px}
-.features .head{text-align:center;margin-bottom:40px}
-.features .head h2{font-size:31px;margin:12px 0 8px;letter-spacing:-.02em}
-.features .head p{color:var(--muted);margin:0}
-.feat-groups{display:grid;grid-template-columns:repeat(3,1fr);gap:22px}
-@media(max-width:980px){.feat-groups{grid-template-columns:1fr}}
-.fgroup{background:var(--surface);border:1px solid var(--border);border-radius:var(--rad);box-shadow:var(--shadow);padding:28px 30px}
-.fgroup h3{margin:0 0 18px;font-size:18px;letter-spacing:-.01em}
-.fgroup ul{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:16px}
-.fgroup li{display:flex;gap:12px;align-items:flex-start}
-.fgroup .ico{flex:0 0 34px;width:34px;height:34px;border-radius:9px;background:var(--soft);display:grid;place-items:center}
-.fgroup .ico svg{width:17px;height:17px;fill:var(--primary)}
-.fgroup b{display:block;font-size:15px;margin-bottom:2px}
-.fgroup span{display:block;font-size:13.5px;color:var(--muted);line-height:1.5}
-
 /* notes */
 .notes{margin-top:66px;background:var(--surface);border:1px solid var(--border);border-radius:var(--rad);box-shadow:var(--shadow);padding:34px 38px}
 .notes h2{margin:0 0 18px;font-size:22px}
@@ -104,7 +87,7 @@ footer .sep{margin:0 8px;color:var(--border)}
 /* reveal */
 [data-reveal]{opacity:0;transform:translateY(18px);transition:opacity .5s,transform .5s}
 [data-reveal].in{opacity:1;transform:none}
-@media(max-width:600px){.hero{padding-top:64px}.features .head h2{font-size:26px}}
+@media(max-width:600px){.hero{padding-top:64px}}
 </style>
 </head>
 <body>
@@ -117,96 +100,23 @@ footer .sep{margin:0 8px;color:var(--border)}
     <img class="logo" src="icon.svg" alt="dsh-systray 图标" width="132" height="132">
     <div class="eyebrow">Windows · macOS</div>
     <h1>dsh-systray</h1>
-    <p class="sub" data-i18n="heroSub">轻量 · 可靠 · 可迁移——双击即启，托盘常驻，服务就绪一触即达。</p>
+    <p class="sub" data-i18n="heroSub">DeepSeek Harness 桌面托盘：双击后台启动本地服务。</p>
     <div class="actions">
       <a class="btn primary" href="https://github.com/refyon/dsh-systray/releases/latest/download/dsh-systray-windows-x64.zip"><svg class="ico" viewBox="0 0 24 24" fill="currentColor"><path d="M3 5.5l8.5-1.2v8.4H3V5.5zm9.5-1.3L21 3v9.7h-8.5V4.2zM3 13.7h8.5v8.4L3 20.9v-7.2zm9.5.8H21v6.9l-8.5 1.3v-8.2z"/></svg><span data-i18n="dlWin">下载 Windows 版</span></a>
       <a class="btn ghost" href="https://github.com/refyon/dsh-systray/releases/latest/download/dsh-systray-macos-universal.zip"><svg class="ico" viewBox="0 0 24 24" fill="currentColor"><path d="M16.9 12.9c0-2.1 1.7-3.1 1.8-3.2-1-1.4-2.5-1.6-3-1.7-1.3-.1-2.5.8-3.2.8-.6 0-1.6-.8-2.7-.7-1.4 0-2.7.8-3.4 2-1.4 2.5-.4 6.2 1 8.2.7 1 1.5 2.1 2.6 2 .9 0 1.3-.6 2.5-.6s1.5.6 2.5.6c1 0 1.7-1 2.4-2 .7-1.1 1-2.1 1-2.2 0 0-2-1-2-3.2zM15 6.3c.6-.7 1-1.7.9-2.7-.8 0-1.9.6-2.5 1.3-.5.6-1 1.6-.9 2.6.9.1 1.9-.5 2.5-1.2z"/></svg><span data-i18n="dlMac">下载 macOS 版</span></a>
     </div>
-    <div class="ver-chip"><span data-i18n="verLabel">当前版本</span> <b id="version">v0.8.0</b> <span data-i18n="verSuffix">· 由 CI 自动构建发布</span></div>
+    <div class="ver-chip"><span data-i18n="verLabel">当前版本</span> <b id="version">v0.8.13</b></div>
   </section>
 
   <section class="hub" id="screenshots">
     <div class="car" data-reveal>
       <div class="shot-stack car-stage">
-        <img class="shot" id="car-img" src="shots/general.webp" alt="dsh-systray 界面轮播" />
-        <div class="car-bubble" id="car-cap">常规 — 自启与服务状态，一眼掌握</div>
+        <img class="shot" id="car-img" src="shots/general.webp" alt="dsh-systray 界面" />
+        <div class="car-bubble" id="car-cap">常规</div>
       </div>
       <button class="car-arrow prev" id="car-prev" type="button" aria-label="上一张"></button>
       <button class="car-arrow next" id="car-next" type="button" aria-label="下一张"></button>
       <div class="car-dots" id="car-dots"></div>
-    </div>
-  </section>
-
-  <section class="features" id="features">
-    <div class="head">
-      <span class="eyebrow">WHY DSH-SYSTRAY</span>
-      <h2 data-i18n="featTitle">轻量、可靠、可迁移</h2>
-      <p data-i18n="featLead">单文件、自愈、随身带。像系统原生的一部分。</p>
-    </div>
-    <div class="feat-groups">
-      <div class="fgroup" data-reveal>
-        <h3 data-i18n="fg1T">轻量 — 双击即用</h3>
-        <ul>
-          <li>
-            <div class="ico"><svg viewBox="0 0 24 24"><path d="M6 3l14 9-14 9V3z"/></svg></div>
-            <div><b data-i18n="f1T">双击即启</b><span data-i18n="f1D">服务在后台安静就绪，不用记端口，不用开终端。</span></div>
-          </li>
-          <li>
-            <div class="ico"><svg viewBox="0 0 24 24"><path d="M21 8l-9-5-9 5v8l9 5 9-5V8zM3.3 8.5L12 13.3l8.7-4.8M12 22V13.3"/></svg></div>
-            <div><b data-i18n="f2T">单文件免安装</b><span data-i18n="f2D">Windows 单 exe / macOS 单 app，免管理员权限，解压即用。</span></div>
-          </li>
-          <li>
-            <div class="ico"><svg viewBox="0 0 24 24"><path d="M12 2a10 10 0 1 0 0 20 10 10 0 0 0 0-20zm0 18a8 8 0 1 1 0-16 8 8 0 0 1 0 16zm4-8a4 4 0 1 1-8 0 4 4 0 0 1 8 0z"/></svg></div>
-            <div><b data-i18n="f3T">常驻托盘</b><span data-i18n="f3D">一望即知服务状态，深浅色随系统自动切换。</span></div>
-          </li>
-          <li>
-            <div class="ico"><svg viewBox="0 0 24 24"><path d="M12 22a10 10 0 0 1-10-10A10 10 0 0 1 12 2a10 10 0 0 1 8.4 4.6L17 10h5V5l-1.8 1.8A8 8 0 1 0 20 12h-2a6 6 0 1 1-8.2-5.8L11.4 5A8 8 0 0 0 4 12a8 8 0 0 0 8 8v2z"/></svg></div>
-            <div><b data-i18n="f4T">始终唯一</b><span data-i18n="f4D">不会重复启动，托盘里永远只有一个它。</span></div>
-          </li>
-        </ul>
-      </div>
-      <div class="fgroup" data-reveal>
-        <h3 data-i18n="fg2T">可靠 — 自动自愈</h3>
-        <ul>
-          <li>
-            <div class="ico"><svg viewBox="0 0 24 24"><path d="M12 2l9 5v5c0 5.5-3.8 9.4-9 10-5.2-.6-9-4.5-9-10V7l9-5zm0 2.2L5 8.6v3.5c0 4.3 2.9 7.5 7 8 4.1-.5 7-3.7 7-8V8.6l-7-4.4zM8.6 12.4l2.1 2.1 4.7-4.7 1.4 1.4-6.1 6.1-3.5-3.5 1.4-1.4z"/></svg></div>
-            <div><b data-i18n="f5T">启动看得见</b><span data-i18n="f5D">每一步进度清晰呈现，就绪后贴心提醒。</span></div>
-          </li>
-          <li>
-            <div class="ico"><svg viewBox="0 0 24 24"><path d="M12 22a10 10 0 0 1-10-10A10 10 0 0 1 12 2a10 10 0 0 1 8.4 4.6L17 10h5V5l-1.8 1.8A8 8 0 1 0 20 12h-2a6 6 0 1 1-8.2-5.8L11.4 5A8 8 0 0 0 4 12a8 8 0 0 0 8 8v2z"/></svg></div>
-            <div><b data-i18n="f6T">启动失败自动回退</b><span data-i18n="f6D">启动异常时自动回退到上次正常运行的 harness 与插件状态。</span></div>
-          </li>
-          <li>
-            <div class="ico"><svg viewBox="0 0 24 24"><path d="M12 2l9 5v5c0 5.5-3.8 9.4-9 10-5.2-.6-9-4.5-9-10V7l9-5zm0 2.2L5 8.6v3.5c0 4.3 2.9 7.5 7 8 4.1-.5 7-3.7 7-8V8.6l-7-4.4zM8.6 12.4l2.1 2.1 4.7-4.7 1.4 1.4-6.1 6.1-3.5-3.5 1.4-1.4z"/></svg></div>
-            <div><b data-i18n="f7T">更新失败自动回滚</b><span data-i18n="f7D">harness 与插件更新前自动快照，失败自动还原并重启校验。</span></div>
-          </li>
-          <li>
-            <div class="ico"><svg viewBox="0 0 24 24"><path d="M4 4h16a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2zm4 6l3 3-3 3m5 0h4"/></svg></div>
-            <div><b data-i18n="f8T">日志实时跟随</b><span data-i18n="f8D">最新记录自动呈现，需要时一键清空。</span></div>
-          </li>
-        </ul>
-      </div>
-      <div class="fgroup" data-reveal>
-        <h3 data-i18n="fg3T">可迁移 — 数据随身带</h3>
-        <ul>
-          <li>
-            <div class="ico"><svg viewBox="0 0 24 24"><path d="M7 7h10M13 3l4 4-4 4M17 17H7m-4 4l4-4-4-4"/></svg></div>
-            <div><b data-i18n="f9T">数据随身带</b><span data-i18n="f9D">会话与插件一键打包，换台机器也能无缝恢复。</span></div>
-          </li>
-          <li>
-            <div class="ico"><svg viewBox="0 0 24 24"><path d="M12 22a10 10 0 0 1-10-10A10 10 0 0 1 12 2a10 10 0 0 1 8.4 4.6L17 10h5V5l-1.8 1.8A8 8 0 1 0 20 12h-2a6 6 0 1 1-8.2-5.8L11.4 5A8 8 0 0 0 4 12a8 8 0 0 0 8 8v2z"/></svg></div>
-            <div><b data-i18n="f10T">冲突智能处理</b><span data-i18n="f10D">导入时逐项恢复、冲突询问，自动备份现有内容。</span></div>
-          </li>
-          <li>
-            <div class="ico"><svg viewBox="0 0 24 24"><path d="M4 21v-7M4 10V3M12 21v-9M12 8V3M20 21v-5M20 12V3M1 14h6M9 8h6M17 16h6"/></svg></div>
-            <div><b data-i18n="f11T">配置即数据</b><span data-i18n="f11D">配置与数据都在用户目录，随导出包完整迁移。</span></div>
-          </li>
-          <li>
-            <div class="ico"><svg viewBox="0 0 24 24"><path d="M12 22a10 10 0 1 0 0-20 10 10 0 0 0 0 20zM2 12h20M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg></div>
-            <div><b data-i18n="f12T">跨平台一致</b><span data-i18n="f12D">Windows / macOS 同一套界面、同一份数据格式。</span></div>
-          </li>
-        </ul>
-      </div>
     </div>
   </section>
 
@@ -215,16 +125,14 @@ footer .sep{margin:0 8px;color:var(--border)}
     <ol>
       <li data-i18n="n1">下载对应平台 zip 并解压到任意目录</li>
       <li data-i18n="n2"><b>Windows</b>：双击 <code>dsh-systray.exe</code>（SmartScreen 提示时选「仍要运行」）</li>
-      <li data-i18n="n3"><b>macOS</b>：首次<b>右键 → 打开</b> <code>dsh-systray</code>，绕过 Gatekeeper</li>
-      <li data-i18n="n4">首次启动约需 2-5 分钟完成环境部署，随后自动打开服务；配置保存在用户目录的 <code>config.json</code></li>
-      <li data-i18n="n5">换机迁移：旧机器「导出」打包 zip，新机器「导入」逐项恢复会话、插件与文件目录</li>
+      <li data-i18n="n3"><b>macOS</b>：首次<b>右键 → 打开</b> <code>dsh-systray</code></li>
+      <li data-i18n="n4">首次启动约 2-5 分钟完成环境部署，随后自动打开服务</li>
     </ol>
   </section>
 </main>
 
 <footer>
-  <p data-i18n="fTag">dsh-systray · DeepSeek Harness 桌面托盘</p>
-  <p style="margin-top:8px">
+  <p>
     <a href="https://github.com/refyon/dsh-systray/releases/latest" target="_blank" rel="noopener"><span data-i18n="fLinkRel">更新日志</span></a><span class="sep">·</span>
     <a href="https://github.com/refyon/dsh-systray/releases/latest/download/SHA256SUMS.txt" target="_blank" rel="noopener"><span data-i18n="fLinkSha">SHA256 校验和</span></a><span class="sep">·</span>
     <a href="https://github.com/refyon/dsh-systray" target="_blank" rel="noopener"><span data-i18n="fLinkSrc">源码 ↗</span></a>
@@ -236,70 +144,36 @@ footer .sep{margin:0 8px;color:var(--border)}
   // ==================== i18n（中/英） ====================
   var I18N = {
     zh: {
-      title: "dsh-systray · 桌面托盘，静默启动",
-      desc: "dsh-systray — Windows / macOS 桌面托盘：双击后台启动 DeepSeek Harness 本地服务，托盘常驻、开机自启、自动更新、数据一键迁移。",
+      title: "dsh-systray",
+      desc: "dsh-systray — DeepSeek Harness 桌面托盘（Windows / macOS）。",
       logoAlt: "dsh-systray 图标",
-      heroSub: "轻量 · 可靠 · 可迁移——双击即启，托盘常驻，服务就绪一触即达。",
+      heroSub: "DeepSeek Harness 桌面托盘：双击后台启动本地服务。",
       dlWin: "下载 Windows 版", dlMac: "下载 macOS 版",
-      verLabel: "当前版本", verSuffix: "· 由 CI 自动构建发布",
-      featTitle: "轻量、可靠、可迁移",
-      featLead: "单文件、自愈、随身带。像系统原生的一部分。",
-      fg1T: "轻量 — 双击即用", fg2T: "可靠 — 自动自愈", fg3T: "可迁移 — 数据随身带",
-      f1T: "双击即启", f1D: "服务在后台安静就绪，不用记端口，不用开终端。",
-      f2T: "单文件免安装", f2D: "Windows 单 exe / macOS 单 app，免管理员权限，解压即用。",
-      f3T: "常驻托盘", f3D: "一望即知服务状态，深浅色随系统自动切换。",
-      f4T: "始终唯一", f4D: "不会重复启动，托盘里永远只有一个它。",
-      f5T: "启动看得见", f5D: "每一步进度清晰呈现，就绪后贴心提醒。",
-      f6T: "启动失败自动回退", f6D: "启动异常时自动回退到上次正常运行的 harness 与插件状态。",
-      f7T: "更新失败自动回滚", f7D: "harness 与插件更新前自动快照，失败自动还原并重启校验。",
-      f8T: "日志实时跟随", f8D: "最新记录自动呈现，需要时一键清空。",
-      f9T: "数据随身带", f9D: "会话与插件一键打包，换台机器也能无缝恢复。",
-      f10T: "冲突智能处理", f10D: "导入时逐项恢复、冲突询问，自动备份现有内容。",
-      f11T: "配置即数据", f11D: "配置与数据都在用户目录，随导出包完整迁移。",
-      f12T: "跨平台一致", f12D: "Windows / macOS 同一套界面、同一份数据格式。",
+      verLabel: "当前版本",
       notesTitle: "开始使用",
       n1: "下载对应平台 zip 并解压到任意目录",
       n2: "<b>Windows</b>：双击 <code>dsh-systray.exe</code>（SmartScreen 提示时选「仍要运行」）",
-      n3: "<b>macOS</b>：首次<b>右键 → 打开</b> <code>dsh-systray</code>，绕过 Gatekeeper",
-      n4: "首次启动约需 2-5 分钟完成环境部署，随后自动打开服务；配置保存在用户目录的 <code>config.json</code>",
-      n5: "换机迁移：旧机器「导出」打包 zip，新机器「导入」逐项恢复会话、插件与文件目录",
-      fTag: "dsh-systray · DeepSeek Harness 桌面托盘",
+      n3: "<b>macOS</b>：首次<b>右键 → 打开</b> <code>dsh-systray</code>",
+      n4: "首次启动约 2-5 分钟完成环境部署，随后自动打开服务",
       fLinkRel: "更新日志", fLinkSha: "SHA256 校验和", fLinkSrc: "源码 ↗",
       prevAria: "上一张", nextAria: "下一张", dotAria: "第 %d 张",
-      carCap: ["常规 — 自启与服务状态，一眼掌握", "关于（上）— 版本与各模块检查更新", "关于（下）— 已安装插件逐个管理", "日志 — 实时跟随，随看随清", "导出 — 会话插件，一键打包", "导入 — 无缝迁移，逐项恢复"]
+      carCap: ["常规", "关于 · 版本与更新", "关于 · 已安装插件", "日志", "导出", "导入"]
     },
     en: {
-      title: "dsh-systray · Desktop tray, silent startup",
-      desc: "dsh-systray — a Windows / macOS desktop tray app: launch the DeepSeek Harness local service in the background with a double-click; tray resident, autostart on boot, auto-update and one-click data migration.",
+      title: "dsh-systray",
+      desc: "dsh-systray — a desktop tray app for DeepSeek Harness (Windows / macOS).",
       logoAlt: "dsh-systray logo",
-      heroSub: "Lightweight · Reliable · Portable — double-click to start, lives in the tray, service ready at your fingertips.",
+      heroSub: "A desktop tray app for DeepSeek Harness: double-click to start the local service.",
       dlWin: "Download for Windows", dlMac: "Download for macOS",
-      verLabel: "Version", verSuffix: "· built & released automatically by CI",
-      featTitle: "Lightweight, Reliable, Portable",
-      featLead: "Single file, self-healing, take it anywhere. Feels native.",
-      fg1T: "Lightweight — double-click to use", fg2T: "Reliable — self-healing", fg3T: "Portable — data travels with you",
-      f1T: "Start with a double-click", f1D: "The service is quietly ready in the background — no ports to remember, no terminal to open.",
-      f2T: "Single-file, no install", f2D: "One exe on Windows / one app on macOS, no admin rights needed, unzip and run.",
-      f3T: "Always in the tray", f3D: "Service status at a glance; light & dark theme follow the system.",
-      f4T: "Always a single instance", f4D: "Never launches twice — only one instance ever sits in the tray.",
-      f5T: "Visible startup", f5D: "Every step is shown clearly, with a friendly prompt when ready.",
-      f6T: "Auto-rollback on startup failure", f6D: "If startup fails, it automatically rolls back to the last known-good harness & plugin state.",
-      f7T: "Auto-rollback on update failure", f7D: "Snapshots taken before harness/plugin updates; failures are reverted and verified on restart.",
-      f8T: "Live logs", f8D: "Newest records stream in automatically; clear with one click.",
-      f9T: "Take your data anywhere", f9D: "Bundle sessions & plugins with one click and restore seamlessly on another machine.",
-      f10T: "Smart conflict handling", f10D: "Restore item by item with conflict prompts, auto-backing up existing content.",
-      f11T: "Config is data", f11D: "Config and data live under your user directory and migrate fully with the export bundle.",
-      f12T: "Cross-platform consistent", f12D: "Same UI and same data format on Windows and macOS.",
+      verLabel: "Version",
       notesTitle: "Getting Started",
       n1: "Download the zip for your platform and extract it anywhere",
       n2: "<b>Windows</b>: double-click <code>dsh-systray.exe</code> (choose “More info → Run anyway” if SmartScreen appears)",
-      n3: "<b>macOS</b>: first time <b>right-click → Open</b> <code>dsh-systray</code> to bypass Gatekeeper",
-      n4: "First launch takes about 2–5 min to deploy the environment, then opens the service automatically; config is stored in <code>config.json</code> under your user directory",
-      n5: "Migrating machines: use Export on the old machine to bundle a zip, then Import on the new one to restore sessions, plugins and folders item by item",
-      fTag: "dsh-systray · Desktop tray for DeepSeek Harness",
+      n3: "<b>macOS</b>: first time <b>right-click → Open</b> <code>dsh-systray</code>",
+      n4: "First launch takes about 2–5 min to deploy the environment, then opens the service automatically",
       fLinkRel: "Release Notes", fLinkSha: "SHA256 checksums", fLinkSrc: "Source ↗",
       prevAria: "Previous", nextAria: "Next", dotAria: "Slide %d",
-      carCap: ["General — autostart & service status at a glance", "About (top) — version & per-module update checks", "About (bottom) — manage installed plugins", "Logs — live view, clear with one click", "Export — sessions & plugins, one-click bundle", "Import — seamless migration, itemized restore"]
+      carCap: ["General", "About · version & updates", "About · installed plugins", "Logs", "Export", "Import"]
     }
   };
 

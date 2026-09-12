@@ -48,41 +48,39 @@ const I18N_EN = {
   splashStatus: "Preparing runtime environment…",
   splashCancel: "Cancel update",
   navGeneral: "General", navAbout: "About", navLogs: "Logs", navExport: "Export", navImport: "Import",
-  stAutoTitle: "Start at login", stAutoSub: "Start the background service and keep it in the tray after login",
-  stLangTitle: "Interface language", stLangSub: "Tray menu and native dialogs switch with it; “Follow system” picks the OS language",
+  stAutoTitle: "Start at login",
+  stLangTitle: "Interface language",
   langAuto: "Follow system (auto)",
   svcText: "Background service: starting…",
-  svcSubReady: "Open the Web UI once the service is ready",
   btnRestart: "Restart service", btnOpenWeb: "Open Web UI",
   stPortTitle: "Service port", stHarnessTitle: "Harness directory",
   btnChoose: "Choose…",
   stResetTitle: "Reset DeepSeek Harness",
-  stResetSub: "Stops the service and reinstalls Harness fresh from the selected official version (default: newest stable not newer than current; same-version reinstall allowed); sessions & plugins can be cleared optionally",
+  stResetSub: "Stops the service and reinstalls Harness fresh from the selected official version",
   btnReset: "Reset service",
-  abAppVerTitle: "dsh-systray version", abAppVerSub: "Desktop tray app",
-  abHarnessVerTitle: "DeepSeek Harness version", abHarnessVerSub: "Background service engine",
-  abPreTitle: "Enable prerelease channel", abPreSub: "alpha / beta / rc builds",
+  abAppVerTitle: "dsh-systray version",
+  abHarnessVerTitle: "DeepSeek Harness version",
+  abPreTitle: "Enable prerelease channel",
   btnCheckUpdate: "Check for updates",
   btnUpdateApp: "Update dsh-systray", btnUpdateHarness: "Update Harness",
-  abPluginsTitle: "Installed plugins", abPluginsSub: "Installed via dsh add · update/remove only registers a change; apply them together with a single service restart",
-  plugFilterPh: "Filter plugins (name / source / version)…",
-  plugEmpty: "No user plugins installed (install via dsh add in the Web UI)",
+  abPluginsTitle: "Installed plugins",
+  plugFilterPh: "Filter plugins…",
+  plugEmpty: "No plugins installed",
+  btnDiscardAllPending: "Undo all", btnApplyPending: "Apply now",
   btnRefresh: "Refresh", btnClear: "Clear",
   logPathCopyHint: "Click to copy the log file path",
   btnAddDir: "Add folders…", btnExport: "Export…",
-  expHintDefault: "0 items selected — click “Export…” to bundle a zip",
+  expHintDefault: "0 items selected",
   btnOpenDir: "Open export folder",
   impTitle: "Import dsh-systray export bundle",
-  impSub: "Pick a dsh-systray-export-*.zip to restore sessions, installed plugins or file folders.",
   btnAddZip: "Add archive…",
   btnCancelRestore: "Cancel restore",
   dlgConfirm: "Confirm", btnCancel: "Cancel", btnSkip: "Skip", btnOk: "OK",
   expModalTitle: "Exporting", expModalText: "Preparing export…", btnDone: "Done",
   rstTitle: "Reset DeepSeek Harness",
-  rstMsg: "Resetting stops the background service and clears the harness directory, then performs a fresh install of the chosen official version (the dropdown lists every published version: the current one is preselected for a same-version reinstall; picking a higher version upgrades, and prereleases may be incompatible with installed plugins). Cleared data cannot be recovered.",
+  rstMsg: "Stops the background service and clears the harness directory, then installs the selected version fresh. Checked data is erased and cannot be recovered.",
   rstTargetLabel: "Reset target version", rstLoading: "Querying available versions…",
   rstOptHarness: "Harness service <em>(required)</em>",
-  rstOptHarnessSub: "Freshly install the selected version (default: reinstall the current version; any lower or higher version selectable) and restart the service",
   rstOptSessions: "Sessions", rstOptPlugins: "Installed plugins",
   rstSessionsSub: "Will clear 0 sessions", rstPluginsSub: "Will clear 0 plugins",
   btnStartReset: "Start reset",
@@ -102,8 +100,8 @@ const I18N_DYN = {
   "正在准备导出…": "Preparing export…",
   "正在检查更新…": "Checking for updates…",
   "检查失败：{0}": "Check failed: {0}",
-  "发现新版本 {0}（当前 {1}）": "New version {0} available (current {1})",
-  "已是最新（当前 {0}）。{1}": "Up to date (current {0}). {1}",
+  "有新版本 {0}": "New version {0} available",
+  "已是最新（当前 {0}）": "Up to date (current {0})",
   "已是最新版本（{0}）": "Already on the latest version ({0})",
   "后台服务：运行中": "Background service: running",
   "后台服务：启动中": "Background service: starting",
@@ -112,8 +110,6 @@ const I18N_DYN = {
   "请查看日志": "See logs",
   "已复制": "Copied",
   "复制失败": "Copy failed",
-  "服务就绪，可打开 Web UI": "Service ready — open the Web UI",
-  "服务就绪后可打开 Web UI": "Open the Web UI once the service is ready",
   "重启失败，请查看日志": "Restart failed — see logs",
   "端口已修改为 {0}，当前服务仍运行于 {1}——重启后台服务后生效。": "Port changed to {0}, but the service still runs on {1} — effective after restarting the service.",
   "注意：所选为预发布版本，可能与已安装插件不兼容；若重置后服务无法启动，请查看日志。": "Note: the selected build is a prerelease and may be incompatible with installed plugins; if the service fails to start after reset, check the logs.",
@@ -186,21 +182,20 @@ const I18N_DYN = {
   "所有历史会话": "All sessions",
   "已安装的插件": "Installed plugins",
   "需要打包的文件目录": "Folders to include",
-  "plugins.zip · 通过 dsh add 安装的插件": "plugins.zip · plugins installed via dsh add",
-  "files.zip · 恢复时选择解压位置": "files.zip · choose where to extract on restore",
+  "plugins.zip": "plugins.zip",
+  "files.zip": "files.zip",
   "移除": "Remove",
-  "已选 {0} 项，点击「导出…」打包为 zip{1}": "Selected {0} item(s) — click “Export…” to bundle a zip{1}",
+  "已选 {0} 项{1}": "Selected {0} item(s){1}",
   "（含 {0} 个目录）": " (incl. {0} folder(s))",
   "请至少勾选一项，或为「文件目录」添加目录": "Select at least one item, or add folders under “Folders to include”",
-  "选择 dsh-systray 导出压缩包后可恢复会话、插件或文件目录。": "Pick a dsh-systray export archive to restore sessions, plugins or file folders.",
   "无法恢复：{0}": "Cannot restore: {0}",
-  "服务正在启动校验，不可取消…（请等待确定结果）": "Service boot is being verified — cannot cancel yet… (wait for the result)",
+  "服务正在启动校验，不可取消…": "Service boot is being verified — cannot cancel yet…",
   "当前没有进行中的恢复任务": "No restore task in progress",
-  "已请求取消，正在回退到恢复前状态…（可稍后重新恢复）": "Cancel requested — rolling back to the pre-restore state… (you can restore again later)",
-  "解析成功：共 {0} 个可恢复项，可同时点击多个「恢复」逐项恢复。": "Parsed {0} restorable item(s) — you can click multiple “Restore” buttons.",
+  "已请求取消，正在回退到恢复前状态…": "Cancel requested — rolling back to the pre-restore state…",
+  "共 {0} 个可恢复项": "{0} restorable item(s)",
   "恢复": "Restore",
   "✓ 已完成": "✓ Restored",
-  "正在启动服务并校验插件兼容性…（启动校验过程不可取消，请稍候）": "Starting the service and verifying plugin compatibility… (cannot cancel during boot check, please wait)",
+  "正在启动服务并校验插件兼容性…": "Starting the service and verifying plugin compatibility…",
   "检查更新": "Check for updates",
   "更新": "Update",
   "更新…": "Update…",
@@ -218,12 +213,12 @@ const I18N_DYN = {
   "压缩包": "Archive",
   "未知来源": "Unknown source",
   "开启预发布通道？": "Enable prerelease channel?",
-  "开启后，harness 更新可能安装到不稳定的 alpha / beta / rc 预发布版，可能导致服务启动失败。确定开启吗？": "Enabling may make harness updates install unstable alpha / beta / rc builds and could break the service. Enable now?",
+  "预发布版可能不稳定，可能导致服务启动失败。确定开启吗？": "Prerelease builds may be unstable and could break the service. Enable now?",
   "确定开启": "Enable",
   "更新 dsh-systray？": "Update dsh-systray?",
-  "将下载并安装新版本并自动重启（当前为开发构建时无可用更新）。确认开始更新吗？": "A new version will be downloaded, installed and the app restarted (no updates in dev builds). Start now?",
+  "将下载并安装新版本并自动重启。确认开始更新吗？": "A new version will be downloaded, installed and the app restarted. Start now?",
   "更新 DeepSeek Harness？": "Update DeepSeek Harness?",
-  "将更新 DeepSeek Harness 到最新版本，更新期间服务会短暂重启，失败会自动回退。确认开始更新吗？": "DeepSeek Harness will be updated to the latest version; the service restarts briefly and failures auto-rollback. Start now?",
+  "更新期间服务会短暂重启，失败会自动回退。确认开始更新吗？": "The service restarts briefly and failures auto-rollback. Start now?",
   "尝试启用": "Try enabling",
 };
 function tr(s) { return (curLangCode() === "en" && I18N_DYN[s]) || s; }
@@ -380,9 +375,8 @@ async function refreshService() {
       failed: "后台服务：启动失败",
     };
     $("svc-text").textContent = tr(labels[state.svc.state] || state.svc.state);
-    $("svc-sub").textContent = state.svc.state === "failed"
-      ? (state.svc.reason || tr("请查看日志"))
-      : (state.svc.state === "running" ? tr("服务就绪，可打开 Web UI") : tr("服务就绪后可打开 Web UI"));
+    // 服务状态由标题行（圆点 + 文案）表达；副标题只承载失败原因等必要反馈，不再堆说明文字
+    $("svc-sub").textContent = state.svc.state === "failed" ? (state.svc.reason || tr("请查看日志")) : "";
     // 「打开 Web UI」仅在服务运行时可点（运行端口以实际状态为准）
     const owb = $("btn-open-webui");
     if (owb) owb.disabled = state.svc.state !== "running";
@@ -605,17 +599,13 @@ async function runModuleCheck(which) {
       hintEl.textContent = fmt("检查失败：{0}", m.error);
       return;
     }
+    // 检查结果只给结论（不再附详细说明），细节看下方版本号与日志
     if (m.hasUpdate) {
       hintEl.classList.add("ok");
-      hintEl.textContent = fmt("发现新版本 {0}（当前 {1}）", vtag(m.latest), vtag(m.current));
+      hintEl.textContent = fmt("有新版本 {0}", vtag(m.latest));
       upBtn.classList.remove("hidden");
-    } else if (m.note) {
-      // 非网络失败的说明（如：仓库仅预发布而通道未开）——不再误报“无法获取”
-      hintEl.textContent = m.current
-        ? fmt("已是最新（当前 {0}）。{1}", vtag(m.current), m.note)
-        : m.note;
     } else {
-      hintEl.textContent = fmt("已是最新版本（{0}）", vtag(m.current || m.latest));
+      hintEl.textContent = fmt("已是最新（当前 {0}）", vtag(m.current || m.latest) || "—");
     }
   } catch (e) {
     if (myTok !== tok[which]) return;
@@ -643,7 +633,7 @@ function wireAbout() {
     if (on) {
       const ok = await confirmDialog(
         "开启预发布通道？",
-        "开启后，harness 更新可能安装到不稳定的 alpha / beta / rc 预发布版，可能导致服务启动失败。确定开启吗？",
+        "预发布版可能不稳定，可能导致服务启动失败。确定开启吗？",
         "确定开启"
       );
       if (!ok) return;
@@ -665,7 +655,7 @@ function wireAbout() {
   $("btn-systray-update").addEventListener("click", async () => {
     const ok = await confirmDialog(
       "更新 dsh-systray？",
-      "将下载并安装新版本并自动重启（当前为开发构建时无可用更新）。确认开始更新吗？",
+      "将下载并安装新版本并自动重启。确认开始更新吗？",
       "开始更新"
     );
     if (!ok) return;
@@ -677,7 +667,7 @@ function wireAbout() {
   $("btn-harness-update").addEventListener("click", async () => {
     const ok = await confirmDialog(
       "更新 DeepSeek Harness？",
-      "将更新 DeepSeek Harness 到最新版本，更新期间服务会短暂重启，失败会自动回退。确认开始更新吗？",
+      "更新期间服务会短暂重启，失败会自动回退。确认开始更新吗？",
       "开始更新"
     );
     if (!ok) return;
@@ -809,7 +799,7 @@ function renderPlugins() {
   count.textContent = total ? (shown.length + " / " + total + (curLangCode() === "en" ? "" : " 个")) : "";
   empty.textContent = total
     ? (shown.length ? "" : fmt("没有匹配“{0}”的插件", state.plugFilter))
-    : (curLangCode() === "en" ? I18N_EN.plugEmpty : "未安装任何用户插件（在 Web UI 中通过 dsh add 安装）");
+    : (curLangCode() === "en" ? I18N_EN.plugEmpty : "未安装任何插件");
   empty.classList.toggle("hidden", shown.length > 0);
   list.textContent = "";
   const frag = document.createDocumentFragment();
@@ -1192,8 +1182,8 @@ function setLogFile(name) {
     try {
       const files = await a.GetLogFiles();
       const f = files && files[0];
-      if (f && !f.exists) showLogHint("日志文件尚未创建（应用正常启动后会自动创建并写入此文件）");
-      else if (f && f.size === 0) showLogHint("日志文件已创建但暂无内容（应用运行中的行为会写入此文件）");
+      if (f && !f.exists) showLogHint("日志文件尚未创建");
+      else if (f && f.size === 0) showLogHint("日志文件暂无内容");
     } catch (e) { console.error("GetLogFiles", e); }
   })();
   pollLog();
@@ -1262,8 +1252,8 @@ function renderExportRows() {
   wrap.innerHTML = "";
   const opts = [
     { kind: "sessions", label: "所有历史会话", sub: "sessions.zip · ~/.dsh/sessions" },
-    { kind: "plugins", label: "已安装的插件", sub: "plugins.zip · 通过 dsh add 安装的插件" },
-    { kind: "files", label: "需要打包的文件目录", sub: "files.zip · 恢复时选择解压位置" },
+    { kind: "plugins", label: "已安装的插件", sub: "plugins.zip" },
+    { kind: "files", label: "需要打包的文件目录", sub: "files.zip" },
   ];
   for (const o of opts) {
     const div = document.createElement("div");
@@ -1305,7 +1295,7 @@ function renderExportRows() {
 function updateExportHint() {
   const n = Object.values(state.expSelected).filter(Boolean).length;
   $("exp-hint").textContent = n > 0
-    ? fmt("已选 {0} 项，点击「导出…」打包为 zip{1}", n, state.expDirs.length ? fmt("（含 {0} 个目录）", state.expDirs.length) : "")
+    ? fmt("已选 {0} 项{1}", n, state.expDirs.length ? fmt("（含 {0} 个目录）", state.expDirs.length) : "")
     : tr("请至少勾选一项，或为「文件目录」添加目录");
 }
 
@@ -1447,7 +1437,7 @@ function syncImpHealUI(on) {
     syncImpRow(k);
   });
   if (on) {
-    impRowText("plugins", "正在启动服务并校验插件兼容性…（启动校验过程不可取消，请稍候）", "");
+    impRowText("plugins", "正在启动服务并校验插件兼容性…", "");
   }
 }
 
@@ -1455,10 +1445,10 @@ function renderImportRows() {
   const wrap = $("imp-rows");
   wrap.innerHTML = "";
   if (!state.impItems.length) {
-    setImpHint(tr("选择 dsh-systray 导出压缩包后可恢复会话、插件或文件目录。"), false);
+    setImpHint("", false);
     return;
   }
-  setImpHint(fmt("解析成功：共 {0} 个可恢复项，可同时点击多个「恢复」逐项恢复。", state.impItems.length), false);
+  setImpHint(fmt("共 {0} 个可恢复项", state.impItems.length), false);
   for (const it of state.impItems) {
     const div = document.createElement("div");
     div.className = "imp-item";
@@ -1533,7 +1523,7 @@ async function impCancel(kind) {
   } catch (e) { /* 忽略 */ }
   if (state.impHealAll || r === "healing") {
     syncImpHealUI(true);
-    impRowText(kind, tr("服务正在启动校验，不可取消…（请等待确定结果）"), "muted");
+    impRowText(kind, tr("服务正在启动校验，不可取消…"), "muted");
     return;
   }
   if (r !== "ok") {
@@ -1545,7 +1535,7 @@ async function impCancel(kind) {
   impRowBusy(kind, false, "", 0);
   const st = impSt(kind);
   st.pending = true;
-  impRowText(kind, tr("已请求取消，正在回退到恢复前状态…（可稍后重新恢复）"), "muted");
+  impRowText(kind, tr("已请求取消，正在回退到恢复前状态…"), "muted");
   armImpWatch(kind, 90000);
 }
 

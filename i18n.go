@@ -131,10 +131,10 @@ var i18nEnMap = map[string]string{
 
 	// 待应用插件变更（登记 → 应用）：窗口关闭/隐藏前的确认与相关提示
 	"立即应用并重启": "Apply & restart now",
-	"有 %d 项插件变更尚未应用（更新/删除需要重启后台服务才能生效）。\n是否现在应用并重启服务？":
-	"%d plugin change(s) are not applied yet (updates/removals need a service restart to take effect).\nApply them now and restart the service?",
-	"有 %d 项插件变更尚未应用（更新/删除需要重启后台服务才能生效）。是否现在应用并重启服务？":
-	"%d plugin change(s) are not applied yet (updates/removals need a service restart to take effect). Apply them now and restart the service?",
+	"有 %d 项插件变更尚未应用。\n是否现在应用并重启服务？":
+	"%d plugin change(s) are not applied yet.\nApply them now and restart the service?",
+	"有 %d 项插件变更尚未应用。是否现在应用并重启服务？":
+	"%d plugin change(s) are not applied yet. Apply them now and restart the service?",
 	"正在应用已登记的插件变更，请等待完成后再操作。": "Pending plugin changes are being applied — please wait for it to finish.",
 	"插件已不存在（可能已被删除或移除），本项已跳过": "The plugin no longer exists (it may have been removed) — this change was skipped",
 }

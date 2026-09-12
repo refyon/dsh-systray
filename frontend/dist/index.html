@@ -40,7 +40,6 @@
           <div class="card-row">
             <div class="row-text">
               <div class="row-title" data-i18n="stAutoTitle">开机自启动</div>
-              <div class="row-sub" data-i18n="stAutoSub">登录后自动启动后台服务并常驻托盘</div>
             </div>
             <button id="sw-autostart" class="switch" role="switch" aria-checked="false" aria-label="开机自启动"></button>
           </div>
@@ -49,7 +48,6 @@
           <div class="card-row">
             <div class="row-text">
               <div class="row-title" data-i18n="stLangTitle">界面语言</div>
-              <div class="row-sub" data-i18n="stLangSub">托盘菜单与原生弹窗随之切换；跟随系统按当前系统语言自动选择</div>
             </div>
             <select id="sel-lang" class="input-select" aria-label="界面语言">
               <option value="auto" data-i18n="langAuto">跟随系统（自动检测）</option>
@@ -65,7 +63,7 @@
                 <span id="svc-dot" class="dot dot-starting"></span>
                 <span id="svc-text" data-i18n="svcText">后台服务：启动中</span>
               </div>
-              <div id="svc-sub" class="row-sub" data-i18n="svcSubReady">服务就绪后可打开 Web UI</div>
+              <div id="svc-sub" class="row-sub"></div>
             </div>
             <div class="btn-group">
               <button id="btn-restart" class="btn btn-primary" data-i18n="btnRestart">重启后台服务</button>
@@ -94,7 +92,7 @@
           <div class="card-row">
             <div class="row-text">
               <div class="row-title" data-i18n="stResetTitle">重置 DeepSeek Harness</div>
-              <div class="row-sub" data-i18n="stResetSub">停止服务并按所选官方版本全新重装 Harness（默认不高于当前版本的最新稳定版，可选当前版本重装），可勾选清除会话与插件</div>
+              <div class="row-sub" data-i18n="stResetSub">停止服务并按所选官方版本全新重装 Harness</div>
             </div>
             <button id="btn-reset-harness" class="btn btn-danger" data-i18n="btnReset">重置服务</button>
           </div>
@@ -107,7 +105,6 @@
           <div class="card-row">
             <div class="row-text">
               <div class="row-title" data-i18n="abAppVerTitle">dsh-systray 版本号</div>
-              <div class="row-sub" data-i18n="abAppVerSub">桌面托盘设置程序</div>
             </div>
             <strong class="ver-lg" id="ver-app">—</strong>
           </div>
@@ -122,14 +119,12 @@
           <div class="card-row">
             <div class="row-text">
               <div class="row-title" data-i18n="abHarnessVerTitle">DeepSeek Harness 版本号</div>
-              <div class="row-sub" data-i18n="abHarnessVerSub">后台服务引擎</div>
             </div>
             <strong class="ver-lg" id="ver-harness">—</strong>
           </div>
           <div class="card-row">
             <div class="row-text">
               <div class="row-title" data-i18n="abPreTitle">开启预发布通道</div>
-              <div class="row-sub" data-i18n="abPreSub">alpha / beta / rc 预发布版</div>
             </div>
             <button id="sw-prerelease" class="switch" role="switch" aria-checked="false" aria-label="预发布通道"></button>
           </div>
@@ -144,7 +139,6 @@
           <div class="card-row">
             <div class="row-text">
               <div class="row-title" data-i18n="abPluginsTitle">已安装插件</div>
-              <div class="row-sub" data-i18n="abPluginsSub">通过 dsh add 安装 · 点击更新/删除只登记变更，可一次应用并只重启一次服务</div>
             </div>
             <span id="plug-count" class="plug-count"></span>
           </div>
@@ -159,10 +153,10 @@
             </div>
           </div>
           <div class="plug-filter-row">
-            <input id="plug-filter" class="plug-filter" type="search" placeholder="过滤插件（名称 / 来源 / 版本）…" aria-label="过滤插件" autocomplete="off" data-i18n-ph="plugFilterPh" />
+            <input id="plug-filter" class="plug-filter" type="search" placeholder="过滤插件…" aria-label="过滤插件" autocomplete="off" data-i18n-ph="plugFilterPh" />
           </div>
           <div id="plug-list" class="plug-list"></div>
-          <div id="plug-empty" class="plug-empty row-sub hidden" data-i18n="plugEmpty">未安装任何用户插件（在 Web UI 中通过 dsh add 安装）</div>
+          <div id="plug-empty" class="plug-empty row-sub hidden" data-i18n="plugEmpty">未安装任何插件</div>
         </div>
       </section>
 
@@ -188,7 +182,7 @@
           <button id="btn-export" class="btn btn-primary" data-i18n="btnExport">导出…</button>
         </div>
         <div class="exp-result">
-          <div id="exp-hint" class="row-sub" data-i18n="expHintDefault">已选 0 项，点击「导出…」打包为 zip</div>
+          <div id="exp-hint" class="row-sub" data-i18n="expHintDefault">已选 0 项</div>
           <button id="exp-open" class="btn btn-ghost hidden" data-i18n="btnOpenDir">打开导出目录</button>
         </div>
       </section>
@@ -198,7 +192,6 @@
         <div class="card imp-intro">
           <div class="imp-intro-main">
             <div class="row-title" data-i18n="impTitle">导入 dsh-systray 导出包</div>
-            <div class="row-sub" data-i18n="impSub">选择 dsh-systray-export-*.zip 压缩包，可恢复历史会话、已安装插件或文件目录。</div>
             <div id="imp-path" class="row-sub row-sub-path imp-path hidden"></div>
           </div>
           <button id="btn-import-pick" class="btn btn-primary btn-sm" data-i18n="btnAddZip">添加压缩包…</button>
@@ -248,7 +241,7 @@
     <div class="modal-mask"></div>
     <div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="reset-title">
       <div class="modal-title" id="reset-title" data-i18n="rstTitle">重置 DeepSeek Harness</div>
-      <div class="modal-msg" data-i18n="rstMsg">重置会停止后台服务并清空 harness 目录，然后全新安装所选官方版本（下拉列出全部已发布版本：默认选中当前版本进行同版本重装；选择更高版本为升级重装，预发布版本可能不兼容已装插件）。被清除的数据不可恢复。</div>
+      <div class="modal-msg" data-i18n="rstMsg">将停止后台服务并清空 harness 目录，然后全新安装所选版本。勾选的数据将被清除且不可恢复。</div>
       <div class="reset-target">
         <div class="reset-target-head">
           <label for="reset-target" class="reset-target-label" data-i18n="rstTargetLabel">重置目标版本</label>
@@ -264,7 +257,6 @@
           <input type="checkbox" id="reset-c-harness" checked disabled>
           <span class="reset-opt-main">
             <span class="reset-opt-title" data-i18n="rstOptHarness">Harness 服务 <em>（必选）</em></span>
-            <span class="row-sub" data-i18n="rstOptHarnessSub">全新安装下拉选择的版本（默认当前版本同版本重装，可任选更低或更高版本）并重启服务</span>
           </span>
         </label>
         <label class="reset-opt">

@@ -67,9 +67,8 @@ def main():
     canvas.alpha_composite(base, (pad, pad))
 
     # ---------- 前景窗口：与真实 APP「安装/更新 harness」splash 视图一致的进度特写 ----------
-    # 真实结构：白卡 + 标题「DeepSeek Harness」+ 状态「正在安装 DeepSeek Harness 依赖…」
-    #          + 副文案「首次运行自动部署环境…」+ 进度条（首次安装/依赖安装无取消按钮）。
-    fw, fh = 400, 152
+    # 真实结构：白卡 + 标题「DeepSeek Harness」+ 状态「正在安装 DeepSeek Harness 依赖…」+ 进度条
+    fw, fh = 400, 124
     fx, fy = canvas_w - fw - pad + 10, pad + H - fh + 60
     fg = Image.new("RGBA", (fw, fh), (0, 0, 0, 0))
     fd = ImageDraw.Draw(fg)
@@ -79,15 +78,12 @@ def main():
     canvas.alpha_composite(fg_shadow, (fx - fspad, fy - fspad))
 
     # 标题（居中，同 splash-card：bold）
-    fd.text((fw // 2, 24), "DeepSeek Harness", font=font(FONT_BOLD, 14), fill=(15, 23, 42, 255), anchor="mm")
+    fd.text((fw // 2, 30), "DeepSeek Harness", font=font(FONT_BOLD, 14), fill=(15, 23, 42, 255), anchor="mm")
     # 状态文本（同真实安装文案，居中、灰）
-    fd.text((fw // 2, 50), "正在安装 DeepSeek Harness 依赖…",
+    fd.text((fw // 2, 58), "正在安装 DeepSeek Harness 依赖…",
             font=font(FONT, 13), fill=(100, 116, 139, 255), anchor="mm")
-    # 副文案：首次运行说明（更浅灰、更小）
-    fd.text((fw // 2, 72), "首次运行 · 自动部署环境（约需 2-5 分钟）",
-            font=font(FONT, 10), fill=(148, 163, 184, 255), anchor="mm")
     # 进度条（轨道 + 品牌蓝填充，居中）
-    track_x, track_y, track_w, track_h = (fw - 260) // 2, 96, 260, 7
+    track_x, track_y, track_w, track_h = (fw - 260) // 2, 88, 260, 7
     fd.rounded_rectangle([track_x, track_y, track_x + track_w, track_y + track_h], radius=4, fill=(241, 245, 249, 255))
     fill_w = int(track_w * 0.68)
     fd.rounded_rectangle([track_x, track_y, track_x + fill_w, track_y + track_h], radius=4, fill=(37, 99, 235, 255))
