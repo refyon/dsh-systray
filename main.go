@@ -109,7 +109,7 @@ type appConfig struct {
 	HarnessPrerelease bool `json:"harnessPrerelease"`
 	// Language 界面语言偏好：auto（跟随系统）| zh | en；缺省 auto。运行时解析见 i18n.go。
 	Language string `json:"language"`
-	// PendingPluginOps 待应用的插件变更（更新/删除）：点击后只登记，等用户在关闭设置窗口时
+	// PendingPluginOps 待应用的插件变更（更新/删除/启用）：点击后只登记，等用户在关闭设置窗口时
 	// 确认、或在关于页点「立即应用」才执行（整批一次重启）。跨托盘重启保留，见 plugin_batch.go。
 	PendingPluginOps []pendingPluginOp `json:"pendingPluginOps,omitempty"`
 }

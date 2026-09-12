@@ -2,7 +2,7 @@ package main
 
 // ==================== 插件操作批处理队列 ====================
 // 背景：单次插件更新/删除的耗时大头是固定开销——停服 → pnpm → 重启 → 健康校验（≥10s 窗口）。
-// 连续操作多个插件时这段开销被逐次重复。本队列把「连续点击的多个插件更新/删除」并入一批：
+// 连续操作多个插件时这段开销被逐次重复。本队列把「连续点击的多个插件更新/删除/启用」并入一批：
 //   - 包操作阶段：整批只停一次服务，逐项「快照 → 消毒 → pnpm → 结果校验」；单项失败只回退
 //     该项快照（其余继续），不发弹窗、不重启；
 //   - 收尾阶段：整批一次启动 + 健康校验。校验失败才走自愈（禁用启动日志点名的嫌疑插件 →
@@ -16,6 +16,9 @@ package main
 //   - 更新前处于「已禁用」的插件：更新成功后先解除禁用（加回 bundles），由批末那次启动校验一并
 //     判定——仍不兼容时 disableBootSuspects 会重新禁用它（等价于单插件路径的「启用失败自动重新
 //     禁用」），不额外增加重启次数；
+//   - 「启用」（op=enable）：只做 profile 声明编辑（清禁用记录 + 加回激活清单），无 pnpm、无
+//     版本校验，但**不标 recordOnly**——必须参与批末那一次启动校验，才能做到「统一处理完后只
+//     重启一次」，并与单插件路径的「启用失败自动重新禁用」等价；
 //   - 启动失败归因不再区分「嫌疑是否含本次目标插件」：批内可能同时改了多个插件，统一按
 //     「点名嫌疑 → 全部用户插件」两级自愈，两级都不奏效才整批回退。
 
@@ -45,6 +48,7 @@ type pluginOpTask struct {
 	target      string // update：本次安装的目标版本（检查结果）
 	newVer      string // update：安装后的实际版本
 	recordOnly  bool   // 只改记录（待重指定 / 无依赖声明的自动禁用行）：不停服、不做包操作
+	pkgOnly     bool   // 启用：只改 profile 声明（快照仅备份 package.json，不搬 node_modules、无 pnpm）
 	wasDisabled bool   // update 前处于禁用态：成功后解除禁用，交批末校验判定
 
 	// risk 删除登记时检测到的会话数据风险（该插件往会话日志写入的自定义事件；nil=无风险）。
@@ -229,7 +233,7 @@ func pendingDropNames(list []*pluginOpTask, names []string) (kept []*pluginOpTas
 	for _, n := range names {
 		set[n] = true
 	}
-	verbOf := map[string]string{"update": "（更新）", "remove": "（删除）"}
+	verbOf := map[string]string{"update": "（更新）", "remove": "（删除）", "enable": "（启用）"}
 	for _, t := range list {
 		if set[t.name] {
 			dropped = append(dropped, t.name+verbOf[t.op])
@@ -274,7 +278,7 @@ func pluginOpStage(id, op string) (bool, string) {
 	if op == "remove" {
 		t.risk = checkPluginRemovalRisk(t.name)
 	}
-	verb := map[string]string{"update": "更新", "remove": "删除"}[op]
+	verb := map[string]string{"update": "更新", "remove": "删除", "enable": "启用"}[op]
 
 	pluginQMu.Lock()
 	pluginPending, _ = pendingUpsertTask(pluginPending, t)
@@ -400,6 +404,16 @@ func pluginOpPrepare(row PluginRow, op string) (*pluginOpTask, string) {
 		}
 	case "remove":
 		t.recordOnly = row.PendingLocal || row.GhostDisabled
+	case "enable":
+		// 只接受「已禁用且仍有依赖声明」的行：无依赖的自动禁用记录（ghost）没有可加回的声明，
+		// 启用是空操作，应直接删除记录；未禁用的行没有可做的事。
+		switch {
+		case row.GhostDisabled:
+			return nil, "「" + row.Name + "」没有依赖声明（自动禁用记录），请直接删除该记录。"
+		case !row.Disabled:
+			return nil, "「" + row.Name + "」当前未处于禁用状态。"
+		}
+		t.pkgOnly = true
 	default:
 		return nil, "未知操作：" + op
 	}
@@ -512,6 +526,8 @@ func runPluginPackagePhase(t *pluginOpTask, splash *SplashState, idx int) {
 		runPluginUpdatePhase(t, splash, idx)
 	case "remove":
 		runPluginRemovePhase(t, splash, idx)
+	case "enable":
+		runPluginEnablePhase(t, splash, idx)
 	}
 }
 
@@ -670,10 +686,59 @@ func runPluginPnpmWithAgeRetry(splash *SplashState, dirs []string, args []string
 	return perr, retried
 }
 
+// runPluginEnablePhase 启用单项：逐目录「轻量快照（仅声明文件）→ 清禁用记录 + 加回激活清单」。
+// 无 pnpm、无版本校验——能否真正加载由批末那一次启动校验统一判定（失败时既有两级自愈会重新
+// 禁用它，等价单插件路径的「启用失败自动重新禁用」，且不额外增加重启次数）。
+func runPluginEnablePhase(t *pluginOpTask, splash *SplashState, idx int) {
+	row := t.row
+	for i, dir := range row.Locs {
+		splash.Update(fmt.Sprintf("正在启用 %s（第 %d 项 · %d/%d 个环境）…",
+			row.Name, idx, i+1, len(row.Locs)), 0.5)
+		snapshotProfilePkgOnly(dir, t.snap)
+		if err := enablePluginInProfile(dir, row.Name); err != nil {
+			restorePluginTaskSnapshot(t)
+			t.fail("写回启用状态失败：" + err.Error())
+			return
+		}
+	}
+	t.ok = true
+	logUI("插件包操作完成", fmt.Sprintf("已启用 %s", row.Name))
+}
+
+// snapshotProfilePkgOnly 只备份 profile 的声明文件（package.json / pnpm-lock.yaml），不搬
+// node_modules——供「只改声明」的操作（启用）使用；回退见 restoreProfilePkgOnlySnapshot。
+func snapshotProfilePkgOnly(dir, suffix string) {
+	for _, name := range []string{"package.json", "pnpm-lock.yaml"} {
+		src := filepath.Join(dir, name)
+		if data, err := os.ReadFile(src); err == nil {
+			_ = os.WriteFile(src+suffix, data, 0o644)
+		}
+	}
+}
+
+// restoreProfilePkgOnlySnapshot 写回 snapshotProfilePkgOnly 的声明备份（不动 node_modules、
+// 不做 pnpm install；无备份时无操作）。
+func restoreProfilePkgOnlySnapshot(dir, suffix string) {
+	for _, name := range []string{"package.json", "pnpm-lock.yaml"} {
+		bak := filepath.Join(dir, name+suffix)
+		if data, err := os.ReadFile(bak); err == nil {
+			_ = os.WriteFile(filepath.Join(dir, name), data, 0o644)
+		}
+	}
+}
+
 // restorePluginTaskSnapshot 回退单项的包操作（不发弹窗、不重启——重启由批末统一进行）。
 // 尚未快照（失败发生在快照之前）时无可回退，直接返回——否则会走「无 node_modules 备份」
 // 分支对 profile 空跑一次 pnpm install。
 func restorePluginTaskSnapshot(t *pluginOpTask) {
+	// 启用（pkgOnly）只动过声明文件：逐目录写回快照即可；依赖与锁文件从未改动，不能走
+	// 「无 node_modules 备份 → pnpm install」兜底（重装纯属引入网络风险）。
+	if t.pkgOnly {
+		for _, dir := range t.locs {
+			restoreProfilePkgOnlySnapshot(dir, t.snap)
+		}
+		return
+	}
 	if len(t.hadNM) == 0 {
 		return
 	}
@@ -752,7 +817,9 @@ func finishPluginBatch(tasks []*pluginOpTask, splash *SplashState, paused bool) 
 		for _, dir := range t.locs {
 			cleanupPluginProfileSnapshotSuffix(dir, t.snap)
 			switch t.op {
-			case "update":
+			case "update", "enable":
+				// 声明变更（更新 / 启用）成功即提升 LKG：否则下次冷启动失败回退时会拼出
+				// 旧 LKG 与当前禁用态不一致的组合（启用成功但回退后又被禁用）。
 				if t.ok {
 					promoteProfileLkg(dir)
 				}
@@ -855,6 +922,15 @@ func emitPluginBatchResults(tasks []*pluginOpTask, scopeNote string) {
 			}
 			lines = append(lines, "· "+t.name+" "+label)
 			emitPluginOpDone(PluginOpDone{Name: t.name, Op: "remove", OK: true})
+		case t.ok && t.op == "enable":
+			// 启用本身成功，但若批末校验失败、自愈已把它重新禁用，则如实报告（避免「已启用」
+			// 与横幅里「已自动禁用」自相矛盾）。
+			label := "已启用"
+			if disabled, _ := pluginDisabledAcross(t.locs, t.name); disabled {
+				label = "启用后仍不兼容，已自动重新禁用"
+			}
+			lines = append(lines, "· "+t.name+" "+label)
+			emitPluginOpDone(PluginOpDone{Name: t.name, Op: "enable", OK: true})
 		case t.ok:
 			lines = append(lines, "· "+t.name+" 已完成")
 		default:

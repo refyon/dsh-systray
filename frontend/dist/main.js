@@ -138,8 +138,8 @@ const I18N_DYN = {
   "立即应用": "Apply now",
   "全部撤销": "Undo all",
   "撤销全部待应用变更？": "Undo all pending changes?",
-  "将撤销 {0} 项尚未生效的变更（更新/删除），已安装的插件不受影响。确认撤销吗？":
-    "This undoes {0} pending change(s) (updates/removals). Installed plugins are not affected. Undo them all?",
+  "将撤销 {0} 项尚未生效的变更（更新/删除/启用），已安装的插件不受影响。确认撤销吗？":
+    "This undoes {0} pending change(s) (updates/removals/enables). Installed plugins are not affected. Undo them all?",
   "有 {0} 项变更尚未生效（{1}）": "{0} change(s) not applied yet ({1})",
   "{0} 项更新": "{0} update(s)",
   "{0} 项删除": "{0} removal(s)",
@@ -156,18 +156,21 @@ const I18N_DYN = {
     "Fixed {0} record(s); the plugin is still writing — {1} session(s) remain at risk",
   "已修复 {0} 个会话（{1} 条记录），删除后不再影响历史会话":
     "Fixed {0} session(s) ({1} record(s)) — removal no longer affects past sessions",
+  "{0} 项启用": "{0} enable(s)",
   "已登记：更新到 {0}（重启服务后生效）": "Registered: update to {0} (takes effect after the service restarts)",
   "已登记：删除该插件（重启服务后生效）": "Registered: remove this plugin (takes effect after the service restarts)",
   "已登记：移除「待重指定」记录": "Registered: drop the pending-respec record",
+  "已登记：启用该插件（重启服务后生效）": "Registered: enable this plugin (takes effect after the service restarts)",
   "（更新）": " (update)",
   "（删除）": " (remove)",
+  "（启用）": " (enable)",
   "删除该插件": "remove this plugin",
   "更新到最新版本": "update to the latest version",
+  "启用该插件": "enable this plugin",
   "重启服务后生效": "— takes effect after the service restarts",
   "有 {0} 项变更尚未生效：{1}{2}": "{0} change(s) not applied yet: {1}{2}",
   "等 {0} 项": " and {0} in total",
   "待应用：{0}（重启服务后生效）": "Pending: {0} (takes effect after the service restarts)",
-  "正在尝试启用插件…": "Trying to enable plugin…",
   "正在删除插件…": "Removing plugin…",
   "无法更新：{0}": "Update failed: {0}",
   "更新失败：{0}": "Update failed: {0}",
@@ -177,7 +180,6 @@ const I18N_DYN = {
   "确定": "OK",
   "更新并启用插件？": "Update and enable plugin?",
   "更新插件？": "Update plugin?",
-  "启用插件？": "Enable plugin?",
   "开始更新": "Start update",
   "开始重置": "Start reset",
   "覆盖更新本地插件？": "Overwrite-update local plugin?",
@@ -792,11 +794,13 @@ function renderPendingBanner() {
     text.textContent = "";
     return;
   }
-  const updates = items.filter((p) => p.op !== "remove").length;
-  const removes = items.length - updates;
+  const updates = items.filter((p) => p.op === "update").length;
+  const removes = items.filter((p) => p.op === "remove").length;
+  const enables = items.length - updates - removes;
   const parts = [];
   if (updates) parts.push(fmt("{0} 项更新", updates));
   if (removes) parts.push(fmt("{0} 项删除", removes));
+  if (enables) parts.push(fmt("{0} 项启用", enables));
   let line = fmt("有 {0} 项变更尚未生效（{1}）", items.length, parts.join(" · ")) + " " + tr("重启服务后生效");
   // 删除类变更若检测到会话数据风险，横幅只报数量（逐条警示与「修复会话」在下方插件行内）
   const risky = items.filter((p) => p.op === "remove" && p.risk && p.risk.sessions > 0).length;
@@ -906,11 +910,12 @@ function renderPluginRow(p, idx) {
   upBtn.disabled = !(p.canUpdate || p.source === "file");
   actions.appendChild(upBtn);
 
-  // 「启用」：仅禁用（不兼容自愈）行出现——尝试加回启用清单并重启；
-  // 若仍与当前版本不兼容，后端自动重新禁用并重启服务（保证服务可启动）。
+  // 「启用」：仅禁用（不兼容自愈）行出现——登记一条启用变更，与更新/删除共用一次服务重启；
+  // 若仍与当前版本不兼容，批末自愈会自动重新禁用（服务保持可用）。
   // 无依赖声明的「已自动禁用」行（ghostDisabled）不可直接启用，只提供删除。
+  let enBtn = null;
   if (p.disabled && !p.ghostDisabled) {
-    const enBtn = document.createElement("button");
+    enBtn = document.createElement("button");
     enBtn.className = "btn btn-outline btn-xs";
     enBtn.textContent = tr("启用");
     enBtn.dataset.enable = "";
@@ -926,11 +931,13 @@ function renderPluginRow(p, idx) {
   actions.appendChild(delBtn);
 
   // 待应用变更行：隐藏变更类按钮，只留「撤销」——变更已登记但未执行（需重启服务生效），
-  // 重复点击更新/删除会造成「已登记还想再登记」的困惑与并发登记。
+  // 重复点击更新/删除/启用会造成「已登记还想再登记」的困惑与并发登记。
   // 待删除且检测到会话数据风险时，另给「修复会话」入口（删除后这些历史会话会打不开）。
   const risk = p.pendingOp === "remove" ? p.pendingRisk : null;
   if (p.pendingOp) {
-    for (const b of [upBtn, delBtn]) b.classList.add("hidden");
+    const hide = [upBtn, delBtn];
+    if (enBtn) hide.push(enBtn);
+    for (const b of hide) b.classList.add("hidden");
     if (risk && risk.sessions > 0) {
       const fixBtn = document.createElement("button");
       fixBtn.className = "btn btn-outline btn-xs";
@@ -961,7 +968,8 @@ function renderPluginRow(p, idx) {
         risk.sessions, risk.events), "warn");
     } else {
       setNote(item, fmt("待应用：{0}（重启服务后生效）",
-        p.pendingOp === "remove" ? tr("删除该插件") : tr("更新到最新版本")), "muted");
+        p.pendingOp === "remove" ? tr("删除该插件")
+          : (p.pendingOp === "enable" ? tr("启用该插件") : tr("更新到最新版本"))), "muted");
     }
   } else if (p.disabled && !(st && st.note)) {
     // 禁用行默认原因行（无动态检查状态时显示）
@@ -1038,17 +1046,14 @@ function doPluginUpdate(p, item, upBtn) {
   bindings().StartPluginUpdate(p.name);
 }
 
-/** 手动启用被禁用的插件（尝试 → 失败自动重新禁用并重启，由 Go 弹窗提示结果）。 */
-async function doPluginEnable(p, item, enBtn) {
-  const ok = await confirmDialog(
-    "启用插件？",
-    "将把插件 " + p.name + " 加回启用清单并重启服务。\n\n若它仍与当前版本不兼容，将自动重新禁用并重启服务（服务保持可用）。确认尝试启用吗？",
-    "尝试启用"
-  );
-  if (!ok) return;
+/**
+ * 手动启用被禁用的插件：点击即登记为待应用变更（**不弹确认框**——登记不执行、可随时「撤销」，
+ * 与更新/删除共用同一个待应用区与一次服务重启；启用后仍不兼容时由批末自愈自动重新禁用）。
+ */
+function doPluginEnable(p, item, enBtn) {
   item.querySelectorAll("button").forEach((b) => { b.disabled = true; });
-  setNote(item, tr("正在尝试启用插件…"), "muted");
-  bindings().EnablePlugin(p.id); // 完成/失败由 Go 弹窗提示，随后 plugins:changed 刷新列表
+  setNote(item, tr("已登记：启用该插件（重启服务后生效）"), "muted");
+  bindings().EnablePlugin(p.id); // 结果由 Go 端 plugin:op:done / plugins:changed 刷新行状态
 }
 
 /** 本地插件更新：弹目录选择 → Go 端比较所选/当前版本 → 有差异确认后覆盖更新，相同提示已是最新。 */

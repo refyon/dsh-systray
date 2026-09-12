@@ -702,8 +702,8 @@ func askUpdateHarness(newVer, curVer string) bool {
 	return strings.Contains(out, updLabel)
 }
 
-// askApplyPendingPlugins 关闭/隐藏设置窗口前询问是否立即应用待应用的插件变更（更新/删除需要
-// 重启服务才生效）：true=立即应用并重启。
+// askApplyPendingPlugins 关闭/隐藏设置窗口前询问是否立即应用待应用的插件变更（更新/删除/启用
+// 需要重启服务才生效）：true=立即应用并重启。
 func askApplyPendingPlugins(n int) bool {
 	msg := TF("有 %d 项插件变更尚未应用。是否现在应用并重启服务？", n)
 	applyLabel := T("立即应用并重启")

@@ -229,3 +229,91 @@ func TestHarnessFamilyMismatches(t *testing.T) {
 		t.Fatalf("missing @deepseek-ai/dsh must be reported, got %v", bad)
 	}
 }
+
+// ==================== 启用并入批量操作 ====================
+
+// TestPluginOpPrepareEnable 启用登记校验：仅接受「已禁用且仍有依赖声明」的行——未禁用的行无事
+// 可做，无依赖声明的自动禁用记录（ghost）没有可加回的声明（应直接删除记录），二者都必须拒绝。
+func TestPluginOpPrepareEnable(t *testing.T) {
+	disabled := PluginRow{ID: "a", Name: "dsh-x", Source: "github", Disabled: true, Locs: []string{"C:/x"}}
+	task, why := pluginOpPrepare(disabled, "enable")
+	if why != "" || task == nil {
+		t.Fatalf("禁用行的启用应被受理，got task=%v why=%q", task, why)
+	}
+	if !task.pkgOnly || task.recordOnly {
+		t.Fatalf("启用必须 pkgOnly（只改声明）且非 recordOnly（需参与批末重启校验），got pkgOnly=%v recordOnly=%v",
+			task.pkgOnly, task.recordOnly)
+	}
+	enabled := PluginRow{ID: "b", Name: "dsh-y", Source: "github"}
+	if _, why = pluginOpPrepare(enabled, "enable"); why == "" {
+		t.Fatal("未禁用行的启用必须拒绝")
+	}
+	ghost := PluginRow{ID: "c", Name: "dsh-ghost", GhostDisabled: true, Disabled: true}
+	if _, why = pluginOpPrepare(ghost, "enable"); why == "" {
+		t.Fatal("无依赖声明的自动禁用记录必须拒绝启用（应直接删除记录）")
+	}
+}
+
+// TestPendingEnableOps 启用与更新/删除同一套「最后操作生效」：同操作幂等、换操作覆盖；
+// 导入恢复对账的作废文案带「（启用）」。
+func TestPendingEnableOps(t *testing.T) {
+	list, _ := pendingUpsertTask(nil, &pluginOpTask{id: "a", name: "dsh-x", op: "enable"})
+	list, replaced := pendingUpsertTask(list, &pluginOpTask{id: "a", name: "dsh-x", op: "enable"})
+	if len(list) != 1 || replaced {
+		t.Fatalf("重复登记启用应幂等，got len=%d replaced=%v", len(list), replaced)
+	}
+	// 先启用后更新：更新吸收启用意图（最后操作生效）
+	list, replaced = pendingUpsertTask(list, &pluginOpTask{id: "a", name: "dsh-x", op: "update"})
+	if len(list) != 1 || !replaced || list[0].op != "update" {
+		t.Fatalf("启用后登记更新应覆盖为 update，got len=%d replaced=%v op=%s", len(list), replaced, list[0].op)
+	}
+	kept, dropped := pendingDropNames([]*pluginOpTask{{id: "a", name: "dsh-x", op: "enable"}}, []string{"dsh-x"})
+	if len(kept) != 0 || len(dropped) != 1 || dropped[0] != "dsh-x（启用）" {
+		t.Fatalf("作废文案应含「（启用）」，got kept=%d dropped=%v", len(kept), dropped)
+	}
+}
+
+// TestPluginEnablePhaseAndRollback 启用阶段只改 profile 声明（清禁用记录 + 加回激活清单），
+// 不搬 node_modules、不发 pnpm；回退（pkgOnly）写回声明快照、node_modules 原样保留。
+func TestPluginEnablePhaseAndRollback(t *testing.T) {
+	dir := t.TempDir()
+	writePkgJSON(t, dir, `{"name":"web","dependencies":{"alpha":"^1.0.0"},
+	  "dsh":{"profile":{"bundles":[],"disabledPlugins":{"alpha":"启动日志存在加载错误"}}}}`)
+	writeFileUnder(t, filepath.Join(dir, "node_modules", "alpha", "package.json"), `{"name":"alpha","version":"1.0.0"}`)
+
+	row := PluginRow{ID: "alpha", Name: "alpha", Source: "github", Disabled: true, Locs: []string{dir}}
+	task, why := pluginOpPrepare(row, "enable")
+	if why != "" {
+		t.Fatalf("prepare: %s", why)
+	}
+	runPluginEnablePhase(task, &SplashState{Update: func(string, float64) {}}, 1)
+	if !task.ok {
+		t.Fatalf("启用阶段应成功，got ok=%v reason=%s", task.ok, task.reason)
+	}
+	f := readPkgFixture(t, dir)
+	if len(f.Dsh.Profile.DisabledPlugins) != 0 {
+		t.Fatalf("禁用记录未清除：%+v", f.Dsh.Profile.DisabledPlugins)
+	}
+	if len(f.Dsh.Profile.Bundles) != 1 || f.Dsh.Profile.Bundles[0] != "alpha" {
+		t.Fatalf("启用未加回激活清单：%+v", f.Dsh.Profile.Bundles)
+	}
+	// 只改声明：node_modules 必须原地未动（pkgOnly 快照不搬运目录）
+	if _, err := os.Stat(filepath.Join(dir, "node_modules", "alpha", "package.json")); err != nil {
+		t.Fatalf("node_modules 应原地保留：%v", err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "node_modules"+task.snap)); !os.IsNotExist(err) {
+		t.Fatal("pkgOnly 快照不应搬运 node_modules")
+	}
+	// 回退：写回声明快照 → 回到「禁用态」，node_modules 仍在
+	restorePluginTaskSnapshot(task)
+	f = readPkgFixture(t, dir)
+	if f.Dsh.Profile.DisabledPlugins["alpha"] != "启动日志存在加载错误" {
+		t.Fatalf("回退未恢复禁用记录：%+v", f.Dsh.Profile.DisabledPlugins)
+	}
+	if len(f.Dsh.Profile.Bundles) != 0 {
+		t.Fatalf("回退未恢复激活清单：%+v", f.Dsh.Profile.Bundles)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "node_modules", "alpha", "package.json")); err != nil {
+		t.Fatalf("回退不应动 node_modules：%v", err)
+	}
+}

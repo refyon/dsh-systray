@@ -657,44 +657,16 @@ func (a *App) ApplyLocalPluginUpdate(id, dir string) {
 	go runLocalPluginUpdate(row, dir)
 }
 
-// EnablePlugin 手动启用被禁用的插件（前端「启用」按钮）：
-// 清除禁用记录并加回 bundles → 重启健康校验；若启用后仍不兼容（启动日志点名该插件），
-// 自动重新禁用并重启服务——保证最终服务可启动。结果以弹窗提示。
+// EnablePlugin 登记一条「启用」的待应用变更（前端「启用」按钮）：被禁用的插件与更新、删除
+// 共用同一个待应用区，关闭设置窗口或点「立即应用」时整批执行（停一次服务、统一启动校验后
+// 只重启一次）。启用后仍不兼容时，批末自愈会自动重新禁用它——等价原立即路径的「启用失败
+// 自动重新禁用」，但不再与其它并发操作抢服务端口。
 func (a *App) EnablePlugin(id string) {
 	if shotMode {
 		return
 	}
-	row, ok := findPluginRowByID(id)
-	if !ok {
-		showMessageBox(T("未找到该插件，可能已被移除。"), appName)
-		return
-	}
-	if !row.Disabled {
-		return
-	}
-	logUI("启用插件", row.Name)
-	if appCtx != nil {
-		wruntime.WindowShow(appCtx)
-	}
-	go runPluginEnable(row)
-}
-
-// runPluginEnable 执行启用（见 enablePluginAndVerify）：失败自动重新禁用并重启，保证服务可启动。
-func runPluginEnable(row PluginRow) {
-	enabled, why := enablePluginAndVerify(row)
-	if enabled {
-		logUI("启用插件完成", row.Name)
-		showMessageBox(fmt.Sprintf("插件 %s 已启用，服务已重启。", row.Name), appName)
-		emitPluginOpDone(PluginOpDone{Name: row.Name, Op: "enable", OK: true, Version: row.Version})
-	} else {
-		logUI("启用插件失败，已自动重新禁用", fmt.Sprintf("%s：%s", row.Name, why))
-		showMessageBox(fmt.Sprintf("插件 %s 启用失败（仍与当前版本不兼容），已自动重新禁用并重启服务。\n原因：%s\n\n"+
-			"可先「检查更新」到兼容版本，或确认插件已修复后再尝试启用。", row.Name, why), appName)
-		emitPluginOpDone(PluginOpDone{Name: row.Name, Op: "enable", OK: false, Reason: why})
-	}
-	if appCtx != nil {
-		wruntime.EventsEmit(appCtx, "plugins:changed", nil)
-	}
+	logUI("登记插件启用（待应用）", id)
+	pluginOpStage(id, "enable")
 }
 
 // RemovePlugin 登记一条「删除」的待应用变更（前端确认后调用）：不立即执行，与更新共用同一个
