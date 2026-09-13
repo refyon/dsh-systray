@@ -61,7 +61,7 @@ dsh-systray 是一个 Windows / macOS 系统托盘应用，围绕三个核心特
 - **环境自检**：启动时检查 node / pnpm / harness，缺失时运行内置安装脚本（含 `git clone` 拉取 harness 源码）
 - **启动失败自动回退**：服务启动失败（进程异常退出 / 加载错误）时，自动回退到上次正常运行的 harness 与插件状态并重启
 - **更新双保险**：后台自动检查 GitHub Releases 新版本，窗口内展示下载进度并可取消；dsh-systray / DeepSeek Harness / 插件按模块独立检查更新，更新前自动快照、安装后健康校验，失败自动回退到上一可用版本
-- **私有仓库插件**：来自私有仓库的插件在检查更新时会引导 GitHub 设备流授权（浏览器内完成，一次性代码自动复制到剪贴板）；凭据由系统凭据库保存，dsh-systray 不落盘任何 token
+- **私有仓库插件**：来自私有仓库的插件在检查更新时引导 GitHub 设备流授权——弹窗确认后自动打开浏览器、**一次性授权码直接显示在进度窗口里**（同时写入剪贴板），授权完成自动重试检查；首次使用会自动下载 GitHub CLI 便携版并显示下载进度。凭据由系统凭据库保存，dsh-systray 不落盘任何 token，也不把 token 发给第三方镜像
 - **日志**：「日志」页实时跟踪 app.log / server.log，显示完整路径，自动跟随最新写入，支持一键清空
 
 ### 可迁移 —— 数据随身带，换机无缝恢复
@@ -117,8 +117,8 @@ dsh-systray 是一个 Windows / macOS 系统托盘应用，围绕三个核心特
 
 | 平台 | 构建命令 |
 | --- | --- |
-| Windows | `wails build -s -clean -platform windows/amd64 -ldflags "-X main.appVersion=v0.8.13"` |
-| macOS | `wails build -s -clean -platform darwin/universal -ldflags "-X main.appVersion=v0.8.13"` |
+| Windows | `wails build -s -clean -platform windows/amd64 -ldflags "-X main.appVersion=v0.9.0"` |
+| macOS | `wails build -s -clean -platform darwin/universal -ldflags "-X main.appVersion=v0.9.0"` |
 
 > - `-s`：跳过前端构建（直接内嵌 `frontend/dist`）；改动前端后无需其他步骤，直接重新 `wails build`
 > - `-X main.appVersion=` 注入当前版本号，供自动更新对比使用（GitHub Actions 打 tag 发布时自动注入；本地开发可省略，此时为 `dev`，跳过更新检查）

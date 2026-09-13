@@ -184,6 +184,10 @@ footer .sep{margin:0 8px;color:var(--border)}
             <div class="ico"><svg viewBox="0 0 24 24"><path d="M4 4h16a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2zm4 6l3 3-3 3m5 0h4"/></svg></div>
             <div><b data-i18n="f8T">日志实时跟随</b><span data-i18n="f8D">最新记录自动呈现，需要时一键清空。</span></div>
           </li>
+          <li>
+            <div class="ico"><svg viewBox="0 0 24 24"><path d="M7 11V7a5 5 0 0 1 10 0v4M5 11h14v10H5V11zm7 4v3"/></svg></div>
+            <div><b data-i18n="f13T">私有仓库插件</b><span data-i18n="f13D">来自私有仓库的插件，检查更新时引导 GitHub 设备流授权；一次性代码直接显示在进度窗口，凭据交给系统凭据库保存。</span></div>
+          </li>
         </ul>
       </div>
       <div class="fgroup" data-reveal>
@@ -253,6 +257,7 @@ footer .sep{margin:0 8px;color:var(--border)}
       f6T: "启动失败自动回退", f6D: "启动异常时自动回退到上次正常运行的 harness 与插件状态。",
       f7T: "更新失败自动回滚", f7D: "harness 与插件更新前自动快照，失败自动还原并重启校验。",
       f8T: "日志实时跟随", f8D: "最新记录自动呈现，需要时一键清空。",
+      f13T: "私有仓库插件", f13D: "来自私有仓库的插件，检查更新时引导 GitHub 设备流授权；一次性代码直接显示在进度窗口，凭据交给系统凭据库保存。",
       f9T: "数据随身带", f9D: "会话与插件一键打包，换台机器也能无缝恢复。",
       f10T: "冲突智能处理", f10D: "导入时逐项恢复、冲突询问，自动备份现有内容。",
       f11T: "配置即数据", f11D: "配置与数据都在用户目录，随导出包完整迁移。",
@@ -266,7 +271,7 @@ footer .sep{margin:0 8px;color:var(--border)}
       fTag: "dsh-systray · DeepSeek Harness 桌面托盘",
       fLinkRel: "更新日志", fLinkSha: "SHA256 校验和", fLinkSrc: "源码 ↗",
       prevAria: "上一张", nextAria: "下一张", dotAria: "第 %d 张",
-      carCap: ["常规 — 自启与服务状态，一眼掌握", "关于（上）— 版本与各模块检查更新", "关于（下）— 已安装插件逐个管理", "日志 — 实时跟随，随看随清", "导出 — 会话插件，一键打包", "导入 — 无缝迁移，逐项恢复"]
+      carCap: ["常规 — 自启与服务状态，一眼掌握", "关于（上）— 版本与各模块检查更新", "关于（下）— 已安装插件逐个管理", "日志 — 实时跟随，随看随清", "导出 — 会话插件，一键打包", "导入 — 无缝迁移，逐项恢复", "私有仓库插件 — 检查更新时的 GitHub 设备流授权"]
     },
     en: {
       title: "dsh-systray · Desktop tray, silent startup",
@@ -286,6 +291,7 @@ footer .sep{margin:0 8px;color:var(--border)}
       f6T: "Auto-rollback on startup failure", f6D: "If startup fails, it automatically rolls back to the last known-good harness & plugin state.",
       f7T: "Auto-rollback on update failure", f7D: "Snapshots taken before harness/plugin updates; failures are reverted and verified on restart.",
       f8T: "Live logs", f8D: "Newest records stream in automatically; clear with one click.",
+      f13T: "Private-repo plugins", f13D: "Plugins from private repositories guide you through GitHub device-flow auth on update checks; the one-time code is shown right in the progress window and credentials stay in the system store.",
       f9T: "Take your data anywhere", f9D: "Bundle sessions & plugins with one click and restore seamlessly on another machine.",
       f10T: "Smart conflict handling", f10D: "Restore item by item with conflict prompts, auto-backing up existing content.",
       f11T: "Config is data", f11D: "Config and data live under your user directory and migrate fully with the export bundle.",
@@ -299,7 +305,7 @@ footer .sep{margin:0 8px;color:var(--border)}
       fTag: "dsh-systray · Desktop tray for DeepSeek Harness",
       fLinkRel: "Release Notes", fLinkSha: "SHA256 checksums", fLinkSrc: "Source ↗",
       prevAria: "Previous", nextAria: "Next", dotAria: "Slide %d",
-      carCap: ["General — autostart & service status at a glance", "About (top) — version & per-module update checks", "About (bottom) — manage installed plugins", "Logs — live view, clear with one click", "Export — sessions & plugins, one-click bundle", "Import — seamless migration, itemized restore"]
+      carCap: ["General — autostart & service status at a glance", "About (top) — version & per-module update checks", "About (bottom) — manage installed plugins", "Logs — live view, clear with one click", "Export — sessions & plugins, one-click bundle", "Import — seamless migration, itemized restore", "Private-repo plugins — GitHub device-flow auth on update checks"]
     }
   };
 
@@ -370,14 +376,16 @@ footer .sep{margin:0 8px;color:var(--border)}
   }
 
   // ==================== 界面截图轮播 ====================
-  // 图片为 WebP 且按需加载；EN 页优先使用 docs/shots-en/（英文 UI 截图），文件缺失时回退中文截图。
+  // 图片按需加载；EN 页优先使用 docs/shots-en/（英文 UI 截图），文件缺失时回退中文截图。
+  // 末尾两张为「GitHub 授权确认」弹窗（私有仓库插件），由 scripts/capture_github_dialog.ps1 生成。
   var shots = [
     { en: 'shots-en/general.webp',     zh: 'shots/general.webp' },
     { en: 'shots-en/about-top.webp',   zh: 'shots/about-top.webp' },
     { en: 'shots-en/about-bottom.webp',zh: 'shots/about-bottom.webp' },
     { en: 'shots-en/logs.webp',        zh: 'shots/logs.webp' },
     { en: 'shots-en/export.webp',      zh: 'shots/export.webp' },
-    { en: 'shots-en/import.webp',      zh: 'shots/import.webp' }
+    { en: 'shots-en/import.webp',      zh: 'shots/import.webp' },
+    { en: 'shots-en/github-auth.png',  zh: 'shots/github-auth.png' }
   ];
   var carImg = document.getElementById('car-img');
   var carCap = document.getElementById('car-cap');

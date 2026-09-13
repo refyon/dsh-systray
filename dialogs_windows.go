@@ -65,7 +65,7 @@ const (
 	dlgPad    = 20
 	dlgW      = 380
 	dlgBtnH   = 30
-	dlgBtnW   = 80
+	dlgBtnW   = 96 // 固定按钮宽度：容纳「登录 GitHub」等较长主操作文案（14px/600 下约 90px）
 	dlgBtnGap = 16
 
 	dialogColorMsg   = 0x00857066 // #667085
@@ -264,6 +264,7 @@ var (
 	dialogGraySelBrush  uintptr
 	dialogMsgFont       uintptr
 	dialogBtnFont       uintptr
+	dialogBtnWidths     []int32 // 各按钮自适应宽度（createDialogWindow 使用）
 	dialogClassRegister bool
 )
 
@@ -539,6 +540,16 @@ func runModernDialog(caption, message string, buttons []string, primary int) int
 	dialogResult = -1
 	dialogMsgFont = makeSystemFont(16, 400)
 	dialogBtnFont = makeFont(14, 600)
+	// 按钮按文案自适应宽度（下限 dlgBtnW）：固定宽度会把「登录 GitHub」（约 90px）/
+	// 「Sign in to GitHub」（约 135px，英文更宽）截断——中英双语都要完整可见。
+	dialogBtnWidths = make([]int32, len(buttons))
+	for i, label := range buttons {
+		w := int32(measureTextWidth(label, dialogBtnFont)) + 32
+		if w < dlgBtnW {
+			w = dlgBtnW
+		}
+		dialogBtnWidths[i] = w
+	}
 
 	resultCh := make(chan int, 1)
 	go func() {
@@ -584,7 +595,7 @@ func createDialogWindow(caption, message string) uintptr {
 
 	// 宽度/高度均按文本自适应：短文本收窄，长文本按内容列宽换行
 	msgW := measureTextWidth(message, dialogMsgFont)
-	totalBtnW := len(buttonsW())*dlgBtnW + (len(buttonsW())-1)*dlgBtnGap
+	totalBtnW := buttonsTotalW()
 	innerW := int32(dlgW)
 	// 宽度头部余量，避免文本贴着控件边缘被强迫换行而裁切
 	needed := int32(msgW) + 28
@@ -654,13 +665,20 @@ func createDialogWindow(caption, message string) uintptr {
 	btnStartX := int32(dlgPad) + (innerW-int32(totalBtnW))/2
 	for i, label := range dialogLabels {
 		bt, _ := syscall.UTF16PtrFromString(label)
-		btnX := int32(btnStartX) + int32(i)*(dlgBtnW+dlgBtnGap)
+		bw := int32(dlgBtnW)
+		if i < len(dialogBtnWidths) {
+			bw = dialogBtnWidths[i]
+		}
+		btnX := int32(btnStartX)
+		for j := 0; j < i && j < len(dialogBtnWidths); j++ {
+			btnX += dialogBtnWidths[j] + dlgBtnGap
+		}
 		hb, _, _ := pCreateWindowExW.Call(
 			0,
 			uintptr(unsafe.Pointer(btnCls)),
 			uintptr(unsafe.Pointer(bt)),
 			wsChild|wsVisible|wsTabStop|bsOwnDraw,
-			uintptr(btnX), uintptr(btnY), uintptr(dlgBtnW), uintptr(dlgBtnH),
+			uintptr(btnX), uintptr(btnY), uintptr(bw), uintptr(dlgBtnH),
 			hwnd, uintptr(1000+i), moduleHandle(), 0,
 		)
 		if hb != 0 {
@@ -682,4 +700,18 @@ func buttonsW() []string {
 		return []string{"确定"}
 	}
 	return dialogLabels
+}
+
+// buttonsTotalW 各按钮宽度之和（含间距）：按钮按文案自适应，弹窗宽度据此下限。
+func buttonsTotalW() int {
+	labels := buttonsW()
+	total := 0
+	for i := range labels {
+		w := int(dlgBtnW)
+		if i < len(dialogBtnWidths) {
+			w = int(dialogBtnWidths[i])
+		}
+		total += w
+	}
+	return total + (len(labels)-1)*int(dlgBtnGap)
 }

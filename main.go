@@ -399,6 +399,13 @@ func main() {
 	if cfg.Language != "" {
 		langPref = normalizeLang(cfg.Language)
 	}
+	// 截图/预览模式可用 DSH_SYSTRAY_LANG 覆盖界面语言：生成英文截图时不必改动用户配置
+	// （scripts/capture_shots.ps1 / capture_github_dialog.ps1 依赖它）。
+	if v := strings.TrimSpace(os.Getenv("DSH_SYSTRAY_LANG")); v != "" {
+		if l := normalizeLang(v); l != "auto" {
+			langPref = l
+		}
+	}
 	curLang = resolveLang(langPref)
 	log.Printf("[i18n] language pref=%q system=%s → curLang=%s", cfg.Language, detectSystemLang(), curLang)
 	// 待应用的插件变更随 config 持久化：先存下，等插件列表可用（onStartup）时逐条校验载入。
