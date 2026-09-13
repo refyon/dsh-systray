@@ -41,13 +41,28 @@ import (
 // 注意：Go 用反引号原文承载本脚本，脚本内因此不使用模板字符串。
 const sessionEventToolScript = `import fs from "node:fs";
 import path from "node:path";
-import { zstdCompressSync, zstdDecompressSync, constants } from "node:zlib";
+import zlib from "node:zlib";
+
+// zstd 走命名空间导入而不是具名导入：具名导入在旧 Node 上是**链接期**失败（ESM 校验具名导出），
+// 整个脚本连一行结果都打不出来，检查会静默失效；命名空间导入 + 显式探活才能给出可读原因。
+// （macOS 与 Windows 的便携运行时都是 Node v24.9.0，zstd 自 22.15 / 23.8 起提供。）
+const zstdDecompressSync = zlib.zstdDecompressSync;
+const zstdCompressSync = zlib.zstdCompressSync;
+const ZSTD_FLUSH = zlib.constants ? zlib.constants.ZSTD_e_flush : undefined;
+const CHECKSUM_OPTIONS = zlib.constants && zlib.constants.ZSTD_c_checksumFlag !== undefined
+  ? { params: { [zlib.constants.ZSTD_c_checksumFlag]: 1 } }
+  : {};
 
 const MARK = "DSHEVENTS\t";
 const MAGIC = 4247762216;
 
 function say(line) { console.log(MARK + line); }
 function fail(msg) { say("ERR\t" + String(msg).replace(/[\r\n\t]+/g, " ")); process.exit(1); }
+
+// 运行时能力探活：Node 太旧时点名原因，而不是抛异常让调用方只看到「没有输出」。
+if (typeof zstdDecompressSync !== "function" || typeof zstdCompressSync !== "function") {
+  fail("当前 Node（" + process.version + "）不支持 zstd：需要 Node 22.15+ / 24+，请先让应用安装便携运行时");
+}
 
 // scanFrames 与 dsh-session-persistence-jsonl 的扫描口径一致：会话日志是**拼接的 zstd 帧**，
 // 一帧一个追加批次；帧尾不完整（正在写入）时报 tornStart，由调用方决定是否容忍。
@@ -95,7 +110,7 @@ function readLogText(file) {
   let text = "";
   for (const f of scanned.frames) text += zstdDecompressSync(buffer.subarray(f.start, f.end)).toString("utf8");
   if (scanned.tornStart !== undefined) {
-    try { text += zstdDecompressSync(buffer.subarray(scanned.tornStart), { finishFlush: constants.ZSTD_e_flush }).toString("utf8"); } catch (error) {}
+    try { if (ZSTD_FLUSH !== undefined) text += zstdDecompressSync(buffer.subarray(scanned.tornStart), { finishFlush: ZSTD_FLUSH }).toString("utf8"); } catch (error) {}
   }
   return text;
 }
@@ -244,7 +259,7 @@ if (mode === "scan") {
         return JSON.stringify(ev);
       });
       if (!touched) { rebuilt.push(buffer.subarray(frames[i].start, frames[i].end)); continue; }
-      rebuilt.push(zstdCompressSync(Buffer.from(next.join("\n") + (endsWithNewline ? "\n" : ""), "utf8"), { params: { [constants.ZSTD_c_checksumFlag]: 1 } }));
+      rebuilt.push(zstdCompressSync(Buffer.from(next.join("\n") + (endsWithNewline ? "\n" : ""), "utf8"), CHECKSUM_OPTIONS));
     }
     if (changed === 0) continue;
     try {
@@ -376,9 +391,12 @@ func pluginRiskFromScan(name string, scan sessionEventScan) *pluginSessionRisk {
 }
 
 // parseSessionEventScan 解析 scan 模式输出（纯函数，便于单测）。
+// 没有任何结果行（既无 DONE 也无 ERR）时按失败归因：脚本可能压根没跑起来（Node 过旧不支持 zstd、
+// 便携运行时缺失等），此时静默当成「无风险」会让用户以为检查过了。
 func parseSessionEventScan(out string) (sessionEventScan, string) {
 	scan := sessionEventScan{BySession: map[string][]string{}}
 	var errMsg string
+	done := false
 	for _, raw := range strings.Split(out, "\n") {
 		line := strings.TrimSpace(raw)
 		if !strings.HasPrefix(line, sessionEventMarker) {
@@ -408,15 +426,22 @@ func parseSessionEventScan(out string) (sessionEventScan, string) {
 			scan.BySession[fields[1]] = types
 		case "WARN":
 			scan.Warnings = append(scan.Warnings, strings.Join(fields[1:], " "))
+		case "DONE":
+			done = true
 		case "ERR":
 			errMsg = strings.TrimSpace(strings.Join(fields[1:], " "))
 		}
+	}
+	if errMsg == "" && !done {
+		errMsg = "检查脚本没有返回结果（Node 可能过旧、不支持 zstd，或未能启动）"
 	}
 	return scan, errMsg
 }
 
 // parseSessionEventRepair 解析 repair 模式输出：修复文件数、修复事件数、跳过/失败文件数。
+// 同 scan：完全没有结果行时按失败归因，避免「修复没跑起来」被当成「修复了 0 条」。
 func parseSessionEventRepair(out string) (files, events, skipped, failed int, errMsg string) {
+	done := false
 	for _, raw := range strings.Split(out, "\n") {
 		line := strings.TrimSpace(raw)
 		if !strings.HasPrefix(line, sessionEventMarker) {
@@ -425,6 +450,7 @@ func parseSessionEventRepair(out string) (files, events, skipped, failed int, er
 		fields := strings.Split(strings.TrimPrefix(line, sessionEventMarker), "\t")
 		switch fields[0] {
 		case "DONE":
+			done = true
 			if len(fields) >= 3 {
 				files = atoiSafe(fields[1])
 				events = atoiSafe(fields[2])
@@ -438,6 +464,9 @@ func parseSessionEventRepair(out string) (files, events, skipped, failed int, er
 		case "ERR":
 			errMsg = strings.TrimSpace(strings.Join(fields[1:], " "))
 		}
+	}
+	if errMsg == "" && !done {
+		errMsg = "修复脚本没有返回结果（Node 可能过旧、不支持 zstd，或未能启动）"
 	}
 	return files, events, skipped, failed, errMsg
 }

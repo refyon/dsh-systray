@@ -95,6 +95,10 @@ func TestParseSessionEventScan(t *testing.T) {
 	if _, errMsg := parseSessionEventScan("DSHEVENTS\tERR\t未找到 harness 事件白名单\n"); errMsg == "" {
 		t.Fatal("expected error message from ERR line")
 	}
+	// 脚本完全没输出（Node 过旧 / 未启动）必须归因为失败，而不是当成「无风险」。
+	if _, errMsg := parseSessionEventScan(""); errMsg == "" {
+		t.Fatal("expected diagnostic when the script produced no result lines")
+	}
 }
 
 func TestParseSessionEventRepair(t *testing.T) {
@@ -104,6 +108,9 @@ func TestParseSessionEventRepair(t *testing.T) {
 	}
 	if _, _, _, _, errMsg := parseSessionEventRepair("DSHEVENTS\tERR\tno node\n"); errMsg != "no node" {
 		t.Fatalf("errMsg = %q", errMsg)
+	}
+	if _, _, _, _, errMsg := parseSessionEventRepair(""); errMsg == "" {
+		t.Fatal("expected diagnostic when the repair script produced no result lines")
 	}
 	// 老版本脚本只输出两个字段：跳过/失败按 0 处理，不panic。
 	if files, events, skipped, failed, _ := parseSessionEventRepair("DSHEVENTS\tDONE\t2\t7\n"); files != 2 || events != 7 || skipped != 0 || failed != 0 {
