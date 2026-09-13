@@ -43,6 +43,7 @@ var (
 	importQMu      sync.Mutex
 	importQueue    []*importTask
 	importWorkerOn bool
+	importWorkerEx bool        // 现有 worker 已决定退休（队列已排空、正在收尾）：新任务需另起 worker
 	importHealOn   atomic.Bool // 共享自愈进行中（不可取消）
 	importCurrent  *importTask // worker 正在执行的任务（供 importRestoreCancelled 读取）
 	importPaused   bool        // 本批是否已暂停服务
@@ -53,12 +54,21 @@ var (
 // importEnqueue 受理一个恢复项：占用 kind 槽（同 kind 未完成则拒绝）并启动 worker。
 func importEnqueue(kind string, overwriteOn bool) (bool, string) {
 	importQMu.Lock()
+	kept := importQueue[:0]
+	var retire []*importTask
 	for _, t := range importQueue {
-		if t.kind == kind && !t.sent {
-			importQMu.Unlock()
-			return false, "该恢复项已在处理中（请等待完成或先取消）"
+		if t.kind != kind || t.sent {
+			kept = append(kept, t)
+			continue
 		}
+		// 同 kind 且已请求取消：不再继续拦着（用户重试不应被「已在处理中」卡死）。
+		// 任务移出队列并终态化：已完成回退的旧任务就此退休；真正还在跑的那个会自行
+		// 通过 cancel 中断（terminal 幂等，不会重复发 import:done）。
+		t.cancel.Store(true)
+		retire = append(retire, t)
+		continue
 	}
+	importQueue = kept
 	// 消费 PreviewRestore 暂存的内容
 	pendingRestore.mu.Lock()
 	ok := pendingRestore.kind == kind && pendingRestore.innerZip != ""
@@ -81,22 +91,33 @@ func importEnqueue(kind string, overwriteOn bool) (bool, string) {
 		return false, "尚未预览或 kind 不匹配: " + kind
 	}
 	importQueue = append(importQueue, t)
-	run := !importWorkerOn
+	// 是否要另起 worker：没有在跑的，或现有 worker 已排空队列准备退休
+	// （它不会再回头看队列——旧实现只看 importWorkerOn，正好卡在这个交接窗口上，
+	// 新入队的任务永远不会被执行：2026-09-14 现场实证 batch finish 只处理了 1 个任务，
+	// 而第二次「恢复」明明已被受理）。
+	run := !importWorkerOn || importWorkerEx
 	if run {
 		importWorkerOn = true
+		importWorkerEx = false
 	}
 	importQMu.Unlock()
+	// 退休任务在锁外终态化（finalizeTask 自行加锁）：前端据此解锁对应行
+	for _, old := range retire {
+		finalizeTask(old, false, "", nil)
+	}
 	if run {
 		go importWorker()
 	}
 	return true, ""
 }
 
-// importRestoreRunning 是否有恢复任务（队列非空或在跑）。
+// importRestoreRunning 是否有恢复批次在跑（含队列执行与批末共享自愈/收尾阶段）。
+// 只看 importWorkerOn：worker 从入队起一直活到整批收尾结束，队列刚空的瞬间收尾尚未开始，
+// 此时若按「队列非空」判断会出现窗口期（2026-09-13 修复）。
 func importRestoreRunning() bool {
 	importQMu.Lock()
 	defer importQMu.Unlock()
-	return importWorkerOn && len(importQueue) > 0
+	return importWorkerOn
 }
 
 // importRestoreHealing 是否处于（不可中断的）共享自愈阶段。
@@ -124,25 +145,52 @@ func importCancelKind(kind string) string {
 		return "healing"
 	}
 	importQMu.Lock()
-	defer importQMu.Unlock()
+	var retired []*importTask
+	hit := false
+	kept := importQueue[:0]
 	for _, t := range importQueue {
-		if t.kind == kind && !t.sent {
-			t.cancel.Store(true)
-			logUI("取消恢复导入项", "kind="+kind+" 已请求中断")
-			return "ok"
+		if t.kind != kind {
+			kept = append(kept, t)
+			continue
 		}
+		hit = true
+		if t.sent {
+			// 已发过 import:done 的残留条目：直接退休，别让它继续拦着后续请求
+			// （否则每次取消都命中它、界面永远等不到新结果——2026-09-13 现场问题）。
+			log.Printf("import: retiring stale queue entry kind=%s", kind)
+			retired = append(retired, t)
+			continue
+		}
+		t.cancel.Store(true)
+		kept = append(kept, t)
 	}
-	return "idle"
+	importQueue = kept
+	importQMu.Unlock()
+	for _, old := range retired {
+		finalizeTask(old, false, "", nil)
+	}
+	if !hit {
+		return "idle"
+	}
+	logUI("取消恢复导入项", "kind="+kind+" 已请求中断")
+	return "ok"
 }
 
 // importWorker 顺序执行队列任务；队列清空后做批末统一收尾（共享自愈或直接恢复服务），
 // 再按执行顺序发布各任务的 import:done。
+// importWorkerOn 一直保持到**整批收尾（含共享自愈）结束**：队列刚空时收尾还没开始，
+// 若此时就置 false，importRestoreRunning 会在「队列空→自愈开始」的窗口里返回 false，
+// 让重新选择导入包的请求漏过去（2026-09-13 修复）。
 func importWorker() {
+	deferred := false
 	var processed []*importTask
 	for {
 		importQMu.Lock()
 		if len(importQueue) == 0 {
-			importWorkerOn = false
+			// 在自己持有锁的这一步宣布退休：此后（含收尾期间）新入队的任务
+			// 由 importEnqueue 另起 worker 接手，不会再丢唤醒。
+			importWorkerEx = true
+			deferred = true
 			importQMu.Unlock()
 			break
 		}
@@ -150,7 +198,9 @@ func importWorker() {
 		importCurrent = t
 		importQMu.Unlock()
 
+		start := time.Now()
 		runImportTask(t)
+		log.Printf("import[%s] task returned after %s", t.kind, time.Since(start).Round(time.Second))
 
 		importQMu.Lock()
 		importCurrent = nil
@@ -159,6 +209,18 @@ func importWorker() {
 		processed = append(processed, t)
 	}
 	finishImportBatch(processed)
+	importQMu.Lock()
+	if deferred && importWorkerEx {
+		// 收尾期间没有新任务接手：本 worker 归还「在跑」标记
+		// （若已有新 worker 顶上来，标记归它，不能在这里清掉）。
+		importWorkerOn = false
+		importWorkerEx = false
+		importQMu.Unlock()
+		log.Printf("import: worker exited (processed=%d)", len(processed))
+		return
+	}
+	importQMu.Unlock()
+	log.Printf("import: worker exited (processed=%d, handoff)", len(processed))
 }
 
 // runImportTask 执行单条任务的应用段（pause/解压/注册/消毒/预检/对齐）。
@@ -168,6 +230,9 @@ func importWorker() {
 func runImportTask(t *importTask) {
 	emit := func(text string, pct float64, hint ...bool) {
 		h := len(hint) > 0 && hint[0]
+		// 阶段埋点：用户报「一直取消不掉、也等不到完成」时，靠日志定位卡在哪一步
+		// （2026-09-13 复盘：只有 import:progress 事件、没有阶段日志，无法归因）。
+		log.Printf("import[%s] stage: %s (pct=%.2f)", t.kind, text, pct)
 		if appCtx != nil {
 			wruntime.EventsEmit(appCtx, "import:progress", map[string]interface{}{
 				"kind": t.kind, "text": text, "pct": pct, "hint": h})
@@ -374,10 +439,12 @@ func finishImportBatch(processed []*importTask) {
 	}
 	importPaused = false
 	clearImportJournal()
+	log.Printf("import: batch finish begin (tasks=%d healRan=%v healErr=%v)", len(processed), healRan, healErr)
 
 	for _, t := range processed {
 		finalizeTask(t, healRan, healNote, healErr)
 	}
+	log.Printf("import: batch finish done (tasks=%d)", len(processed))
 }
 
 // finalizeTask 补全任务终态并推送 import:done。

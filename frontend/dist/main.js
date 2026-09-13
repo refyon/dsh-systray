@@ -309,6 +309,8 @@ function showPage(name) {
   $("page-" + name).classList.remove("hidden");
   if (name === "logs") startLogPolling();
   else stopLogPolling();
+  // 导入页：恢复进行中时「添加压缩包…」保持禁用（窗口隐藏期间可能已有恢复在跑）
+  if (name === "import") syncImportPickBtn();
   // 关于页每次进入刷新版本号与插件清单（更新/导入等操作后保持最新）
   if (name === "about") {
     refreshVersions();
@@ -1482,6 +1484,7 @@ function impRowBusy(kind, busy, text, pct) {
 /** 按当前状态同步该行的「恢复/取消/已完成」按钮可见性与禁用态。 */
 function syncImpRow(kind) {
   const row = document.querySelector('[data-ikind="' + kind + '"]');
+  syncImportPickBtn(); // 任一行的 busy 变化都影响「添加压缩包…」的可用性
   if (!row) return;
   const done = !!state.impDone[kind];
   const st = impSt(kind);
@@ -1512,6 +1515,7 @@ function syncImpHealUI(on) {
     const k = row.getAttribute("data-ikind");
     syncImpRow(k);
   });
+  syncImportPickBtn(); // 自愈阶段同样禁止重新添加压缩包
   if (on) {
     impRowText("plugins", "正在启动服务并校验插件兼容性…", "");
   }
@@ -1607,30 +1611,41 @@ async function impCancel(kind) {
     impRowText(kind, tr("当前没有进行中的恢复任务"), "muted");
     return;
   }
-  // 已受理：立即解锁该行（恢复可用、进度/取消按钮收起），后端回退后台进行
-  impRowBusy(kind, false, "", 0);
+  // 已受理：**保持该行占用**直到 import:done——后端还要回退文件并重启服务，
+  // 提前解锁会让用户秒点「恢复」，而队列里旧任务尚未出队，被后端拒绝
+  // （2026-09-13 现场问题：取消后立刻重新恢复，报「该恢复项已在处理中」）。
   const st = impSt(kind);
+  st.busy = true;
   st.pending = true;
+  impRowBusy(kind, true, "", 0);
   impRowText(kind, tr("已请求取消，正在回退到恢复前状态…"), "muted");
   armImpWatch(kind, 90000);
 }
 
-/** 每行兜底：长时间未收到 import:done 时复位该行。 */
+/** 每行兜底：长时间未收到 import:done 时复位该行。
+ *  复位前先向后端确认该 kind 是否仍在处理（取消后的回退可能较慢），
+ *  仍在处理就只续期、不解除占用，避免用户重试时被后端拒绝。 */
 function armImpWatch(kind, ms) {
   const st = impSt(kind);
   clearTimeout(st.watch);
-  st.watch = setTimeout(() => {
-    if (st.pending) {
-      st.pending = false;
-      impRowText(kind, "尚未收到取消回退的完成事件；可重新恢复或到日志页查看。", "muted");
-      return;
-    }
-    if (!st.busy) return;
+  st.watch = setTimeout(async () => {
     if (state.impHealAll) {
       impRowText(kind, "服务启动校验仍在进行（不可中断），请继续等待…", "muted");
       armImpWatch(kind, 60000);
       return;
     }
+    let stillBusy = false;
+    try {
+      const kinds = await bindings().ImportInflight();
+      stillBusy = !!kinds && kinds.indexOf(kind) >= 0;
+    } catch (e) { /* 查询失败：按本地状态处理 */ }
+    if (stillBusy) {
+      impRowText(kind, st.pending ? tr("仍在回退到恢复前状态，请稍候…") : tr("服务端仍在处理，请稍候…"), "muted");
+      armImpWatch(kind, 60000);
+      return;
+    }
+    st.pending = false;
+    if (!st.busy) return;
     impRowBusy(kind, false, "", 0);
     impRowText(kind, "恢复未在预期时间内收到服务端结果，界面已复位；若服务端仍在处理请稍候再试（日志页可查）。", "muted");
   }, ms);
@@ -1662,11 +1677,36 @@ function wireImport() {
       $("imp-path").classList.remove("hidden");
       renderImportRows();
     } catch (e) {
-      setImpHint("解析失败：" + (e && e.message ? e.message : e), false);
+      // 后端拒绝（恢复中）时保留当前导入项状态，只提示原因
+      const msg = (e && e.message ? e.message : String(e));
+      if (msg.indexOf("恢复") >= 0 || msg.indexOf("restore") >= 0 || msg.indexOf("Restore") >= 0) {
+        setImpHint(msg, true);
+        return;
+      }
+      setImpHint("解析失败：" + msg, false);
       $("imp-rows").innerHTML = "";
       state.impItems = [];
     }
   });
+}
+
+/** 是否有恢复任务在跑（含不可中断的共享自愈阶段）——决定「添加压缩包…」是否可用。 */
+function importBusy() {
+  if (state.impHealAll) return true;
+  for (const k in state.imp) {
+    if (state.imp[k] && state.imp[k].busy) return true;
+  }
+  return false;
+}
+
+/** 同步「添加压缩包…」按钮可用性与提示：恢复期间禁用（文案解释原因），并阻止状态复位。 */
+function syncImportPickBtn() {
+  const btn = $("btn-import-pick");
+  if (!btn) return;
+  const busy = importBusy();
+  btn.disabled = busy;
+  btn.title = busy ? tr("正在恢复导入项，恢复期间不能重新添加压缩包。") : "";
+  return busy;
 }
 
 // ==================== 事件监听（Go → JS） ====================
@@ -1750,6 +1790,17 @@ function wireEvents() {
   EventsOn("import:done", (d) => {
     if (!d || !d.kind) return;
     const st = impSt(d.kind);
+    // 入队被拒（同 kind 仍在上一次恢复里没收尾，例如刚取消、回退还在跑）：
+    // 这不是「恢复失败」，而是该项仍被占用——保持占用并说明，等真正完成再解锁
+    // （2026-09-13 现场问题：取消后立刻重试，报「该恢复项已在处理中」且按钮看似可用）。
+    if (d.error && String(d.error).indexOf("已在处理中") >= 0) {
+      st.busy = true;
+      st.pending = false;
+      impRowBusy(d.kind, true, "", 0);
+      impRowText(d.kind, tr("上一项恢复仍在收尾，请稍候再试。"), "muted");
+      armImpWatch(d.kind, 60000);
+      return;
+    }
     clearTimeout(st.watch);
     st.busy = false;
     st.pending = false;
@@ -1951,6 +2002,16 @@ async function init() {
       })();
     }
   } catch (e) { /* ignore */ }
+
+  // 恢复进行中进入导入页（窗口隐藏期间已发起恢复）：禁用「添加压缩包…」并说明原因
+  (async () => {
+    try {
+      if (await bindings().RestoreBusy()) {
+        syncImportPickBtn();
+        setImpHint(tr("正在恢复导入项，恢复期间不能重新添加压缩包。"), true);
+      }
+    } catch (e) { /* ignore */ }
+  })();
 
   // 拉取初始数据（即使 splash 阶段也可填充）
   refreshConfig();

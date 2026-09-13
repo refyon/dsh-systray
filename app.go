@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"runtime"
+	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -964,7 +965,30 @@ type ImportPickResult struct {
 	Items []ImportItem `json:"items"`
 }
 
+// RestoreBusy 是否有恢复任务占用（运行中或处于不可中断的共享自愈阶段）：
+// 此期间禁止重新选择导入包，否则前端导入项状态会被复位、后端也会出现新旧包混用。
+func (a *App) RestoreBusy() bool {
+	return importRestoreRunning() || importRestoreHealing()
+}
+
+// ImportInflight 仍在处理中的恢复项 kind（队列里尚未发布结果的任务）：
+// 前端兜底计时到点时用它向后端确认「这一行是否还在跑」，避免误解锁后重试被后端拒绝。
+func (a *App) ImportInflight() []string {
+	importQMu.Lock()
+	defer importQMu.Unlock()
+	out := make([]string, 0, len(importQueue))
+	for _, t := range importQueue {
+		if !t.sent {
+			out = append(out, t.kind)
+		}
+	}
+	sort.Strings(out)
+	return out
+}
+
 // ImportPick 选择导入压缩包并解析（原生文件对话框）。
+// 恢复进行中直接拒绝：重新选择会把 importZipPath/importItems 换成新包，而已入队的任务
+// 仍按旧包解出的内容在跑，前端状态也会被复位（2026-09-13 现场问题）。
 func (a *App) ImportPick() (*ImportPickResult, error) {
 	if shotMode {
 		// 截图模式：直接返回演示可恢复项（不弹文件对话框、不暴露真实路径）
@@ -976,6 +1000,10 @@ func (a *App) ImportPick() (*ImportPickResult, error) {
 				{Kind: "files", Label: T("自选文件目录"), Size: 128512000},
 			},
 		}, nil
+	}
+	if a.RestoreBusy() {
+		logUI("拒绝重新选择导入包", "恢复进行中")
+		return nil, fmt.Errorf("正在恢复导入项，请等待完成或先取消后再添加压缩包。")
 	}
 	p, err := wruntime.OpenFileDialog(appCtx, wruntime.OpenDialogOptions{
 		Title: "选择 dsh-systray 导出压缩包",
