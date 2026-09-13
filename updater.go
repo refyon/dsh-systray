@@ -62,7 +62,8 @@ var updateMirrors = []string{
 	"https://gh-proxy.com/",
 	"https://gh.llkk.cc/",
 	"https://github.moeyy.xyz/",
-	"https://mirror.ghproxy.com/",
+	// mirror.ghproxy.com 于 2026-09-13 移除：域名已废弃（公共 DNS 无 A 记录，
+	// 本机被污染解析到 Facebook 网段），实测 12s 无响应，白白吃掉检查/下载预算。
 }
 
 // updateMirrorOverride 用户在 config.json 配置的 updateMirror（可空）。
@@ -1720,6 +1721,72 @@ func downloadOnce(ctx context.Context, url, dest string, onProgress func(pct flo
 	}
 	return nil
 }
+
+// downloadWithRetry 带「停滞看门狗」与重试的下载，供 GitHub CLI 这类大文件使用：
+// 每次尝试取一个镜像候选，超过 stall 没有任何数据到达即判定该候选挂死并换下一个；
+// 镜像列表跑完仍失败则整轮重试，最多 dlRetryRounds 轮。ctx 为整体预算。
+// 直连候选（空前缀）按原 URL 请求，不做字符串拼接。
+func downloadWithRetry(ctx context.Context, url, dest string, stall time.Duration, onProgress func(pct float64)) error {
+	var lastErr error
+	for round := 0; round < dlRetryRounds; round++ {
+		for _, prefix := range buildMirrors() {
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
+			target := url
+			if prefix != "" {
+				target = prefix + url
+			}
+			attemptCtx, cancel := context.WithCancel(ctx)
+			progressed := make(chan struct{}, 1)
+			done := make(chan struct{})
+			go func() {
+				defer close(done)
+				t := time.NewTimer(stall)
+				defer t.Stop()
+				for {
+					select {
+					case <-attemptCtx.Done():
+						return
+					case <-progressed:
+						if !t.Stop() {
+							select {
+							case <-t.C:
+							default:
+							}
+						}
+						t.Reset(stall)
+					case <-t.C:
+						cancel() // 该候选停滞：中断本次尝试，换下一个
+						return
+					}
+				}
+			}()
+			err := downloadOnce(attemptCtx, target, dest, func(pct float64) {
+				if onProgress != nil {
+					onProgress(pct)
+				}
+				select {
+				case progressed <- struct{}{}:
+				default:
+				}
+			})
+			cancel()
+			<-done
+			if err == nil {
+				return nil
+			}
+			lastErr = err
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
+		}
+	}
+	return lastErr
+}
+
+// dlRetryRounds 带看门狗下载的整轮重试次数（镜像列表全部尝试一遍算一轮）。
+const dlRetryRounds = 3
 
 // verifyChecksum 用 Release 附带的 SHA256SUMS.txt 校验更新包。
 func verifyChecksum(zipPath, assetName, sumsPath string) error {

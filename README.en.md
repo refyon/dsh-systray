@@ -61,6 +61,7 @@ Designed around three core traits: **Lightweight, Reliable, Portable**.
 - **Environment self-check**: checks node / pnpm / harness on startup and runs the built-in installer if missing (including `git clone` for a source harness)
 - **Auto-rollback on startup failure**: if the service fails to start (process crash / load error), it rolls back to the last known-good harness & plugin state and restarts
 - **Twofold update safety**: background checks for new GitHub Releases; download progress is shown in the window and cancellable; dsh-systray / DeepSeek Harness / plugins are checked independently per module, with automatic snapshots before updates, health verification after install and auto-rollback to the last working version on failure
+- **Private-repo plugins**: plugins hosted in private repositories trigger a GitHub device-flow authorization on update checks (completed in the browser, with the one-time code copied to the clipboard); credentials live in the system credential store — dsh-systray never writes any token to disk
 - **Logs**: the Logs page follows app.log / server.log live, shows full paths, auto-scrolls to the newest writes and supports one-click clearing
 
 ### Portable — data travels with you, seamless restore on another machine

@@ -384,7 +384,16 @@ type browseInfoW struct {
 
 // wailsMainHWND 定位 Wails 设置主窗口的 HWND：遍历顶层窗口取本进程的可见窗口。
 // 找不到（如主窗口隐藏、仅托盘常驻）返回 0，调用方不设 owner 维持旧行为。
-func wailsMainHWND() uintptr {
+// 注意：HWND 只在「当前可见」时返回，不能用来判断窗口是否已打开——那个用 mainWindowVisible。
+func wailsMainHWND() uintptr { return findProcessTopWindow(true) }
+
+// mainWindowVisible 设置主窗口当前是否可见（被其它窗口遮挡、最小化都仍算可见）。
+// 用途见 main.go showMainWindow：窗口已开着时托盘「设置」只置前、不重载内容。
+// 与 wailsMainHWND 同源：都取「本进程当前可见的顶层窗口」。
+func mainWindowVisible() bool { return wailsMainHWND() != 0 }
+
+// findProcessTopWindow 遍历本进程顶层窗口：onlyVisible=true 时只认可见窗口。
+func findProcessTopWindow(onlyVisible bool) uintptr {
 	modUser32 := syscall.NewLazyDLL("user32.dll")
 	pEnumWindows := modUser32.NewProc("EnumWindows")
 	pIsWindowVisible := modUser32.NewProc("IsWindowVisible")
@@ -400,7 +409,7 @@ func wailsMainHWND() uintptr {
 			return 1
 		}
 		vis, _, _ := pIsWindowVisible.Call(hwnd)
-		if vis != 0 {
+		if !onlyVisible || vis != 0 {
 			found = hwnd
 			return 0
 		}
@@ -822,6 +831,12 @@ func messageBoxResult(text, caption string, flags uintptr) uintptr {
 
 func showMessageBox(text, caption string) {
 	runModernDialog(caption, text, []string{"确定"}, 0)
+}
+
+// askGitHubAuth 私有仓库插件的 GitHub 授权确认：true=用户点「登录 GitHub」。
+// 文案由调用方（gh.go）给出；按钮顺序与其它询问弹窗一致（主操作在右）。
+func askGitHubAuth(msg string) bool {
+	return runModernDialog(appName, msg, []string{T("取消"), T(ghLoginLabel)}, 1) == 1
 }
 
 // askStopServer 退出前询问是否停止后台 Web 服务：0=停止并退出，1=保留服务，-1=取消退出。

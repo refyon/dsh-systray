@@ -66,6 +66,10 @@ func disabledNames(rows []PluginRow) string {
 	return strings.Join(names, "、")
 }
 
+// repoNotVisibleMsg 仓库对当前身份不可见的判定文案：不存在，或私有仓库且未完成 GitHub 授权。
+// 上层（CheckPluginUpdate）据此触发 gh 设备流授权引导（见 gh.go）。
+const repoNotVisibleMsg = "仓库不可见"
+
 // pluginCheckDeadline 单插件一次检查的最长耗时（多个候选源共用该预算，超时即报错返回）。
 const pluginCheckDeadline = 15 * time.Second
 
@@ -507,7 +511,7 @@ func getWithMirrors(candidates []string, deadline time.Duration) ([]byte, error)
 	defer cancel()
 	client := &http.Client{}
 	var lastErr error
-	for _, u := range candidates {
+	for i, u := range candidates {
 		candCtx, candCancel := context.WithTimeout(ctx, pluginCheckCandidateTimeout)
 		req, err := http.NewRequestWithContext(candCtx, "GET", u, nil)
 		if err != nil {
@@ -517,6 +521,13 @@ func getWithMirrors(candidates []string, deadline time.Duration) ([]byte, error)
 		}
 		req.Header.Set("User-Agent", "dsh-systray/"+appVersion)
 		req.Header.Set("Accept", "application/vnd.github+json, application/json")
+		// 私有仓库未认证一律 404：凭据只附在「直连」的 GitHub 官方域名候选上，
+		// 第三方镜像不转发 token。token 由 gh 提供、只存内存（见 gh.go）。
+		if i == 0 && isGitHubHost(u) {
+			if tok := ghAuthToken(); tok != "" {
+				req.Header.Set("Authorization", "Bearer "+tok)
+			}
+		}
 		resp, err := client.Do(req)
 		if err != nil {
 			candCancel()
@@ -524,9 +535,15 @@ func getWithMirrors(candidates []string, deadline time.Duration) ([]byte, error)
 			continue
 		}
 		if resp.StatusCode != http.StatusOK {
+			code := resp.StatusCode
 			resp.Body.Close()
 			candCancel()
-			lastErr = fmt.Errorf("HTTP %d", resp.StatusCode)
+			// 直连候选（i==0）给出的 404/403 是确定性结论——仓库不存在或为私有仓库
+			// （未认证不可见），镜像不会改变可见性，立即收尾，避免把剩余预算耗在镜像回退上。
+			if i == 0 && (code == http.StatusNotFound || code == http.StatusForbidden) {
+				return nil, fmt.Errorf("HTTP %d", code)
+			}
+			lastErr = fmt.Errorf("HTTP %d", code)
 			continue
 		}
 		body, err := io.ReadAll(io.LimitReader(resp.Body, updateMaxBodySize))
@@ -541,15 +558,44 @@ func getWithMirrors(candidates []string, deadline time.Duration) ([]byte, error)
 	return nil, lastErr
 }
 
+// apiMirrors 转发 api.github.com 的镜像白名单：2026-09-13 实测 ghfast.top /
+// ghproxy.net / gh.llkk.cc 对 API 路径一律 403（只放行 release/raw），
+// github.moeyy.xyz / mirror.ghproxy.com 直接挂起——只有 gh-proxy.com 支持 API。
+var apiMirrors = []string{
+	"https://gh-proxy.com/",
+}
+
 // mirrorCandidates 把原始 URL 扩展为「直连 + 各镜像前缀」候选列表。
+// api.github.com 只搭支持 API 的镜像：其余镜像对 API 一律 403 或挂起，回退它们
+// 只会白耗检查预算（2026-09-13 复盘：restrict-discipline / dsh-ui-taste
+// 检查更新报 context deadline exceeded）。
 func mirrorCandidates(rawURL string) []string {
 	out := []string{rawURL}
+	if u, err := url.Parse(rawURL); err == nil && strings.EqualFold(u.Host, "api.github.com") {
+		for _, m := range apiMirrors {
+			out = append(out, m+rawURL)
+		}
+		return out
+	}
 	for _, m := range buildMirrors() {
 		if m != "" {
 			out = append(out, m+rawURL)
 		}
 	}
 	return out
+}
+
+// isGitHubHost 判断 URL 是否指向 GitHub 官方端点（决定该候选能否携带 Token）。
+func isGitHubHost(rawURL string) bool {
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		return false
+	}
+	switch strings.ToLower(u.Host) {
+	case "api.github.com", "raw.githubusercontent.com", "github.com", "codeload.github.com":
+		return true
+	}
+	return false
 }
 
 // npmRegistryPath 转义包名（scoped：@scope/name → @scope%2fname）。
@@ -740,6 +786,11 @@ func githubDefaultBranch(owner, repo string) (string, error) {
 	u := fmt.Sprintf("https://api.github.com/repos/%s/%s", url.PathEscape(owner), url.PathEscape(repo))
 	body, err := getWithMirrors(mirrorCandidates(u), pluginCheckDeadline)
 	if err != nil {
+		// 404 不是网络故障，而是「未认证看不到这个仓库」（私有仓库，或已改名/删除）。
+		// 单独说明，避免用户把它误判成镜像/网络问题（2026-09-13 复盘）。
+		if strings.Contains(err.Error(), "HTTP 404") {
+			return "", fmt.Errorf("%s：%s/%s 不存在或为私有仓库（私有仓库需先完成 GitHub 授权）", repoNotVisibleMsg, owner, repo)
+		}
 		return "", fmt.Errorf("GitHub 仓库查询失败：%w", err)
 	}
 	var m struct {

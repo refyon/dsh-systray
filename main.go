@@ -908,12 +908,20 @@ func bootstrapService() {
 }
 
 // showMainWindow 显示设置窗口（托盘“设置”点击）。
+// 窗口已开着：只置顶，**不重载内容**——reload 会把正在进行的进度界面（更新下载/安装、
+// harness 更新/重置、导入恢复、GitHub 授权等）整块换成设置页，用户就看不到进度与「取消」入口了。
+// 只有窗口未打开时才按正常启动加载设置内容（并刷新版本/插件清单）。
 func showMainWindow() {
 	if appCtx == nil {
 		return
 	}
+	alreadyOpen := mainWindowVisible()
 	wruntime.WindowShow(appCtx)
 	ensureMainWindowForeground() // 平台实现：把窗口真正置前（需求：所有弹窗/窗口自动前台）
+	if alreadyOpen {
+		log.Printf("settings window already open: raised only (no content reload)")
+		return
+	}
 	// 更新进行中（自身更新下载/安装、harness 更新/重置）：保持更新进度界面置顶，不切回设置页——
 	// ui:show-settings 会让前端整块重载设置页内容（含刷新版本/插件），进度界面随之消失，
 	// 用户看不到下载/安装阶段与「取消更新」入口。

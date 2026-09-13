@@ -663,6 +663,19 @@ func showReadyPrompt(url string) {
 	}
 }
 
+// askGitHubAuth 私有仓库插件的 GitHub 授权确认：true=用户点「登录 GitHub」。
+// 文案由调用方（gh.go）给出；按钮顺序与其它询问弹窗一致（主操作在右，回车默认执行）。
+func askGitHubAuth(msg string) bool {
+	login := T(ghLoginLabel)
+	script := fmt.Sprintf(`display dialog "%s" with title "%s" buttons {%q, %q} default button %q`,
+		escapeAppleScript(msg), appName, T("取消"), login, login)
+	out, err := runAppleScript(script)
+	if err != nil {
+		return false
+	}
+	return strings.Contains(out, login)
+}
+
 // askUpdateDialog 提示用户发现新版本：true=立即更新。
 func askUpdateDialog(newVer string) bool {
 	msg := TF("发现新版本 %s（当前版本 %s）。\n是否立即下载并更新？", withV(newVer), withV(appVersion))

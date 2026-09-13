@@ -76,6 +76,7 @@ const I18N_EN = {
   impSub: "Pick a dsh-systray-export-*.zip to restore sessions, installed plugins or file folders.",
   btnAddZip: "Add archive…",
   btnCancelRestore: "Cancel restore",
+  impBusyHint: "Restoring an import item — you can't add another archive until it finishes or is canceled.",
   dlgConfirm: "Confirm", btnCancel: "Cancel", btnSkip: "Skip", btnOk: "OK",
   expModalTitle: "Exporting", expModalText: "Preparing export…", btnDone: "Done",
   rstTitle: "Reset DeepSeek Harness",
@@ -207,6 +208,10 @@ const I18N_DYN = {
   "当前没有进行中的恢复任务": "No restore task in progress",
   "已请求取消，正在回退到恢复前状态…": "Cancel requested — rolling back to the pre-restore state…",
   "共 {0} 个可恢复项": "{0} restorable item(s)",
+  "正在恢复导入项，恢复期间不能重新添加压缩包。": "Restoring an import item — you can't add another archive until it finishes or is canceled.",
+  "上一项恢复仍在收尾，请稍候再试。": "The previous restore is still finishing up — please try again in a moment.",
+  "仍在回退到恢复前状态，请稍候…": "Still rolling back to the pre-restore state — please wait…",
+  "服务端仍在处理，请稍候…": "The service is still working on it — please wait…",
   "恢复": "Restore",
   "✓ 已完成": "✓ Restored",
   "正在启动服务并校验插件兼容性…": "Starting the service and verifying plugin compatibility…",
@@ -1639,6 +1644,12 @@ function fmtSize(n) {
 
 function wireImport() {
   $("btn-import-pick").addEventListener("click", async () => {
+    // 恢复进行中：不允许重新添加压缩包——重新解析会把导入项状态整体复位，
+    // 与后台正在跑的恢复任务（按旧包内容执行）错位（2026-09-13 现场问题）。
+    if (importBusy()) {
+      setImpHint(tr("正在恢复导入项，恢复期间不能重新添加压缩包。"), true);
+      return;
+    }
     setImpHint("正在解析压缩包…", false);
     try {
       const res = await bindings().ImportPick();

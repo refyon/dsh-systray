@@ -126,17 +126,39 @@ var i18nEnMap = map[string]string{
 	"是否重启后台 Web 服务？\n重启期间 Web UI 会短暂不可用。":                    "Restart the background web service?\nThe Web UI will be briefly unavailable during restart.",
 
 	"取消": "Cancel",
-	"DeepSeek Harness 服务已就绪。\n是否立即打开 Web UI？": "DeepSeek Harness service is ready.\nOpen the Web UI now?",
-	"DeepSeek Harness 服务已就绪。是否立即打开 Web UI？":   "DeepSeek Harness service is ready. Open the Web UI now?",
+	// 私有仓库 GitHub 授权引导（原生弹窗，见 gh.go / platform_*.go）
+	"登录 GitHub": "Sign in to GitHub",
+	"插件 %s 来自私有仓库 %s。\n\n检查更新需要 GitHub 授权：点击「登录 GitHub」后会打开浏览器，一次性代码自动复制到剪贴板，粘贴即可。": "Plugin %s comes from the private repository %s.\n\nChecking for updates requires GitHub authorization: clicking “Sign in to GitHub” opens your browser and copies a one-time code to the clipboard — just paste it.",
+	"GitHub 授权流程正在进行中，请先在浏览器中完成。": "GitHub authorization is already in progress — please finish it in your browser.",
+	"正在下载 GitHub CLI（首次约 15 MB）…": "Downloading the GitHub CLI (first run ~15 MB)…",
+	"正在下载 GitHub CLI（%.0f%%）…":    "Downloading the GitHub CLI (%.0f%%)…",
+	"GitHub CLI 已就绪":              "GitHub CLI is ready",
+	"正在准备 GitHub 授权…":             "Preparing GitHub authorization…",
+	"请在浏览器中填入一次性代码：【%s】":          "Enter this one-time code in the browser: 【%s】",
+	"GitHub CLI 下载失败：":            "GitHub CLI download failed: ",
+	// 导入：恢复进行中禁止重新添加压缩包（否则导入项状态被复位）
+	"正在恢复导入项，恢复期间不能重新添加压缩包。":                         "Restoring an import item — you can't add another archive until it finishes or is canceled.",
+	"正在恢复导入项，请等待完成或先取消后再添加压缩包。":                      "Restoring an import item — wait for it to finish or cancel it before adding another archive.",
+	"上一项恢复仍在收尾，请稍候再试。":                               "The previous restore is still finishing up — please try again in a moment.",
+	"仍在回退到恢复前状态，请稍候…":                                "Still rolling back to the pre-restore state — please wait…",
+	"服务端仍在处理，请稍候…":                                   "The service is still working on it — please wait…",
+	"授权已完成，但未能读取到凭据。\n可在终端执行 gh auth status 查看登录状态。": "Authorization finished, but no credential could be read.\nRun gh auth status in a terminal to check the sign-in state.",
+	"DeepSeek Harness 服务已就绪。\n是否立即打开 Web UI？":        "DeepSeek Harness service is ready.\nOpen the Web UI now?",
+	"DeepSeek Harness 服务已就绪。是否立即打开 Web UI？":          "DeepSeek Harness service is ready. Open the Web UI now?",
 
 	// 待应用插件变更（登记 → 应用）：窗口关闭/隐藏前的确认与相关提示
 	"立即应用并重启": "Apply & restart now",
-	"有 %d 项插件变更尚未应用。\n是否现在应用并重启服务？":
-	"%d plugin change(s) are not applied yet.\nApply them now and restart the service?",
-	"有 %d 项插件变更尚未应用。是否现在应用并重启服务？":
-	"%d plugin change(s) are not applied yet. Apply them now and restart the service?",
-	"正在应用已登记的插件变更，请等待完成后再操作。": "Pending plugin changes are being applied — please wait for it to finish.",
-	"插件已不存在（可能已被删除或移除），本项已跳过": "The plugin no longer exists (it may have been removed) — this change was skipped",
+	"有 %d 项插件变更尚未应用。\n是否现在应用并重启服务？": "%d plugin change(s) are not applied yet.\nApply them now and restart the service?",
+	"有 %d 项插件变更尚未应用。是否现在应用并重启服务？":   "%d plugin change(s) are not applied yet. Apply them now and restart the service?",
+	"正在应用已登记的插件变更，请等待完成后再操作。":       "Pending plugin changes are being applied — please wait for it to finish.",
+	"插件已不存在（可能已被删除或移除），本项已跳过":       "The plugin no longer exists (it may have been removed) — this change was skipped",
+}
+
+// ghAuthPromptMsg 私有仓库插件的 GitHub 授权询问文案（gh.go 与测试共用）。
+func ghAuthPromptMsg(plugin, repo string) string {
+	return TF("插件 %s 来自私有仓库 %s。\n\n"+
+		"检查更新需要 GitHub 授权：点击「登录 GitHub」后会打开浏览器，"+
+		"一次性代码自动复制到剪贴板，粘贴即可。", plugin, repo)
 }
 
 // T 按当前生效语言翻译 zh 文案；无映射时回退原文（zh）。

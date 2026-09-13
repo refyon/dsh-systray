@@ -572,6 +572,13 @@ func (a *App) CheckPluginUpdate(id string) PluginCheckResult {
 		return PluginCheckResult{Name: id, Error: T("未找到该插件，可能已被移除。")}
 	}
 	res := checkPluginUpdateByRow(row)
+	// 私有仓库（GitHub 来源）报「仓库不可见」时，引导 gh 设备流授权后重试一次：
+	// 未认证访问私有仓库必然 404，这一步把「查不到」变成「授权后能查到」。
+	if res.Error != "" && row.Source == "github" && strings.Contains(res.Error, repoNotVisibleMsg) {
+		if owner, repo, ok := githubSpecParts(row.Spec); ok && promptGitHubAuth(row.Name, owner+"/"+repo) {
+			res = checkPluginUpdateByRow(row)
+		}
+	}
 	state := "已是最新"
 	if res.Error != "" {
 		state = "失败：" + res.Error
