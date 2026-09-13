@@ -482,6 +482,7 @@ input { font-family: inherit; }
 /* 行内小号说明：原因 / 检查结果 / 错误 */
 .plug-note { color: var(--muted); font-size: var(--fs-xs); margin-top: 3px; line-height: 1.5; overflow-wrap: anywhere; }
 .plug-note.err { color: var(--danger); }
+.plug-note.warn { color: var(--warn); }
 .plug-note.ok { color: var(--ok); }
 
 /* 插件行操作按钮：单行排布（放不下时允许换行），按钮缩小后整行更紧凑 */

@@ -548,12 +548,14 @@ func (a *App) GetInstalledPlugins() []PluginRow {
 // 并隐藏该行的更新/删除按钮）。
 func markPendingPluginRows(rows []PluginRow) []PluginRow {
 	marks := pluginPendingMarks()
+	risks := pluginPendingRisks()
 	if len(marks) == 0 {
 		return rows
 	}
 	for i := range rows {
 		if op, ok := marks[rows[i].Name]; ok {
 			rows[i].PendingOp = op
+			rows[i].PendingRisk = risks[rows[i].Name]
 		}
 	}
 	return rows

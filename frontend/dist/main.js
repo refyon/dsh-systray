@@ -142,6 +142,19 @@ const I18N_DYN = {
   "有 {0} 项变更尚未生效（{1}）": "{0} change(s) not applied yet ({1})",
   "{0} 项更新": "{0} update(s)",
   "{0} 项删除": "{0} removal(s)",
+  // 插件删除的会话数据风险（该插件写入的自定义事件会让历史会话在删除后打不开）
+  "修复会话": "Fix sessions",
+  "删除后 {0} 个历史会话将无法打开（该插件写入了 {1} 条自定义记录），可点「修复会话」后删除":
+    "Deleting it makes {0} past session(s) unopenable (this plugin wrote {1} custom record(s)) — use \"Fix sessions\" first",
+  "（{0} 项删除会导致历史会话无法打开，可在行内先「修复会话」）":
+    " ({0} removal(s) will make past sessions unopenable — fix them inline first)",
+  "正在修复历史会话记录…": "Fixing past session records…",
+  "修复失败：{0}": "Fix failed: {0}",
+  "未知原因": "unknown reason",
+  "已修复 {0} 条记录；该插件仍在写入，还有 {1} 个会话存在风险":
+    "Fixed {0} record(s); the plugin is still writing — {1} session(s) remain at risk",
+  "已修复 {0} 个会话（{1} 条记录），删除后不再影响历史会话":
+    "Fixed {0} session(s) ({1} record(s)) — removal no longer affects past sessions",
   "已登记：更新到 {0}（重启服务后生效）": "Registered: update to {0} (takes effect after the service restarts)",
   "已登记：删除该插件（重启服务后生效）": "Registered: remove this plugin (takes effect after the service restarts)",
   "已登记：移除「待重指定」记录": "Registered: drop the pending-respec record",
@@ -706,6 +719,7 @@ function wireAbout() {
       else if (btn.dataset.discard !== undefined) doPluginDiscard(p, item, btn);
       else if (btn.dataset.update !== undefined) doPluginUpdate(p, item, btn);
       else if (btn.dataset.del !== undefined) doPluginRemove(p, item, btn);
+      else if (btn.dataset.repair !== undefined) doPluginRiskRepair(p, item, btn);
     });
   }
 }
@@ -718,11 +732,12 @@ function srcLabel(src) {
   return tr(z || src || "未知来源");
 }
 
-/** 行内小号状态文字：tone = ok | err | muted */
+/** 行内小号状态文字：tone = ok | err | warn | muted */
 function setNote(item, text, tone) {
   const note = item.querySelector("[data-note]");
   if (!note) return;
-  note.className = "plug-note" + (tone === "ok" || tone === "err" ? " " + tone : "");
+  const toned = tone === "ok" || tone === "err" || tone === "warn";
+  note.className = "plug-note" + (toned ? " " + tone : "");
   note.textContent = text || "";
 }
 
@@ -775,7 +790,11 @@ function renderPendingBanner() {
   const parts = [];
   if (updates) parts.push(fmt("{0} 项更新", updates));
   if (removes) parts.push(fmt("{0} 项删除", removes));
-  text.textContent = fmt("有 {0} 项变更尚未生效（{1}）", items.length, parts.join(" · ")) + " " + tr("重启服务后生效");
+  let line = fmt("有 {0} 项变更尚未生效（{1}）", items.length, parts.join(" · ")) + " " + tr("重启服务后生效");
+  // 删除类变更若检测到会话数据风险，横幅只报数量（逐条警示与「修复会话」在下方插件行内）
+  const risky = items.filter((p) => p.op === "remove" && p.risk && p.risk.sessions > 0).length;
+  if (risky) line += " " + fmt("（{0} 项删除会导致历史会话无法打开，可在行内先「修复会话」）", risky);
+  text.textContent = line;
   box.classList.remove("hidden");
 }
 
@@ -901,8 +920,17 @@ function renderPluginRow(p, idx) {
 
   // 待应用变更行：隐藏变更类按钮，只留「撤销」——变更已登记但未执行（需重启服务生效），
   // 重复点击更新/删除会造成「已登记还想再登记」的困惑与并发登记。
+  // 待删除且检测到会话数据风险时，另给「修复会话」入口（删除后这些历史会话会打不开）。
+  const risk = p.pendingOp === "remove" ? p.pendingRisk : null;
   if (p.pendingOp) {
     for (const b of [upBtn, delBtn]) b.classList.add("hidden");
+    if (risk && risk.sessions > 0) {
+      const fixBtn = document.createElement("button");
+      fixBtn.className = "btn btn-outline btn-xs";
+      fixBtn.textContent = tr("修复会话");
+      fixBtn.dataset.repair = "";
+      actions.appendChild(fixBtn);
+    }
     const undoBtn = document.createElement("button");
     undoBtn.className = "btn btn-outline btn-xs";
     undoBtn.textContent = tr("撤销");
@@ -916,10 +944,18 @@ function renderPluginRow(p, idx) {
   if (!p.canUpdate && p.reason && (p.source !== "file" || p.pendingLocal)) setNote(item, p.reason, "muted");
   // 重渲染后恢复行内状态（检查结果 / 更新可用性），避免过滤/刷新丢失
   const st = applyPlugState(item, state.plugState[p.name], p);
-  // 待应用变更：常驻提示「需重启服务生效」（优先于检查/禁用等行内状态）
+  // 待应用变更：常驻提示「需重启服务生效」（优先于检查/禁用等行内状态）；
+  // 若刚刚修复过会话记录，保留修复结论（st.fromRiskFix，见 doPluginRiskRepair）。
   if (p.pendingOp) {
-    setNote(item, fmt("待应用：{0}（重启服务后生效）",
-      p.pendingOp === "remove" ? tr("删除该插件") : tr("更新到最新版本")), "muted");
+    if (st && st.fromRiskFix && st.note) {
+      // 修复结论已由 applyPlugState 写入，此处不覆盖
+    } else if (risk && risk.sessions > 0) {
+      setNote(item, fmt("删除后 {0} 个历史会话将无法打开（该插件写入了 {1} 条自定义记录），可点「修复会话」后删除",
+        risk.sessions, risk.events), "warn");
+    } else {
+      setNote(item, fmt("待应用：{0}（重启服务后生效）",
+        p.pendingOp === "remove" ? tr("删除该插件") : tr("更新到最新版本")), "muted");
+    }
   } else if (p.disabled && !(st && st.note)) {
     // 禁用行默认原因行（无动态检查状态时显示）
     setNote(item, fmt("已禁用（{0}）", p.disabledReason || tr("与当前版本不兼容")), "err");
@@ -1060,6 +1096,40 @@ function doPluginRemove(p, item, delBtn) {
 async function doPluginDiscard(p, item, btn) {
   btn.disabled = true;
   bindings().DiscardPendingPluginChange(p.id);
+  await loadPlugins();
+}
+
+/**
+ * 修复待删除插件的会话数据风险：给该插件写入的自定义事件补上「可跳过」标记，修复后这些历史会话
+ * 在任何构建下都能正常打开（原日志逐个备份）。只动会话日志，不停服、不需要重启；插件仍在运行时
+ * 可能继续写入新记录，此时提示残留数量，可在应用变更前再修复一次。
+ */
+async function doPluginRiskRepair(p, item, btn) {
+  const a = bindings();
+  if (!a) return;
+  item.querySelectorAll("button").forEach((b) => { b.disabled = true; });
+  setNote(item, "正在修复历史会话记录…", "muted");
+  let r = null;
+  try {
+    r = await a.RepairPluginSessionEvents(p.id);
+  } catch (e) {
+    setNote(item, fmt("修复失败：{0}", e && e.message ? e.message : e), "err");
+    setTimeout(() => { item.querySelectorAll("button").forEach((b) => { b.disabled = false; }); }, 1500);
+    return;
+  }
+  const st = state.plugState[p.name] || (state.plugState[p.name] = {});
+  st.atVersion = p.version || ""; // 结论对应「当时版本」：版本变化即过期（与 applyPlugState 同口径）
+  st.fromRiskFix = true;
+  if (!r || !r.ok) {
+    st.note = fmt("修复失败：{0}", (r && r.reason) || tr("未知原因"));
+    st.noteTone = "err";
+  } else if ((r.remainingSessions || 0) > 0) {
+    st.note = fmt("已修复 {0} 条记录；该插件仍在写入，还有 {1} 个会话存在风险", r.events, r.remainingSessions);
+    st.noteTone = "warn";
+  } else {
+    st.note = fmt("已修复 {0} 个会话（{1} 条记录），删除后不再影响历史会话", r.files, r.events);
+    st.noteTone = "ok";
+  }
   await loadPlugins();
 }
 

@@ -47,6 +47,10 @@ type pluginOpTask struct {
 	recordOnly  bool   // 只改记录（待重指定 / 无依赖声明的自动禁用行）：不停服、不做包操作
 	wasDisabled bool   // update 前处于禁用态：成功后解除禁用，交批末校验判定
 
+	// risk 删除登记时检测到的会话数据风险（该插件往会话日志写入的自定义事件；nil=无风险）。
+	// 仅作提示与「修复」入口，不阻断登记与执行；修复后回填复查结果（见 plugin_session_events.go）。
+	risk *pluginSessionRisk
+
 	// 结果
 	ok     bool
 	reason string
@@ -82,7 +86,7 @@ func pluginPendingOps() []pendingPluginOp {
 	defer pluginQMu.Unlock()
 	out := make([]pendingPluginOp, 0, len(pluginPending))
 	for _, t := range pluginPending {
-		out = append(out, pendingPluginOp{ID: t.id, Op: t.op})
+		out = append(out, pendingPluginOp{ID: t.id, Op: t.op, Risk: t.risk})
 	}
 	return out
 }
@@ -98,11 +102,25 @@ func pluginPendingMarks() map[string]string {
 	return out
 }
 
+// pluginPendingRisks 待应用变更的「插件名 → 会话数据风险」，供插件行展示风险警示与「修复」入口。
+func pluginPendingRisks() map[string]*pluginSessionRisk {
+	pluginQMu.Lock()
+	defer pluginQMu.Unlock()
+	out := make(map[string]*pluginSessionRisk, len(pluginPending))
+	for _, t := range pluginPending {
+		if t.risk != nil {
+			out[t.name] = t.risk
+		}
+	}
+	return out
+}
+
 // PendingPluginChange 关于页横幅展示的一条待应用变更。
 type PendingPluginChange struct {
-	ID   string `json:"id"`
-	Name string `json:"name"`
-	Op   string `json:"op"` // update | remove
+	ID   string             `json:"id"`
+	Name string             `json:"name"`
+	Op   string             `json:"op"` // update | remove
+	Risk *pluginSessionRisk `json:"risk,omitempty"`
 }
 
 // pluginPendingList 待应用变更列表（关于页横幅）。
@@ -111,7 +129,7 @@ func pluginPendingList() []PendingPluginChange {
 	defer pluginQMu.Unlock()
 	out := make([]PendingPluginChange, 0, len(pluginPending))
 	for _, t := range pluginPending {
-		out = append(out, PendingPluginChange{ID: t.id, Name: t.name, Op: t.op})
+		out = append(out, PendingPluginChange{ID: t.id, Name: t.name, Op: t.op, Risk: t.risk})
 	}
 	return out
 }
@@ -137,6 +155,7 @@ func loadPendingPluginOps(ops []pendingPluginOp) int {
 			dropped++
 			continue
 		}
+		t.risk = o.Risk // 跨托盘重启保留上次检测到的风险与「修复」入口
 		dup := false
 		for _, q := range pluginPending {
 			if q.id == t.id {
@@ -249,6 +268,11 @@ func pluginOpStage(id, op string) (bool, string) {
 	t, why := pluginOpPrepare(row, op)
 	if why != "" {
 		return reject(why)
+	}
+	// 删除登记时先查会话数据风险（该插件往会话日志写过自定义事件吗？删掉后有多少会话会打不开）。
+	// 只登记、不阻断：有风险时行内给警示与「修复」入口，由用户决定先修复还是照删。
+	if op == "remove" {
+		t.risk = checkPluginRemovalRisk(t.name)
 	}
 	verb := map[string]string{"update": "更新", "remove": "删除"}[op]
 

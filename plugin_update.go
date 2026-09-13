@@ -124,6 +124,9 @@ type PluginRow struct {
 	Disabled       bool     `json:"disabled"`       // 是否处于禁用状态（不兼容自愈：不在 bundles 激活清单）
 	DisabledReason string   `json:"disabledReason"` // 禁用原因（启动日志错误摘要）
 	PendingOp      string   `json:"pendingOp"`      // 待应用变更：update | remove（空=无）；需重启服务才生效
+	// PendingRisk 待应用「删除」的会话数据风险：该插件写入的自定义事件会让这些会话在删除后打不开；
+	// 前端据此显示警示与「修复」入口（nil=无风险或非删除变更）。
+	PendingRisk *pluginSessionRisk `json:"pendingRisk,omitempty"`
 }
 
 // PluginCheckResult 单个插件的检查结果。

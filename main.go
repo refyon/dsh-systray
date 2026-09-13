@@ -118,6 +118,8 @@ type appConfig struct {
 type pendingPluginOp struct {
 	ID string `json:"id"` // 插件行稳定标识（PluginRow.ID）
 	Op string `json:"op"` // update | remove
+	// Risk 删除登记时检测到的会话数据风险（该插件写入的自定义事件）：跨重启保留警示与「修复」入口。
+	Risk *pluginSessionRisk `json:"risk,omitempty"`
 }
 
 // configFilePath 用户配置目录下的 config.json（Windows: %APPDATA%\dsh-systray；macOS: ~/Library/Application Support/dsh-systray）。
@@ -515,7 +517,7 @@ func onStartup(ctx context.Context) {
 		start, _ := systray.RunWithExternalLoop(onReady, onExit)
 		start()
 	}
-		go bootstrapService()
+	go bootstrapService()
 }
 
 // pendingPluginOpsFromConfig 启动时从 config.json 读到的待应用插件变更（onStartup 逐条校验载入）。
