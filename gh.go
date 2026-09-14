@@ -37,6 +37,11 @@ const (
 	ghRepoOwner       = "cli"
 	ghRepoName        = "cli"
 
+	// ghAuthStartAttempts 设备流「起流」阶段的尝试次数。本机到 github.com 的连接会周期性
+	// 被阻断（2026-09-14 实证：设备码请求 21s 后失败，同期 git pull 也是 21s 连接超时），
+	// 起流失败时用户还没拿到任何东西，自动重试比让用户反复点「检查更新」可靠。
+	ghAuthStartAttempts = 3
+
 	// ghLoginLabel 授权确认弹窗的主按钮文案（zh 字面量，en 由 i18nEnMap 翻译）。
 	// 平台层 askGitHubAuth 与回归测试共用，避免按钮文案漂移成空串而不可见。
 	ghLoginLabel = "登录 GitHub"
@@ -62,6 +67,13 @@ var (
 	ghTokenFailedAt time.Time
 	ghTokenMu       sync.Mutex
 	ghAuthFlowMu    sync.Mutex // 串行化授权流程：并发点「检查更新」不会起第二个 gh
+
+	// ghAuthRetryDelay 起流失败到重试之间的等待（变量而非常量：测试里置 0，不真的睡）。
+	ghAuthRetryDelay = 2 * time.Second
+
+	// ghDeviceFlowOnce 单次设备流执行（起流 → 展示代码 → 等用户完成授权）。抽成变量以便
+	// 测试注入假实现验证重试策略，不必在测试里 spawn 真实 gh。
+	ghDeviceFlowOnce = ghDeviceLoginOnce
 
 	// ghDownloadMu 压制重复的 GitHub CLI 下载（结果经 ghDownloadDone 广播）。
 	ghDownloadMu   sync.Mutex
@@ -238,6 +250,157 @@ func invalidateGHToken() {
 	ghTokenFailedAt = time.Time{}
 }
 
+// ==================== 私有仓库的拉包凭据（gh → git / pnpm） ====================
+// 检查更新只用内存里的 token；**更新**（pnpm 重解析并下载私有仓库）还要两个凭据出口：
+//  1. git：pnpm 解析 github: spec 的引用时跑 `git ls-remote`（本机实证：未认证时
+//     could not read Username），用 gh 写进 git 配置的凭据助手取 token；
+//  2. codeload：pnpm 把 hosted-git spec 解析成 codeload tarball 下载（本机实证：
+//     未认证 404），用用户级 npmrc 里的 tokenHelper 取 token（pnpm 执行该命令、
+//     把 stdout 当 token）。
+// 两处配置都只写「命令」、不写 token（token 由 gh 从系统凭据库读出），与 gh.go 顶部
+// 「令牌只经内存」的约定一致。
+
+// codeloadTokenHelperKey 用户级 .npmrc 的 codeload 凭据键。必须用户级：pnpm 明确拒绝
+// 项目级 .npmrc 里的 tokenHelper（TOKEN_HELPER_IN_PROJECT_CONFIG）。
+const codeloadTokenHelperKey = "//codeload.github.com/:tokenHelper="
+
+var (
+	ghCredsMu   sync.Mutex
+	ghCredsDone bool // 本进程是否已尝试配置（失败也不反复 spawn gh / 改文件）
+	ghCredsOK   bool
+)
+
+// ensureGitHubPrivateRepoCreds 把 gh 的凭据接给 git 与 pnpm（幂等，进程内只成功/失败一次）。
+// 失败只影响私有仓库的「更新」拉包，不影响检查更新与授权，调用方不必当致命错误处理。
+func ensureGitHubPrivateRepoCreds() bool {
+	ghCredsMu.Lock()
+	defer ghCredsMu.Unlock()
+	if ghCredsDone {
+		return ghCredsOK
+	}
+	bin := findGHBinary()
+	if bin == "" {
+		return false // gh 尚未就位：不记结果，装好 gh 后再调用仍有机会成功
+	}
+	ok := true
+	if err := ghSetupGitCredentials(bin); err != nil {
+		logWarn("app", "gh auth setup-git failed: %v", err)
+		ok = false
+	}
+	if err := writeCodeloadTokenHelper(bin); err != nil {
+		logWarn("app", "npmrc codeload credential failed: %v", err)
+		ok = false
+	}
+	ghCredsDone, ghCredsOK = true, ok
+	if ok {
+		logInfo("app", "private repo credentials ready (git credential helper + npmrc tokenHelper)")
+	}
+	return ok
+}
+
+// ghSetupGitCredentials 让 git 也用 gh 的凭据（pnpm 解析 github: spec 走 git ls-remote，
+// 不经过 npmrc）。gh 只把「凭据助手命令」写进 git 配置，token 仍在系统凭据库。
+// 需要已登录：未登录时 gh 直接报错退出，不会写入任何配置（本机实证）。
+func ghSetupGitCredentials(bin string) error {
+	ctx, cancel := context.WithTimeout(context.Background(), ghTokenCmdTimeout)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, bin, "auth", "setup-git", "--hostname", "github.com")
+	cmd.SysProcAttr = ghSysProcAttr() // 不留控制台窗口（见 procattr_windows.go）
+	if out, err := cmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("%v（%s）", err, strings.TrimSpace(string(out)))
+	}
+	return nil
+}
+
+// writeCodeloadTokenHelper 在用户级 ~/.npmrc 写入/更新 codeload 的 tokenHelper。
+// 幂等：内容已一致时不碰文件；只动这一行，保留用户其它配置。
+func writeCodeloadTokenHelper(bin string) error {
+	if !npmrcTokenHelperPathSafe(bin) {
+		return fmt.Errorf("gh 路径含空白或 pnpm 保留字符，无法用 tokenHelper 表达：%s", bin)
+	}
+	p, err := userNpmrcPath()
+	if err != nil {
+		return err
+	}
+	cur := ""
+	if b, rerr := os.ReadFile(p); rerr == nil {
+		cur = string(b)
+	} else if !os.IsNotExist(rerr) {
+		return rerr
+	}
+	next, changed := upsertNpmrcTokenHelper(cur, codeloadTokenHelperKey+bin+" auth token --hostname github.com")
+	if !changed {
+		return nil
+	}
+	// 先写同目录临时文件再改名：避免写一半留下残缺的 npmrc（用户可能还有别的配置）。
+	tmp := p + ".dsh-tmp"
+	if err := os.WriteFile(tmp, []byte(next), 0o644); err != nil {
+		return err
+	}
+	if err := os.Rename(tmp, p); err != nil {
+		_ = os.Remove(tmp)
+		return err
+	}
+	return nil
+}
+
+// userNpmrcPath 用户级 npmrc 路径（npm 的 userconfig）。
+func userNpmrcPath() (string, error) {
+	home, err := os.UserHomeDir()
+	if err != nil || home == "" {
+		return "", fmt.Errorf("无法确定用户主目录")
+	}
+	return filepath.Join(home, ".npmrc"), nil
+}
+
+// npmrcTokenHelperPathSafe gh 可执行文件路径能否直接用于 tokenHelper：pnpm 按空白切分
+// 该配置，并禁止 $ % ` " ' 这些字符（parseCreds.js 的 RESERVED_CHARACTERS），因此路径里
+// 带空格/特殊字符的 gh 无法表达，只能让用户改用不含特殊字符的 gh。
+func npmrcTokenHelperPathSafe(bin string) bool {
+	if bin == "" || strings.TrimSpace(bin) != bin {
+		return false
+	}
+	if strings.ContainsAny(bin, " \t") {
+		return false
+	}
+	return !strings.ContainsAny(bin, "$%`\"'")
+}
+
+// upsertNpmrcTokenHelper 在 npmrc 文本里写入或更新 tokenHelper 行，返回新内容与是否变更。
+// 只动这一行：同键历史重复行合并为一行，其余内容原样保留（含原有换行风格）。
+func upsertNpmrcTokenHelper(content, line string) (string, bool) {
+	nl := "\n"
+	if strings.Contains(content, "\r\n") {
+		nl = "\r\n"
+	}
+	var lines []string
+	if body := strings.TrimSuffix(content, "\n"); body != "" {
+		lines = strings.Split(body, "\n")
+	}
+	out := make([]string, 0, len(lines)+1)
+	replaced := false
+	for _, ln := range lines {
+		ln = strings.TrimSuffix(ln, "\r")
+		if strings.HasPrefix(strings.TrimSpace(ln), codeloadTokenHelperKey) {
+			if replaced {
+				continue // 历史重复行：合并为一行
+			}
+			out = append(out, line)
+			replaced = true
+			continue
+		}
+		out = append(out, ln)
+	}
+	if !replaced {
+		out = append(out, line)
+	}
+	next := strings.Join(out, nl) + nl
+	if next == content {
+		return content, false
+	}
+	return next, true
+}
+
 // ghVerifyURLRe 从 gh 输出里取设备授权页地址。
 // gh 在非 TTY 环境（本程序以管道 stdio 运行它）**不会自己拉起浏览器**，只打印：
 //
@@ -247,25 +410,29 @@ func invalidateGHToken() {
 // 所以浏览器由本程序代为拉起（2026-09-13 实证）。
 var ghVerifyURLRe = regexp.MustCompile(`https://\S+`)
 
-// ghVerifyURLFromOutput 从 gh 输出里取授权页地址；没有合法地址时返回空串。
-// 只在 github.com 域名下取值，避免 gh 输出里的其它链接（如帮助文档）被误当授权页。
+// ghVerifyURLFromOutput 从 gh 输出里取设备授权页地址；没有合法地址时返回空串。
+// 只认设备授权页本身（github.com/login/device）：gh 输出里别的 github.com 链接都不是它——
+// 升级提示指向 release 页，而设备码请求失败时打印的是 Go 的 *url.Error，里面那个
+// https://github.com/login/device/code 是 **API 端点**。旧逻辑按 host 判定，把 API 端点
+// 当授权页打开（2026-09-14 本机日志实证：opening https://github.com/login/device/code": ，
+// 一次性代码长度 0）：用户看到 API 页面、无从填码，整条授权流程停在死路上。
 func ghVerifyURLFromOutput(out string) string {
 	for _, u := range ghVerifyURLRe.FindAllString(out, -1) {
-		u = strings.TrimRight(u, ".,;)") // 去掉行尾标点
-		if host, ok := ghVerifyHost(u); ok && strings.EqualFold(host, "github.com") {
+		u = strings.TrimRight(u, `.,;:)]}"'`) // 去掉行尾标点与引号（错误文本里 URL 后面常跟 ": ）
+		if ghIsDeviceVerifyURL(u) {
 			return u
 		}
 	}
 	return ""
 }
 
-// ghVerifyHost 取 URL 的 host（解析失败返回 false）。
-func ghVerifyHost(raw string) (string, bool) {
+// ghIsDeviceVerifyURL 是否为设备授权页：host=github.com 且 path=/login/device。
+func ghIsDeviceVerifyURL(raw string) bool {
 	u, err := url.Parse(raw)
-	if err != nil || u.Host == "" {
-		return "", false
+	if err != nil || !strings.EqualFold(u.Host, "github.com") {
+		return false
 	}
-	return u.Host, true
+	return strings.EqualFold(strings.TrimRight(u.Path, "/"), "/login/device")
 }
 
 // ghDeviceCodeRe 抓一次性授权码（形如 D41C-AB86：4 位 + 连字符 + 4 位，字母数字）。
@@ -281,13 +448,39 @@ func ghDeviceCodeFromOutput(out string) string {
 	return ""
 }
 
-// ghDeviceLogin 跑 gh 设备流授权：等 gh 打出一次性代码与授权页地址后，由本程序
+// ghDeviceLogin 跑 gh 设备流授权，起流失败（用户还没看到代码，通常是网络瞬断）时自动重试。
+// onWait(url, code) 在抓到授权页地址时回调一次。onAttempt(attempt, total) 每次尝试开始前
+// 回调（nil 表示不关心），供调用方展示「正在重连」而不是干等。
+func ghDeviceLogin(bin string, onWait func(url, code string), onAttempt func(attempt, total int)) error {
+	var lastErr error
+	for attempt := 1; attempt <= ghAuthStartAttempts; attempt++ {
+		if onAttempt != nil {
+			onAttempt(attempt, ghAuthStartAttempts)
+		}
+		shown, err := ghDeviceFlowOnce(bin, onWait)
+		if err == nil {
+			return nil
+		}
+		lastErr = err
+		// 代码/地址已经给到用户后不再重试：此时失败属于「用户没在窗口期内完成」，
+		// 重试会换一个新码，只会让用户手里的码失效。
+		if shown || attempt == ghAuthStartAttempts {
+			return err
+		}
+		logWarn("app", "github device flow start failed (attempt %d/%d), retrying: %s",
+			attempt, ghAuthStartAttempts, strings.SplitN(err.Error(), "\n", 2)[0])
+		time.Sleep(ghAuthRetryDelay)
+	}
+	return lastErr
+}
+
+// ghDeviceLoginOnce 单次设备流授权：等 gh 打出一次性代码与授权页地址后，由本程序
 // 打开浏览器（并把代码写进剪贴板），再等待用户在浏览器内完成授权。
 // 输出不含凭据（token 由 gh 写入系统凭据库，不经过这里）。
-// onWait(url, code) 在抓到授权页地址时回调一次，用于向用户展示地址与代码。
+// 返回 shown=是否已把授权页地址与代码展示给用户（决定上层能否重试）。
 // SysProcAttr.HideWindow 必须设置：否则 Windows 会为 gh.exe 新建一个命令行窗口，
 // 用户看到的是黑窗口而不是浏览器（2026-09-13 实证）。
-func ghDeviceLogin(bin string, onWait func(url, code string)) error {
+func ghDeviceLoginOnce(bin string, onWait func(url, code string)) (shown bool, err error) {
 	ctx, cancel := context.WithTimeout(context.Background(), ghAuthFlowTimeout)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, bin, "auth", "login",
@@ -297,11 +490,11 @@ func ghDeviceLogin(bin string, onWait func(url, code string)) error {
 
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
-		return fmt.Errorf("无法建立 GitHub 授权输出通道：%w", err)
+		return false, fmt.Errorf("无法建立 GitHub 授权输出通道：%w", err)
 	}
 	cmd.Stderr = cmd.Stdout // gh 的提示统一走 stderr，合并后一次扫描
 	if err := cmd.Start(); err != nil {
-		return fmt.Errorf("无法启动 GitHub 授权：%w", err)
+		return false, fmt.Errorf("无法启动 GitHub 授权：%w", err)
 	}
 
 	var (
@@ -355,17 +548,17 @@ func ghDeviceLogin(bin string, onWait func(url, code string)) error {
 	scanMu.Unlock()
 	switch {
 	case ctx.Err() == context.DeadlineExceeded:
-		return fmt.Errorf("等待 GitHub 授权超时（%s 内未完成）。\n可稍后在终端执行 gh auth login 重试。", ghAuthFlowTimeout)
+		return opened, fmt.Errorf("等待 GitHub 授权超时（%s 内未完成）。\n可稍后在终端执行 gh auth login 重试。", ghAuthFlowTimeout)
 	case err != nil:
-		return fmt.Errorf("GitHub 授权未完成：%v\n%s", err, out)
+		return opened, fmt.Errorf("GitHub 授权未完成：%v\n%s", err, out)
 	case !opened:
 		// 没抓到地址：把 gh 的提示原样带出去，别让用户面对一句没有线索的失败。
 		if scanErr != nil {
-			return fmt.Errorf("GitHub 授权流程异常：%v\n%s", scanErr, out)
+			return false, fmt.Errorf("GitHub 授权流程异常：%v\n%s", scanErr, out)
 		}
-		return fmt.Errorf("未能获取 GitHub 授权页地址。\n%s", out)
+		return false, fmt.Errorf("未能获取 GitHub 授权页地址。\n%s", out)
 	}
-	return nil
+	return true, nil
 }
 
 // startGHDownload 首次授权前下载 gh 便携版：在设置窗口的进度视图里展示下载／安装进度
@@ -458,12 +651,26 @@ func promptGitHubAuth(plugin, repo string) bool {
 	err := ghDeviceLogin(bin, func(url, code string) {
 		// 授权码必须显示出来：网页要用户手工填入，剪贴板可能被覆盖。
 		// 状态行是单行（前端 textContent + 不保留换行），所以代码与说明同行、用括号框住。
-		splash.Update(TF("请在浏览器中填入一次性代码：【%s】", code), 0.33)
-		logUI("打开 GitHub 授权页", "一次性代码 "+code+"，地址 "+url)
+		if code == "" {
+			// 没解析到代码（gh 输出格式变动）：至少引导用户去浏览器完成，不显示空的【】。
+			splash.Update(T("请在浏览器中完成 GitHub 授权（一次性代码已复制到剪贴板）。"), 0.33)
+		} else {
+			splash.Update(TF("请在浏览器中填入一次性代码：【%s】", code), 0.33)
+		}
+		logUI("打开 GitHub 授权页", "一次性代码 "+orDash(code)+"，地址 "+url)
+	}, func(attempt, total int) {
+		// 起流重试期间给可见反馈：本机到 github.com 的连接会周期性被阻断，第一次尝试
+		// 可能要等 20s 才失败（2026-09-14 实证），没有提示用户只会以为界面卡死。
+		if attempt > 1 {
+			splash.Update(TF("正在重新连接 GitHub（第 %d/%d 次尝试）…", attempt, total), 0.05)
+		}
 	})
 	splash.Close()
 	notifySplashDone()
 	if err != nil {
+		// 失败也要留痕：此前只有成功路径写日志，出问题时日志页只剩「仓库不可见」，
+		// 看不出授权卡在哪一步（2026-09-14 排障实证）。
+		logUI("GitHub 授权失败", strings.SplitN(err.Error(), "\n", 2)[0])
 		if appCtx != nil {
 			wruntime.WindowShow(appCtx)
 			ensureMainWindowForeground()
@@ -476,6 +683,12 @@ func promptGitHubAuth(plugin, repo string) bool {
 		showMessageBox(T("授权已完成，但未能读取到凭据。\n可在终端执行 gh auth status 查看登录状态。"), appName)
 		return false
 	}
-	logUI("GitHub 授权成功", "私有仓库插件的检查更新已启用")
+	// 授权成功顺手把「更新」需要的凭据出口接好（git 凭据助手 + npmrc tokenHelper）：
+	// 检查更新只用内存 token，但 pnpm 拉私有仓库包要走这两个出口。
+	if ensureGitHubPrivateRepoCreds() {
+		logUI("GitHub 授权成功", "私有仓库插件的检查更新与更新拉包均已启用")
+	} else {
+		logUI("GitHub 授权成功", "检查更新已启用；拉包凭据未就绪（见上方告警，更新可能失败）")
+	}
 	return true
 }

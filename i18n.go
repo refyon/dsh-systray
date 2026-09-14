@@ -135,6 +135,8 @@ var i18nEnMap = map[string]string{
 	"GitHub CLI 已就绪":              "GitHub CLI is ready",
 	"正在准备 GitHub 授权…":             "Preparing GitHub authorization…",
 	"请在浏览器中填入一次性代码：【%s】":          "Enter this one-time code in the browser: 【%s】",
+	"请在浏览器中完成 GitHub 授权（一次性代码已复制到剪贴板）。": "Finish the authorization in your browser (the one-time code is already on your clipboard).",
+	"正在重新连接 GitHub（第 %d/%d 次尝试）…":       "Reconnecting to GitHub (attempt %d of %d)…",
 	"GitHub CLI 下载失败：":            "GitHub CLI download failed: ",
 	// 导入：恢复进行中禁止重新添加压缩包（否则导入项状态被复位）
 	"正在恢复导入项，恢复期间不能重新添加压缩包。":                         "Restoring an import item — you can't add another archive until it finishes or is canceled.",

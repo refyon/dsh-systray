@@ -2,10 +2,14 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 // TestClassifyPluginSpec 依赖 spec → 来源分类（npm/github/file/tarball/unknown）与可否更新。
@@ -70,6 +74,36 @@ func TestGithubSpecParts(t *testing.T) {
 		if ok != c.ok || o != c.owner || r != c.repo {
 			t.Errorf("spec %q: got (%s,%s,%v), want (%s,%s,%v)", c.spec, o, r, ok, c.owner, c.repo, c.ok)
 		}
+	}
+}
+
+// TestGetWithMirrorsNotVisibleOnlyFromDirect 「仓库不可见」只能由直连候选（唯一携带凭据的
+// 通道）下结论：镜像的 404 只是这条通道没看到，据它引导 GitHub 授权会把「已授权但直连被
+// 间歇阻断」变成反复授权却始终失败的循环（2026-09-14 本机实证）。
+func TestGetWithMirrorsNotVisibleOnlyFromDirect(t *testing.T) {
+	notFound := func() *httptest.Server {
+		return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusNotFound)
+		}))
+	}
+	var notVisible *githubNotVisibleError
+
+	// 直连候选 404：判定为「对当前身份不可见」。
+	direct := notFound()
+	defer direct.Close()
+	if _, err := getWithMirrors([]string{direct.URL}, time.Second); !errors.As(err, &notVisible) {
+		t.Errorf("直连 404: err = %v, want githubNotVisibleError", err)
+	}
+
+	// 直连网络失败 + 镜像 404：只能是通道失败，不能给出身份判定。
+	mirror := notFound()
+	defer mirror.Close()
+	_, err := getWithMirrors([]string{"http://127.0.0.1:1", mirror.URL}, 5*time.Second)
+	if err == nil {
+		t.Fatal("直连失败 + 镜像 404: err = nil, want error")
+	}
+	if errors.As(err, &notVisible) {
+		t.Errorf("镜像 404 被误判为仓库不可见: %v", err)
 	}
 }
 

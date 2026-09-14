@@ -541,6 +541,13 @@ func runPluginUpdatePhase(t *pluginOpTask, splash *SplashState, idx int) {
 	}
 	t.target = target
 
+	// 私有仓库（github 来源 + 已有 gh 凭据）的拉包还需要 git 凭据助手与 npmrc
+	// tokenHelper：**已在旧版本完成授权**的机器不会重新走授权流程，只在授权钩子里
+	// 配置会漏掉它们（幂等，已配置则直接返回）。
+	if row.Source == "github" && ghAuthToken() != "" {
+		ensureGitHubPrivateRepoCreds()
+	}
+
 	for _, dir := range row.Locs {
 		t.hadNM = append(t.hadNM, snapshotPluginProfileSuffix(dir, t.snap))
 	}

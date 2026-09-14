@@ -117,8 +117,8 @@ Prerequisites: Go 1.21+, [Wails CLI v2](https://wails.io/docs/gettingstarted/ins
 
 | Platform | Build command |
 | --- | --- |
-| Windows | `wails build -s -clean -platform windows/amd64 -ldflags "-X main.appVersion=v0.8.0"` |
-| macOS | `wails build -s -clean -platform darwin/universal -ldflags "-X main.appVersion=v0.8.0"` |
+| Windows | `wails build -s -clean -platform windows/amd64 -ldflags "-X main.appVersion=v0.9.1"` |
+| macOS | `wails build -s -clean -platform darwin/universal -ldflags "-X main.appVersion=v0.9.1"` |
 
 > - `-s`: skips the frontend build (embeds `frontend/dist` directly); after frontend changes simply re-run `wails build`
 > - `-X main.appVersion=` injects the current version used for auto-update comparison (injected automatically when GitHub Actions builds a tagged release; local builds may omit it — the version is then `dev`, which skips update checks)

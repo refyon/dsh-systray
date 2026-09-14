@@ -14,6 +14,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -503,6 +504,14 @@ func findPluginRowByID(id string) (PluginRow, bool) {
 
 // ---- 网络查询 ----
 
+// githubNotVisibleError 直连 GitHub 官方端点返回的「仓库对当前身份不可见」（404/403）。
+// 只有直连候选能下这个结论——它是唯一携带 gh 凭据的通道（凭据不转发给第三方镜像，见
+// getWithMirrors）。镜像的 404 只说明这条通道没看到：据此引导用户去授权，会把「已授权
+// 但直连被间歇阻断」（2026-09-14 本机实证）变成反复授权却始终失败的循环。
+type githubNotVisibleError struct{ code int }
+
+func (e *githubNotVisibleError) Error() string { return fmt.Sprintf("HTTP %d", e.code) }
+
 // getWithMirrors 带多候选（直连 + 镜像前缀）的 GET，把候选 URL 依次请求直至成功。
 // deadline 为整体预算（上下文超时，逐候选共享），避免镜像全挂时长时间卡 UI；
 // 单候选另有 pluginCheckCandidateTimeout 上限（取剩余预算更小者），防止单个挂起候选独占预算。
@@ -540,8 +549,9 @@ func getWithMirrors(candidates []string, deadline time.Duration) ([]byte, error)
 			candCancel()
 			// 直连候选（i==0）给出的 404/403 是确定性结论——仓库不存在或为私有仓库
 			// （未认证不可见），镜像不会改变可见性，立即收尾，避免把剩余预算耗在镜像回退上。
+			// 用带类型的错误把「身份判定」与「通道失败」区分开（镜像 404 不算判定）。
 			if i == 0 && (code == http.StatusNotFound || code == http.StatusForbidden) {
-				return nil, fmt.Errorf("HTTP %d", code)
+				return nil, &githubNotVisibleError{code: code}
 			}
 			lastErr = fmt.Errorf("HTTP %d", code)
 			continue
@@ -788,7 +798,10 @@ func githubDefaultBranch(owner, repo string) (string, error) {
 	if err != nil {
 		// 404 不是网络故障，而是「未认证看不到这个仓库」（私有仓库，或已改名/删除）。
 		// 单独说明，避免用户把它误判成镜像/网络问题（2026-09-13 复盘）。
-		if strings.Contains(err.Error(), "HTTP 404") {
+		// 只有直连通道的 404/403 算这个结论：镜像 404 只是通道失败，报授权引导会让
+		// 已授权的用户反复重登（见 githubNotVisibleError）。
+		var notVisible *githubNotVisibleError
+		if errors.As(err, &notVisible) {
 			return "", fmt.Errorf("%s：%s/%s 不存在或为私有仓库（私有仓库需先完成 GitHub 授权）", repoNotVisibleMsg, owner, repo)
 		}
 		return "", fmt.Errorf("GitHub 仓库查询失败：%w", err)
