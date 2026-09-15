@@ -22,7 +22,9 @@ func TestShotGitHubAuthDialog(t *testing.T) {
 		langPref = normalizeLang(v)
 	}
 	curLang = resolveLang(langPref)
-	msg := ghAuthPromptMsg("refyon/dsh-ui-taste", "refyon/dsh-ui-taste")
+	// 脱敏：插件名与来源仓库一律用虚构示例（与 plugin_update.go shotPlugins 的示例集一致），
+	// 截图会进公开站点/README，不能暴露开发者真实的私有仓库标识。
+	msg := ghAuthPromptMsg("prompt-assistant", "example/prompt-assistant")
 	runModernDialog(appName, msg, []string{T("取消"), T(ghLoginLabel)}, 1)
 	time.Sleep(500 * time.Millisecond)
 }

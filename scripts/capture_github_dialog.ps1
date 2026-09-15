@@ -6,9 +6,12 @@
 #
 # 两种模式：
 #   默认（窗口 + 弹窗合成）——先以截图模式启动设置窗口（DSH_SYSTRAY_SHOT_PAGE 指定页面），
-#     再把弹窗弹到窗口之上，整屏抓取设置窗口客户区，得到与其它轮播图同尺寸（808×505）的
-#     「设置窗口 + 授权弹窗」图。
+#     再把弹窗弹到窗口客户区中央，抓成与其它轮播图同尺寸（808×505）的「设置窗口 + 授权弹窗」图。
+#     抓图优先整屏抓取，桌面不可用（锁屏等）时自动退回 PrintWindow 双窗合成，见下方注释。
 #   -DialogOnly —— 只截弹窗本身（旧行为：PrintWindow 单窗口抓取，436×191）。
+#
+# 弹窗文案是脱敏示例（tmp_shot_dialog_test.go 用 prompt-assistant / example/prompt-assistant，
+# 与 plugin_update.go shotPlugins 的虚构示例集一致），截图会进公开站点，不要写真实私有仓库名。
 #
 # 注意：设置程序是单实例（互斥体），脚本会先结束正在运行的 dsh-systray 托盘实例，
 #       跑完后需用户自行重新启动托盘程序。
@@ -99,14 +102,14 @@ if (-not $OutFile) {
 New-Item -ItemType Directory -Force -Path (Split-Path -Parent $OutFile) | Out-Null
 
 if (-not (Test-Path $appExe)) { throw "未找到 $appExe（先构建：scripts\build.ps1）" }
-if (-not (Test-Path $dialogExe)) {
-    Write-Host "building dialogshot.exe ..."
-    Push-Location $root
-    try {
-        & go test -c -o $dialogExe .
-        if ($LASTEXITCODE -ne 0) { throw 'go test -c 失败（dialogshot.exe 未生成）' }
-    } finally { Pop-Location }
-}
+# 每次都重编 dialogshot.exe：弹窗文案改动（如脱敏示例名）必须落到截图上，
+# 旧二进制残留会让图里继续出现改动前的文案（有构建缓存，重编只需数秒）。
+Write-Host 'building dialogshot.exe ...'
+Push-Location $root
+try {
+    & go test -c -o $dialogExe .
+    if ($LASTEXITCODE -ne 0) { throw 'go test -c 失败（dialogshot.exe 未生成）' }
+} finally { Pop-Location }
 
 if ($Lang -eq 'en') { $env:DSH_SYSTRAY_LANG = 'en' } else { Remove-Item Env:DSH_SYSTRAY_LANG -ErrorAction SilentlyContinue }
 $env:DSH_TMP_SHOT_DIALOG = '1'
@@ -248,9 +251,8 @@ $dw = $dr.R - $dr.L; $dh = $dr.B - $dr.T
 $dx = $pt.X + [int](($cw - $dw) / 2)
 $dy = $pt.Y + [int](($chh - $dh) / 2)
 
-# 摆弹窗并核验：弹窗必须仍可见、矩形落在截图区内、且 z 序高于设置窗口。
-# 注意不要在弹窗上敲 Alt（Focus-Window）——那会夺走弹窗的前台/置顶状态，
-# 实测会让弹窗在屏幕抓取前消失，抓到的图只剩设置窗口。
+# 摆弹窗并核验：矩形必须落在截图区内（合成按窗口实际位置贴图）、可见、进程未退出。
+# 注意不要在弹窗上敲 Alt（Focus-Window）——那会夺走弹窗的前台/置顶状态。
 function Set-DialogOverWindow {
     param([IntPtr]$Dlg, [IntPtr]$Owner, [int]$X, [int]$Y)
     for ($i = 1; $i -le 6; $i++) {
@@ -260,34 +262,95 @@ function Set-DialogOverWindow {
         $r = [DshCap+RECT]::new()
         [void][DshCap]::GetWindowRect($Dlg, [ref]$r)
         $inside = ($r.L -ge $pt.X) -and ($r.T -ge $pt.Y) -and ($r.R -le ($pt.X + $cw)) -and ($r.B -le ($pt.Y + $chh))
-        $above = ([DshCap]::ZIndex($Dlg) -gt 0) -and ([DshCap]::ZIndex($Dlg) -lt [DshCap]::ZIndex($Owner))
-        if ($inside -and $above -and [DshCap]::IsWindowVisible($Dlg) -and (-not $d.Proc.HasExited)) { return $true }
-        Write-Host ("  dialog check {0}/6: inside={1} aboveOwner={2} exited={3}" -f $i, $inside, $above, $d.Proc.HasExited)
+        if ($inside -and [DshCap]::IsWindowVisible($Dlg) -and (-not $d.Proc.HasExited)) { return $true }
+        Write-Host ("  dialog check {0}/6: inside={1} visible={2} exited={3}" -f $i, $inside, [DshCap]::IsWindowVisible($Dlg), $d.Proc.HasExited)
     }
     return $false
 }
 
 if (-not (Set-DialogOverWindow -Dlg $d.Hwnd -Owner $h -X $dx -Y $dy)) {
-    $dump = Join-Path $env:TEMP 'dsh-github-auth-debug.png'
-    $full = New-Object System.Drawing.Bitmap(1920, 1080)
-    $g0 = [System.Drawing.Graphics]::FromImage($full)
-    $g0.CopyFromScreen(0, 0, 0, 0, $full.Size)
-    $g0.Dispose()
-    $full.Save($dump, [System.Drawing.Imaging.ImageFormat]::Png)
-    $full.Dispose()
     Close-AuthDialog $d
     Stop-AllInstances
-    throw "授权弹窗未压在设置窗口之上（全屏现场：$dump）"
+    throw '授权弹窗未摆到设置窗口客户区内'
 }
 
-$bmp = New-Object System.Drawing.Bitmap($cw, $chh)
-$g = [System.Drawing.Graphics]::FromImage($bmp)
-$g.CopyFromScreen($pt.X, $pt.Y, 0, 0, $bmp.Size)
-$g.Dispose()
-$varied = Test-Varied $bmp
-Save-Cropped $bmp $OutFile
-$bmp.Dispose()
-if (-not $varied) { Write-Host 'warn: 截图内容疑似空白，请检查窗口是否被其它置顶窗口遮挡' }
+# 抓图两条路径：
+#  ①整屏抓取（CopyFromScreen）——最接近真实桌面（含弹窗 DWM 阴影），但要求桌面可访问；
+#    锁屏 / 无交互桌面时 BitBlt 会报 "The handle is invalid"。
+#  ②PrintWindow 双窗合成——与桌面状态无关，任何情况下都能出图；代价是没有弹窗阴影。
+#    设置窗口按客户区（PW_CLIENTONLY|PW_RENDERFULLCONTENT，同 capture_shots.ps1），
+#    弹窗取整窗（PW_RENDERFULLCONTENT，含标题栏），再按窗口相对位置贴到客户区上，
+#    贴图用圆角裁剪，避免把弹窗窗口矩形四角的底色带进背景。
+function Get-WindowBitmap {
+    param([IntPtr]$Hwnd, [int]$W, [int]$H, [uint32]$Flags)
+    $bmp = New-Object System.Drawing.Bitmap($W, $H)
+    $g = [System.Drawing.Graphics]::FromImage($bmp)
+    $hdc = $g.GetHdc()
+    [void][DshCap]::PrintWindow($Hwnd, $hdc, $Flags)
+    $g.ReleaseHdc($hdc)
+    $g.Dispose()
+    return $bmp
+}
+
+function New-RoundedPath([int]$X, [int]$Y, [int]$W, [int]$H, [int]$R) {
+    $p = New-Object System.Drawing.Drawing2D.GraphicsPath
+    $d = 2 * $R
+    $p.AddArc($X, $Y, $d, $d, 180, 90)
+    $p.AddArc($X + $W - $d, $Y, $d, $d, 270, 90)
+    $p.AddArc($X + $W - $d, $Y + $H - $d, $d, $d, 0, 90)
+    $p.AddArc($X, $Y + $H - $d, $d, $d, 90, 90)
+    $p.CloseFigure()
+    return $p
+}
+
+# PrintWindow 会把弹窗四周不可见的拉伸边框（DWM 阴影区）渲染成黑边：
+# 沿中线量出四条黑边厚度，贴图时按内缩后的真实内容矩形贴，避免给图里画一圈黑框。
+function Get-BlackInset([System.Drawing.Bitmap]$Bmp) {
+    $w = $Bmp.Width; $h = $Bmp.Height
+    $mx = [int]($w / 2); $my = [int]($h / 2)
+    $dark = { param($c) ($c.R -lt 16 -and $c.G -lt 16 -and $c.B -lt 16) }
+    $l = 0; while ($l -lt $w -and (& $dark $Bmp.GetPixel($l, $my))) { $l++ }
+    $r = 0; while ($r -lt $w -and (& $dark $Bmp.GetPixel($w - 1 - $r, $my))) { $r++ }
+    $t = 0; while ($t -lt $h -and (& $dark $Bmp.GetPixel($mx, $t))) { $t++ }
+    $b = 0; while ($b -lt $h -and (& $dark $Bmp.GetPixel($mx, $h - 1 - $b))) { $b++ }
+    return @{ L = $l; T = $t; R = $r; B = $b }
+}
+
+$shot = $null
+try {
+    $bmp = New-Object System.Drawing.Bitmap($cw, $chh)
+    $g = [System.Drawing.Graphics]::FromImage($bmp)
+    $g.CopyFromScreen($pt.X, $pt.Y, 0, 0, $bmp.Size)
+    $g.Dispose()
+    if (Test-Varied $bmp) { $shot = $bmp; Write-Host '  method=screen' } else { $bmp.Dispose(); Write-Host '  screen copy blank' }
+} catch {
+    Write-Host "  screen copy unavailable ($($_.Exception.Message))"
+}
+if (-not $shot) {
+    $r = [DshCap+RECT]::new()
+    [void][DshCap]::GetWindowRect($d.Hwnd, [ref]$r)
+    $appBmp = Get-WindowBitmap -Hwnd $h -W $cw -H $chh -Flags 3
+    $dlgBmp = Get-WindowBitmap -Hwnd $d.Hwnd -W $dw -H $dh -Flags 2
+    $ins = Get-BlackInset $dlgBmp
+    $iw = $dw - $ins.L - $ins.R; $ih = $dh - $ins.T - $ins.B
+    if ($iw -le 0 -or $ih -le 0) { throw "弹窗内容区测量失败（黑边 $($ins.L)/$($ins.T)/$($ins.R)/$($ins.B)）" }
+    $px = $r.L - $pt.X + $ins.L; $py = $r.T - $pt.Y + $ins.T
+    $shot = New-Object System.Drawing.Bitmap($cw, $chh)
+    $g = [System.Drawing.Graphics]::FromImage($shot)
+    $g.DrawImage($appBmp, 0, 0, $cw, $chh)
+    $clip = New-RoundedPath $px $py $iw $ih 8
+    $g.SetClip($clip)
+    $g.DrawImage($dlgBmp,
+        (New-Object System.Drawing.Rectangle($px, $py, $iw, $ih)),
+        (New-Object System.Drawing.Rectangle($ins.L, $ins.T, $iw, $ih)),
+        [System.Drawing.GraphicsUnit]::Pixel)
+    $g.ResetClip()
+    $g.Dispose(); $clip.Dispose(); $appBmp.Dispose(); $dlgBmp.Dispose()
+    Write-Host ("  method=printwindow-composite (弹窗黑边内缩 {0}/{1}/{2}/{3})" -f $ins.L, $ins.T, $ins.R, $ins.B)
+}
+
+Save-Cropped $shot $OutFile
+$shot.Dispose()
 
 Close-AuthDialog $d
 Stop-AllInstances
