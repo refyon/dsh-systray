@@ -977,6 +977,9 @@ func onReady() {
 	refreshServiceMenu()
 	// 周期刷新，保证每次打开托盘菜单都反映服务实时状态
 	go pollServiceMenu()
+	// 沿用已在运行的服务时（上次退出保留服务 / 重启电脑后服务仍在跑），日志里已没有令牌行：
+	// 校验上次记录的访问链接，有效则复用（帮助页「复制访问链接」恢复可用），失效则清除。
+	go adoptPersistedTokenURL()
 	systray.AddSeparator()
 	mSettings = systray.AddMenuItem(T("设置"), T("打开设置窗口"))
 	systray.AddSeparator()

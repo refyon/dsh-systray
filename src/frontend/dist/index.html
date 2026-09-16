@@ -220,18 +220,20 @@
           <div class="row-title" data-i18n="helpWebAuthTitle">Web UI 提示“需要重新鉴权”</div>
           <div class="row-sub" data-i18n="helpWebAuthSymp">打开 harness 网页端时浏览器显示：dsh web authentication required; reopen the URL printed by dsh web.</div>
           <div id="help-state" class="row-sub help-note hidden" data-i18n="helpStopped">后台服务未运行：启动服务后即可打开 Web UI 或复制访问链接。</div>
-          <div id="help-warn" class="row-warn help-note hidden" data-i18n="helpNoToken">日志中未找到带访问令牌的链接（服务可能是在系统终端中手动启动的）。请复制启动终端里打印的 dsh web 地址；或在「常规」页重启后台服务后回来重试。</div>
+          <div id="help-warn" class="row-warn help-note hidden" data-i18n="helpNoToken">没有找到带访问令牌的链接：服务不是由本程序拉起的（例如上次退出时保留了服务，或电脑重启后服务仍在运行），日志轮转也可能丢失该行。浏览器此前已正常登录过 → 直接点「打开 Web UI」；换浏览器或不带记录的窗口 → 先点「重启后台服务」生成新链接。</div>
           <div class="row-sub help-why" data-i18n="helpWebAuthWhy">原因：后台服务每次启动都会更换访问令牌（安全设计）——旧书签与历史记录里的地址随即失效；浏览器中还没有有效凭据（首次打开、清理过 Cookie，或凭据已超过 30 天）。</div>
           <ol class="help-steps">
             <li data-i18n="helpWebAuthStep1">点击下方「打开 Web UI」，它会自动使用最新的访问链接。</li>
             <li data-i18n="helpWebAuthStep2">或点击「复制访问链接」，粘贴到浏览器地址栏打开。</li>
             <li data-i18n="helpWebAuthStep3">请按链接原样打开（地址是 127.0.0.1）——凭据与地址绑定，不要改写成 localhost。</li>
-            <li data-i18n="helpWebAuthStep4">仍打不开时，到「常规」页重启后台服务，再回来重试（会生成新的访问链接）。</li>
+            <li data-i18n="helpWebAuthStep4">仍打不开时，点「重启后台服务」重新生成访问链接，再回来重试。</li>
           </ol>
           <div class="help-actions">
+            <button id="btn-help-restart" class="btn btn-ghost hidden" data-i18n="btnRestart">重启后台服务</button>
             <button id="btn-help-copy" class="btn btn-ghost" data-i18n="btnCopyLink">复制访问链接</button>
             <button id="btn-help-open" class="btn btn-primary" data-i18n="btnOpenWeb">打开 Web UI</button>
           </div>
+          <div id="help-busy" class="row-sub help-note hidden" data-i18n="helpRestarting">正在重启后台服务…完成后「复制访问链接」会恢复可用（当前网页端会短暂断开）。</div>
         </div>
       </section>
     </main>

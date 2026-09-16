@@ -1,9 +1,11 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"io"
 	"log"
+	"net/http"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -1158,6 +1160,164 @@ func logSizeOrZero() int64 {
 	return 0
 }
 
+// ---------- 访问链接持久化（"托盘沿用已在运行的服务"场景） ----------
+// 该场景（上次退出保留服务 / 重启电脑后服务仍在跑）下本进程没有拉起服务、日志里也没有
+// 令牌行——把上次捕获到的链接存到配置目录的小文件里，下次启动校验通过即可继续使用
+// （服务进程未变时令牌依然有效）。
+
+// webTokenState 访问链接缓存文件的持久化形态。
+type webTokenState struct {
+	URL  string `json:"url"`
+	Port int    `json:"port"`
+}
+
+// webTokenStateFile 缓存文件路径覆盖（测试用；空 = 按配置目录解析）。
+var webTokenStateFile string
+
+// webTokenStatePath 访问链接缓存文件：与应用配置同目录的独立小文件
+// （config.json 会被多处整份覆盖写，状态放这里互不干扰）。
+func webTokenStatePath() string {
+	if webTokenStateFile != "" {
+		return webTokenStateFile
+	}
+	p := configFilePath()
+	if p == "" {
+		return ""
+	}
+	return filepath.Join(filepath.Dir(p), "web-token.json")
+}
+
+// persistTokenURL 记录本程序启动服务时捕获的带令牌链接（供下次沿用已在运行的服务时复用）。
+func persistTokenURL(u string) {
+	p := webTokenStatePath()
+	if p == "" || u == "" {
+		return
+	}
+	data, err := json.Marshal(webTokenState{URL: u, Port: port})
+	if err != nil {
+		return
+	}
+	if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+		return
+	}
+	_ = os.WriteFile(p, data, 0o600)
+}
+
+// persistedTokenURL 读取上次记录的链接：端口与当前（或本进程最后启动）端口不一致时视为失效并清除。
+func persistedTokenURL() string {
+	p := webTokenStatePath()
+	if p == "" {
+		return ""
+	}
+	data, err := os.ReadFile(p)
+	if err != nil {
+		return ""
+	}
+	var st webTokenState
+	if json.Unmarshal(data, &st) != nil || st.URL == "" {
+		return ""
+	}
+	if st.Port != port && st.Port != serverStartedPort {
+		clearPersistedTokenURL() // 端口已改：旧链接指向别的端口，不再复用
+		return ""
+	}
+	return st.URL
+}
+
+// clearPersistedTokenURL 删除访问链接缓存（服务已停或令牌已失效）。
+func clearPersistedTokenURL() {
+	if p := webTokenStatePath(); p != "" {
+		_ = os.Remove(p)
+	}
+}
+
+// clearPersistedTokenURLIf 仅当缓存里仍是 url 这一条时才删除：避免清掉并发写入的新链接
+// （启动沿用校验与「本进程拉起服务」的捕获可能同时发生）。
+func clearPersistedTokenURLIf(url string) {
+	p := webTokenStatePath()
+	if p == "" {
+		return
+	}
+	data, err := os.ReadFile(p)
+	if err != nil {
+		return
+	}
+	var st webTokenState
+	if json.Unmarshal(data, &st) != nil || st.URL != url {
+		return
+	}
+	_ = os.Remove(p)
+}
+
+// ---------- 访问链接校验 ----------
+
+// tokenURLVerdict 访问链接的校验结论。
+type tokenURLVerdict int
+
+const (
+	tokenURLUnknown tokenURLVerdict = iota // 无法判定（未运行/网络失败/超时/异常响应）
+	tokenURLValid                          // 令牌有效（303 跳回 / 或 200）
+	tokenURLStale                          // 明确失效（401/403：令牌已随服务重启轮换）
+)
+
+// tokenURLCheckClient 校验用 HTTP 客户端：不跟随重定向（令牌匹配时服务端返回 303 跳回 /）。
+var tokenURLCheckClient = &http.Client{
+	Timeout:       4 * time.Second,
+	CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
+}
+
+// verifyTokenURL 用一次不带 cookie 的根请求校验带令牌链接：303/200 视为有效，401/403 视为
+// 已失效，其余（连接失败/超时/5xx）无法判定——只有明确失效才清除缓存，避免服务尚未就绪时误删。
+func verifyTokenURL(u string) tokenURLVerdict {
+	req, err := http.NewRequest(http.MethodGet, u, nil)
+	if err != nil {
+		return tokenURLUnknown
+	}
+	resp, err := tokenURLCheckClient.Do(req)
+	if err != nil {
+		return tokenURLUnknown
+	}
+	defer resp.Body.Close()
+	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 4096)) // 读完小响应体，便于连接复用
+	switch resp.StatusCode {
+	case http.StatusSeeOther, http.StatusOK:
+		return tokenURLValid
+	case http.StatusUnauthorized, http.StatusForbidden:
+		return tokenURLStale
+	default:
+		return tokenURLUnknown
+	}
+}
+
+// adoptPersistedTokenURL 启动后复用上次记录的访问链接：等服务就绪后校验，令牌有效才写入内存
+// 缓存（帮助页「复制访问链接」据此恢复可用），明确失效则清除缓存文件。最多等待 20s。
+func adoptPersistedTokenURL() bool {
+	if shotMode {
+		return false
+	}
+	cand := persistedTokenURL()
+	if cand == "" {
+		return false
+	}
+	deadline := time.Now().Add(20 * time.Second)
+	for {
+		switch verifyTokenURL(cand) {
+		case tokenURLValid:
+			setServerTokenURL(cand)
+			logInfo("app", "沿用上次记录的 Web UI 访问链接（服务由先前进程启动，令牌仍有效）")
+			return true
+		case tokenURLStale:
+			clearPersistedTokenURLIf(cand)
+			logInfo("app", "上次记录的 Web UI 访问链接已失效（令牌随服务重启轮换），已清除")
+			return false
+		}
+		if time.Now().After(deadline) {
+			return false
+		}
+		time.Sleep(700 * time.Millisecond)
+	}
+}
+
 // findLatestTokenURL 在单个日志文件里取最新一条 dsh web 访问链接：最多读尾 512KB；
 // after > 0 时只解析该偏移之后的内容（启动后定点捕获用，避免把上一条旧 token 日志当成本次
 // 启动结果）；文件被轮转/截断（长度小于 after）时从头再扫。读不到返回 ("", false)。
@@ -1245,6 +1405,7 @@ func captureStartedTokenURL(from int64) {
 	for time.Now().Before(deadline) {
 		if u, ok := findLatestTokenURL(unifiedLogPath(), from); ok {
 			setServerTokenURL(u)
+			persistTokenURL(u) // 记到配置目录：下次若沿用已在运行的服务，可直接复用
 			return
 		}
 		time.Sleep(300 * time.Millisecond)

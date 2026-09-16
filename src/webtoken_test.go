@@ -1,7 +1,10 @@
 package main
 
 import (
+	"net/http"
+	"net/http/httptest"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -111,5 +114,118 @@ func TestWebTokenURLBinding(t *testing.T) {
 	}
 	if got := (&App{}).WebTokenURL(); got != "http://127.0.0.1:3080/?token=demo" {
 		t.Fatalf("shot mode binding got %q", got)
+	}
+}
+
+// useTempTokenFile 把访问链接缓存文件指向临时目录（避免写进真实配置目录）。
+func useTempTokenFile(t *testing.T) string {
+	t.Helper()
+	prev := webTokenStateFile
+	webTokenStateFile = filepath.Join(t.TempDir(), "web-token.json")
+	t.Cleanup(func() { webTokenStateFile = prev })
+	return webTokenStateFile
+}
+
+// 缓存文件读写：端口一致才复用；端口已改视为失效并清除。
+func TestPersistedTokenURLPortGuard(t *testing.T) {
+	p := useTempTokenFile(t)
+	useTempLogDir(t)
+	prevPort, prevStarted := port, serverStartedPort
+	t.Cleanup(func() { port, serverStartedPort = prevPort, prevStarted })
+	port, serverStartedPort = 3080, 0
+
+	persistTokenURL("http://127.0.0.1:3080/?token=KEEP")
+	if got := persistedTokenURL(); !strings.Contains(got, "KEEP") {
+		t.Fatalf("persisted url got %q", got)
+	}
+	port = 3099 // 端口已改：旧链接指向别的端口
+	if got := persistedTokenURL(); got != "" {
+		t.Fatalf("port change should invalidate, got %q", got)
+	}
+	if _, err := os.Stat(p); !os.IsNotExist(err) {
+		t.Fatalf("stale cache file should be removed, err=%v", err)
+	}
+}
+
+// clearPersistedTokenURLIf 只清除同一链接：并发写入的新链接不能被旧校验结果清掉。
+func TestClearPersistedTokenURLIf(t *testing.T) {
+	useTempTokenFile(t)
+	useTempLogDir(t)
+	prevPort := port
+	t.Cleanup(func() { port = prevPort })
+	port = 3080
+
+	persistTokenURL("http://127.0.0.1:3080/?token=NEW")
+	clearPersistedTokenURLIf("http://127.0.0.1:3080/?token=OLD")
+	if got := persistedTokenURL(); !strings.Contains(got, "NEW") {
+		t.Fatalf("different url must not clear cache, got %q", got)
+	}
+	clearPersistedTokenURLIf("http://127.0.0.1:3080/?token=NEW")
+	if got := persistedTokenURL(); got != "" {
+		t.Fatalf("same url should be cleared, got %q", got)
+	}
+}
+
+// verifyTokenURL：令牌匹配 303 → 有效；401 → 明确失效；5xx / 连接失败 → 无法判定。
+func TestVerifyTokenURL(t *testing.T) {
+	valid := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Query().Get("token") == "good" {
+			w.Header().Set("location", "/")
+			w.WriteHeader(http.StatusSeeOther)
+			return
+		}
+		w.WriteHeader(http.StatusUnauthorized)
+	}))
+	defer valid.Close()
+	if v := verifyTokenURL(valid.URL + "/?token=good"); v != tokenURLValid {
+		t.Fatalf("valid token verdict=%v", v)
+	}
+	if v := verifyTokenURL(valid.URL + "/?token=old"); v != tokenURLStale {
+		t.Fatalf("stale token verdict=%v", v)
+	}
+
+	broken := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	broken.Close() // 连接失败：无法判定（不得据此清除缓存）
+	if v := verifyTokenURL(broken.URL + "/?token=x"); v != tokenURLUnknown {
+		t.Fatalf("closed server verdict=%v", v)
+	}
+}
+
+// adoptPersistedTokenURL：有效则写入内存缓存；明确失效（401）则清除缓存文件。
+func TestAdoptPersistedTokenURL(t *testing.T) {
+	useTempLogDir(t)
+	t.Cleanup(func() { setServerTokenURL("") })
+	prevPort := port
+	t.Cleanup(func() { port = prevPort })
+	port = 3080
+
+	good := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("location", "/")
+		w.WriteHeader(http.StatusSeeOther)
+	}))
+	defer good.Close()
+	useTempTokenFile(t)
+	setServerTokenURL("")
+	persistTokenURL(good.URL + "/?token=good")
+	if !adoptPersistedTokenURL() {
+		t.Fatal("valid persisted url should be adopted")
+	}
+	if got := startedTokenURL(); got != good.URL+"/?token=good" {
+		t.Fatalf("cache got %q", got)
+	}
+
+	stale := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+	}))
+	defer stale.Close()
+	setServerTokenURL("")
+	persistTokenURL(stale.URL + "/?token=old")
+	if adoptPersistedTokenURL() {
+		t.Fatal("stale persisted url must not be adopted")
+	}
+	if got := persistedTokenURL(); got != "" {
+		t.Fatalf("stale cache file should be removed, got %q", got)
 	}
 }

@@ -903,6 +903,8 @@ input { font-family: inherit; }
 /* 「复制访问链接」的短暂结果反馈（沿用日志页路径复制的语义色） */
 .btn.copied { color: var(--ok); }
 .btn.copied-fail { color: var(--danger); }
+/* 帮助页状态提示行的失败态（如重启失败） */
+.help-busy-error { color: var(--danger); }
 
 /* ---------- Reduced motion ---------- */
 @media (prefers-reduced-motion: reduce) {

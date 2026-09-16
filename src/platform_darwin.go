@@ -358,7 +358,8 @@ func startServer() (bool, <-chan error) {
 }
 
 func killServer() {
-	setServerTokenURL("") // 服务已停：旧访问链接（旧 token）不再对应当前服务，清缓存
+	setServerTokenURL("")    // 服务已停：旧访问链接（旧 token）不再对应当前服务，清缓存
+	clearPersistedTokenURL() // 连同缓存文件一并清除（下次启动不应再沿用）
 	if serverCmd != nil && serverCmd.Process != nil {
 		_ = serverCmd.Process.Kill() // 本进程拉起的 node 直接 SIGKILL
 		serverCmd = nil

@@ -92,10 +92,11 @@ const I18N_EN = {
   helpWebAuthStep1: "Click “Open Web UI” below — it always uses the latest access link.",
   helpWebAuthStep2: "Or click “Copy access link” and paste it into the browser address bar.",
   helpWebAuthStep3: "Open the link exactly as given (the address is 127.0.0.1) — the credential is bound to that address, so don't rewrite it as localhost.",
-  helpWebAuthStep4: "If it still fails, restart the background service on the General page, then come back and try again (a new access link is generated).",
+  helpWebAuthStep4: "If it still fails, click “Restart service” to generate a new access link, then try again.",
   btnCopyLink: "Copy access link",
   helpStopped: "The background service isn't running: start it to open the Web UI or copy the access link.",
-  helpNoToken: "No access link with a token was found in the logs (the service may have been started manually in a terminal). Copy the dsh web address printed there, or restart the background service on the General page and try again.",
+  helpNoToken: "No access link with a token was found: the service wasn't started by this app (it was kept running after the last exit, or survived a reboot), and log rotation can drop that line. If this browser signed in before, just click “Open Web UI”; for another browser or a private window, click “Restart service” first to generate a new link.",
+  helpRestarting: "Restarting the background service… “Copy access link” becomes available once it's ready (the current Web UI session drops briefly).",
 };
 const PAGE_I18N_KEY = { general: "navGeneral", about: "navAbout", logs: "navLogs", export: "navExport", import: "navImport", help: "navHelp" };
 
@@ -124,6 +125,7 @@ const I18N_DYN = {
   "已复制访问链接": "Access link copied",
   "复制失败": "Copy failed",
   "重启失败，请查看日志": "Restart failed — see logs",
+  "正在重启后台服务…": "Restarting the background service…",
   "端口已修改为 {0}，当前服务仍运行于 {1}——重启后台服务后生效。": "Port changed to {0}, but the service still runs on {1} — effective after restarting the service.",
   "注意：所选为预发布版本，可能与已安装插件不兼容；若重置后服务无法启动，请查看日志。": "Note: the selected build is a prerelease and may be incompatible with installed plugins; if the service fails to start after reset, check the logs.",
   "已关闭预发布通道，检查更新将仅显示稳定版本": "Prerelease channel off — update checks now only show stable releases",
@@ -430,18 +432,45 @@ async function refreshService() {
 }
 
 // 帮助页「Web UI 需要重新鉴权」条目的状态：服务未运行时两个操作禁用并给出说明；服务运行但
-// 日志中没有带令牌的链接（服务由终端手动启动、日志轮转丢失）时禁用复制并显示警告。
+// 拿不到带令牌的链接（服务由先前进程启动/终端手动启动、日志轮转丢失）时禁用复制、显示警告，
+// 并把「重启后台服务」（重新生成链接）摆出来。helpRestarting 期间锁住全部操作，由收尾统一刷新。
+let helpRestarting = false;
+
 function refreshHelpState() {
   const open = $("btn-help-open");
   const copy = $("btn-help-copy");
-  if (!open || !copy) return;
+  const restart = $("btn-help-restart");
+  if (!open || !copy || !restart) return;
   const svc = state.svc || {};
   const running = svc.state === "running";
   const hasToken = running && !!svc.tokenFound;
+  const warn = running && !hasToken;
+  $("help-state").classList.toggle("hidden", running);
+  $("help-warn").classList.toggle("hidden", !warn);
+  restart.classList.toggle("hidden", !warn);
+  if (helpRestarting) {
+    open.disabled = true;
+    copy.disabled = true;
+    restart.disabled = true;
+    return;
+  }
   open.disabled = !running;
   copy.disabled = !hasToken;
-  $("help-state").classList.toggle("hidden", running);
-  $("help-warn").classList.toggle("hidden", !(running && !hasToken));
+  restart.disabled = false;
+}
+
+// 帮助页状态提示行（重启中/重启失败）：空文本 = 隐藏。
+function setHelpBusy(text, isError) {
+  const el = $("help-busy");
+  if (!el) return;
+  if (!text) {
+    el.classList.add("hidden");
+    el.classList.remove("help-busy-error");
+    return;
+  }
+  el.textContent = text;
+  el.classList.toggle("help-busy-error", !!isError);
+  el.classList.remove("hidden");
 }
 
 function wireGeneral() {
@@ -1745,8 +1774,9 @@ function syncImportPickBtn() {
 
 // ==================== 帮助页 ====================
 
-// 帮助页操作绑定：「打开 Web UI」（带最新访问令牌）与「复制访问链接」（短暂成功/失败反馈，
-// 与日志页路径复制同一模式）。按钮可用性/警告提示由 refreshHelpState 按服务状态刷新。
+// 帮助页操作绑定：「打开 Web UI」（带最新访问令牌）、「复制访问链接」（短暂成功/失败反馈，
+// 与日志页路径复制同一模式）与「重启后台服务」（拿不到令牌链接时就地重新生成）。
+// 按钮可用性/警告提示由 refreshHelpState 按服务状态刷新。
 function wireHelp() {
   $("btn-help-open").addEventListener("click", async () => {
     const btn = $("btn-help-open");
@@ -1776,6 +1806,29 @@ function wireHelp() {
       if (copyBtn.textContent === mark) copyBtn.textContent = copyBtn.dataset.orig || orig;
       delete copyBtn.dataset.orig;
     }, 1600);
+  });
+  // 重启后台服务：服务由本程序重新拉起后会被定点捕获新令牌（300ms 轮询），
+  // 故完成后补几次状态刷新，让「复制访问链接」尽快恢复可用。
+  const restartBtn = $("btn-help-restart");
+  restartBtn.addEventListener("click", async () => {
+    if (restartBtn.disabled || helpRestarting) return;
+    helpRestarting = true;
+    refreshHelpState(); // 三个操作立即锁住（重启期间状态会短暂变为非 running）
+    setHelpBusy(tr("正在重启后台服务…"));
+    let ok = false;
+    try { ok = await bindings().RestartService(); } catch (e) { console.error("RestartService", e); }
+    helpRestarting = false;
+    if (!ok) {
+      setHelpBusy(tr("重启失败，请查看日志"), true);
+      refreshService();
+      setTimeout(() => setHelpBusy(""), 4000);
+      return;
+    }
+    setHelpBusy("");
+    refreshService();
+    setTimeout(refreshService, 1200);
+    setTimeout(refreshService, 3000);
+    setTimeout(refreshService, 6000);
   });
 }
 
