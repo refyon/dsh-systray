@@ -247,6 +247,12 @@ func (a *App) GetServiceState() ServiceState {
 // 且已按需求弹出「是否打开 Web UI」询问）；失败返回 false（已弹错误提示）。
 // 阻塞直到重启完成或失败，前端据此刷新按钮/状态。
 func (a *App) RestartService() bool {
+	// harness 更新/重置进行中：两者都会 killServer + 拉起服务，并发会互相踩踏
+	//（重启流程的进度事件还会在更新收尾后把进度视图重新拉起——2026-09-15 现场问题）。
+	if harnessOpBusy.Load() {
+		showMessageBox("正在更新或重置 DeepSeek Harness，请等待流程完成后再重启服务。", appName)
+		return false
+	}
 	logUI("重启后台服务", "")
 	return restartBackgroundService(func(stage string) {
 		wruntime.EventsEmit(appCtx, "service:restart", map[string]interface{}{"stage": stage})

@@ -80,7 +80,9 @@ var updateFinalizing atomic.Bool
 // 同时把 splash 阶段复位为 startup：更新期间的 phase=update 不泄漏到后续
 // 插件/harness 更新与重启服务的进度视图（那些流程不注册「取消更新」句柄）。
 func emitUpdateDone(ok, canceled bool, note string) {
-	setSplashPhase("startup")
+	// 静默复位相位：这里若发 splash:progress 事件，前端会先把已收起的更新进度视图重新拉起，
+	// 再靠随后的 update:done 切回设置页——事件延误/丢失即卡在更新视图（见 setSplashPhaseQuiet）。
+	setSplashPhaseQuiet("startup")
 	if appCtx == nil {
 		return
 	}
@@ -1175,14 +1177,15 @@ func restartAndVerifyServerWithin(settle time.Duration) bool {
 	return verifyServerBootWithin(before, exitCh, settle)
 }
 
-// rollbackUpdate 更新失败处理：停止服务 → 回退快照 → 重启校验 → 弹窗报告。
-func rollbackUpdate(splash *SplashState, prev string, hadNMBackup bool, reason string) {
+// rollbackUpdate 更新失败处理：停止服务 → 回退快照 → 重启校验 → 返回给用户的提示文案。
+// 不关进度视图、不弹窗——收尾顺序统一由 finishHarnessUpdate 保证
+// （关视图 → 清忙标记 → 先发完成事件 → 再异步弹窗）。
+func rollbackUpdate(splash *SplashState, prev string, hadNMBackup bool, reason string) string {
 	splash.Update(T("更新失败，正在回退到上一可用版本…"), 0.6)
 	killServer()
 	restoreHarnessSnapshot(hadNMBackup)
 	splash.Update(T("正在重启服务…"), 0.85)
 	restartAndVerifyServerAfterChange()
-	splash.Close()
 	msg := "DeepSeek Harness 更新失败（" + reason + "），已回退到"
 	if prev != "" {
 		msg += " v" + prev + "。"
@@ -1190,7 +1193,23 @@ func rollbackUpdate(splash *SplashState, prev string, hadNMBackup bool, reason s
 		msg += "上一可用版本。"
 	}
 	msg += "\n\n日志：" + unifiedLogPath()
-	showMessageBox(msg, appName)
+	return msg
+}
+
+// finishHarnessUpdate 更新流程收尾：关进度视图 → 清忙标记 → 先发完成事件（前端切回设置页、
+// 复位更新按钮）→ 再异步弹完成提示。
+// 顺序是关键：完成提示是阻塞式原生弹窗，若先弹窗、后发事件，则在用户点掉弹窗前
+// harnessOpBusy 一直为 true——此时托盘打开窗口会被 updateProgressActive 抑制
+// （只置前、不切设置页），用户对着停留在进度上的窗口无从退出，表现即"更新完成后
+// 更新窗口不退出"（2026-09-15 现场问题）。事件先行 + 弹窗异步后，任何时刻打开窗口
+// 都能拿到设置页；弹窗若因前台竞争不可见也不再阻塞流程收尾。
+func finishHarnessUpdate(splash *SplashState, msg string, ok bool, note string) {
+	splash.Close()
+	harnessOpBusy.Store(false) // 提前清（defer 兜底仍在，重复写无害）：托盘打开据此判断是否抑制设置页
+	emitUpdateDone(ok, false, note)
+	if msg != "" {
+		go showMessageBox(msg, appName)
+	}
 }
 
 // runHarnessUpdate 更新 DeepSeek Harness（npm 模式更新 @deepseek-ai/dsh；源码模式 git pull+install+build），
@@ -1215,25 +1234,25 @@ func runHarnessUpdate(latest string) {
 			ver = "latest"
 		}
 		if ver != "latest" && !npmHarnessVersionAvailable(ver) {
-			splash.Close()
-			showMessageBox("无法更新 DeepSeek Harness：\n\nnpm registry 上未找到 @deepseek-ai/dsh@"+ver+
-				"（该版本 GitHub 已发布但可能尚未同步到 npm，或 registry/网络异常）。\n未对当前版本做任何改动。\n\n"+
-				"日志："+unifiedLogPath(), appName)
-			emitUpdateDone(false, false, "npm registry 上未找到目标版本")
+			finishHarnessUpdate(splash,
+				"无法更新 DeepSeek Harness：\n\nnpm registry 上未找到 @deepseek-ai/dsh@"+ver+
+					"（该版本 GitHub 已发布但可能尚未同步到 npm，或 registry/网络异常）。\n未对当前版本做任何改动。\n\n"+
+					"日志："+unifiedLogPath(),
+				false, "npm registry 上未找到目标版本")
 			return
 		}
 	case sourceMode:
 		if !isGitHarnessDir() {
-			splash.Close()
-			showMessageBox("无法更新 DeepSeek Harness：\n\n该 Harness 目录不是 git 仓库（可能是 zip 解压或整目录复制而来），无法走源码更新。\n"+
-				"请使用 git clone 的 Harness 源码目录，或恢复 npm 预构建形态（当前目录缺少 @deepseek-ai/dsh 入口）。\n\n目录："+harnessDir, appName)
-			emitUpdateDone(false, false, "Harness 目录不是 git 仓库")
+			finishHarnessUpdate(splash,
+				"无法更新 DeepSeek Harness：\n\n该 Harness 目录不是 git 仓库（可能是 zip 解压或整目录复制而来），无法走源码更新。\n"+
+					"请使用 git clone 的 Harness 源码目录，或恢复 npm 预构建形态（当前目录缺少 @deepseek-ai/dsh 入口）。\n\n目录："+harnessDir,
+				false, "Harness 目录不是 git 仓库")
 			return
 		}
 	default:
-		splash.Close()
-		showMessageBox("无法识别 DeepSeek Harness 安装形态（npm 预构建或 git 源码 checkout）。\n\n目录："+harnessDir, appName)
-		emitUpdateDone(false, false, "无法识别 Harness 安装形态")
+		finishHarnessUpdate(splash,
+			"无法识别 DeepSeek Harness 安装形态（npm 预构建或 git 源码 checkout）。\n\n目录："+harnessDir,
+			false, "无法识别 Harness 安装形态")
 		return
 	}
 
@@ -1352,8 +1371,7 @@ func runHarnessUpdate(latest string) {
 		}
 	}
 	if err != nil {
-		rollbackUpdate(splash, prev, hadNMBackup, reason)
-		emitUpdateDone(false, false, reason)
+		finishHarnessUpdate(splash, rollbackUpdate(splash, prev, hadNMBackup, reason), false, reason)
 		return
 	}
 
@@ -1396,7 +1414,6 @@ func runHarnessUpdate(latest string) {
 		if ok {
 			// 保留新版本：harness LKG 提升到更新前快照（未来失败回退旧版时插件完整可用的状态）
 			promoteHarnessLkg(prev)
-			splash.Close()
 			names := make([]string, 0, len(disabled))
 			for _, d := range disabled {
 				names = append(names, d.Name)
@@ -1411,28 +1428,23 @@ func runHarnessUpdate(latest string) {
 					"已禁用全部已激活的用户插件以保证新版启动（保留记录，可在「关于页 → 已安装插件」中逐个重新启用）：\n· %s",
 					withV(latest), strings.Join(names, "、"))
 			}
-			msg += installNote + alignNote
-			showMessageBox(msg, appName)
-			emitUpdateDone(true, false, "")
+			finishHarnessUpdate(splash, msg+installNote+alignNote, true, "")
 			return
 		}
 		// 两级禁用均未能换取启动（核心故障）→ 整体回退，原因需写明已尝试禁用插件，
 		// 避免用户误以为「直接回退、未尝试保留新版本」。
 		rbReason := "新版本启动失败（已尝试排查并禁用不兼容插件，仍无法启动——疑为核心故障）"
-		rollbackUpdate(splash, prev, hadNMBackup, rbReason)
-		emitUpdateDone(false, false, rbReason+"，已回退")
+		finishHarnessUpdate(splash, rollbackUpdate(splash, prev, hadNMBackup, rbReason), false, rbReason+"，已回退")
 		return
 	}
 
 	// 5) 成功：快照提升为 LKG（保留到下次冷启动验证通过后再清理——启动失败时可自动回退到该状态）
 	promoteHarnessLkg(prev)
-	splash.Close()
 	msg := fmt.Sprintf("DeepSeek Harness 已更新到 %s，服务已重启。", withV(latest))
 	if !isStableVersion(strings.TrimPrefix(latest, "v")) {
 		msg += "\n\n提示：预发布版本可能与已装插件不兼容；如遇异常，可用「重置服务」回退到上一个正常运行的版本。"
 	}
-	showMessageBox(msg+installNote+alignNote, appName)
-	emitUpdateDone(true, false, "")
+	finishHarnessUpdate(splash, msg+installNote+alignNote, true, "")
 }
 
 // fetchLatestRelease 查询 GitHub Releases 最新版本；直连失败时依次回退镜像前缀（国内 DNS/网络不稳时更可靠）。

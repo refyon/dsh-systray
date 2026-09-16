@@ -1731,8 +1731,11 @@ function wireEvents() {
 
   EventsOn("splash:progress", (d) => {
     if (!d) return;
-    if (d.phase === "update" && state.splashMode !== "update") showSplash("update", d.text || tr("正在更新…"));
-    if (d.phase === "startup") {
+    // 相位复位事件（空文本 + 0 进度）只用于后端复位相位，不应把已收起的进度视图重新拉起：
+    // 它若晚于 update:done 到达，窗口就停在进度视图（表现＝更新完成后不退出更新窗口）。
+    const phaseReset = !d.text && d.pct === 0;
+    if (d.phase === "update" && !phaseReset && state.splashMode !== "update") showSplash("update", d.text || tr("正在更新…"));
+    if (d.phase === "startup" && !phaseReset) {
       $("splash").classList.remove("hidden");
       $("settings").classList.add("hidden");
       state.splashMode = "startup";
@@ -1840,12 +1843,16 @@ function wireEvents() {
   // 更新流程结束（成功/取消/失败，Go 侧统一 emit update:done）：回到设置视图并恢复
   // 「更新」按钮，用户可再次检查/发起更新。此前 Go 从未发出该事件，按钮取消后一直不可用。
   EventsOn("update:done", () => {
+    // 完成即复位进度视图状态：此后任何迟到的相位复位事件都不再把窗口拉回进度视图
+    // （更新完成后不退出更新窗口的另一处兜底）。
+    state.splashMode = "";
     showSettings();
     const hub = $("btn-harness-update");
     if (hub) hub.disabled = false;
     const sysBtn = $("btn-systray-update");
     if (sysBtn) sysBtn.disabled = false;
     refreshVersions();
+    refreshService(); // 更新/重启期间服务状态变过：同步圆点与文案，窗口重新打开即为最新
   });
 
   // 插件更新完成：刷新插件列表（版本/来源状态可能变化）

@@ -26,6 +26,14 @@ func setSplashPhase(p string) {
 	emitSplash("", 0)
 }
 
+// setSplashPhaseQuiet 只复位相位、不向前端发事件（供流程收尾使用）。
+// 相位复位本身没有任何 UI 用途，但它会命中前端 splash:progress 的 startup 分支把已收起的
+// 进度视图重新拉起——紧随其后的 update:done 才切回设置页，两枚事件之间一旦丢失/延误，
+// 窗口就停在进度视图（2026-09-15 现场问题：更新已完成却不退出更新窗口）。
+func setSplashPhaseQuiet(p string) {
+	splashPhase.Store(p)
+}
+
 func splashOnCloseFn() func() bool {
 	if v, ok := splashOnClose.Load().(func() bool); ok {
 		return v
