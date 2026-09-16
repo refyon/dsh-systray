@@ -1,5 +1,7 @@
-# 构建 dsh-systray.exe（Wails 规范构建：自动嵌入 build/windows/icon.ico 图标资源 + production 标签）
+# 构建 dsh-systray.exe（Wails 规范构建：自动嵌入 src/build/windows/icon.ico 图标资源 + production 标签）
 # 注意：必须用 wails build（不能 go build）——纯 go build 会命中 Wails 错误桩并丢失 exe/窗口图标。
+# Go 模块、wails.json、build/、frontend/ 都在 src\（Wails 项目根，见仓库整理），
+# 因此 wails 命令一律在 src\ 下执行；编译产物留在 src\build\bin\，仓库根不再放编译产物。
 # bindings 单独生成（wails generate module），随后 build 用 -skipbindings：
 #   wails build 内嵌的 bindings 阶段会把编译出的 wailsbindings.exe 当作完整程序运行一次，
 #   在本机（含开机自启动注册表项 / 单实例 / GUI 场景）会因运行副作用不稳定而失败；
@@ -10,10 +12,10 @@ param(
 )
 $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent $PSScriptRoot
-$dist = Join-Path $root 'dist'
-New-Item -ItemType Directory -Force -Path $dist | Out-Null
+$src = Join-Path $root 'src'
+$bin = Join-Path $src 'build\bin\dsh-systray.exe'
 
-# 先停掉可能占用 build\bin\dsh-systray.exe 的残留进程，避免 wails build 删除产物时 Access denied
+# 先停掉可能占用产物的残留进程，避免 wails build 删除产物时 Access denied
 Get-Process dsh-systray -ErrorAction SilentlyContinue | Stop-Process -Force
 
 $wails = $null
@@ -27,14 +29,14 @@ if (-not $wails) {
 
 if (-not $env:GOPROXY) { $env:GOPROXY = 'https://goproxy.cn,direct' }
 
-Push-Location $root
-# 1) 生成 wailsjs 绑定（单独命令，稳定成功）；捕获输出便于失败诊断
-$genOut = & $wails generate module 2>&1 | Out-String
-if ($LASTEXITCODE -ne 0) { Pop-Location; throw "wails generate module failed (exit $LASTEXITCODE)`n$genOut" }
-# 2) 编译（跳过内嵌 bindings，复用上一步产物）
-$buildOut = & $wails build -skipbindings -s -platform windows/amd64 -ldflags "-s -w -H=windowsgui -X main.appVersion=$Version" 2>&1 | Out-String
-if ($LASTEXITCODE -ne 0) { Pop-Location; throw "wails build failed (exit $LASTEXITCODE)`n$buildOut" }
-Copy-Item (Join-Path $root 'build\bin\dsh-systray.exe') (Join-Path $dist 'dsh-systray.exe') -Force
-Pop-Location
+Push-Location $src
+try {
+    # 1) 生成 wailsjs 绑定（单独命令，稳定成功）；捕获输出便于失败诊断
+    $genOut = & $wails generate module 2>&1 | Out-String
+    if ($LASTEXITCODE -ne 0) { throw "wails generate module failed (exit $LASTEXITCODE)`n$genOut" }
+    # 2) 编译（跳过内嵌 bindings，复用上一步产物）
+    $buildOut = & $wails build -skipbindings -s -platform windows/amd64 -ldflags "-s -w -H=windowsgui -X main.appVersion=$Version" 2>&1 | Out-String
+    if ($LASTEXITCODE -ne 0) { throw "wails build failed (exit $LASTEXITCODE)`n$buildOut" }
+} finally { Pop-Location }
 
-Write-Host "Built $dist\dsh-systray.exe (wails build, icon embedded)"
+Write-Host "Built $bin (wails build, icon embedded)"

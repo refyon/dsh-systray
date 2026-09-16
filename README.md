@@ -89,15 +89,29 @@ dsh-systray 是一个 Windows / macOS 系统托盘应用，围绕三个核心特
 - `updateMirror`：可选，GitHub 更新下载镜像前缀（国内网络友好，如 `https://ghproxy.net/`）
 - `harnessPrerelease`：是否把 alpha/beta/rc 视为 harness 可更新版本（默认关闭，仅更新稳定版）
 
+## 仓库结构
+
+```
+src/                 Wails 项目根（Go 模块 + wails.json + 前端 + 构建资产；wails 命令都在这里执行）
+  ├── *.go           后端源码（main/app/platform_*/plugin_*/updater/exportimport …）
+  ├── frontend/dist  静态前端（go:embed 内嵌，零构建步骤）
+  ├── build/         Wails 构建资产（appicon.png、windows/icon.ico、darwin/Info.plist）
+  └── bootstrap/     首次运行安装脚本（go:embed，运行期写到临时目录执行）
+docs/                网站（index.html）+ 截图物料 + Release Notes + 图标源图
+scripts/             构建 / 截图 / 图标工具（build.ps1、capture_*.ps1、gen-icon.mjs …）
+```
+
+构建产物落在 `src/build/bin/`，仓库根不再存放编译产物。
+
 ## 架构
 
 ```
 ┌────────────────────────────── dsh-systray (Wails v2) ──────────────────────────────┐
-│  frontend/（静态 HTML/CSS/JS，go:embed 内嵌，零构建步骤）                           │
+│  src/frontend/（静态 HTML/CSS/JS，go:embed 内嵌，零构建步骤）                       │
 │    ├── 启动/更新进度视图 + 设置五页（常规/关于/日志/导出/导入）                     │
 │    └── 浅色/深色设计令牌（style.css :root 与 prefers-color-scheme）                │
 ├───────────────────────────────────────────────────────────────────────────────────┤
-│  Go 后端                                                                           │
+│  Go 后端（src/）                                                                   │
 │    ├── main.go       入口：配置/单实例/服务编排/窗口生命周期                       │
 │    ├── app.go        Wails Bindings（配置/服务/日志/更新/导出导入）                │
 │    ├── platform_*.go 自启动/运行时/服务器/对话框/托盘图标（Windows/macOS）          │
@@ -107,7 +121,7 @@ dsh-systray 是一个 Windows / macOS 系统托盘应用，围绕三个核心特
 └───────────────────────────────────────────────────────────────────────────────────┘
 ```
 
-- **前端**：原生 HTML/CSS/JS，无 Node 构建链；Wails `-s` 直接嵌入 `frontend/dist`
+- **前端**：原生 HTML/CSS/JS，无 Node 构建链；Wails `-s` 直接嵌入 `src/frontend/dist`
 - **托盘**：[energye/systray](https://github.com/energye/systray)（与 Wails 事件循环共存的 fork；macOS 经 `RunWithExternalLoop` 集成，不接管 NSApplication）
 - **更新**：Windows 替换单文件 exe；macOS 替换整个 `.app` 包（`ditto` 解压保留权限）
 
@@ -115,19 +129,23 @@ dsh-systray 是一个 Windows / macOS 系统托盘应用，围绕三个核心特
 
 前置：Go 1.21+、[Wails CLI v2](https://wails.io/docs/gettingstarted/installation)（`go install github.com/wailsapp/wails/v2/cmd/wails@v2.15.0`）、前端静态文件（无需 Node）。
 
-| 平台 | 构建命令 |
+构建命令都在 `src/` 下执行（Wails 项目根 = `wails.json` 所在目录）；Windows 也可直接用 `scripts\build.ps1`（自动 `generate module` + `-skipbindings` 构建）。
+
+| 平台 | 构建命令（在 `src/` 下执行） |
 | --- | --- |
 | Windows | `wails build -s -clean -platform windows/amd64 -ldflags "-X main.appVersion=v0.9.2"` |
 | macOS | `wails build -s -clean -platform darwin/universal -ldflags "-X main.appVersion=v0.9.2"` |
 
-> - `-s`：跳过前端构建（直接内嵌 `frontend/dist`）；改动前端后无需其他步骤，直接重新 `wails build`
+> - 产物：`src/build/bin/dsh-systray.exe`（Windows）/ `src/build/bin/dsh-systray.app`（macOS），仓库根不再输出编译产物
+> - `-s`：跳过前端构建（直接内嵌 `src/frontend/dist`）；改动前端后无需其他步骤，直接重新 `wails build`
 > - `-X main.appVersion=` 注入当前版本号，供自动更新对比使用（GitHub Actions 打 tag 发布时自动注入；本地开发可省略，此时为 `dev`，跳过更新检查）
 > - Windows 如需为未预装 WebView2 的机器兜底，加 `-webview2 download`（内嵌引导安装器，CI 已启用）
-> - macOS 产物为 `.app` 包；`build/darwin/Info.plist` 已注入 `LSUIElement=true`（纯托盘应用，不显示 Dock 图标）
+> - macOS 产物为 `.app` 包；`src/build/darwin/Info.plist` 已注入 `LSUIElement=true`（纯托盘应用，不显示 Dock 图标）
 
 ## 开发
 
 ```bash
+cd src
 wails dev   # 热重载开发模式（需 Node 可选；静态前端下等同于编译并运行）
 ```
 

@@ -1,5 +1,4 @@
 # 构建产物（本地编译的二进制/压缩包均不上传，发布资产由 CI 生成）
-/dist/
 *.exe
 *.zip
 *.dmg
@@ -18,12 +17,12 @@ plugin-update.log
 Thumbs.db
 .DS_Store
 
-# ͼ��/վ��Ԥ��������ύ��
-preview*.png
+# 图标/网站预览物料（不提交）
+docs/preview*.png
 
-# Wails �������build/bin�����Զ����ɵİ󶨣�frontend/wailsjs��
-build/bin/
-frontend/wailsjs/
+# Wails 构建产物（src/build/bin）与自动生成的绑定（src/frontend/wailsjs）
+src/build/bin/
+src/frontend/wailsjs/
 
-# 本地部署用 icns（scripts/restyle-appicon.mjs 生成，wails build 会从 build/appicon.png 自动重生成）
-iconfile.icns
+# 本地部署用 icns（scripts/restyle-appicon.mjs 生成，wails build 会从 src/build/appicon.png 自动重生成）
+docs/iconfile.icns

@@ -37,7 +37,7 @@ func detectSystemLang() string {
 	return "zh"
 }
 
-//go:embed scripts/install-prereqs.ps1
+//go:embed bootstrap/install-prereqs.ps1
 var installScript []byte
 
 // notoSansSCFamily / notoSansSCURLs / notoSansSCFontDir / downloadNotoSansSC 定义在 updater.go（跨平台共享）。

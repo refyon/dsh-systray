@@ -3,7 +3,7 @@
 ## 1. Overview
 
 温暖克制的「工具感」界面：以品牌蓝为主色、中性灰阶打底，圆角卡片分组、留白分层。
-设计目标是**一屏一个主操作、状态一目了然**。本规范同时约束桌面应用（Wails 前端 `frontend/dist/style.css`）与官网（`docs/index.html`），两侧 token 必须保持一致。
+设计目标是**一屏一个主操作、状态一目了然**。本规范同时约束桌面应用（Wails 前端 `src/frontend/dist/style.css`）与官网（`docs/index.html`），两侧 token 必须保持一致。
 
 ## 2. Colors
 

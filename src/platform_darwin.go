@@ -22,7 +22,7 @@ import (
 	wruntime "github.com/wailsapp/wails/v2/pkg/runtime"
 )
 
-//go:embed scripts/install-prereqs.sh
+//go:embed bootstrap/install-prereqs.sh
 var installScript []byte
 
 const launchAgentLabel = "com.deepseek.dsh-systray"

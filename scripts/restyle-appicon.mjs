@@ -1,7 +1,8 @@
 // scripts/restyle-appicon.mjs — APP 图标重制为「品牌蓝圆角底 + 白色鲸鱼」
 // 几何对齐 apps/mug-uninstaller/make-icon.swift：背景 squircle 缩进 7% 画布、圆角 22.37%×背景边长、
 // 鲸鱼墨量面积对齐 mug 图标（杯体+把手 ≈19.7% 画布）。
-// 输入：whale-src.png（透明底灰色鲸鱼剪影）；输出：app-icon.png、icon.ico、preview-new.png、iconfile.icns
+// 输入：docs/whale-src.png（透明底灰色鲸鱼剪影）；输出：src/build/appicon.png（构建资产，wails build 据此生成 icns）、
+//       docs/app-icon.png、docs/icon.ico、docs/preview-new.png、docs/iconfile.icns
 // 注：iconfile.icns 用纯 Node 封装 ic10 单条目（1024 PNG 原样嵌入），载荷与 app-icon.png 逐字节一致、可独立验证。
 //     （早前曾误判 sips+iconutil 产物损坏，实为临时校验脚本的 PNG Paeth 滤镜解码 bug；经 Go 官方 png.Decode 验证，两种管道产物均正确。）
 import { readFileSync, writeFileSync } from 'node:fs'
@@ -176,9 +177,11 @@ function downsample(img, factor) {
   return { width: w, height: h, data: out }
 }
 
-const app = readFileSync(join(root, 'whale-src.png'))
+const app = readFileSync(join(root, 'docs', 'whale-src.png'))
 const styled = restyle(app)
-writeFileSync(join(root, 'app-icon.png'), styled)
+// 构建资产（wails build 读 src/build/appicon.png 生成 macOS icns）+ docs 参考图各写一份，避免两处漂移
+writeFileSync(join(root, 'src', 'build', 'appicon.png'), styled)
+writeFileSync(join(root, 'docs', 'app-icon.png'), styled)
 
 // macOS 应用图标（Dock / Finder）：icns = 'icns' 魔数 + 总长 + ic10 条目（1024 PNG 原样）
 function makeICNS(png) {
@@ -188,12 +191,12 @@ function makeICNS(png) {
   len.writeUInt32BE(8 + png.length)
   return Buffer.concat([Buffer.from('icns'), total, Buffer.from('ic10'), len, png])
 }
-writeFileSync(join(root, 'iconfile.icns'), makeICNS(styled))
+writeFileSync(join(root, 'docs', 'iconfile.icns'), makeICNS(styled))
 
 const dec = decodePNG(styled)
 const small = downsample(dec, 4)
 const ico = makeICO([{ size: 256, data: encodePNG(small.width, small.height, small.data) }])
-writeFileSync(join(root, 'icon.ico'), ico)
-writeFileSync(join(root, 'preview-new.png'), styled)
+writeFileSync(join(root, 'docs', 'icon.ico'), ico)
+writeFileSync(join(root, 'docs', 'preview-new.png'), styled)
 
 console.log('done | app-icon:', styled.length, '| icon.ico:', ico.length, '| preview-new:', styled.length, '| iconfile.icns')

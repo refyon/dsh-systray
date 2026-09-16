@@ -24,7 +24,7 @@ public class Cap {
 
 $crop = 8
 $root = Split-Path -Parent $PSScriptRoot
-$exe = Join-Path $root 'build\bin\dsh-systray.exe'
+$exe = Join-Path $root 'src\build\bin\dsh-systray.exe'
 $outDir = if ($Lang -eq 'en') { Join-Path $root 'docs\shots-en' } else { Join-Path $root 'docs\shots' }
 $readyFile = Join-Path $env:TEMP 'dsh-shot-ready.flag'
 New-Item -ItemType Directory -Force -Path $outDir | Out-Null

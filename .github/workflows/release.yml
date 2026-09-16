@@ -35,10 +35,10 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Setup Go (version from go.mod)
+      - name: Setup Go (version from src/go.mod)
         uses: actions/setup-go@v5
         with:
-          go-version-file: go.mod
+          go-version-file: src/go.mod
           cache: true
 
       - name: Install Wails CLI (pinned; v2.15.0 兼容 Go 1.27，v2.11.0 会报 "package fmt without types")
@@ -58,18 +58,20 @@ jobs:
           else
             VERSION="dev"
           fi
+          # Go 模块与 wails.json 都在 src/（Wails 项目根，见仓库整理），构建须在该目录下执行
+          cd src
           if [ "$RUNNER_OS" = "Windows" ]; then
             # Windows: 单文件 exe（WebView2 前端内嵌）；-webview2 download 嵌入运行时引导器兜底
             wails build -s -clean -platform windows/amd64 \
               -webview2 download \
               -ldflags "-s -w -H=windowsgui -X main.appVersion=${VERSION}"
-            cp build/bin/dsh-systray.exe dist/
+            cp build/bin/dsh-systray.exe ../dist/
           else
             # macOS: Wails 直接产出 universal .app（Intel + Apple Silicon）；
             # build/darwin/Info.plist 已注入 LSUIElement=true（隐藏 Dock 图标，纯托盘应用）
             wails build -s -clean -platform darwin/universal \
               -ldflags "-s -w -X main.appVersion=${VERSION}"
-            cp -R build/bin/dsh-systray.app dist/
+            cp -R build/bin/dsh-systray.app ../dist/
           fi
 
       - name: Package archive

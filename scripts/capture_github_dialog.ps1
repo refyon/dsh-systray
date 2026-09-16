@@ -88,7 +88,7 @@ public class DshCap {
 
 $crop = 8   # 与其它轮播图一致：裁掉 8px 窗口圆角/边框
 $root = Split-Path -Parent $PSScriptRoot
-$appExe = Join-Path $root 'build\bin\dsh-systray.exe'
+$appExe = Join-Path $root 'src\build\bin\dsh-systray.exe'
 $dialogExe = Join-Path $env:TEMP 'dsh-dialog-shot\dialogshot.exe'
 $readyFile = Join-Path $env:TEMP 'dsh-shot-ready.flag'
 $HWND_TOPMOST = [IntPtr](-1)
@@ -105,7 +105,7 @@ if (-not (Test-Path $appExe)) { throw "未找到 $appExe（先构建：scripts\b
 # 每次都重编 dialogshot.exe：弹窗文案改动（如脱敏示例名）必须落到截图上，
 # 旧二进制残留会让图里继续出现改动前的文案（有构建缓存，重编只需数秒）。
 Write-Host 'building dialogshot.exe ...'
-Push-Location $root
+Push-Location (Join-Path $root 'src')
 try {
     & go test -c -o $dialogExe .
     if ($LASTEXITCODE -ne 0) { throw 'go test -c 失败（dialogshot.exe 未生成）' }

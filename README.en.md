@@ -89,15 +89,29 @@ Designed around three core traits: **Lightweight, Reliable, Portable**.
 - `updateMirror`: optional GitHub update download mirror prefix (handy behind mainland-China networks, e.g. `https://ghproxy.net/`)
 - `harnessPrerelease`: whether alpha/beta/rc builds count as updateable harness versions (off by default — only stable versions)
 
+## Repository layout
+
+```
+src/                 Wails project root (Go module + wails.json + frontend + build assets; run wails here)
+  ├── *.go           backend sources (main/app/platform_*/plugin_*/updater/exportimport …)
+  ├── frontend/dist  static frontend (embedded via go:embed, zero build steps)
+  ├── build/         Wails build assets (appicon.png, windows/icon.ico, darwin/Info.plist)
+  └── bootstrap/     first-run install scripts (go:embed, written to a temp dir at runtime)
+docs/                website (index.html) + screenshots + release notes + icon sources
+scripts/             build / capture / icon tooling (build.ps1, capture_*.ps1, gen-icon.mjs …)
+```
+
+Build output lands in `src/build/bin/`; the repository root keeps no build artifacts.
+
 ## Architecture
 
 ```
 ┌────────────────────────────── dsh-systray (Wails v2) ──────────────────────────────┐
-│  frontend/ (static HTML/CSS/JS, embedded via go:embed, zero build steps)            │
+│  src/frontend/ (static HTML/CSS/JS, embedded via go:embed, zero build steps)        │
 │    ├── startup/update progress view + five settings pages (general/about/logs/export/import)
 │    └── light/dark design tokens (style.css :root and prefers-color-scheme)          │
 ├───────────────────────────────────────────────────────────────────────────────────┤
-│  Go backend                                                                         │
+│  Go backend (src/)                                                                  │
 │    ├── main.go       entry: config / single instance / service orchestration / window lifecycle
 │    ├── app.go        Wails Bindings (config / service / logs / update / export-import)
 │    ├── platform_*.go autostart / runtime / server / dialogs / tray icons (Windows/macOS)
@@ -107,7 +121,7 @@ Designed around three core traits: **Lightweight, Reliable, Portable**.
 └───────────────────────────────────────────────────────────────────────────────────┘
 ```
 
-- **Frontend**: plain HTML/CSS/JS without a Node build chain; Wails `-s` embeds `frontend/dist` directly
+- **Frontend**: plain HTML/CSS/JS without a Node build chain; Wails `-s` embeds `src/frontend/dist` directly
 - **Tray**: [energye/systray](https://github.com/energye/systray) (a fork coexisting with the Wails event loop; on macOS integrated via `RunWithExternalLoop`, without taking over NSApplication)
 - **Update**: Windows replaces the single exe; macOS replaces the whole `.app` bundle (`ditto` extraction preserves permissions)
 
@@ -115,19 +129,23 @@ Designed around three core traits: **Lightweight, Reliable, Portable**.
 
 Prerequisites: Go 1.21+, [Wails CLI v2](https://wails.io/docs/gettingstarted/installation) (`go install github.com/wailsapp/wails/v2/cmd/wails@v2.15.0`), static frontend files (no Node needed).
 
-| Platform | Build command |
+Run the build commands inside `src/` (the Wails project root = the directory holding `wails.json`); on Windows you can also use `scripts\build.ps1` (runs `generate module` + a `-skipbindings` build).
+
+| Platform | Build command (run inside `src/`) |
 | --- | --- |
 | Windows | `wails build -s -clean -platform windows/amd64 -ldflags "-X main.appVersion=v0.9.2"` |
 | macOS | `wails build -s -clean -platform darwin/universal -ldflags "-X main.appVersion=v0.9.2"` |
 
-> - `-s`: skips the frontend build (embeds `frontend/dist` directly); after frontend changes simply re-run `wails build`
+> - Output: `src/build/bin/dsh-systray.exe` (Windows) / `src/build/bin/dsh-systray.app` (macOS); the repository root keeps no build artifacts
+> - `-s`: skips the frontend build (embeds `src/frontend/dist` directly); after frontend changes simply re-run `wails build`
 > - `-X main.appVersion=` injects the current version used for auto-update comparison (injected automatically when GitHub Actions builds a tagged release; local builds may omit it — the version is then `dev`, which skips update checks)
 > - On Windows add `-webview2 download` to embed a bootstrap installer for machines without WebView2 (enabled in CI)
-> - macOS output is a `.app` bundle; `build/darwin/Info.plist` sets `LSUIElement=true` (pure tray app — no Dock icon)
+> - macOS output is a `.app` bundle; `src/build/darwin/Info.plist` sets `LSUIElement=true` (pure tray app — no Dock icon)
 
 ## Development
 
 ```bash
+cd src
 wails dev   # hot-reload dev mode (Node optional; with a static frontend this equals compile & run)
 ```
 

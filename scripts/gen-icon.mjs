@@ -1,8 +1,8 @@
 // scripts/gen-icon.mjs — 图标生成：纯 Node、零外部依赖（不依赖外部 SVG / sharp）。
 //
-// 输入：whale-src.png（透明底鲸鱼剪影）。
-// 输出：icon_gen.go（浅色 + 深色双主题 ICO + macOS 菜单栏模板 PNG）、icon.ico、preview-dark.png。
-// 模板 PNG 由 whale-src.png 渲染：纯黑鲸鱼、透明底、正方形画布、按自然比例 1.33 填满宽度（宽>高）。
+// 输入：docs/whale-src.png（透明底鲸鱼剪影）。
+// 输出：src/icon_gen.go（浅色 + 深色双主题 ICO + macOS 菜单栏模板 PNG）、docs/icon.ico、docs/preview-dark.png。
+// 模板 PNG 由 docs/whale-src.png 渲染：纯黑鲸鱼、透明底、正方形画布、按自然比例 1.33 填满宽度（宽>高）。
 // 用法：node scripts/gen-icon.mjs [输出路径]
 
 import { readFileSync, writeFileSync } from 'node:fs'
@@ -14,7 +14,7 @@ const __dirname = dirname(fileURLToPath(import.meta.url))
 const root = join(__dirname, '..')
 
 // ---- 从现有 icon_gen.go 提取已嵌入的图标数据（主 ICO + 模板 PNG） ----
-const genPath = join(root, 'icon_gen.go')
+const genPath = join(root, 'src', 'icon_gen.go')
 const genSrc = readFileSync(genPath, 'utf8')
 function extractConst(name) {
   const marker = 'const ' + name + ' = `'
@@ -178,7 +178,7 @@ function recolorPNG(png, topRGB, botRGB) {
 
 // ---- 扁平蓝底白鲸鱼（与网站图标一致；浅/深色任务栏均可见，故 light/dark 相同） ----
 // 用透明底鲸鱼轮廓（whale-src.png）合成到纯色圆角蓝底上；鲸鱼缩放至 80% 居中留边。
-const whaleSrc = decodePNG(readFileSync(join(root, 'whale-src.png')))
+const whaleSrc = decodePNG(readFileSync(join(root, 'docs', 'whale-src.png')))
 const WSRC = whaleSrc.width, HSRC = whaleSrc.height
 let wxmin = WSRC, wymin = HSRC, wxmax = -1, wymax = -1
 for (let y = 0; y < HSRC; y++) for (let x = 0; x < WSRC; x++) if (whaleSrc.data[(y * WSRC + x) * 4 + 3] > 0) {
@@ -312,6 +312,6 @@ writeFileSync(out, go)
 
 // 可执行图标/预览由 restyle-appicon.mjs 负责（app-icon.png / icon.ico）；此处仅写深色预览供肉眼检查
 const darkBest = parseICO(icoDark).sort((a, b) => b.size - a.size)[0]
-writeFileSync(join(root, 'preview-dark.png'), darkBest.data)
+writeFileSync(join(root, 'docs', 'preview-dark.png'), darkBest.data)
 
 console.log('wrote', out, '| icoLight:', icoLight.length, '| icoDark:', icoDark.length, '| template:', template.length, '| go:', go.length)
