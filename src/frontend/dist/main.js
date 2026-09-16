@@ -47,7 +47,7 @@ const state = {
 const I18N_EN = {
   splashStatus: "Preparing runtime environment…",
   splashCancel: "Cancel update",
-  navGeneral: "General", navAbout: "About", navLogs: "Logs", navExport: "Export", navImport: "Import",
+  navGeneral: "General", navAbout: "About", navLogs: "Logs", navExport: "Export", navImport: "Import", navHelp: "Help",
   stAutoTitle: "Start at login", stAutoSub: "Start the background service and keep it in the tray after login",
   stLangTitle: "Interface language", stLangSub: "Tray menu and native dialogs switch with it; “Follow system” picks the OS language",
   langAuto: "Follow system (auto)",
@@ -86,8 +86,18 @@ const I18N_EN = {
   rstOptSessions: "Sessions", rstOptPlugins: "Installed plugins",
   rstSessionsSub: "Will clear 0 sessions", rstPluginsSub: "Will clear 0 plugins",
   btnStartReset: "Start reset",
+  helpWebAuthTitle: "Web UI asks for authentication",
+  helpWebAuthSymp: "Opening the harness Web UI in the browser shows: dsh web authentication required; reopen the URL printed by dsh web.",
+  helpWebAuthWhy: "Why: the background service issues a new access token each time it starts (by design), so addresses kept in bookmarks or history stop working; and the browser has no valid credential yet (first visit, cleared cookies, or older than 30 days).",
+  helpWebAuthStep1: "Click “Open Web UI” below — it always uses the latest access link.",
+  helpWebAuthStep2: "Or click “Copy access link” and paste it into the browser address bar.",
+  helpWebAuthStep3: "Open the link exactly as given (the address is 127.0.0.1) — the credential is bound to that address, so don't rewrite it as localhost.",
+  helpWebAuthStep4: "If it still fails, restart the background service on the General page, then come back and try again (a new access link is generated).",
+  btnCopyLink: "Copy access link",
+  helpStopped: "The background service isn't running: start it to open the Web UI or copy the access link.",
+  helpNoToken: "No access link with a token was found in the logs (the service may have been started manually in a terminal). Copy the dsh web address printed there, or restart the background service on the General page and try again.",
 };
-const PAGE_I18N_KEY = { general: "navGeneral", about: "navAbout", logs: "navLogs", export: "navExport", import: "navImport" };
+const PAGE_I18N_KEY = { general: "navGeneral", about: "navAbout", logs: "navLogs", export: "navExport", import: "navImport", help: "navHelp" };
 
 function curLangCode() {
   return (state.cfg && state.cfg.curLang === "en") ? "en" : "zh";
@@ -111,6 +121,7 @@ const I18N_DYN = {
   "后台服务：启动失败": "Background service: failed to start",
   "请查看日志": "See logs",
   "已复制": "Copied",
+  "已复制访问链接": "Access link copied",
   "复制失败": "Copy failed",
   "重启失败，请查看日志": "Restart failed — see logs",
   "端口已修改为 {0}，当前服务仍运行于 {1}——重启后台服务后生效。": "Port changed to {0}, but the service still runs on {1} — effective after restarting the service.",
@@ -299,7 +310,7 @@ function rerenderDynamicText() {
 
 // ==================== 页面路由 ====================
 
-const PAGE_TITLES = { general: "常规", about: "关于", logs: "日志", export: "导出", import: "导入" };
+const PAGE_TITLES = { general: "常规", about: "关于", logs: "日志", export: "导出", import: "导入", help: "帮助" };
 
 function showPage(name) {
   state.page = name;
@@ -318,6 +329,8 @@ function showPage(name) {
     refreshVersions();
     loadPlugins();
   }
+  // 帮助页：进入即刷新服务状态（按钮可用性与警告提示按运行态/令牌可用性渲染）
+  if (name === "help") refreshService();
 }
 
 /** 截图模式：把内容区滚动到 DSH_SYSTRAY_SHOT_SCROLL 指定位置（bottom=最底；数字=像素）。
@@ -404,6 +417,7 @@ async function refreshService() {
     const owb = $("btn-open-webui");
     if (owb) owb.disabled = state.svc.state !== "running";
     updatePortHint();
+    refreshHelpState();
     // 兜底（仅截图模式）：若 splash:done 在页面就绪前已发出（快速就绪 + 慢 WebView），
     // 周期轮询发现服务 running 且 splash 未收起时自动切回设置页。
     // 正常模式绝不在此处切页——窗口由 Go 在就绪后统一隐藏，避免启动瞬间闪现设置页。
@@ -413,6 +427,21 @@ async function refreshService() {
       loadPlugins();
     }
   } catch (e) { console.error("GetServiceState", e); }
+}
+
+// 帮助页「Web UI 需要重新鉴权」条目的状态：服务未运行时两个操作禁用并给出说明；服务运行但
+// 日志中没有带令牌的链接（服务由终端手动启动、日志轮转丢失）时禁用复制并显示警告。
+function refreshHelpState() {
+  const open = $("btn-help-open");
+  const copy = $("btn-help-copy");
+  if (!open || !copy) return;
+  const svc = state.svc || {};
+  const running = svc.state === "running";
+  const hasToken = running && !!svc.tokenFound;
+  open.disabled = !running;
+  copy.disabled = !hasToken;
+  $("help-state").classList.toggle("hidden", running);
+  $("help-warn").classList.toggle("hidden", !(running && !hasToken));
 }
 
 function wireGeneral() {
@@ -1714,6 +1743,42 @@ function syncImportPickBtn() {
   return busy;
 }
 
+// ==================== 帮助页 ====================
+
+// 帮助页操作绑定：「打开 Web UI」（带最新访问令牌）与「复制访问链接」（短暂成功/失败反馈，
+// 与日志页路径复制同一模式）。按钮可用性/警告提示由 refreshHelpState 按服务状态刷新。
+function wireHelp() {
+  $("btn-help-open").addEventListener("click", async () => {
+    const btn = $("btn-help-open");
+    if (btn.disabled) return;
+    try { await bindings().OpenWebUI(); } catch (e) { console.error("OpenWebUI", e); }
+  });
+  const copyBtn = $("btn-help-copy");
+  let timer = null;
+  copyBtn.addEventListener("click", async () => {
+    if (copyBtn.disabled || copyBtn.dataset.busy) return;
+    copyBtn.dataset.busy = "1"; // 复制异步进行中：忽略连点
+    let ok = false;
+    try {
+      const url = await bindings().WebTokenURL();
+      if (url) { await bindings().CopyToClipboard(url); ok = true; }
+    } catch (e) { console.error("copy web access link", e); }
+    delete copyBtn.dataset.busy;
+    const orig = copyBtn.dataset.orig || copyBtn.textContent;
+    const mark = tr(ok ? "已复制访问链接" : "复制失败");
+    copyBtn.dataset.orig = orig;
+    copyBtn.textContent = mark;
+    copyBtn.classList.add(ok ? "copied" : "copied-fail");
+    clearTimeout(timer);
+    timer = setTimeout(() => {
+      copyBtn.classList.remove("copied", "copied-fail");
+      // 仅当仍显示反馈文案时还原（语言切换已重写文案则不覆盖）
+      if (copyBtn.textContent === mark) copyBtn.textContent = copyBtn.dataset.orig || orig;
+      delete copyBtn.dataset.orig;
+    }, 1600);
+  });
+}
+
 // ==================== 事件监听（Go → JS） ====================
 
 function wireEvents() {
@@ -1977,6 +2042,7 @@ async function init() {
   wireLogs();
   wireExport();
   wireImport();
+  wireHelp();
 
   document.querySelectorAll(".nav-item").forEach((b) => {
     b.addEventListener("click", () => showPage(b.dataset.page));
@@ -2030,9 +2096,9 @@ async function init() {
   refreshService();
   refreshVersions();
 
-  // 服务状态周期刷新（设置视图可见时）
+  // 服务状态周期刷新（常规页与帮助页可见时：后者的操作按钮/警告提示按运行态渲染）
   setInterval(() => {
-    if (state.page === "general") refreshService();
+    if (state.page === "general" || state.page === "help") refreshService();
   }, 3000);
 }
 

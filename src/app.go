@@ -224,12 +224,15 @@ type ServiceState struct {
 	Reason      string `json:"reason"`
 	WebURL      string `json:"webURL"`
 	RunningPort int    `json:"runningPort"`
+	// TokenFound 是否已持有带令牌的访问链接（帮助页「Web UI 需要重新鉴权」条目据此选择
+	// 正常说明或警告：服务由终端手动启动、日志轮转丢失令牌行时为 false）。
+	TokenFound bool `json:"tokenFound"`
 }
 
 func (a *App) GetServiceState() ServiceState {
 	// 实际端口优先：配置端口或本进程最后启动的端口（端口已改未重启场景）
 	if running, rp, live := resolveRunningService(); running {
-		return ServiceState{State: "running", WebURL: live, RunningPort: rp}
+		return ServiceState{State: "running", WebURL: live, RunningPort: rp, TokenFound: webTokenFound()}
 	}
 	// 未运行：RunningPort 回传「最后运行端口」（0=从未启动过），供前端判断端口是否需重启生效
 	last := serverStartedPort
@@ -1120,37 +1123,145 @@ func (a *App) CancelRestore(kind string) string {
 
 // ==================== 杂项 ====================
 
+// ---------- Web UI 访问链接（帮助页） ----------
+
 // webTokenRe 匹配 dsh web 启动时打印的访问 URL（含最新鉴权 token）。
 var webTokenRe = regexp.MustCompile(`(?m)dsh web:\s*(https?://\S+)`)
 
-// webTokenURL 取 dsh web 当前（带最新 token 的）URL：dsh web 每次启动都会换新 token，
-// 自愈/重启后旧 token 失效会报 "authentication required; reopen the URL printed by dsh web"。
-// 按需尾部扫描统一日志（含 .1 轮转档，各最多读尾 512KB）取最新一条；取不到回退 webURL。
+// serverTokenURL 本进程最近一次启动服务时捕获到的访问链接（含该次启动的新 token）。
+// dsh web 每次启动都会换新 token，而日志轮转可能把 "dsh web:" 行挤出扫描窗口（基础文件 +
+// .1 各尾 512KB），故启动后定点捕获缓存；取用时缓存优先、日志扫描兜底。killServer 清空
+// （服务已停，旧链接的令牌不再对应当前服务）。
+var (
+	serverTokenMu  sync.Mutex
+	serverTokenURL string
+)
+
+func setServerTokenURL(u string) {
+	serverTokenMu.Lock()
+	serverTokenURL = u
+	serverTokenMu.Unlock()
+}
+
+func startedTokenURL() string {
+	serverTokenMu.Lock()
+	defer serverTokenMu.Unlock()
+	return serverTokenURL
+}
+
+// logSizeOrZero 统一日志当前长度（不存在返回 0）：startServer 启动前记录，
+// 供 captureStartedTokenURL 只解析本次启动之后写入的输出。
+func logSizeOrZero() int64 {
+	if st, err := os.Stat(unifiedLogPath()); err == nil {
+		return st.Size()
+	}
+	return 0
+}
+
+// findLatestTokenURL 在单个日志文件里取最新一条 dsh web 访问链接：最多读尾 512KB；
+// after > 0 时只解析该偏移之后的内容（启动后定点捕获用，避免把上一条旧 token 日志当成本次
+// 启动结果）；文件被轮转/截断（长度小于 after）时从头再扫。读不到返回 ("", false)。
+func findLatestTokenURL(path string, after int64) (string, bool) {
+	f, err := os.Open(path)
+	if err != nil {
+		return "", false
+	}
+	defer f.Close()
+	st, err := f.Stat()
+	if err != nil {
+		return "", false
+	}
+	size := st.Size()
+	if after > size {
+		after = 0 // 文件被轮转/截断：从头再扫
+	}
+	start := int64(0)
+	if size > 512*1024 {
+		start = size - 512*1024
+	}
+	if after > start {
+		start = after
+	}
+	if start >= size {
+		return "", false
+	}
+	if _, err := f.Seek(start, io.SeekStart); err != nil {
+		return "", false
+	}
+	b, err := io.ReadAll(f)
+	if err != nil {
+		return "", false
+	}
+	ms := webTokenRe.FindAllSubmatch(b, -1)
+	if len(ms) == 0 {
+		return "", false
+	}
+	return string(ms[len(ms)-1][1]), true
+}
+
+// webTokenFound 当前是否存在带令牌的访问链接（帮助页据此显示正常说明或警告）。
+func webTokenFound() bool {
+	if shotMode {
+		return true // 截图模式：恒按正常态渲染（链接为脱敏演示值）
+	}
+	if startedTokenURL() != "" {
+		return true
+	}
+	if _, ok := findLatestTokenURL(unifiedLogPath(), 0); ok {
+		return true
+	}
+	_, ok := findLatestTokenURL(unifiedLogPath()+".1", 0)
+	return ok
+}
+
+// webTokenURL 取 dsh web 当前（带最新 token 的）URL：内存缓存（本进程启动时捕获）优先，
+// 其次统一日志（含 .1 轮转档）尾部扫描，取不到回退不含 token 的基础地址 webURL。
 func webTokenURL() string {
-	for _, p := range []string{unifiedLogPath(), unifiedLogPath() + ".1"} {
-		f, err := os.Open(p)
-		if err != nil {
-			continue
-		}
-		start := int64(0)
-		if st, serr := f.Stat(); serr == nil && st.Size() > 512*1024 {
-			start = st.Size() - 512*1024
-		}
-		if _, serr := f.Seek(start, io.SeekStart); serr != nil {
-			f.Close()
-			continue
-		}
-		b, rerr := io.ReadAll(f)
-		f.Close()
-		if rerr != nil {
-			continue
-		}
-		ms := webTokenRe.FindAllSubmatch(b, -1)
-		if len(ms) > 0 {
-			return string(ms[len(ms)-1][1])
-		}
+	if shotMode {
+		return shotTokenURL()
+	}
+	if u := startedTokenURL(); u != "" {
+		return u
+	}
+	if u, ok := findLatestTokenURL(unifiedLogPath(), 0); ok {
+		return u
+	}
+	if u, ok := findLatestTokenURL(unifiedLogPath()+".1", 0); ok {
+		return u
 	}
 	return webURL
+}
+
+// shotTokenURL 截图模式的脱敏演示访问链接（token 为占位值，不泄露真实令牌）。
+func shotTokenURL() string {
+	return fmt.Sprintf("http://127.0.0.1:%d/?token=demo", port)
+}
+
+// captureStartedTokenURL 启动服务后定点捕获本次打印的访问链接：每 300ms 扫一次日志新增
+// 部分，最多 30s（首次启动打印较慢）——命中即写入缓存。捕获不到不报错：取用时回退全量
+// 日志扫描，前端据 TokenFound 显示警告与解除指引。
+func captureStartedTokenURL(from int64) {
+	deadline := time.Now().Add(30 * time.Second)
+	for time.Now().Before(deadline) {
+		if u, ok := findLatestTokenURL(unifiedLogPath(), from); ok {
+			setServerTokenURL(u)
+			return
+		}
+		time.Sleep(300 * time.Millisecond)
+	}
+}
+
+// WebTokenURL 帮助页「复制访问链接」用：返回当前可直接打开的访问链接（含最新令牌）。
+// 未找到令牌链接（服务由 systray 之外启动、日志轮转丢失令牌行）返回空串——前端据此禁用
+// 复制按钮并显示警告。截图模式返回脱敏演示链接。
+func (a *App) WebTokenURL() string {
+	if shotMode {
+		return shotTokenURL()
+	}
+	if !webTokenFound() {
+		return ""
+	}
+	return webTokenURL()
 }
 
 // OpenWebUI 打开 harness Web 界面（带最新鉴权 token，兼容“修改端口未重启/自愈重启后

@@ -879,6 +879,31 @@ input { font-family: inherit; }
 .input-select:hover:not(:disabled) { border-color: var(--primary); }
 .input-select:focus-visible { outline: 2px solid var(--focus); outline-offset: 1px; }
 
+/* ---------- Help page ---------- */
+/* 帮助条目：标题 + 症状 + 状态/警告 + 原因 + 步骤 + 操作（后续条目按同样结构追加卡片） */
+.help-note { margin-top: var(--sp-3); }
+.help-card .row-warn { margin: var(--sp-3) 0 0; }
+.help-why { margin-top: var(--sp-4); }
+.help-steps {
+  margin: var(--sp-2) 0 0;
+  padding-left: var(--sp-5);
+  color: var(--muted);
+  font-size: var(--fs-xs);
+  line-height: 1.6;
+  display: grid;
+  gap: var(--sp-1);
+}
+.help-actions {
+  display: flex;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: var(--sp-2);
+  margin-top: var(--sp-5);
+}
+/* 「复制访问链接」的短暂结果反馈（沿用日志页路径复制的语义色） */
+.btn.copied { color: var(--ok); }
+.btn.copied-fail { color: var(--danger); }
+
 /* ---------- Reduced motion ---------- */
 @media (prefers-reduced-motion: reduce) {
   * { transition: none !important; animation: none !important; }

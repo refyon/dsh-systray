@@ -338,6 +338,7 @@ func startServer() (bool, <-chan error) {
 	cmd.Stderr = w
 	cmd.Stdin = nil
 
+	from := logSizeOrZero() // 本次启动前的日志长度：捕获访问链接时只解析此后写入的输出
 	if err := cmd.Start(); err != nil {
 		log.Printf("failed to start server: %v", err)
 		return false, nil
@@ -352,10 +353,12 @@ func startServer() (bool, <-chan error) {
 		exitCh <- err
 	}()
 	log.Printf("server started, pid=%d", cmd.Process.Pid)
+	go captureStartedTokenURL(from) // 捕获本次启动打印的访问链接（含新 token）缓存备后用
 	return true, exitCh
 }
 
 func killServer() {
+	setServerTokenURL("") // 服务已停：旧访问链接（旧 token）不再对应当前服务，清缓存
 	if serverCmd != nil && serverCmd.Process != nil {
 		_ = serverCmd.Process.Kill() // 本进程拉起的 node 直接 SIGKILL
 		serverCmd = nil
