@@ -255,6 +255,10 @@ $d = Start-AuthDialog
 $dr = [DshCap+RECT]::new()
 [void][DshCap]::GetWindowRect($d.Hwnd, [ref]$dr)
 $dw = $dr.R - $dr.L; $dh = $dr.B - $dr.T
+# 弹窗客户区（真实弹窗带系统标题栏，截图里只取客户区内容 → 出图是无边框卡片，见下方抓图说明）
+$dcr = [DshCap+RECT]::new()
+[void][DshCap]::GetClientRect($d.Hwnd, [ref]$dcr)
+$dww = $dcr.R - $dcr.L; $dhh = $dcr.B - $dcr.T
 $dx = $pt.X + [int](($cw - $dw) / 2)
 $dy = $pt.Y + [int](($chh - $dh) / 2)
 
@@ -281,12 +285,14 @@ if (-not (Set-DialogOverWindow -Dlg $d.Hwnd -Owner $h -X $dx -Y $dy)) {
     throw '授权弹窗未摆到设置窗口客户区内'
 }
 
-# 抓图统一走「PrintWindow 合成 + Python 贴图」：
-#   设置窗口按客户区取（PW_CLIENTONLY|PW_RENDERFULLCONTENT，同 capture_shots.ps1），
-#   弹窗取整窗（PW_RENDERFULLCONTENT）→ compose_dialog_shot.py：圆角卡片 + 四周柔和阴影。
-# 为什么不用整屏抓取：弹窗已无边框，真实阴影由 DWM 合成、PrintWindow 渲染不到；整屏抓取
-# 又要求桌面可访问（锁屏 / 无交互会话时 BitBlt 报 "The handle is invalid"）。合成路径
-# 与桌面状态无关，中英两张图的阴影/圆角完全一致。屏幕抓取仅作 PrintWindow 失败时的兜底。
+# 抓图说明（方案 C：真实弹窗保留系统标题栏，**只有截图呈现无边框卡片**）：
+#   设置窗口取客户区（PW_CLIENTONLY|PW_RENDERFULLCONTENT，同 capture_shots.ps1）；
+#   弹窗只取**客户区**（GetClientRect + ClientToScreen + PW_CLIENTONLY）——系统标题栏与
+#   边框都不进图；再由 compose_dialog_shot.py 贴成圆角卡片并画四周柔和阴影。
+#   因此应用内弹窗保持 Windows 原生外观，网站轮播图/README 是无边框卡片风格。
+#   为什么不直接整屏抓取：真实阴影由 DWM 合成、PrintWindow 渲染不到，且整屏抓取要求
+#   桌面可访问（锁屏 / 无交互会话时 BitBlt 报 "The handle is invalid"）。合成路径与桌面
+#   状态无关，中英两张图的圆角与阴影完全一致；整屏抓取仅在 PrintWindow 失败时兜底。
 function Get-WindowBitmap {
     param([IntPtr]$Hwnd, [int]$W, [int]$H, [uint32]$Flags)
     $bmp = New-Object System.Drawing.Bitmap($W, $H)
@@ -298,61 +304,50 @@ function Get-WindowBitmap {
     return $bmp
 }
 
-# PrintWindow 会把弹窗四周不可见的拉伸边框（DWM 阴影区）渲染成黑边：
-# 沿中线量出四条黑边厚度，贴图时按内缩后的真实内容矩形贴，避免给图里画一圈黑框。
-function Get-BlackInset([System.Drawing.Bitmap]$Bmp) {
-    $w = $Bmp.Width; $h = $Bmp.Height
-    $mx = [int]($w / 2); $my = [int]($h / 2)
-    $dark = { param($c) ($c.R -lt 16 -and $c.G -lt 16 -and $c.B -lt 16) }
-    $l = 0; while ($l -lt $w -and (& $dark $Bmp.GetPixel($l, $my))) { $l++ }
-    $r = 0; while ($r -lt $w -and (& $dark $Bmp.GetPixel($w - 1 - $r, $my))) { $r++ }
-    $t = 0; while ($t -lt $h -and (& $dark $Bmp.GetPixel($mx, $t))) { $t++ }
-    $b = 0; while ($b -lt $h -and (& $dark $Bmp.GetPixel($mx, $h - 1 - $b))) { $b++ }
-    return @{ L = $l; T = $t; R = $r; B = $b }
-}
-
 # 抓取 + 合成都放在 try 里：失败路径也要把弹窗进程与设置窗口收拾干净（否则残留进程会
 # 让下一次运行的单实例互斥、窗口查找全部异常——2026-09-15 实测）。
 try {
+    $iw = $dww; $ih = $dhh            # 弹窗客户区尺寸（标题栏/边框不计入）
+    $dpt = [DshCap+POINT]::new()
+    [void][DshCap]::ClientToScreen($d.Hwnd, [ref]$dpt)
+    $px = $dpt.X - $pt.X; $py = $dpt.Y - $pt.Y   # 弹窗客户区在设置窗口客户区图中的位置
+
     $appBmp = Get-VariedWindowBitmap -Hwnd $h -W $cw -H $chh -Flags 3
     if (Test-Varied $appBmp) {
-        $dlgBmp = Get-VariedWindowBitmap -Hwnd $d.Hwnd -W $dw -H $dh -Flags 2 -Tries 4
-        $ins = Get-BlackInset $dlgBmp
-        $iw = $dw - $ins.L - $ins.R; $ih = $dh - $ins.T - $ins.B
-        if ($iw -le 0 -or $ih -le 0) { throw "弹窗内容区测量失败（黑边 $($ins.L)/$($ins.T)/$($ins.R)/$($ins.B)）" }
-        $r = [DshCap+RECT]::new()
-        [void][DshCap]::GetWindowRect($d.Hwnd, [ref]$r)
-        $px = $r.L - $pt.X + $ins.L; $py = $r.T - $pt.Y + $ins.T
-        $tmpDir = Join-Path $env:TEMP 'dsh-dialog-shot-frames'
-        New-Item -ItemType Directory -Force -Path $tmpDir | Out-Null
-        $appPng = Join-Path $tmpDir 'app.png'; $dlgPng = Join-Path $tmpDir 'dialog.png'
-        $appBmp.Save($appPng, [System.Drawing.Imaging.ImageFormat]::Png)
-        $dlgBmp.Save($dlgPng, [System.Drawing.Imaging.ImageFormat]::Png)
-        $appBmp.Dispose(); $dlgBmp.Dispose()
-        Push-Location $root
-        try {
-            python scripts\compose_dialog_shot.py $appPng $dlgPng $OutFile `
-                --x $px --y $py --w $iw --h $ih --ix $ins.L --iy $ins.T --crop $crop --radius 10
-            if ($LASTEXITCODE -ne 0) { throw "合成失败（compose_dialog_shot.py exit $LASTEXITCODE）" }
-        } finally { Pop-Location }
-        Write-Host ("  method=printwindow+python (卡片 {0}x{1}，阴影/圆角由合成脚本绘制)" -f $iw, $ih)
+        $dlgBmp = Get-VariedWindowBitmap -Hwnd $d.Hwnd -W $iw -H $ih -Flags 3 -Tries 4
+        Write-Host ("  method=printwindow (弹窗只取客户区 {0}x{1}，标题栏不入图)" -f $iw, $ih)
     } else {
         $appBmp.Dispose()
-        Write-Host '  printwindow blank, fallback to screen copy（保留真实阴影）'
-        $bmp = New-Object System.Drawing.Bitmap($cw, $chh)
-        $g = [System.Drawing.Graphics]::FromImage($bmp)
-        $g.CopyFromScreen($pt.X, $pt.Y, 0, 0, $bmp.Size)
+        Write-Host '  printwindow blank, fallback to screen copy（从整屏图裁出弹窗客户区）'
+        $appBmp = New-Object System.Drawing.Bitmap($cw, $chh)
+        $g = [System.Drawing.Graphics]::FromImage($appBmp)
+        $g.CopyFromScreen($pt.X, $pt.Y, 0, 0, $appBmp.Size)
         $g.Dispose()
-        if (-not (Test-Varied $bmp)) { $bmp.Dispose(); throw '整屏抓取失败（桌面不可访问且 PrintWindow 为空）' }
-        $ow = $cw - 2*$crop; $oh = $chh - 2*$crop
-        $out = New-Object System.Drawing.Bitmap($ow, $oh)
-        $g2 = [System.Drawing.Graphics]::FromImage($out)
-        $g2.DrawImage($bmp, (New-Object System.Drawing.Rectangle(0,0,$ow,$oh)), (New-Object System.Drawing.Rectangle($crop,$crop,$ow,$oh)), [System.Drawing.GraphicsUnit]::Pixel)
-        $g2.Dispose()
-        $out.Save($OutFile, [System.Drawing.Imaging.ImageFormat]::Png)
-        $out.Dispose(); $bmp.Dispose()
-        Write-Host ("saved {0} ({1}x{2})" -f $OutFile, $ow, $oh)
+        if (-not (Test-Varied $appBmp)) { $appBmp.Dispose(); throw '整屏抓取失败（桌面不可访问且 PrintWindow 为空）' }
+        if ($px -lt 0 -or $py -lt 0 -or ($px + $iw) -gt $cw -or ($py + $ih) -gt $chh) {
+            $appBmp.Dispose(); throw "弹窗客户区超出设置窗口截图范围（$px,$py ${iw}x${ih}）"
+        }
+        $dlgBmp = New-Object System.Drawing.Bitmap($iw, $ih)
+        $gd = [System.Drawing.Graphics]::FromImage($dlgBmp)
+        $gd.DrawImage($appBmp,
+            (New-Object System.Drawing.Rectangle(0,0,$iw,$ih)),
+            (New-Object System.Drawing.Rectangle($px,$py,$iw,$ih)),
+            [System.Drawing.GraphicsUnit]::Pixel)
+        $gd.Dispose()
     }
+
+    $tmpDir = Join-Path $env:TEMP 'dsh-dialog-shot-frames'
+    New-Item -ItemType Directory -Force -Path $tmpDir | Out-Null
+    $appPng = Join-Path $tmpDir 'app.png'; $dlgPng = Join-Path $tmpDir 'dialog.png'
+    $appBmp.Save($appPng, [System.Drawing.Imaging.ImageFormat]::Png)
+    $dlgBmp.Save($dlgPng, [System.Drawing.Imaging.ImageFormat]::Png)
+    $appBmp.Dispose(); $dlgBmp.Dispose()
+    Push-Location $root
+    try {
+        python scripts\compose_dialog_shot.py $appPng $dlgPng $OutFile `
+            --x $px --y $py --w $iw --h $ih --crop $crop --radius 10
+        if ($LASTEXITCODE -ne 0) { throw "合成失败（compose_dialog_shot.py exit $LASTEXITCODE）" }
+    } finally { Pop-Location }
 } catch {
     Write-Host "  capture failed: $($_.Exception.Message)"
     Close-AuthDialog $d
