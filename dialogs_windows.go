@@ -31,6 +31,8 @@ const (
 	swShow                     = 5
 	wsCaption                  = 0x00C00000
 	wsSysMenu                  = 0x00080000
+	wsPopup                    = 0x80000000
+	csDropShadow               = 0x00020000
 	wsClipChildren             = 0x02000000
 	wsChild                    = 0x40000000
 	wsVisible                  = 0x10000000
@@ -67,6 +69,8 @@ const (
 	dlgBtnH   = 30
 	dlgBtnW   = 96 // 固定按钮宽度：容纳「登录 GitHub」等较长主操作文案（14px/600 下约 90px）
 	dlgBtnGap = 16
+	dlgTitleH = 20 // 卡片内标题行高度
+	dlgRadius = 10 // 卡片圆角半径（与网站轮播图的合成圆角一致）
 
 	dialogColorMsg   = 0x00857066 // #667085
 	dialogColorTxt   = 0x00281810 // #101828
@@ -120,6 +124,7 @@ var (
 	pGetTextMetrics        = modGdi32.NewProc("GetTextMetricsA")
 	pAddFontResourceExW    = modGdi32.NewProc("AddFontResourceExW")
 	pDwmSetWindowAttribute = modDwmapi.NewProc("DwmSetWindowAttribute")
+	pDwmExtendFrame        = modDwmapi.NewProc("DwmExtendFrameIntoClientArea")
 	// GDI+（抗锯齿绘图）
 	modGdiplus                = syscall.NewLazyDLL("gdiplus.dll")
 	gpStartup                 = modGdiplus.NewProc("GdiplusStartup")
@@ -222,6 +227,9 @@ type rect struct {
 	left, top, right, bottom int32
 }
 
+// margins 供 DwmExtendFrameIntoClientArea 使用（字段顺序与 Win32 MARGINS 一致）。
+type margins struct{ left, right, top, bottom int32 }
+
 type paintStruct struct {
 	hdc         uintptr
 	fErase      int32
@@ -264,6 +272,7 @@ var (
 	dialogGraySelBrush  uintptr
 	dialogMsgFont       uintptr
 	dialogBtnFont       uintptr
+	dialogTitleFont     uintptr
 	dialogBtnWidths     []int32 // 各按钮自适应宽度（createDialogWindow 使用）
 	dialogClassRegister bool
 )
@@ -476,6 +485,20 @@ func dialogWndProc(hwnd, uMsg, wParam, lParam uintptr) uintptr {
 		pSetBkMode.Call(wParam, bkOpaque)
 		h, _, _ := pGetStockObject.Call(whiteBrush)
 		return h
+	case wmPaint:
+		// 无边框卡片：白色圆角卡面 + 1px 浅描边。原标题栏（WS_CAPTION）已去除，
+		// 卡片观感与 README 主图 / 网站轮播图一致（圆角由 DWM 与截图合成共同保证）。
+		var ps paintStruct
+		hdc, _, _ := pBeginPaint.Call(hwnd, uintptr(unsafe.Pointer(&ps)))
+		if hdc != 0 {
+			var rc rect
+			pGetClientRect.Call(hwnd, uintptr(unsafe.Pointer(&rc)))
+			fillRoundedRectAA(hdc, rc, dlgRadius, colorRefToARGB(dialogColorBorder))
+			inner := rect{rc.left + 1, rc.top + 1, rc.right - 1, rc.bottom - 1}
+			fillRoundedRectAA(hdc, inner, dlgRadius-1, colorRefToARGB(colorWhite))
+			pEndPaint.Call(hwnd, uintptr(unsafe.Pointer(&ps)))
+		}
+		return 0
 	case wmDrawItem:
 		if lParam == 0 {
 			break
@@ -540,6 +563,7 @@ func runModernDialog(caption, message string, buttons []string, primary int) int
 	dialogResult = -1
 	dialogMsgFont = makeSystemFont(16, 400)
 	dialogBtnFont = makeFont(14, 600)
+	dialogTitleFont = makeFont(14, 600)
 	// 按钮按文案自适应宽度（下限 dlgBtnW）：固定宽度会把「登录 GitHub」（约 90px）/
 	// 「Sign in to GitHub」（约 135px，英文更宽）截断——中英双语都要完整可见。
 	dialogBtnWidths = make([]int32, len(buttons))
@@ -582,7 +606,7 @@ func createDialogWindow(caption, message string) uintptr {
 	if !dialogClassRegister {
 		wc := wndClassExW{
 			cbSize:        uint32(unsafe.Sizeof(wndClassExW{})),
-			style:         csHRedraw | csVRedraw,
+			style:         csHRedraw | csVRedraw | csDropShadow, // 无边框弹窗的系统投影兜底
 			lpfnWndProc:   cb,
 			hInstance:     moduleHandle(),
 			hCursor:       cur,
@@ -612,13 +636,15 @@ func createDialogWindow(caption, message string) uintptr {
 	}
 	// 高度余量：容纳 descender 与偶发多一行
 	msgH += 6
-	btnY := int32(dlgPad) + int32(msgH) + 12
+	// 卡片内标题行（原标题栏承担的角色）+ 与消息之间的间距
+	titleY := int32(dlgPad)
+	msgY := titleY + dlgTitleH + 8
+	btnY := msgY + int32(msgH) + 12
 	clientH := btnY + int32(dlgBtnH) + int32(dlgPad)
 
-	r := rect{0, 0, clientW, clientH}
-	pAdjustWindowRectEx.Call(uintptr(unsafe.Pointer(&r)), wsCaption|wsSysMenu, 0, 0)
-	winW := r.right - r.left
-	winH := r.bottom - r.top
+	// 无边框窗口：窗口矩形即卡片矩形（不再按标题栏/边框做 AdjustWindowRectEx）
+	winW := clientW
+	winH := clientH
 
 	sw, _, _ := pGetSystemMetrics.Call(smCX)
 	sh, _, _ := pGetSystemMetrics.Call(smCY)
@@ -630,7 +656,7 @@ func createDialogWindow(caption, message string) uintptr {
 		0,
 		uintptr(unsafe.Pointer(cls)),
 		uintptr(unsafe.Pointer(capPtr)),
-		wsCaption|wsSysMenu,
+		wsPopup, // 无标题栏 / 无边框：卡片化自绘（需求 2）
 		uintptr(x), uintptr(y), uintptr(winW), uintptr(winH),
 		0, 0, moduleHandle(), 0,
 	)
@@ -640,16 +666,33 @@ func createDialogWindow(caption, message string) uintptr {
 	dialogHwnd = hwnd
 	corner := uintptr(dwmcRound)
 	pDwmSetWindowAttribute.Call(hwnd, dwmcWindowCornerPreference, uintptr(unsafe.Pointer(&corner)), unsafe.Sizeof(corner))
+	// 四周窗口阴影：给无边框窗口扩展 1px 边框，DWM 据此按圆角形状绘制系统投影
+	//（CS_DROPSHADOW 为兜底；截图合成路径另由 scripts 侧补柔和阴影）。
+	m := margins{1, 1, 1, 1}
+	pDwmExtendFrame.Call(hwnd, uintptr(unsafe.Pointer(&m)))
+
+	// 标题行（原 WS_CAPTION 标题栏的文案，居中加粗）
+	staticCls, _ := syscall.UTF16PtrFromString("STATIC")
+	titPtr, _ := syscall.UTF16PtrFromString(caption)
+	if titHwnd, _, _ := pCreateWindowExW.Call(
+		0,
+		uintptr(unsafe.Pointer(staticCls)),
+		uintptr(unsafe.Pointer(titPtr)),
+		wsChild|wsVisible|ssCenter,
+		uintptr(dlgPad), uintptr(titleY), uintptr(innerW), uintptr(dlgTitleH),
+		hwnd, 199, moduleHandle(), 0,
+	); titHwnd != 0 {
+		pSendMessageW.Call(titHwnd, wmSetFont, dialogTitleFont, 1)
+	}
 
 	// 消息文本
-	staticCls, _ := syscall.UTF16PtrFromString("STATIC")
 	mt, _ := syscall.UTF16PtrFromString(message)
 	msgHwnd, _, _ := pCreateWindowExW.Call(
 		0,
 		uintptr(unsafe.Pointer(staticCls)),
 		uintptr(unsafe.Pointer(mt)),
 		wsChild|wsVisible|ssCenter,
-		uintptr(dlgPad), uintptr(dlgPad), uintptr(innerW), uintptr(msgH),
+		uintptr(dlgPad), uintptr(msgY), uintptr(innerW), uintptr(msgH),
 		hwnd, 200, moduleHandle(), 0,
 	)
 	if msgHwnd != 0 {

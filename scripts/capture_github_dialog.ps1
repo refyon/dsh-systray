@@ -114,28 +114,35 @@ try {
 if ($Lang -eq 'en') { $env:DSH_SYSTRAY_LANG = 'en' } else { Remove-Item Env:DSH_SYSTRAY_LANG -ErrorAction SilentlyContinue }
 $env:DSH_TMP_SHOT_DIALOG = '1'
 
+# 采样判断"窗口是否真的画好了"：9×9 网格取色，真实界面（浅灰底 + 白卡 + 文本/边框）通常
+# 有 8 种以上颜色，空白/未绘制窗口只有 1-2 种。阈值取 >5：原来 5×5 网格 + >3 在"关于页底部"
+# 这种大片浅色页面上会误判为空白（2026-09-15 实测 4 色，勉强过线，稍有偏差即失败）。
 function Test-Varied([System.Drawing.Bitmap]$bmp) {
     $seen = @{}
     $w = $bmp.Width; $h = $bmp.Height
-    foreach ($fx in 0.12,0.25,0.5,0.75,0.88) {
-        foreach ($fy in 0.12,0.25,0.5,0.75,0.88) {
+    foreach ($fx in 0.06,0.14,0.25,0.37,0.5,0.63,0.75,0.86,0.94) {
+        foreach ($fy in 0.06,0.14,0.25,0.37,0.5,0.63,0.75,0.86,0.94) {
             $c = $bmp.GetPixel([int]($w*$fx),[int]($h*$fy))
             $seen[[string]$c.ToArgb()] = 1
         }
     }
-    return ($seen.Count -gt 3)
+    return ($seen.Count -gt 5)
 }
 
-function Save-Cropped([System.Drawing.Bitmap]$bmp, [string]$path) {
-    $ow = $bmp.Width - 2*$crop; $oh = $bmp.Height - 2*$crop
-    if ($ow -le 0 -or $oh -le 0) { throw "截图尺寸过小：$($bmp.Width)x$($bmp.Height)" }
-    $out = New-Object System.Drawing.Bitmap($ow, $oh)
-    $g2 = [System.Drawing.Graphics]::FromImage($out)
-    $g2.DrawImage($bmp, (New-Object System.Drawing.Rectangle(0,0,$ow,$oh)), (New-Object System.Drawing.Rectangle($crop,$crop,$ow,$oh)), [System.Drawing.GraphicsUnit]::Pixel)
-    $g2.Dispose()
-    $out.Save($path, [System.Drawing.Imaging.ImageFormat]::Png)
-    Write-Host ("saved {0} ({1}x{2})" -f $path, $ow, $oh)
-    $out.Dispose()
+# 抓取并等待界面画好：切换视图/首次绘制瞬间会抓到近空白位图，这里重试若干次。
+function Get-VariedWindowBitmap {
+    param([IntPtr]$Hwnd, [int]$W, [int]$H, [uint32]$Flags, [int]$Tries = 6)
+    $bmp = $null
+    for ($i = 1; $i -le $Tries; $i++) {
+        if ($bmp) { $bmp.Dispose() }
+        $bmp = Get-WindowBitmap -Hwnd $Hwnd -W $W -H $H -Flags $Flags
+        if (Test-Varied $bmp) { return $bmp }
+        if ($i -lt $Tries) {
+            Write-Host ("  capture retry {0}/{1}（窗口尚未绘制完成）" -f $i, $Tries)
+            Start-Sleep -Milliseconds 800
+        }
+    }
+    return $bmp
 }
 
 function Stop-AllInstances {
@@ -274,13 +281,12 @@ if (-not (Set-DialogOverWindow -Dlg $d.Hwnd -Owner $h -X $dx -Y $dy)) {
     throw '授权弹窗未摆到设置窗口客户区内'
 }
 
-# 抓图两条路径：
-#  ①整屏抓取（CopyFromScreen）——最接近真实桌面（含弹窗 DWM 阴影），但要求桌面可访问；
-#    锁屏 / 无交互桌面时 BitBlt 会报 "The handle is invalid"。
-#  ②PrintWindow 双窗合成——与桌面状态无关，任何情况下都能出图；代价是没有弹窗阴影。
-#    设置窗口按客户区（PW_CLIENTONLY|PW_RENDERFULLCONTENT，同 capture_shots.ps1），
-#    弹窗取整窗（PW_RENDERFULLCONTENT，含标题栏），再按窗口相对位置贴到客户区上，
-#    贴图用圆角裁剪，避免把弹窗窗口矩形四角的底色带进背景。
+# 抓图统一走「PrintWindow 合成 + Python 贴图」：
+#   设置窗口按客户区取（PW_CLIENTONLY|PW_RENDERFULLCONTENT，同 capture_shots.ps1），
+#   弹窗取整窗（PW_RENDERFULLCONTENT）→ compose_dialog_shot.py：圆角卡片 + 四周柔和阴影。
+# 为什么不用整屏抓取：弹窗已无边框，真实阴影由 DWM 合成、PrintWindow 渲染不到；整屏抓取
+# 又要求桌面可访问（锁屏 / 无交互会话时 BitBlt 报 "The handle is invalid"）。合成路径
+# 与桌面状态无关，中英两张图的阴影/圆角完全一致。屏幕抓取仅作 PrintWindow 失败时的兜底。
 function Get-WindowBitmap {
     param([IntPtr]$Hwnd, [int]$W, [int]$H, [uint32]$Flags)
     $bmp = New-Object System.Drawing.Bitmap($W, $H)
@@ -290,17 +296,6 @@ function Get-WindowBitmap {
     $g.ReleaseHdc($hdc)
     $g.Dispose()
     return $bmp
-}
-
-function New-RoundedPath([int]$X, [int]$Y, [int]$W, [int]$H, [int]$R) {
-    $p = New-Object System.Drawing.Drawing2D.GraphicsPath
-    $d = 2 * $R
-    $p.AddArc($X, $Y, $d, $d, 180, 90)
-    $p.AddArc($X + $W - $d, $Y, $d, $d, 270, 90)
-    $p.AddArc($X + $W - $d, $Y + $H - $d, $d, $d, 0, 90)
-    $p.AddArc($X, $Y + $H - $d, $d, $d, 90, 90)
-    $p.CloseFigure()
-    return $p
 }
 
 # PrintWindow 会把弹窗四周不可见的拉伸边框（DWM 阴影区）渲染成黑边：
@@ -316,41 +311,54 @@ function Get-BlackInset([System.Drawing.Bitmap]$Bmp) {
     return @{ L = $l; T = $t; R = $r; B = $b }
 }
 
-$shot = $null
+# 抓取 + 合成都放在 try 里：失败路径也要把弹窗进程与设置窗口收拾干净（否则残留进程会
+# 让下一次运行的单实例互斥、窗口查找全部异常——2026-09-15 实测）。
 try {
-    $bmp = New-Object System.Drawing.Bitmap($cw, $chh)
-    $g = [System.Drawing.Graphics]::FromImage($bmp)
-    $g.CopyFromScreen($pt.X, $pt.Y, 0, 0, $bmp.Size)
-    $g.Dispose()
-    if (Test-Varied $bmp) { $shot = $bmp; Write-Host '  method=screen' } else { $bmp.Dispose(); Write-Host '  screen copy blank' }
+    $appBmp = Get-VariedWindowBitmap -Hwnd $h -W $cw -H $chh -Flags 3
+    if (Test-Varied $appBmp) {
+        $dlgBmp = Get-VariedWindowBitmap -Hwnd $d.Hwnd -W $dw -H $dh -Flags 2 -Tries 4
+        $ins = Get-BlackInset $dlgBmp
+        $iw = $dw - $ins.L - $ins.R; $ih = $dh - $ins.T - $ins.B
+        if ($iw -le 0 -or $ih -le 0) { throw "弹窗内容区测量失败（黑边 $($ins.L)/$($ins.T)/$($ins.R)/$($ins.B)）" }
+        $r = [DshCap+RECT]::new()
+        [void][DshCap]::GetWindowRect($d.Hwnd, [ref]$r)
+        $px = $r.L - $pt.X + $ins.L; $py = $r.T - $pt.Y + $ins.T
+        $tmpDir = Join-Path $env:TEMP 'dsh-dialog-shot-frames'
+        New-Item -ItemType Directory -Force -Path $tmpDir | Out-Null
+        $appPng = Join-Path $tmpDir 'app.png'; $dlgPng = Join-Path $tmpDir 'dialog.png'
+        $appBmp.Save($appPng, [System.Drawing.Imaging.ImageFormat]::Png)
+        $dlgBmp.Save($dlgPng, [System.Drawing.Imaging.ImageFormat]::Png)
+        $appBmp.Dispose(); $dlgBmp.Dispose()
+        Push-Location $root
+        try {
+            python scripts\compose_dialog_shot.py $appPng $dlgPng $OutFile `
+                --x $px --y $py --w $iw --h $ih --ix $ins.L --iy $ins.T --crop $crop --radius 10
+            if ($LASTEXITCODE -ne 0) { throw "合成失败（compose_dialog_shot.py exit $LASTEXITCODE）" }
+        } finally { Pop-Location }
+        Write-Host ("  method=printwindow+python (卡片 {0}x{1}，阴影/圆角由合成脚本绘制)" -f $iw, $ih)
+    } else {
+        $appBmp.Dispose()
+        Write-Host '  printwindow blank, fallback to screen copy（保留真实阴影）'
+        $bmp = New-Object System.Drawing.Bitmap($cw, $chh)
+        $g = [System.Drawing.Graphics]::FromImage($bmp)
+        $g.CopyFromScreen($pt.X, $pt.Y, 0, 0, $bmp.Size)
+        $g.Dispose()
+        if (-not (Test-Varied $bmp)) { $bmp.Dispose(); throw '整屏抓取失败（桌面不可访问且 PrintWindow 为空）' }
+        $ow = $cw - 2*$crop; $oh = $chh - 2*$crop
+        $out = New-Object System.Drawing.Bitmap($ow, $oh)
+        $g2 = [System.Drawing.Graphics]::FromImage($out)
+        $g2.DrawImage($bmp, (New-Object System.Drawing.Rectangle(0,0,$ow,$oh)), (New-Object System.Drawing.Rectangle($crop,$crop,$ow,$oh)), [System.Drawing.GraphicsUnit]::Pixel)
+        $g2.Dispose()
+        $out.Save($OutFile, [System.Drawing.Imaging.ImageFormat]::Png)
+        $out.Dispose(); $bmp.Dispose()
+        Write-Host ("saved {0} ({1}x{2})" -f $OutFile, $ow, $oh)
+    }
 } catch {
-    Write-Host "  screen copy unavailable ($($_.Exception.Message))"
+    Write-Host "  capture failed: $($_.Exception.Message)"
+    Close-AuthDialog $d
+    Stop-AllInstances
+    throw
 }
-if (-not $shot) {
-    $r = [DshCap+RECT]::new()
-    [void][DshCap]::GetWindowRect($d.Hwnd, [ref]$r)
-    $appBmp = Get-WindowBitmap -Hwnd $h -W $cw -H $chh -Flags 3
-    $dlgBmp = Get-WindowBitmap -Hwnd $d.Hwnd -W $dw -H $dh -Flags 2
-    $ins = Get-BlackInset $dlgBmp
-    $iw = $dw - $ins.L - $ins.R; $ih = $dh - $ins.T - $ins.B
-    if ($iw -le 0 -or $ih -le 0) { throw "弹窗内容区测量失败（黑边 $($ins.L)/$($ins.T)/$($ins.R)/$($ins.B)）" }
-    $px = $r.L - $pt.X + $ins.L; $py = $r.T - $pt.Y + $ins.T
-    $shot = New-Object System.Drawing.Bitmap($cw, $chh)
-    $g = [System.Drawing.Graphics]::FromImage($shot)
-    $g.DrawImage($appBmp, 0, 0, $cw, $chh)
-    $clip = New-RoundedPath $px $py $iw $ih 8
-    $g.SetClip($clip)
-    $g.DrawImage($dlgBmp,
-        (New-Object System.Drawing.Rectangle($px, $py, $iw, $ih)),
-        (New-Object System.Drawing.Rectangle($ins.L, $ins.T, $iw, $ih)),
-        [System.Drawing.GraphicsUnit]::Pixel)
-    $g.ResetClip()
-    $g.Dispose(); $clip.Dispose(); $appBmp.Dispose(); $dlgBmp.Dispose()
-    Write-Host ("  method=printwindow-composite (弹窗黑边内缩 {0}/{1}/{2}/{3})" -f $ins.L, $ins.T, $ins.R, $ins.B)
-}
-
-Save-Cropped $shot $OutFile
-$shot.Dispose()
 
 Close-AuthDialog $d
 Stop-AllInstances
