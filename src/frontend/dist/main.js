@@ -446,8 +446,8 @@ function refreshHelpState() {
   const hasToken = running && !!svc.tokenFound;
   const warn = running && !hasToken;
   $("help-state").classList.toggle("hidden", running);
+  // 「重启后台服务」嵌在警告框内：警告框显隐即按钮显隐
   $("help-warn").classList.toggle("hidden", !warn);
-  restart.classList.toggle("hidden", !warn);
   if (helpRestarting) {
     open.disabled = true;
     copy.disabled = true;

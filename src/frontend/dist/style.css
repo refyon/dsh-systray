@@ -883,6 +883,8 @@ input { font-family: inherit; }
 /* 帮助条目：标题 + 症状 + 状态/警告 + 原因 + 步骤 + 操作（后续条目按同样结构追加卡片） */
 .help-note { margin-top: var(--sp-3); }
 .help-card .row-warn { margin: var(--sp-3) 0 0; }
+/* 警告框内的操作（服务非本程序拉起时嵌在提示框里的「重启后台服务」，尺寸同插件行按钮） */
+.help-warn-actions { display: flex; justify-content: flex-end; margin-top: var(--sp-2); }
 .help-why { margin-top: var(--sp-4); }
 .help-steps {
   margin: var(--sp-2) 0 0;
