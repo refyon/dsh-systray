@@ -117,6 +117,26 @@ func TestWebTokenURLBinding(t *testing.T) {
 	}
 }
 
+// 预览警告态开关（DSH_SYSTRAY_SHOT_HELP=warn）：截图模式也按"拿不到链接"渲染，供预览/截图该状态。
+func TestWebTokenURLShotWarnOverride(t *testing.T) {
+	useTempLogDir(t)
+	setServerTokenURL("")
+	prevShot, prevWarn, prevPort, prevURL := shotMode, shotHelpWarn, port, webURL
+	t.Cleanup(func() { shotMode, shotHelpWarn, port, webURL = prevShot, prevWarn, prevPort, prevURL })
+	port = 3080
+	webURL = "http://127.0.0.1:3080/"
+	shotMode, shotHelpWarn = true, true
+	if webTokenFound() {
+		t.Fatal("shot warn mode should report not found")
+	}
+	if got := (&App{}).WebTokenURL(); got != "" {
+		t.Fatalf("shot warn mode should return empty, got %q", got)
+	}
+	if got := webTokenURL(); got != webURL {
+		t.Fatalf("shot warn mode should fall back to base url, got %q", got)
+	}
+}
+
 // useTempTokenFile 把访问链接缓存文件指向临时目录（避免写进真实配置目录）。
 func useTempTokenFile(t *testing.T) string {
 	t.Helper()

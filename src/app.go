@@ -31,6 +31,10 @@ type App struct{}
 // 避免截图泄露真实路径、用户名、版本构建信息（技术栈）。
 var shotMode = os.Getenv("DSH_SYSTRAY_SHOT_PAGE") != ""
 
+// shotHelpWarn 预览/截图模式：强制帮助页呈现「拿不到带令牌链接」的警告态
+// （DSH_SYSTRAY_SHOT_HELP=warn）。该状态真实环境里要求服务不是由本程序拉起，截图无法自然复现。
+var shotHelpWarn = os.Getenv("DSH_SYSTRAY_SHOT_HELP") == "warn"
+
 // sanitizeShotPath 脱敏单个路径（用户目录前缀 → C:\Users\demo）。
 func sanitizeShotPath(p string) string {
 	if !shotMode || p == "" {
@@ -1362,7 +1366,7 @@ func findLatestTokenURL(path string, after int64) (string, bool) {
 // webTokenFound 当前是否存在带令牌的访问链接（帮助页据此显示正常说明或警告）。
 func webTokenFound() bool {
 	if shotMode {
-		return true // 截图模式：恒按正常态渲染（链接为脱敏演示值）
+		return !shotHelpWarn // 截图/预览模式：默认按正常态渲染（链接为脱敏演示值）；=warn 时强制警告态
 	}
 	if startedTokenURL() != "" {
 		return true
@@ -1378,6 +1382,9 @@ func webTokenFound() bool {
 // 其次统一日志（含 .1 轮转档）尾部扫描，取不到回退不含 token 的基础地址 webURL。
 func webTokenURL() string {
 	if shotMode {
+		if shotHelpWarn {
+			return webURL // 预览警告态：不给演示令牌，避免"打开"落到 401 演示链接
+		}
 		return shotTokenURL()
 	}
 	if u := startedTokenURL(); u != "" {
@@ -1414,9 +1421,12 @@ func captureStartedTokenURL(from int64) {
 
 // WebTokenURL 帮助页「复制访问链接」用：返回当前可直接打开的访问链接（含最新令牌）。
 // 未找到令牌链接（服务由 systray 之外启动、日志轮转丢失令牌行）返回空串——前端据此禁用
-// 复制按钮并显示警告。截图模式返回脱敏演示链接。
+// 复制按钮并显示警告。截图模式返回脱敏演示链接（DSH_SYSTRAY_SHOT_HELP=warn 时为警告态）。
 func (a *App) WebTokenURL() string {
 	if shotMode {
+		if shotHelpWarn {
+			return ""
+		}
 		return shotTokenURL()
 	}
 	if !webTokenFound() {
