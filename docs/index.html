@@ -46,7 +46,6 @@ a{color:inherit;text-decoration:none}
 .btn.primary:hover{background:var(--primary-deep)}
 .btn.ghost{background:var(--surface);color:var(--text);border:1px solid var(--border)}
 .btn.ghost:hover{border-color:#cfd4dd}
-.os-hint{margin:12px 0 0;font-size:13px;color:var(--muted)}
 .ver-chip{margin-top:20px;font-size:13px;color:var(--muted)}
 .ver-chip b{color:var(--primary)}
 
@@ -123,7 +122,6 @@ footer .sep{margin:0 8px;color:var(--border)}
       <a class="btn primary" id="dl-win" href="https://github.com/refyon/dsh-systray/releases/latest/download/dsh-systray-windows-x64.zip"><svg class="ico" viewBox="0 0 24 24" fill="currentColor"><path d="M3 5.5l8.5-1.2v8.4H3V5.5zm9.5-1.3L21 3v9.7h-8.5V4.2zM3 13.7h8.5v8.4L3 20.9v-7.2zm9.5.8H21v6.9l-8.5 1.3v-8.2z"/></svg><span data-i18n="dlWin">下载 Windows 版</span></a>
       <a class="btn ghost" id="dl-mac" href="https://github.com/refyon/dsh-systray/releases/latest/download/dsh-systray-macos-universal.zip"><svg class="ico" viewBox="0 0 24 24" fill="currentColor"><path d="M16.9 12.9c0-2.1 1.7-3.1 1.8-3.2-1-1.4-2.5-1.6-3-1.7-1.3-.1-2.5.8-3.2.8-.6 0-1.6-.8-2.7-.7-1.4 0-2.7.8-3.4 2-1.4 2.5-.4 6.2 1 8.2.7 1 1.5 2.1 2.6 2 .9 0 1.3-.6 2.5-.6s1.5.6 2.5.6c1 0 1.7-1 2.4-2 .7-1.1 1-2.1 1-2.2 0 0-2-1-2-3.2zM15 6.3c.6-.7 1-1.7.9-2.7-.8 0-1.9.6-2.5 1.3-.5.6-1 1.6-.9 2.6.9.1 1.9-.5 2.5-1.2z"/></svg><span data-i18n="dlMac">下载 macOS 版</span></a>
     </div>
-    <p class="os-hint" id="dl-hint"></p>
     <div class="ver-chip"><span data-i18n="verLabel">当前版本</span> <b id="version">v0.8.0</b> <span data-i18n="verSuffix">· 由 CI 自动构建发布</span></div>
   </section>
 
@@ -247,8 +245,6 @@ footer .sep{margin:0 8px;color:var(--border)}
       logoAlt: "dsh-systray 图标",
       heroSub: "轻量 · 可靠 · 可迁移——双击即启，托盘常驻，服务就绪一触即达。",
       dlWin: "下载 Windows 版", dlMac: "下载 macOS 版",
-      dlHintMac: "已识别 macOS，为你高亮对应版本", dlHintWin: "已识别 Windows，为你高亮对应版本",
-      dlHintOther: "未识别你的系统，请按需选择版本",
       verLabel: "当前版本", verSuffix: "· 由 CI 自动构建发布",
       featTitle: "轻量、可靠、可迁移",
       featLead: "单文件、自愈、随身带。像系统原生的一部分。",
@@ -283,8 +279,6 @@ footer .sep{margin:0 8px;color:var(--border)}
       logoAlt: "dsh-systray logo",
       heroSub: "Lightweight · Reliable · Portable — double-click to start, lives in the tray, service ready at your fingertips.",
       dlWin: "Download for Windows", dlMac: "Download for macOS",
-      dlHintMac: "macOS detected — that build is highlighted", dlHintWin: "Windows detected — that build is highlighted",
-      dlHintOther: "Couldn't detect your system — pick the right build",
       verLabel: "Version", verSuffix: "· built & released automatically by CI",
       featTitle: "Lightweight, Reliable, Portable",
       featLead: "Single file, self-healing, take it anywhere. Feels native.",
@@ -351,7 +345,6 @@ footer .sep{margin:0 8px;color:var(--border)}
     var prev = document.getElementById("car-prev"), next = document.getElementById("car-next");
     if (prev) prev.setAttribute("aria-label", d.prevAria);
     if (next) next.setAttribute("aria-label", d.nextAria);
-    updateOsHint(); // 下载按钮高亮与提示文案按访客系统渲染（文案随语言切换更新）
     updateCarCaption();
     show(cur); // 语言切换后立即按新语言重选当前页图片（EN 图缺失自动回退 zh）
   }
@@ -363,9 +356,9 @@ footer .sep{margin:0 8px;color:var(--border)}
     b.addEventListener("click", function () { toggleLang(b.getAttribute("data-lang")); });
   });
 
-  // ==================== 下载按钮按访客系统高亮 ====================
-  // 高亮只表达「推荐」，不限制可选：两个版本始终都可点，只是把访客系统的那个换成主按钮样式。
-  // 识别不到（Linux / 移动端 / 隐私模式）时保持默认高亮（Windows）并如实说明未识别。
+  // ==================== 下载按钮按访客系统排序与高亮 ====================
+  // 排序与高亮只表达「推荐」，不限制可选：两个版本始终都可点，只是把访客系统的那个排到最前、
+  // 换成主按钮样式。识别不到（Linux / 移动端 / 隐私模式）时维持默认——Windows 在前并高亮。
   function detectOS() {
     var ua = navigator.userAgent || "";
     // 移动端没有对应构建：iPhone / iPad / Android；iPadOS 会伪装成桌面 Mac，但 UA 里始终带 Mobile/ 标记
@@ -378,20 +371,19 @@ footer .sep{margin:0 8px;color:var(--border)}
     return "";
   }
   var osRec = detectOS();
-  function updateOsHint() {
+  // 推荐项排到最前用真实 DOM 移动（而不是 CSS order）：键盘 Tab 焦点顺序与视觉顺序一致。
+  (function applyOSRecommendation() {
     var win = document.getElementById("dl-win"), mac = document.getElementById("dl-mac");
-    if (win && mac) {
-      win.classList.toggle("primary", osRec !== "mac");
-      win.classList.toggle("ghost", osRec === "mac");
-      mac.classList.toggle("primary", osRec === "mac");
-      mac.classList.toggle("ghost", osRec !== "mac");
-    }
-    var hint = document.getElementById("dl-hint");
-    if (hint) {
-      var key = osRec === "mac" ? "dlHintMac" : (osRec === "win" ? "dlHintWin" : "dlHintOther");
-      hint.textContent = I18N[lang][key] || "";
-    }
-  }
+    if (!win || !mac) return;
+    var rec = osRec === "mac" ? mac : win;
+    var other = osRec === "mac" ? win : mac;
+    rec.classList.add("primary");
+    rec.classList.remove("ghost");
+    other.classList.remove("primary");
+    other.classList.add("ghost");
+    var box = rec.parentNode;
+    if (box && box.firstElementChild !== rec) box.insertBefore(rec, box.firstElementChild);
+  })();
 
   // ==================== 版本号 ====================
   var v = document.getElementById('version');
