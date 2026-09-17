@@ -65,6 +65,12 @@ func startSplash(text string) *SplashState {
 		Update: func(t string, f float64) { emitSplash(t, f) },
 		Close: func() {
 			emitSplash("", 1)
+			// 关进度视图必须同时把设置页还回来：进度视图是整块顶掉设置页显示的，而收尾事件
+			// （update:done）只有更新类流程才发——插件批量操作与「重启后台服务」此前既没有
+			// 收尾事件、又不会有 splash:progress 让前端复位，窗口就一直停在进度视图
+			//（2026-09-17 现场问题：插件更新完成后不退出重启中页面）。这里复用启动完成的
+			// splash:done 语义（前端切回设置页 + 刷新服务状态），重复发送无害。
+			notifySplashDone()
 			hideMainWindow()
 		},
 	}
