@@ -63,10 +63,14 @@ func shotWindowHeight() int {
 }
 
 var (
-	logDir             string
-	webURL             string
-	harnessDir         string
-	port               int
+	logDir     string
+	webURL     string
+	harnessDir string
+	port       int
+	// trustedHosts 配置里声明的额外信任地址，启动服务时透传给 dsh web（--trusted-host）。
+	// dsh 的 /api 有 Host/Origin 栅栏：手机经端口转发/隧道访问时，必须声明"手机看到的地址"，
+	// 否则界面能打开但对话 403。见 trustedHostFlags。
+	trustedHosts       []string
 	startupTimeout     time.Duration
 	quitting           atomic.Bool
 	keepServerRunning  atomic.Bool
@@ -109,6 +113,10 @@ type appConfig struct {
 	HarnessPrerelease bool `json:"harnessPrerelease"`
 	// Language 界面语言偏好：auto（跟随系统）| zh | en；缺省 auto。运行时解析见 i18n.go。
 	Language string `json:"language"`
+	// TrustedHosts 额外信任的访问地址（host 或 host:port，如 192.168.1.5:8899）。
+	// dsh web 的 /api 有 Host/Origin 栅栏，只认 loopback 与这里声明的地址：手机经端口转发
+	// 或隧道访问时，必须把"手机看到的那个地址"声明进来，否则界面能打开但无法对话（403）。
+	TrustedHosts []string `json:"trustedHosts,omitempty"`
 	// PendingPluginOps 待应用的插件变更（更新/删除/启用）：点击后只登记，等用户在关闭设置窗口时
 	// 确认、或在关于页点「立即应用」才执行（整批一次重启）。跨托盘重启保留，见 plugin_batch.go。
 	PendingPluginOps []pendingPluginOp `json:"pendingPluginOps,omitempty"`
@@ -128,6 +136,22 @@ func configFilePath() string {
 		return filepath.Join(dir, "dsh-systray", "config.json")
 	}
 	return ""
+}
+
+// trustedHostFlags 把配置里声明的额外信任地址转成 dsh web 的命令行参数。
+// 过滤空白项并去重，避免空参数让 dsh 启动即报错。
+func trustedHostFlags() []string {
+	seen := map[string]bool{}
+	var out []string
+	for _, h := range trustedHosts {
+		h = strings.TrimSpace(h)
+		if h == "" || seen[h] {
+			continue
+		}
+		seen[h] = true
+		out = append(out, "--trusted-host", h)
+	}
+	return out
 }
 
 // legacyConfigPath 旧版本保存在 exe 同目录的 config.json（仅作兼容读取）。
@@ -171,6 +195,9 @@ func applyConfigFile(cfg *appConfig, path string) {
 	}
 	if len(f.PendingPluginOps) > 0 {
 		cfg.PendingPluginOps = f.PendingPluginOps
+	}
+	if len(f.TrustedHosts) > 0 {
+		cfg.TrustedHosts = f.TrustedHosts
 	}
 }
 
@@ -390,6 +417,7 @@ func main() {
 	updateMirrorOverride = cfg.UpdateMirror
 	harnessPrereleaseOverride = cfg.HarnessPrerelease
 	port = cfg.Port
+	trustedHosts = cfg.TrustedHosts // 供 startServer 透传给 dsh web（见 trustedHostFlags）
 	webURL = fmt.Sprintf("http://127.0.0.1:%d/", port)
 	harnessDir = cfg.HarnessDir
 	startupTimeout = time.Duration(cfg.StartupTimeoutSec) * time.Second

@@ -566,13 +566,18 @@ func startServer() (bool, <-chan error) {
 	}
 
 	var cmd *exec.Cmd
+	// trustedHostArgs 把配置里声明的额外信任地址透传给 dsh web：手机经转发/隧道访问时，
+	// /api 的 Host/Origin 栅栏只认 loopback 与这些声明（缺了它界面能开、对话 403）。
+	trustedHostArgs := trustedHostFlags()
 	if isNpmHarnessReady() {
 		// npm 预构建产物：直接用 node 启动 @deepseek-ai/dsh 入口
 		bin := filepath.Join(harnessDir, "node_modules", "@deepseek-ai", "dsh", "lib", "bin.js")
-		cmd = exec.Command(nodeCmd(), bin, "web", "--no-open", "--host", "127.0.0.1", "--port", strconv.Itoa(port))
+		args := append([]string{bin, "web", "--no-open", "--host", "127.0.0.1", "--port", strconv.Itoa(port)}, trustedHostArgs...)
+		cmd = exec.Command(nodeCmd(), args...)
 	} else {
 		// 源码 checkout：pnpm dsh web
-		cmd = exec.Command(pnpmCmd(), "dsh", "web", "--port", strconv.Itoa(port), "--no-open")
+		args := append([]string{"dsh", "web", "--port", strconv.Itoa(port), "--no-open"}, trustedHostArgs...)
+		cmd = exec.Command(pnpmCmd(), args...)
 	}
 	cmd.Dir = harnessDir
 	hideCmdWindow(cmd)

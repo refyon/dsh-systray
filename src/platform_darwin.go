@@ -323,13 +323,18 @@ func startServer() (bool, <-chan error) {
 	}
 
 	var cmd *exec.Cmd
+	// trustedHostArgs 把配置里声明的额外信任地址透传给 dsh web（与 Windows 侧同语义）：
+	// 经端口转发/隧道访问时，/api 的 Host/Origin 栅栏只认 loopback 与这些声明（缺了它界面能开、对话 403）。
+	trustedHostArgs := trustedHostFlags()
 	if isNpmHarnessReady() {
 		// npm 预构建产物：直接用 node 启动 @deepseek-ai/dsh 入口
 		bin := filepath.Join(harnessDir, "node_modules", "@deepseek-ai", "dsh", "lib", "bin.js")
-		cmd = exec.Command(nodeCmd(), bin, "web", "--no-open", "--host", "127.0.0.1", "--port", strconv.Itoa(port))
+		args := append([]string{bin, "web", "--no-open", "--host", "127.0.0.1", "--port", strconv.Itoa(port)}, trustedHostArgs...)
+		cmd = exec.Command(nodeCmd(), args...)
 	} else {
 		// 源码 checkout：pnpm dsh web
-		cmd = exec.Command("sh", "-c", fmt.Sprintf("%s dsh web --port %d --no-open", pnpmCmd(), port))
+		cmd = exec.Command("sh", "-c", fmt.Sprintf("%s dsh web --port %d --no-open %s",
+			pnpmCmd(), port, strings.Join(trustedHostArgs, " ")))
 	}
 	cmd.Dir = harnessDir
 	// 输出经统一日志句柄落盘（勿提前 Close，见 platform_windows startServer 注释）
