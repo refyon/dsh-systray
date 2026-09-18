@@ -1,4 +1,4 @@
-<h1 align="center">
+﻿<h1 align="center">
   <img src="docs/icon.svg" width="72" alt="dsh-systray logo" />
   <br />
   dsh-systray
@@ -133,8 +133,8 @@ scripts/             构建 / 截图 / 图标工具（build.ps1、capture_*.ps1�
 
 | 平台 | 构建命令（在 `src/` 下执行） |
 | --- | --- |
-| Windows | `wails build -s -clean -platform windows/amd64 -ldflags "-X main.appVersion=v0.9.3"` |
-| macOS | `wails build -s -clean -platform darwin/universal -ldflags "-X main.appVersion=v0.9.3"` |
+| Windows | `wails build -s -clean -platform windows/amd64 -ldflags "-X main.appVersion=v0.9.4"` |
+| macOS | `wails build -s -clean -platform darwin/universal -ldflags "-X main.appVersion=v0.9.4"` |
 
 > - 产物：`src/build/bin/dsh-systray.exe`（Windows）/ `src/build/bin/dsh-systray.app`（macOS），仓库根不再输出编译产物
 > - `-s`：跳过前端构建（直接内嵌 `src/frontend/dist`）；改动前端后无需其他步骤，直接重新 `wails build`

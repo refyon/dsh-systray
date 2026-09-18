@@ -314,12 +314,20 @@ function rerenderDynamicText() {
 
 const PAGE_TITLES = { general: "常规", about: "关于", logs: "日志", export: "导出", import: "导入", help: "帮助" };
 
-function showPage(name) {
-  state.page = name;
-  document.querySelectorAll(".nav-item").forEach((b) => b.classList.toggle("active", b.dataset.page === name));
+// 页标题按当前语言重刷：showPage 与「语言生效后」两条路径都要调——启动时 showPage(shotPage) 早于
+// GetConfig，此刻 curLangCode() 还是默认 zh，若只在这里设一次，英文配置的窗口会一直显示中文标题，
+// 直到用户点一下左侧导航（2026-09-18 英文截图实拍暴露）。
+function refreshPageTitle() {
+  const name = state.page || "general";
   const key = PAGE_I18N_KEY[name];
   $("page-title").textContent = (curLangCode() === "en" && key && I18N_EN[key])
     ? I18N_EN[key] : PAGE_TITLES[name];
+}
+
+function showPage(name) {
+  state.page = name;
+  document.querySelectorAll(".nav-item").forEach((b) => b.classList.toggle("active", b.dataset.page === name));
+  refreshPageTitle();
   document.querySelectorAll(".page").forEach((p) => p.classList.add("hidden"));
   $("page-" + name).classList.remove("hidden");
   if (name === "logs") startLogPolling();
@@ -380,6 +388,7 @@ async function refreshConfig() {
     const ls = $("sel-lang");
     if (ls) ls.value = state.cfg.language || "auto";
     applyStaticI18n(); // 语言生效后重刷静态文案（en 时覆盖默认中文 DOM）
+    refreshPageTitle(); // 页标题不在 data-i18n 静态层里，需在此按已生效的语言重刷
     updatePortHint();
   } catch (e) { console.error("GetConfig", e); }
 }
