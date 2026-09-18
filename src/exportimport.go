@@ -1787,20 +1787,40 @@ func finishPluginImport(dirs []string, hadNM []bool) (string, error) {
 		allDisabled = ok
 	}
 	if ok {
-		promoteImportProfilesToLkg(dirs)
-		cleanupImportProfiles(dirs)
-		markServiceResumed()
-		names := make([]string, 0, len(disabled))
-		for _, d := range disabled {
-			names = append(names, d.Name)
+		// 最大化启用遍：禁用只为换取服务可启动，而禁用依据并不总是可靠（预检解析类误判、
+		// 启动日志陈旧/连带点名）——立即逐个复验并重新启用真正兼容的插件，只留不兼容的禁用，
+		// 免去用户「导入后所有插件都被禁用、还得手动一个个开」（2026-09-18 现场需求）。
+		kept, stillDisabled, mok := maximizeEnabledPlugins(disabled, func(name string, i, n int) {
+			emitImportHealing(fmt.Sprintf("正在重新启用校验 %s（%d/%d）…", name, i, n))
+		})
+		if !mok {
+			log.Printf("import: maximize enable could not restore a healthy state, rolling back")
+			ok = false // 落到下方整体回退
+		} else {
+			promoteImportProfilesToLkg(dirs)
+			cleanupImportProfiles(dirs)
+			markServiceResumed()
+			keptNames, stillNames := pluginNames(kept), pluginNames(stillDisabled)
+			log.Printf("import: plugins restored (re-enabled=%v, still-disabled=%v)", keptNames, stillNames)
+			note := ""
+			if len(keptNames) > 0 {
+				note = "已恢复导入：启动校验失败时被禁用的插件经逐个复验已重新启用 " + strings.Join(keptNames, "、")
+			}
+			if len(stillNames) > 0 {
+				if allDisabled {
+					note = appendNote(note, "服务启动失败且未能定位到具体的不兼容插件；仍禁用 "+strings.Join(stillNames, "、")+
+						"（保留记录，可在关于页逐个检查更新或重新启用）")
+				} else {
+					note = appendNote(note, "以下插件与当前版本不兼容，已自动禁用（可在关于页检查更新，或确认修复后点击「启用」重试）："+
+						strings.Join(stillNames, "、"))
+				}
+			}
+			if note == "" {
+				// 候选均为无依赖声明的残留激活项：只摘除激活声明，无「重新启用」对象
+				note = "已恢复导入：已排除未安装或无法解析的插件激活声明 " + strings.Join(pluginNames(disabled), "、")
+			}
+			return appendNote(appendNote(pfNote, note), reconcilePendingAfterImport(importZipPath)), nil
 		}
-		log.Printf("import: plugins restored with incompatible ones disabled: %s", strings.Join(names, "、"))
-		if allDisabled {
-			return appendNote(appendNote(pfNote, "已恢复导入，但服务启动失败且未能定位具体的不兼容插件，已自动禁用全部已激活的用户插件以保证服务启动"+
-				"（保留记录，可在关于页逐个检查更新或重新启用）："+strings.Join(names, "、")), reconcilePendingAfterImport(importZipPath)), nil
-		}
-		return appendNote(appendNote(pfNote, "已恢复导入，但以下插件与当前版本不兼容，已自动禁用（可在关于页检查更新，或确认修复后点击「启用」重试）："+
-			strings.Join(names, "、")), reconcilePendingAfterImport(importZipPath)), nil
 	}
 	log.Printf("import: service not healthy after restore heal (%s), rolling back", reason)
 	killServer()

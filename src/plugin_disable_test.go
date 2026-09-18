@@ -314,3 +314,185 @@ func TestActivatedUserPluginNames(t *testing.T) {
 		t.Fatalf("names = %v, want %v（官方包过滤、@版本取 base、去重排序）", names, want)
 	}
 }
+
+// ==================== 最大化启用遍（自愈禁用后逐个复验重新启用） ====================
+
+// stubMaximize 替换最大化启用遍的三处可测试缝（单插件启用校验 / 整体校验 / 重启预算），
+// 测试结束还原；同时把统一日志目录指向临时目录，避免读到真实运行日志。
+func stubMaximize(t *testing.T, enable func(PluginRow) (bool, string), verify func() bool) {
+	t.Helper()
+	prevE, prevV, prevB, prevLog := pluginEnableVerify, serverVerify, maximizeRestartBudget, logDir
+	pluginEnableVerify, serverVerify, maximizeRestartBudget = enable, verify, 0
+	logDir = t.TempDir()
+	t.Cleanup(func() {
+		pluginEnableVerify, serverVerify, maximizeRestartBudget, logDir = prevE, prevV, prevB, prevLog
+	})
+}
+
+// maximizeFixture 造一个 profile 目录：deps 里的插件均为「已禁用」态（不在 bundles、有禁用记录），
+// 返回按名字排序的候选行。
+func maximizeFixture(t *testing.T, names ...string) (dir string, candidates []PluginRow) {
+	t.Helper()
+	dir = t.TempDir()
+	deps := make([]string, 0, len(names))
+	disabled := make([]string, 0, len(names))
+	for _, n := range names {
+		deps = append(deps, `"`+n+`":"^1.0.0"`)
+		disabled = append(disabled, `"`+n+`":"与当前 harness 版本不兼容（启动日志存在加载错误）"`)
+	}
+	writePkgJSON(t, dir, `{"name":"web","dependencies":{`+strings.Join(deps, ",")+`},
+	  "dsh":{"profile":{"bundles":[],"disabledPlugins":{`+strings.Join(disabled, ",")+`}}}}`)
+	for _, n := range names {
+		candidates = append(candidates, PluginRow{Name: n, Locs: []string{dir}})
+	}
+	return dir, candidates
+}
+
+// 全部候选都能启用：全部重新启用、无遗留禁用、整体校验通过。
+func TestMaximizeEnabledPluginsAllKept(t *testing.T) {
+	_, candidates := maximizeFixture(t, "alpha", "beta")
+	verifyCalls := 0
+	stubMaximize(t, func(row PluginRow) (bool, string) {
+		for _, d := range row.Locs {
+			if err := enablePluginInProfile(d, row.Name); err != nil {
+				t.Fatalf("enable %s: %v", row.Name, err)
+			}
+		}
+		return true, ""
+	}, func() bool { verifyCalls++; return true })
+
+	kept, still, ok := maximizeEnabledPlugins(candidates, nil)
+	if !ok {
+		t.Fatal("ok = false")
+	}
+	if !reflect.DeepEqual(pluginNames(kept), []string{"alpha", "beta"}) {
+		t.Fatalf("kept = %v", pluginNames(kept))
+	}
+	if len(still) != 0 {
+		t.Fatalf("stillDisabled = %v", pluginNames(still))
+	}
+	if verifyCalls != 1 {
+		t.Fatalf("最终兜底校验应执行一次，got %d", verifyCalls)
+	}
+}
+
+// 单个插件启用即失败（由 enablePluginAndVerify 回禁）：只它保持禁用，其余照常启用。
+func TestMaximizeEnabledPluginsSkipsIncompatible(t *testing.T) {
+	dir, candidates := maximizeFixture(t, "alpha", "beta", "gamma")
+	stubMaximize(t, func(row PluginRow) (bool, string) {
+		if row.Name == "beta" {
+			return false, "缺失 settingsNamespace 导出" // 生产路径已由 enablePluginAndVerify 回禁并写入原因
+		}
+		for _, d := range row.Locs {
+			_ = enablePluginInProfile(d, row.Name)
+		}
+		return true, ""
+	}, func() bool { return true })
+
+	kept, still, ok := maximizeEnabledPlugins(candidates, nil)
+	if !ok {
+		t.Fatal("ok = false")
+	}
+	if !reflect.DeepEqual(pluginNames(kept), []string{"alpha", "gamma"}) {
+		t.Fatalf("kept = %v", pluginNames(kept))
+	}
+	if !reflect.DeepEqual(pluginNames(still), []string{"beta"}) {
+		t.Fatalf("stillDisabled = %v", pluginNames(still))
+	}
+	// beta 仍在禁用记录中（真实路径由 enablePluginAndVerify 写回，这里保留 fixture 原记录）
+	if r := profilePluginDisabledReason(dir, "beta"); r == "" {
+		t.Fatal("beta 应保持禁用记录")
+	}
+	// alpha/gamma 已回到 bundles
+	f := readPkgFixture(t, dir)
+	if len(f.Dsh.Profile.Bundles) != 2 {
+		t.Fatalf("bundles = %v", f.Dsh.Profile.Bundles)
+	}
+}
+
+// 幽灵候选（无依赖声明）不参与：enablePluginInProfile 对其空操作，纳入会被误报「已启用」。
+func TestMaximizeEnabledPluginsFiltersGhost(t *testing.T) {
+	dir, candidates := maximizeFixture(t, "alpha")
+	ghost := PluginRow{Name: "codegraph-sqlite", Locs: []string{dir}} // 无依赖行
+	candidates = append(candidates, ghost)
+	calls := 0
+	stubMaximize(t, func(row PluginRow) (bool, string) {
+		calls++
+		return true, ""
+	}, func() bool { return true })
+
+	kept, still, ok := maximizeEnabledPlugins(candidates, nil)
+	if !ok || calls != 1 {
+		t.Fatalf("ok=%v calls=%d（幽灵行不应触发启用）", ok, calls)
+	}
+	if !reflect.DeepEqual(pluginNames(kept), []string{"alpha"}) || len(still) != 0 {
+		t.Fatalf("kept=%v still=%v", pluginNames(kept), pluginNames(still))
+	}
+}
+
+// 重启预算耗尽：剩余候选保持禁用（不回退已处理结果），整体仍健康。
+func TestMaximizeEnabledPluginsBudgetExhausted(t *testing.T) {
+	_, candidates := maximizeFixture(t, "alpha", "beta", "gamma")
+	stubMaximize(t, func(row PluginRow) (bool, string) { return true, "" }, func() bool { return true })
+	maximizeRestartBudget = 1 // 只够处理第一个候选
+
+	kept, still, ok := maximizeEnabledPlugins(candidates, nil)
+	if !ok {
+		t.Fatal("ok = false")
+	}
+	if !reflect.DeepEqual(pluginNames(kept), []string{"alpha"}) {
+		t.Fatalf("kept = %v", pluginNames(kept))
+	}
+	if !reflect.DeepEqual(pluginNames(still), []string{"beta", "gamma"}) {
+		t.Fatalf("stillDisabled = %v", pluginNames(still))
+	}
+}
+
+// 兜底校验失败：把本轮新启用的全部回禁，还原为「候选全禁用」基线并再校验（ok 仍为 true）。
+func TestMaximizeEnabledPluginsFinalVerifyReverts(t *testing.T) {
+	dir, candidates := maximizeFixture(t, "alpha", "beta")
+	verifyCalls := 0
+	stubMaximize(t, func(row PluginRow) (bool, string) {
+		for _, d := range row.Locs {
+			_ = enablePluginInProfile(d, row.Name)
+		}
+		return true, ""
+	}, func() bool {
+		verifyCalls++
+		return verifyCalls > 1 // 第一次兜底失败，回禁后的第二次通过
+	})
+
+	kept, still, ok := maximizeEnabledPlugins(candidates, nil)
+	if !ok {
+		t.Fatal("ok = false（回禁后已恢复健康，应视作成功）")
+	}
+	if len(kept) != 0 {
+		t.Fatalf("kept = %v（应全部回禁）", pluginNames(kept))
+	}
+	if !reflect.DeepEqual(pluginNames(still), []string{"alpha", "beta"}) {
+		t.Fatalf("stillDisabled = %v", pluginNames(still))
+	}
+	f := readPkgFixture(t, dir)
+	if len(f.Dsh.Profile.Bundles) != 0 {
+		t.Fatalf("bundles 应回到全禁用：%v", f.Dsh.Profile.Bundles)
+	}
+	for _, n := range []string{"alpha", "beta"} {
+		if r := profilePluginDisabledReason(dir, n); r == "" {
+			t.Fatalf("%s 应写回禁用记录", n)
+		}
+	}
+}
+
+// 回禁后仍不健康：ok=false，交调用方走整体回退。
+func TestMaximizeEnabledPluginsRevertAlsoFails(t *testing.T) {
+	_, candidates := maximizeFixture(t, "alpha")
+	stubMaximize(t, func(row PluginRow) (bool, string) { return true, "" }, func() bool { return false })
+
+	kept, still, ok := maximizeEnabledPlugins(candidates, nil)
+	if ok {
+		t.Fatal("ok = true（回禁后仍不健康应报失败）")
+	}
+	if len(kept) != 0 || !reflect.DeepEqual(pluginNames(still), []string{"alpha"}) {
+		t.Fatalf("kept=%v still=%v", pluginNames(kept), pluginNames(still))
+	}
+}

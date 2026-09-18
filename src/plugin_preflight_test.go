@@ -39,6 +39,16 @@ func TestParsePluginCheckOutput(t *testing.T) {
 			"import-error", "The requested module 'x' does not provide an export named 'assertNever'",
 		},
 		{"ERR 无原因", "DSHPREFLIGHT\tERR\n", "import-error", "插件入口加载失败"},
+		{
+			"宿主依赖缺失（解析类，交启动校验裁决）",
+			"DSHPREFLIGHT\tERR\tCannot find package '@deepseek-ai/schemastery' imported from C:\\p\\node_modules\\pkg\\index.js\n",
+			"resolve-error", "Cannot find package '@deepseek-ai/schemastery' imported from C:\\p\\node_modules\\pkg\\index.js",
+		},
+		{
+			"入口文件缺失（绝对路径说明符，仍是解析类）",
+			"DSHPREFLIGHT\tERR\tCannot find package 'C:\\p\\node_modules\\pkg\\lib\\index.js' imported from C:\\p\\[eval1]\n",
+			"resolve-error", "Cannot find package 'C:\\p\\node_modules\\pkg\\lib\\index.js' imported from C:\\p\\[eval1]",
+		},
 		{"无结果行", "some unrelated noise\n", "no-result", ""},
 		{"混在日志里也能命中", "noise\nDSHPREFLIGHT\tOK\nmore noise\n", "", ""},
 	}
@@ -47,6 +57,38 @@ func TestParsePluginCheckOutput(t *testing.T) {
 			kind, msg := parsePluginCheckOutput(c.out)
 			if kind != c.wantKind || msg != c.wantMsg {
 				t.Fatalf("got (%q,%q), want (%q,%q)", kind, msg, c.wantKind, c.wantMsg)
+			}
+		})
+	}
+}
+
+// 解析类错误的「延后裁决」判定：只延后「插件导入的是别的裸包」（宿主依赖），
+// 插件自身入口缺失（绝对路径）与相对导入缺失仍判不兼容。
+func TestPreflightDeferMissingDep(t *testing.T) {
+	cases := []struct {
+		name string
+		pkg  string
+		msg  string
+		want bool
+	}{
+		{"scoped 宿主包", "dsh-ui-taste",
+			"Cannot find package '@deepseek-ai/schemastery' imported from C:\\p\\node_modules\\dsh-ui-taste\\lib\\index.js", true},
+		{"普通宿主包", "dsh-cost-meter",
+			"Cannot find package '@deepseek-ai/dsh-home-paths' imported from C:\\p\\node_modules\\dsh-cost-meter\\lib\\index.js", true},
+		{"第三方裸包（也延后，由启动校验兜底）", "plug",
+			"Cannot find package 'left-pad' imported from C:\\p\\node_modules\\plug\\index.js", true},
+		{"入口文件缺失（绝对路径）", "ghost-plugin",
+			"Cannot find package 'C:\\p\\node_modules\\ghost-plugin\\lib\\index.js' imported from C:\\p\\[eval1]", false},
+		{"相对导入缺失", "plug",
+			"Cannot find module 'C:\\p\\node_modules\\plug\\nope.js' imported from C:\\p\\node_modules\\plug\\index.js", false},
+		{"说明符即插件自身", "plug",
+			"Cannot find package 'plug' imported from C:\\p\\[eval1]", false},
+		{"无法取到说明符", "plug", "ERR_MODULE_NOT_FOUND", false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := preflightDeferMissingDep(c.pkg, c.msg); got != c.want {
+				t.Fatalf("preflightDeferMissingDep(%q, %q) = %v, want %v", c.pkg, c.msg, got, c.want)
 			}
 		})
 	}
@@ -244,6 +286,37 @@ func TestPreflightDetectsMissingEntry(t *testing.T) {
 	disabled, _ := preflightTreeCompatibility([]string{dir})
 	if len(disabled) != 1 || disabled[0] != "ghost-plugin" {
 		t.Fatalf("want [ghost-plugin] disabled, got %v", disabled)
+	}
+}
+
+// 宿主依赖不在 profile 树（真实运行时由 harness 从自己的依赖树提供）：预检不得据此禁用。
+// 2026-09-18 现场实证：0.1.6-alpha.2 三插件因 @deepseek-ai/schemastery、@deepseek-ai/dsh-home-paths
+// 被预检误判禁用，手动启用又全部成功——该判据交真实启动校验裁决。
+func TestPreflightDefersHostDependency(t *testing.T) {
+	if !nodeAvailable() {
+		t.Skip("node 不可用：跳过 exec 类预检用例")
+	}
+	t.Setenv("DSH_HOME", t.TempDir())
+	dir := t.TempDir()
+	writeTestJSON(t, filepath.Join(dir, "node_modules", "host-dep-plugin", "package.json"),
+		`{"name":"host-dep-plugin","version":"1.0.0","type":"module","main":"index.js"}`)
+	writeTestJSON(t, filepath.Join(dir, "node_modules", "host-dep-plugin", "index.js"),
+		"import z from '@deepseek-ai/schemastery';\nexport const apply = () => {};\n")
+	writeTestJSON(t, filepath.Join(dir, "package.json"), `{
+	  "dependencies": {"host-dep-plugin":"^1.0.0"},
+	  "dsh": {"profile": {"bundles": ["host-dep-plugin"]}}
+	}`)
+
+	disabled, notes := preflightTreeCompatibility([]string{dir})
+	if len(disabled) != 0 {
+		t.Fatalf("宿主依赖缺失不应触发禁用，got %v (notes=%v)", disabled, notes)
+	}
+	f := readPkgFixture(t, dir)
+	if _, ok := f.Dsh.Profile.DisabledPlugins["host-dep-plugin"]; ok {
+		t.Fatal("不应写入禁用记录")
+	}
+	if len(f.Dsh.Profile.Bundles) != 1 || f.Dsh.Profile.Bundles[0] != "host-dep-plugin" {
+		t.Fatalf("bundles 应保持激活（交启动校验裁决）：%v", f.Dsh.Profile.Bundles)
 	}
 }
 

@@ -5,6 +5,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 )
@@ -90,10 +91,58 @@ func installedPluginDir(dir, name string) (string, bool) {
 	return p, true
 }
 
+// preflightResolveErrorRe 预检「解析类」错误特征：模块/包在**预检自身的解析链**（profile 目录）
+// 里找不到。宿主包（如 @deepseek-ai/schemastery、@deepseek-ai/dsh-home-paths）由 harness 运行时
+// 从自己的依赖树提供、不在 profile 树里，这类报错在预检环境下必然出现但运行时加载正常
+// （2026-09-18 0.1.6-alpha.2 实证：三个插件的宿主包全部不在 profile 树，全被预检误判禁用，
+// 手动启用又全部成功）——因此不能作为「不兼容」证据，交由真实启动校验裁决。
+var preflightResolveErrorRe = regexp.MustCompile(`(?i)Cannot find (?:package|module)\b|ERR_MODULE_NOT_FOUND`)
+
+// isPreflightResolveError 判断预检错误是否为「解析类」（上下文相关、不可直接作为不兼容判据）。
+func isPreflightResolveError(reason string) bool {
+	return preflightResolveErrorRe.MatchString(reason)
+}
+
+// preflightMissingSpecRe 从 Node 报错里取出未解析的模块说明符（"Cannot find package 'X'" /
+// "Cannot find module 'X'"；Windows 路径已实测与裸包名同形，靠 looksLikePathSpec 区分）。
+var preflightMissingSpecRe = regexp.MustCompile(`Cannot find (?:package|module) '([^']+)'`)
+
+// looksLikePathSpec 说明符是否为路径（相对路径 / 绝对路径 / Windows 盘符路径），而非裸包名
+// （含 @scope/pkg 这种带斜杠的合法包名——斜杠本身不能当路径判据）。
+func looksLikePathSpec(spec string) bool {
+	switch {
+	case strings.HasPrefix(spec, "."), strings.HasPrefix(spec, "/"), strings.HasPrefix(spec, "\\"):
+		return true
+	}
+	if len(spec) >= 3 && spec[1] == ':' && (spec[2] == '\\' || spec[2] == '/') {
+		return true // Windows 盘符绝对路径
+	}
+	return strings.Contains(spec, ":\\") || strings.Contains(spec, ":/")
+}
+
+// preflightDeferMissingDep 解析类错误里，只有「插件静态导入的是**别的裸包**」才延后裁决：
+// 宿主包（@deepseek-ai/schemastery、@deepseek-ai/dsh-home-paths 等）由 harness 运行时从自己的
+// 依赖树提供、不在 profile 树，预检必然报错而运行时加载正常（2026-09-18 实证）。
+// 插件自身入口缺失（实测说明符是绝对路径 .../node_modules/<pkg>/lib/index.js）与相对路径导入
+// 缺失属本机确定性问题，仍判不兼容——保持既有 TestPreflightDetectsMissingEntry 语义。
+func preflightDeferMissingDep(pluginName, reason string) bool {
+	m := preflightMissingSpecRe.FindStringSubmatch(reason)
+	if len(m) < 2 {
+		return false
+	}
+	spec := strings.TrimSpace(m[1])
+	if spec == "" || looksLikePathSpec(spec) {
+		return false
+	}
+	return bundleNameBase(spec) != bundleNameBase(pluginName)
+}
+
 // parsePluginCheckOutput 解析预检输出行，返回 kind：
 //   - ("", "")               入口加载成功且导出 apply；
 //   - ("no-apply", "")       入口能加载，但未导出 apply（可能不是标准 host 插件，只提示）；
-//   - ("import-error", 原因) 加载失败（缺具名导出 / 缺模块 / 语法错误）；
+//   - ("resolve-error", 原因) 模块/包在预检环境解析不到（宿主包或缺失依赖）——**不判不兼容**，
+//     交启动校验裁决（见 preflightResolveErrorRe 注释）；
+//   - ("import-error", 原因) 解析成功但加载失败（缺具名导出 / 语法错误 / 运行时错误）；
 //   - ("no-result", "")      没有任何结果行（node 未能执行，由调用方按失败处理）。
 func parsePluginCheckOutput(out string) (string, string) {
 	for _, line := range strings.Split(out, "\n") {
@@ -111,6 +160,9 @@ func parsePluginCheckOutput(out string) (string, string) {
 			msg := strings.TrimSpace(strings.TrimPrefix(rest, "ERR"))
 			if msg == "" {
 				msg = "插件入口加载失败"
+			}
+			if isPreflightResolveError(msg) {
+				return "resolve-error", msg
 			}
 			return "import-error", msg
 		}
@@ -141,9 +193,12 @@ func pluginImportCheck(dir, name string) (string, string) {
 }
 
 // preflightPluginEntries 逐个预检 dir 的已启用用户插件入口。
-// 返回 broken（name→原因，加载失败）、noApply（可加载但无 apply 导出）、checked（实际检查数）。
-func preflightPluginEntries(dir string) (broken map[string]string, noApply []string, checked int) {
+// 返回 broken（name→原因，确定性加载失败：求值类错误 + 插件自身入口/相对导入缺失）、
+// deferred（name→原因，缺的是别的裸包=宿主依赖，preflightDeferMissingDep 判定，交启动校验裁决）、
+// noApply（可加载但无 apply 导出）、checked（实际检查数）。
+func preflightPluginEntries(dir string) (broken map[string]string, deferred map[string]string, noApply []string, checked int) {
 	broken = map[string]string{}
+	deferred = map[string]string{}
 	for _, name := range profileBundleNames(dir) {
 		if _, ok := installedPluginDir(dir, name); !ok {
 			// 未安装（待重指定 / 未对齐）：由 unresolved-bundle 逻辑负责，预检不重复判定
@@ -156,11 +211,19 @@ func preflightPluginEntries(dir string) (broken map[string]string, noApply []str
 			// 通过
 		case "no-apply":
 			noApply = append(noApply, name)
+		case "resolve-error":
+			// 宿主依赖不在 profile 树（预检环境必然报错）→ 不判不兼容，交真实启动校验裁决；
+			// 插件自身入口/相对导入缺失属确定性问题 → 仍判不兼容
+			if preflightDeferMissingDep(name, reason) {
+				deferred[name] = reason
+			} else {
+				broken[name] = reason
+			}
 		default:
 			broken[name] = reason
 		}
 	}
-	return broken, noApply, checked
+	return broken, deferred, noApply, checked
 }
 
 // disablePreflightBroken 预检失败时禁用插件：有依赖声明走 disablePluginInProfile；
@@ -175,8 +238,12 @@ func disablePreflightBroken(dir, name, reason string) error {
 	return disableGhostPluginInProfile(dir, name, reason)
 }
 
-// preflightTreeCompatibility 对多个 profile 目录做确定性预检：入口加载失败的插件就地禁用，
-// 返回被禁用的插件名与用户可见说明。
+// preflightTreeCompatibility 对多个 profile 目录做确定性预检：入口**求值类**加载失败的插件
+// 就地禁用，返回被禁用的插件名与用户可见说明。
+//
+// 「解析类」错误（Cannot find package / ERR_MODULE_NOT_FOUND）不禁用：宿主包不在 profile 树，
+// 预检环境必然报错而运行时正常（见 preflightResolveErrorRe）；是否真的不兼容交启动校验 +
+// 最大化启用遍裁决——只记日志，避免把兼容插件误禁用（2026-09-18 实证）。
 //
 // 调用点：任何「改动了插件树、随后要拉起服务」的操作（导入 / 更新 / 删除）在做启动健康校验
 // **之前**调用它——把「启动必然失败」提前成「精确点名 + 自动摘除」，不必等服务 fail-loud
@@ -186,11 +253,15 @@ func preflightTreeCompatibility(dirs []string) (disabled []string, notes []strin
 		if strings.TrimSpace(dir) == "" {
 			continue
 		}
-		broken, noApply, checked := preflightPluginEntries(dir)
+		broken, deferred, noApply, checked := preflightPluginEntries(dir)
 		if checked == 0 {
 			continue
 		}
 		log.Printf("preflight: checked %d plugin entries (dir=%s)", checked, dir)
+		for _, name := range sortedKeys(deferred) {
+			log.Printf("preflight: defer judgment on %s (host dependency not visible in preflight env): %s (dir=%s)",
+				name, deferred[name], dir)
+		}
 		for _, name := range noApply {
 			log.Printf("preflight: %s exports no apply (dir=%s)", name, dir)
 			notes = append(notes, fmt.Sprintf("插件 %s 的入口未导出 apply，可能不是标准 host 插件，请留意启动日志", name))
@@ -212,6 +283,16 @@ func preflightTreeCompatibility(dirs []string) (disabled []string, notes []strin
 		}
 	}
 	return disabled, notes
+}
+
+// sortedKeys 取 map 的键并排序（预检结果输出稳定，便于日志与测试比对）。
+func sortedKeys(m map[string]string) []string {
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	return out
 }
 
 // appendNote 拼接两段用户可见说明（任一段为空时返回另一段）。

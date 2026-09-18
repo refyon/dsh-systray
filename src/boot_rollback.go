@@ -218,17 +218,28 @@ func tryBootRollback(why string) (kept, rolled bool, prev string, disabledNames 
 		disabled, ok = disableAllUserPlugins(profileDirs)
 	}
 	if ok {
-		// 当前版本 + 禁用后的状态已验证可启动：成为新的良好基线（旧 LKG 不再需要）
-		clearAllLkg()
-		serverReady.Store(true)
-		serviceFailed.Store(false)
-		refreshServiceMenu()
-		names := make([]string, 0, len(disabled))
-		for _, d := range disabled {
-			names = append(names, d.Name)
+		// 最大化启用遍：禁用只为换取启动，依据可能来自陈旧/连带日志——立即逐个复验，把真正
+		// 兼容的插件重新启用，只留启动点名不兼容的（与导入路径同一策略，见 plugin_disable.go）。
+		kept, stillDisabled, mok := maximizeEnabledPlugins(disabled, nil)
+		if mok {
+			// 当前版本 + 最终状态已验证可启动：成为新的良好基线（旧 LKG 不再需要）
+			clearAllLkg()
+			serverReady.Store(true)
+			serviceFailed.Store(false)
+			refreshServiceMenu()
+			detail := "保持当前版本"
+			if reEnabled := pluginNames(kept); len(reEnabled) > 0 {
+				detail += "，重新启用 " + strings.Join(reEnabled, "、")
+			}
+			names := pluginNames(stillDisabled)
+			if len(names) > 0 {
+				detail += "，禁用 " + strings.Join(names, "、")
+			}
+			logUI("启动失败已自愈", detail)
+			return true, false, "", names
 		}
-		logUI("启动失败已自愈", fmt.Sprintf("保持当前版本，禁用 %s", strings.Join(names, "、")))
-		return true, false, "", names
+		// 重新启用后的还原也未能恢复健康：落到下方 LKG 回退
+		log.Printf("lkg: maximize enable could not restore a healthy state, falling back to LKG")
 	}
 
 	if !hasAnyLkg() {

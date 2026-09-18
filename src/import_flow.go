@@ -130,6 +130,16 @@ func setImportRestoreHealing(on bool) {
 	importHealOn.Store(on)
 }
 
+// emitImportHealing 共享自愈阶段的进度刷新（kind=plugins, healing=true）：把「正在复验/重新启用
+// 哪个插件」告诉界面，避免长自愈期间只剩通用心跳文案（最大化启用遍逐个复验会显著拉长自愈时间）。
+func emitImportHealing(text string) {
+	if appCtx == nil {
+		return
+	}
+	wruntime.EventsEmit(appCtx, "import:progress", map[string]interface{}{
+		"kind": "plugins", "healing": true, "text": text, "pct": 0.93})
+}
+
 // importRestoreCancelled 是否已请求取消当前执行中的任务。
 func importRestoreCancelled() bool {
 	importQMu.Lock()

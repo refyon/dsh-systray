@@ -535,3 +535,119 @@ func enablePluginAndVerify(row PluginRow) (enabled bool, msg string) {
 	}
 	return false, reason + "；重新禁用后服务仍未就绪，请查看日志：" + unifiedLogPath()
 }
+
+// ==================== 最大化启用遍（禁用后立即复验，只留真正不兼容的） ====================
+// 背景（2026-09-18 实证）：导入/启动自愈「禁用点名插件」或「禁用全部用户插件」只为换取服务
+// 可启动，但禁用依据（预检解析类误判、启动日志点名的陈旧/连带错误）并不总是可靠——用户随后
+// 手动逐个启用又全部成功。本遍把「复验」自动化：逐个把候选插件重新启用并做启动校验，
+// 成功即保留、失败则按启动日志原因回禁（服务始终回到健康基线），最终状态=服务可启动 +
+// 最大启用集，不再需要用户手动一个个开。
+//
+// 可测试缝：单测替换为替身，生产路径保持默认实现。
+var (
+	// pluginEnableVerify 单个插件「启用 + 启动校验（失败自动回禁再校验）」，默认 enablePluginAndVerify。
+	pluginEnableVerify = enablePluginAndVerify
+	// serverVerify 整体启动健康校验，默认 restartAndVerifyServer。
+	serverVerify = restartAndVerifyServer
+	// maximizeRestartBudget 最大化启用遍的重启次数上限（每个候选最多 2 次：启用校验 + 失败回禁校验）。
+	// 候选很多时（如兜底禁用全部后的数十个插件）「个数 × 15~30s」不可接受，超限的候选保持禁用，
+	// 由用户在关于页按需手动启用；<=0 表示按候选数放宽（2n+2）。单测会调小以覆盖超限分支。
+	maximizeRestartBudget = 40
+)
+
+// enableableRow 该候选能否按依赖行重新启用：幽灵（bundle-only，无依赖声明）行不可——
+// enablePluginInProfile 对无依赖的插件空操作，纳入候选会被误报「已启用」。
+func enableableRow(row PluginRow) bool {
+	for _, dir := range row.Locs {
+		deps, _ := readProfileRoot(dir)["dependencies"].(map[string]interface{})
+		if _, ok := deps[row.Name]; ok {
+			return true
+		}
+	}
+	return false
+}
+
+// pluginNames 取插件行的名字列表（日志与用户文案用）。
+func pluginNames(rows []PluginRow) []string {
+	out := make([]string, 0, len(rows))
+	for _, r := range rows {
+		out = append(out, r.Name)
+	}
+	return out
+}
+
+// maximizeEnabledPlugins 最大化启用遍（前置：服务处于健康状态、candidates 均处于禁用态）：
+//   - 逐个候选（按名排序）执行「启用 + 启动校验」：成功记 kept；失败由 enablePluginAndVerify
+//     按启动日志原因回禁并再次校验（服务回到健康基线），记 stillDisabled；
+//   - 预算（重启次数上限，默认 2n+2）耗尽后剩余候选保持禁用；
+//   - 结束后如有新启用项再做一次整体校验兜底；兜底失败（罕见）时把 kept 全部回禁还原为
+//     「候选全禁用」并再校验——此时 ok 仍为 true（状态已回到自愈成功后的基线），
+//     只有连还原都校验不过才返回 ok=false，交调用方走整体回退。
+//
+// 返回 kept（本次成功重新启用）、stillDisabled（仍禁用，原因已写入 profile）与 ok（最终服务健康）。
+func maximizeEnabledPlugins(candidates []PluginRow, progress func(name string, i, n int)) (kept, stillDisabled []PluginRow, ok bool) {
+	rows := make([]PluginRow, 0, len(candidates))
+	for _, r := range candidates {
+		if enableableRow(r) {
+			rows = append(rows, r)
+		}
+	}
+	if len(rows) == 0 {
+		return nil, nil, true
+	}
+	sort.Slice(rows, func(i, j int) bool { return rows[i].Name < rows[j].Name })
+	budget := maximizeRestartBudget
+	if budget <= 0 {
+		budget = 2*len(rows) + 2
+	}
+	used := 0
+	for i, row := range rows {
+		if progress != nil {
+			progress(row.Name, i+1, len(rows))
+		}
+		if used >= budget {
+			log.Printf("maximize: restart budget exhausted (%d), keep %s disabled", budget, row.Name)
+			stillDisabled = append(stillDisabled, row)
+			continue
+		}
+		if enabled, _ := pluginEnableVerify(row); enabled {
+			used++
+			kept = append(kept, row)
+			log.Printf("maximize: %s re-enabled and verified", row.Name)
+		} else {
+			used += 2
+			stillDisabled = append(stillDisabled, row)
+			log.Printf("maximize: %s stays disabled (incompatible on enable)", row.Name)
+		}
+	}
+	if len(kept) == 0 {
+		return nil, stillDisabled, true
+	}
+	if serverVerify() {
+		return kept, stillDisabled, true
+	}
+	// 兜底校验失败（罕见）：回禁本轮新启用项，把状态还原为「候选全禁用」基线
+	names := make([]string, 0, len(kept))
+	for _, r := range kept {
+		names = append(names, r.Name)
+	}
+	reasons := bootSuspectReasons(0, names)
+	log.Printf("maximize: final verify failed, re-disabling re-enabled plugins: %s", strings.Join(names, "、"))
+	for _, row := range kept {
+		reason := reasons[row.Name]
+		if reason == "" {
+			reason = "重新启用后启动校验未通过（已自动还原为禁用）"
+		}
+		for _, dir := range row.Locs {
+			if err := disablePluginInProfile(dir, row.Name, reason); err != nil {
+				log.Printf("maximize: re-disable %s in %s failed: %v", row.Name, dir, err)
+			}
+		}
+	}
+	stillDisabled = append(stillDisabled, kept...)
+	if !serverVerify() {
+		log.Printf("maximize: service not healthy after reverting re-enabled plugins")
+		return nil, stillDisabled, false
+	}
+	return nil, stillDisabled, true
+}
