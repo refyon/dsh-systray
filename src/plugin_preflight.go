@@ -315,8 +315,8 @@ func appendNote(a, b string) string {
 //
 //	pnpm 的 remove/update/install 都要解析整张依赖图，一个悬空的 file:/link: 会让**整条命令**
 //	失败——日志实录：
-//	  profile cmd: pnpm [remove dsh-codegraph] (dir=C:\Users\lenovo\.dsh\profiles\web)
-//	  [ERROR] [profile] [ENOENT] ENOENT: no such file or directory, scandir 'D:\agent-env\qtz\plugins\dsh-ui-taste'
+//	  profile cmd: pnpm [remove dsh-codegraph] (dir=<用户目录>\.dsh\profiles\web)
+//	  [ERROR] [profile] [ENOENT] ENOENT: no such file or directory, scandir '<工作区>\plugins\dsh-ui-taste'
 //	  [ERROR] [ui] 删除插件失败 | dsh-codegraph: 移除失败：exit status 0xfffff026
 //
 // 被删的 dsh-codegraph 与悬空的 dsh-ui-taste 毫无关系：工作区从 qtz/ 提到根目录后，

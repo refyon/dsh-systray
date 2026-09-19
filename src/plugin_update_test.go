@@ -33,7 +33,7 @@ func TestClassifyPluginSpec(t *testing.T) {
 		{"git+ssh://git@github.com:user/repo.git", "github", true, false},
 		{"owner/repo", "github", true, false},
 		{"file:./local-plugin", "file", false, true},
-		{"file:D:/agent-env/qtz/plugins/x", "file", false, true},
+		{"file:D:/workspace/plugins/x", "file", false, true},
 		{"link:../plugin", "file", false, true},
 		{"https://example.com/pack-1.2.0.tgz", "tarball", false, true},
 		{"https://example.com/pack.zip", "tarball", false, true},
