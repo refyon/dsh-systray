@@ -544,6 +544,7 @@ func main() {
 func onStartup(ctx context.Context) {
 	appCtx = ctx
 	loadStartupPendingPluginOps() // 跨托盘重启保留「待应用变更未生效」提示（逐条校验后载入）
+	startAccountBackground(ctx)   // 启动自动登录校验 + 每 20 分钟一次的后台同步检查（需求④⑤）
 	if runtime.GOOS == "darwin" {
 		// 系统关机/注销/重启回调须在托盘启动前注册，避免通知竞态丢失。
 		// true=关机/注销开始（跳过停服询问直接放行）；false=会话恢复（FUS 切回，复位）。

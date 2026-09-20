@@ -363,19 +363,22 @@ func accountSyncNow(ctx context.Context, client *accountClient) (accountSyncResu
 			return res, berr
 		}
 		if empty {
+			// 服务器为空：以本机现状上报基线（决策②），本轮无需拉取
 			n, err := accountReportBaseline(ctx, client)
 			if err != nil {
 				return res, err
 			}
 			res.Baseline = true
 			res.Uploaded += n
+			accountMu.Lock()
+			accountCur.BaselineDone = true
+			accountCur.LastSyncedAt = time.Now().Unix()
+			_ = saveAccountState(accountCur)
+			accountMu.Unlock()
+			return res, nil
 		}
-		accountMu.Lock()
-		accountCur.BaselineDone = true
-		accountCur.LastSyncedAt = time.Now().Unix()
-		_ = saveAccountState(accountCur)
-		accountMu.Unlock()
-		return res, nil
+		// 服务器已有记录：**继续走拉取分支**——首次同步同样要把服务器记录拉到本地
+		// （只保存不生效，等用户点「重启生效」），这是需求②的核心路径。
 	}
 
 	// 3) 拉取 + 合并 → 待生效集合（不应用）

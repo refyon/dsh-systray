@@ -1897,6 +1897,9 @@ function wireEvents() {
     showPage(state.page || "general"); // 页标题 / 日志轮询按新语言复位
   });
 
+  // 账号/同步状态变化（登录、后台同步完成、令牌失效）→ 刷新「数据同步」页与左侧小字状态
+  EventsOn("account:changed", () => { refreshSync(); });
+
   EventsOn("splash:progress", (d) => {
     if (!d) return;
     // 相位复位事件（空文本 + 0 进度）只用于后端复位相位，不应把已收起的进度视图重新拉起：
