@@ -117,6 +117,8 @@ type appConfig struct {
 	// dsh web 的 /api 有 Host/Origin 栅栏，只认 loopback 与这里声明的地址：手机经端口转发
 	// 或隧道访问时，必须把"手机看到的那个地址"声明进来，否则界面能打开但无法对话（403）。
 	TrustedHosts []string `json:"trustedHosts,omitempty"`
+	// AccountAPIBase dsh-connect 服务地址；空 = 内置正式域名（见 account.go 的 defaultAccountAPIBase）。
+	AccountAPIBase string `json:"accountApiBase,omitempty"`
 	// PendingPluginOps 待应用的插件变更（更新/删除/启用）：点击后只登记，等用户在关闭设置窗口时
 	// 确认、或在关于页点「立即应用」才执行（整批一次重启）。跨托盘重启保留，见 plugin_batch.go。
 	PendingPluginOps []pendingPluginOp `json:"pendingPluginOps,omitempty"`
@@ -192,6 +194,9 @@ func applyConfigFile(cfg *appConfig, path string) {
 	}
 	if l := normalizeLang(f.Language); l != "auto" {
 		cfg.Language = l
+	}
+	if v := strings.TrimSpace(f.AccountAPIBase); v != "" {
+		cfg.AccountAPIBase = v
 	}
 	if len(f.PendingPluginOps) > 0 {
 		cfg.PendingPluginOps = f.PendingPluginOps
@@ -416,6 +421,7 @@ func main() {
 	cfg := loadConfig()
 	updateMirrorOverride = cfg.UpdateMirror
 	harnessPrereleaseOverride = cfg.HarnessPrerelease
+	accountAPIBaseOverride = strings.TrimSpace(cfg.AccountAPIBase)
 	port = cfg.Port
 	trustedHosts = cfg.TrustedHosts // 供 startServer 透传给 dsh web（见 trustedHostFlags）
 	webURL = fmt.Sprintf("http://127.0.0.1:%d/", port)
@@ -438,6 +444,8 @@ func main() {
 	log.Printf("[i18n] language pref=%q system=%s → curLang=%s", cfg.Language, detectSystemLang(), curLang)
 	// 待应用的插件变更随 config 持久化：先存下，等插件列表可用（onStartup）时逐条校验载入。
 	pendingPluginOpsFromConfig = cfg.PendingPluginOps
+	// 登录态（account.json）与待上报操作记录：只读载入，不阻塞启动。
+	initAccountState()
 
 	// 自愈历史自启动项：旧版本注册的自启动条目未带 --autostart 参数，或残留
 	// 「裸二进制直接 exec」形态（macOS 上因缺 bundle 上下文导致开机自启失效），
