@@ -1219,6 +1219,8 @@ func runHarnessUpdate(latest string) {
 	harnessOpBusy.Store(true) // 与插件操作批处理互斥（两者都会停服 + 跑 pnpm）
 	defer harnessOpBusy.Store(false)
 	prev := installedHarnessVersion()
+	// 更新结束（含失败回滚）时按「版本是否真的变了」上报操作记录：失败时版本未变，不会误报。
+	defer reportHarnessVersionIfChanged(prev)
 
 	// 0) 先判定安装形态——必须在快照之前：快照会把 node_modules 改名备份，而 npm 形态判定
 	//    依赖 node_modules/@deepseek-ai/dsh 存在性；若先快照再判定，npm 形态会被误判为源码

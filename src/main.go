@@ -421,7 +421,7 @@ func main() {
 	cfg := loadConfig()
 	updateMirrorOverride = cfg.UpdateMirror
 	harnessPrereleaseOverride = cfg.HarnessPrerelease
-	accountAPIBaseOverride = strings.TrimSpace(cfg.AccountAPIBase)
+	setAccountAPIBase(strings.TrimSpace(cfg.AccountAPIBase))
 	port = cfg.Port
 	trustedHosts = cfg.TrustedHosts // 供 startServer 透传给 dsh web（见 trustedHostFlags）
 	webURL = fmt.Sprintf("http://127.0.0.1:%d/", port)

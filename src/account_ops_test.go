@@ -12,15 +12,15 @@ import (
 // setupAccountTest 隔离 account.json 目录并复位进程内状态。
 func setupAccountTest(t *testing.T) {
 	t.Helper()
-	oldDir, oldBase := accountStateDirOverride, accountAPIBaseOverride
-	accountStateDirOverride = t.TempDir()
-	accountAPIBaseOverride = ""
+	oldDir, oldBase := accountStateDirValue(), accountAPIBaseValue()
+	setAccountStateDir(t.TempDir())
+	setAccountAPIBase("")
+	clearAccountRuntime()
 	t.Cleanup(func() {
-		accountStateDirOverride, accountAPIBaseOverride = oldDir, oldBase
-		accountMu.Lock()
-		accountCur = accountState{}
-		accountSyncing, accountSyncErr = false, ""
-		accountMu.Unlock()
+		waitAccountSync() // 等在跑的上报结束，避免与下面的复位竞态（-race 曾暴露）
+		setAccountStateDir(oldDir)
+		setAccountAPIBase(oldBase)
+		clearAccountRuntime()
 	})
 }
 

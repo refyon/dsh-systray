@@ -835,6 +835,9 @@ func finishPluginBatch(tasks []*pluginOpTask, splash *SplashState, paused bool) 
 		splash.Close()
 	}
 
+	// 操作记录上报：批处理结果已确定（含自愈成功与整批回退），此时才把成功的在线插件变更登记为 op。
+	reportPluginBatchChanges(tasks)
+
 	emitPluginBatchResults(tasks, scopeNote)
 }
 

@@ -205,10 +205,14 @@ func TestAccountOpsReportAndSince(t *testing.T) {
 
 func TestAccountStateStoreRoundTrip(t *testing.T) {
 	dir := t.TempDir()
-	oldDir, oldBase := accountStateDirOverride, accountAPIBaseOverride
-	accountStateDirOverride = dir
-	accountAPIBaseOverride = ""
-	t.Cleanup(func() { accountStateDirOverride, accountAPIBaseOverride = oldDir, oldBase })
+	oldDir, oldBase := accountStateDirValue(), accountAPIBaseValue()
+	setAccountStateDir(dir)
+	setAccountAPIBase("")
+	t.Cleanup(func() {
+		waitAccountSync()
+		setAccountStateDir(oldDir)
+		setAccountAPIBase(oldBase)
+	})
 
 	if got := loadAccountState(); got.Token != "" {
 		t.Fatalf("文件不存在时应为零值: %+v", got)
@@ -272,14 +276,14 @@ func TestAccountSessionExpiry(t *testing.T) {
 }
 
 func TestAccountAPIBasePrecedence(t *testing.T) {
-	oldBase := accountAPIBaseOverride
-	t.Cleanup(func() { accountAPIBaseOverride = oldBase })
+	oldBase := accountAPIBaseValue()
+	t.Cleanup(func() { setAccountAPIBase(oldBase) })
 
-	accountAPIBaseOverride = ""
+	setAccountAPIBase("")
 	if got := accountAPIBase(); got != defaultAccountAPIBase {
 		t.Fatalf("默认地址错误: %s", got)
 	}
-	accountAPIBaseOverride = "https://example.test/"
+	setAccountAPIBase("https://example.test/")
 	if got := accountAPIBase(); got != "https://example.test" {
 		t.Fatalf("覆盖地址应去掉尾部斜杠: %s", got)
 	}

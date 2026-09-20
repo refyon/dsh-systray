@@ -213,6 +213,9 @@ func runHarnessReset(clearSessions, clearPlugins bool, reqTarget string) {
 	defer splash.Close()
 	harnessOpBusy.Store(true) // 与插件操作批处理互斥（两者都会停服 + 跑 pnpm）
 	defer harnessOpBusy.Store(false)
+	prevVer := installedHarnessVersion()
+	// 重置结束（含失败还原）时按「版本是否真的变了」上报操作记录（选择的目标版本即"最后选用的版本"）。
+	defer reportHarnessVersionIfChanged(prevVer)
 
 	// 0) 先停止服务（否则运行中的 node 占用文件，清空/重装会失败）
 	splash.Update(T("正在停止后台服务…"), 0.1)

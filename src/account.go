@@ -65,9 +65,9 @@ func accountErrorCode(err error) string {
 	return ""
 }
 
-// accountAPIBase 返回生效的服务地址：config.json 的 accountApiBase → 环境变量 → 默认正式域名。
+// accountAPIBase 返回生效的服务地址：config.json 的 accountApiBase → 默认正式域名。
 func accountAPIBase() string {
-	if v := strings.TrimSpace(accountAPIBaseOverride); v != "" {
+	if v := strings.TrimSpace(accountAPIBaseValue()); v != "" {
 		return strings.TrimRight(v, "/")
 	}
 	return defaultAccountAPIBase

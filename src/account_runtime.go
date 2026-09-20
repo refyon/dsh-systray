@@ -55,6 +55,36 @@ func initAccountState() {
 	}
 }
 
+// accountLoggedIn 是否已登录且本地有效期未过（埋点上报的前置判断）。
+func accountLoggedIn() bool {
+	accountMu.Lock()
+	defer accountMu.Unlock()
+	return accountCur.loggedIn(time.Now())
+}
+
+// accountSetSyncError 记录最近一次同步失败原因（状态页展示；下次成功时清除）。
+func accountSetSyncError(msg string) {
+	accountMu.Lock()
+	accountSyncErr = msg
+	accountMu.Unlock()
+}
+
+// accountClearSyncError 清除同步失败状态。
+func accountClearSyncError() {
+	accountMu.Lock()
+	accountSyncErr = ""
+	accountMu.Unlock()
+}
+
+// clearAccountRuntime 复位进程内登录态（登出与测试用）。
+func clearAccountRuntime() {
+	accountMu.Lock()
+	accountCur = accountState{}
+	accountSyncing = false
+	accountSyncErr = ""
+	accountMu.Unlock()
+}
+
 // accountSnapshot 组装状态快照。
 func accountSnapshot() AccountStatusInfo {
 	accountMu.Lock()
@@ -183,10 +213,8 @@ func (a *App) AccountVerify(email, code string) (AccountStatusInfo, error) {
 func (a *App) AccountLogout() (AccountStatusInfo, error) {
 	accountMu.Lock()
 	st := accountCur
-	accountCur = accountState{}
-	accountSyncing = false
-	accountSyncErr = ""
 	accountMu.Unlock()
+	clearAccountRuntime()
 
 	var revokeErr error
 	if st.Token != "" {

@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sync"
 	"time"
 )
 
@@ -17,11 +18,39 @@ import (
 // 服务端令牌有效期是 90 天，本地更短，用于「过期后明确提示重新登录」。
 const accountSessionTTLDays = 30
 
-// accountAPIBaseOverride config.json 的 accountApiBase（空 = 用默认正式域名）。
-var accountAPIBaseOverride string
+// 可注入覆盖值：启动时写入，之后会被后台同步 goroutine 读取，故用读写锁保护
+// （-race 下曾暴露「测试复位 vs 后台上报读」的竞态）。
+var (
+	accountCfgMu            sync.RWMutex
+	accountAPIBaseOverride  string // config.json 的 accountApiBase（空 = 默认正式域名）
+	accountStateDirOverride string // account.json 所在目录（空 = 与 config.json 同目录）
+)
 
-// accountStateDirOverride 测试注入：account.json 所在目录（空 = 与 config.json 同目录）。
-var accountStateDirOverride string
+// setAccountAPIBase 设置服务地址覆盖值（空 = 用默认正式域名）。
+func setAccountAPIBase(v string) {
+	accountCfgMu.Lock()
+	accountAPIBaseOverride = v
+	accountCfgMu.Unlock()
+}
+
+func accountAPIBaseValue() string {
+	accountCfgMu.RLock()
+	defer accountCfgMu.RUnlock()
+	return accountAPIBaseOverride
+}
+
+// setAccountStateDir 设置登录态文件目录（测试注入）。
+func setAccountStateDir(v string) {
+	accountCfgMu.Lock()
+	accountStateDirOverride = v
+	accountCfgMu.Unlock()
+}
+
+func accountStateDirValue() string {
+	accountCfgMu.RLock()
+	defer accountCfgMu.RUnlock()
+	return accountStateDirOverride
+}
 
 // accountState 登录态与同步进度（account.json）。
 type accountState struct {
@@ -61,7 +90,7 @@ type accountPendingOp struct {
 
 // accountStatePath account.json 路径（与 config.json 同目录）。
 func accountStatePath() string {
-	dir := accountStateDirOverride
+	dir := accountStateDirValue()
 	if dir == "" {
 		if p := configFilePath(); p != "" {
 			dir = filepath.Dir(p)

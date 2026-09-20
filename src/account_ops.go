@@ -15,6 +15,7 @@ import (
 	"fmt"
 	"log"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -78,10 +79,23 @@ func accountEnqueueOpIfLoggedIn(key string, value any) {
 	}
 }
 
+// accountFlushMu 串行化上报：埋点（设置改动）与后台同步可能同时触发，串行避免重复提交同一批。
+var accountFlushMu sync.Mutex
+
+// accountSyncWG 追踪在跑的上报 goroutine：测试在复位全局状态前等它们结束（-race 要求），
+// 进程退出前也可等待，保证最后一笔改动不会因为退出而丢失。
+var accountSyncWG sync.WaitGroup
+
+// waitAccountSync 等待在跑的上报结束。
+func waitAccountSync() { accountSyncWG.Wait() }
+
 // accountFlushOps 上报队列中的待上报记录；成功的条目出队并推进游标。
 //
 // 返回本次成功上报的条数。失败时队列保持不变，由调用方决定退避重试。
 func accountFlushOps(ctx context.Context, client *accountClient) (int, error) {
+	accountFlushMu.Lock()
+	defer accountFlushMu.Unlock()
+
 	accountMu.Lock()
 	pending := append([]accountPendingOp(nil), accountCur.PendingOps...)
 	token := accountCur.Token

@@ -175,12 +175,14 @@ func saveCurrentConfig() {
 func (a *App) SetAutostart(on bool) {
 	logUI("设置开机自启动", map[bool]string{true: "开启", false: "关闭"}[on])
 	setAutostartOn(on)
+	reportSettingAutostart() // 操作记录上报（未登录时为空操作）
 }
 
 func (a *App) SetHarnessPrerelease(on bool) {
 	logUI("设置预发布通道", map[bool]string{true: "开启", false: "关闭"}[on])
 	harnessPrereleaseOverride = on
 	saveCurrentConfig()
+	reportSettingPrerelease(on) // 操作记录上报（未登录时为空操作）
 }
 
 func (a *App) SetHarnessDir(d string) {
