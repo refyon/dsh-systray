@@ -16,11 +16,11 @@ import (
 //	请求验证码 → verify 取令牌 → 同步检查（首次会按服务器是否为空决定上报基线/拉取）→
 //	上报一条设置 op → 从服务器拉回并断言可见 → 登出清本地登录态
 //
-// 用法（两步，验证码 10 分钟内有效）：
+// 用法（两步，验证码 10 分钟内有效；**必须带 -count=1**，否则 go test 会用缓存结果而不真的发信/联调）：
 //
-//	DSH_SYSTRAY_E2E=1 DSH_SYSTRAY_E2E_EMAIL=you@example.com go test -run TestAccountE2ELiveServer -v ./
+//	DSH_SYSTRAY_E2E=1 DSH_SYSTRAY_E2E_EMAIL=you@example.com go test -count=1 -run TestAccountE2ELiveServer -v ./
 //	  → 第一次运行只发送验证码并跳过，按提示带上验证码重跑：
-//	DSH_SYSTRAY_E2E=1 DSH_SYSTRAY_E2E_EMAIL=you@example.com DSH_SYSTRAY_E2E_CODE=123456 go test -run TestAccountE2ELiveServer -v ./
+//	DSH_SYSTRAY_E2E=1 DSH_SYSTRAY_E2E_EMAIL=you@example.com DSH_SYSTRAY_E2E_CODE=123456 go test -count=1 -run TestAccountE2ELiveServer -v ./
 func TestAccountE2ELiveServer(t *testing.T) {
 	if os.Getenv("DSH_SYSTRAY_E2E") == "" {
 		t.Skip("真机联调默认跳过：设置 DSH_SYSTRAY_E2E=1 启用（需要真实邮箱验证码）")
