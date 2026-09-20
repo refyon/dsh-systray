@@ -96,17 +96,17 @@ dsh-systray 是一个 Windows / macOS 系统托盘应用，围绕三个核心特
 
 ```
 ┌────────────────────────────── dsh-systray (Wails v2) ──────────────────────────────┐
-│  src/frontend/（静态 HTML/CSS/JS，go:embed 内嵌，零构建步骤）                                       │
-│    ├── 启动/更新进度视图 + 设置七页（常规/关于/日志/导出/导入/数据同步/帮助）                       │
-│    └── 浅色/深色设计令牌（style.css :root 与 prefers-color-scheme）                                 │
+│  src/frontend/（静态 HTML/CSS/JS，go:embed 内嵌，零构建步骤）                       │
+│    ├── 启动/更新进度视图 + 设置七页（常规/关于/日志/导出/导入/数据同步/帮助）       │
+│    └── 浅色/深色设计令牌（style.css :root 与 prefers-color-scheme）                 │
 ├───────────────────────────────────────────────────────────────────────────────────┤
-│  Go 后端（src/）                                                                                    │
-│    ├── main.go       入口：配置/单实例/服务编排/窗口生命周期                                        │
-│    ├── app.go        Wails Bindings（配置/服务/日志/更新/导出导入）                                 │
-│    ├── platform_*.go 自启动/运行时/服务器/对话框/托盘图标（Windows/macOS）                          │
-│    ├── updater.go      自动更新（exe / .app 整包替换，校验+回滚；harness 版本/预发布通道）          │
-│    ├── plugin_update.go 插件清单与单独检查/更新（npm、GitHub 默认分支、本地来源判定）               │
-│    └── exportimport.go / ziptool.go  数据打包与恢复                                                 │
+│  Go 后端（src/）                                                                    │
+│    ├── main.go       入口：配置/单实例/服务编排/窗口生命周期                        │
+│    ├── app.go        Wails Bindings（配置/服务/日志/更新/导出导入）                 │
+│    ├── platform_*.go 自启动/运行时/服务器/对话框/托盘图标（Windows/macOS）          │
+│    ├── updater.go      自动更新（exe / .app 整包替换，校验+回滚；harness 版本/预发布通道）│
+│    ├── plugin_update.go 插件清单与单独检查/更新（npm、GitHub 默认分支、本地来源判定）│
+│    └── exportimport.go / ziptool.go  数据打包与恢复                                 │
 └───────────────────────────────────────────────────────────────────────────────────┘
 ```
 
