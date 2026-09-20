@@ -1,4 +1,4 @@
-﻿<h1 align="center">
+<h1 align="center">
   <img src="docs/icon.svg" width="72" alt="dsh-systray logo" />
   <br />
   dsh-systray
@@ -65,6 +65,7 @@ Designed around three core traits: **Lightweight, Reliable, Portable**.
 - **Logs**: the Logs page follows app.log / server.log live, shows full paths, auto-scrolls to the newest writes and supports one-click clearing
 
 ### Portable — data travels with you, seamless restore on another machine
+- **Account sync (dsh-connect)**: after signing in with an email code, your **start-at-login switch**, the **selected Harness version (including the prerelease channel)** and **every online plugin** follow the account across machines. Machine-specific settings (directories, ports) and local plugins (`file:` / `local`) are never uploaded. Pulled changes **never apply automatically** — the "Data sync" page keeps a persistent "restart to apply" prompt, and the button merges by "latest per key" (duplicate reports are idempotent, removals are tombstones that cannot come back). A background check runs every 20 minutes and the left nav shows a small colour-coded status (syncing / pending / failed / synced + time)
 - **Export / Import**: sessions, installed plugins and chosen file directories are bundled into a zip backup; import parses the bundle to list restorable items, prompts on conflicts with automatic backups, and pauses/restarts the background service during restore
 - **Config is data**: all configuration lives under the user directory (`config.json`), data under `~/.dsh`, and both migrate fully with the export bundle
 - **Cross-platform consistency**: same UI and same data format on Windows and macOS (design tokens in [DESIGN.md](DESIGN.md))
@@ -79,7 +80,8 @@ Designed around three core traits: **Lightweight, Reliable, Portable**.
   "harnessDir": "/path/to/deepseek-harness",
   "startupTimeoutSec": 300,
   "updateMirror": "",
-  "harnessPrerelease": false
+  "harnessPrerelease": false,
+  "accountApiBase": ""
 }
 ```
 
@@ -88,6 +90,7 @@ Designed around three core traits: **Lightweight, Reliable, Portable**.
 - `startupTimeoutSec`: timeout (seconds) waiting for the service to start, default 300 (overridable via `DSH_SYSTRAY_STARTUP_TIMEOUT`)
 - `updateMirror`: optional GitHub update download mirror prefix (handy behind mainland-China networks, e.g. `https://ghproxy.net/`)
 - `harnessPrerelease`: whether alpha/beta/rc builds count as updateable harness versions (off by default — only stable versions)
+- `accountApiBase`: optional base URL of the account-sync service ([dsh-connect](https://github.com/refyon/dsh-connect)); defaults to the official domain. The sign-in state and sync cursor live in a separate `account.json` in the same directory (mode 0600; it holds only the token and cursor, never a password) and are removed when you sign out on the "Data sync" page
 
 ## Repository layout
 

@@ -1,4 +1,4 @@
-﻿<h1 align="center">
+<h1 align="center">
   <img src="docs/icon.svg" width="72" alt="dsh-systray logo" />
   <br />
   dsh-systray
@@ -65,6 +65,7 @@ dsh-systray 是一个 Windows / macOS 系统托盘应用，围绕三个核心特
 - **日志**：「日志」页实时跟踪 app.log / server.log，显示完整路径，自动跟随最新写入，支持一键清空
 
 ### 可迁移 —— 数据随身带，换机无缝恢复
+- **账号同步（dsh-connect）**：邮箱验证码登录后，**开机自启动**、**最后选用的 Harness 版本（含预发布通道）**与**所有在线插件**随账号在多台机器间同步；本机目录、端口等环境相关配置与本地插件（`file:` / `local`）不上传。拉到的改动**不会自动生效**——设置页「数据同步」里常驻「重启生效」提示，点按钮才按「每 key 取最新」合并落地（重复上报幂等、删除是墓碑不会复活）；后台每 20 分钟自动检查一次，左侧「数据同步」项以小字彩色状态显示（同步中 / 待同步 / 同步失败 / 已同步+时间）
 - **导出 / 导入**：会话记录、已安装插件、自选文件目录打包为 zip 备份；导入时解析压缩包罗列可恢复项，冲突询问并自动备份，恢复期间自动暂停/重启后台服务
 - **配置即数据**：全部配置保存在用户目录（`config.json`），数据在 `~/.dsh`，随导出包完整迁移
 - **跨平台一致**：Windows / macOS 同一套界面与数据格式（设计令牌见 [DESIGN.md](DESIGN.md)）
@@ -79,7 +80,8 @@ dsh-systray 是一个 Windows / macOS 系统托盘应用，围绕三个核心特
   "harnessDir": "/path/to/deepseek-harness",
   "startupTimeoutSec": 300,
   "updateMirror": "",
-  "harnessPrerelease": false
+  "harnessPrerelease": false,
+  "accountApiBase": ""
 }
 ```
 
@@ -88,6 +90,7 @@ dsh-systray 是一个 Windows / macOS 系统托盘应用，围绕三个核心特
 - `startupTimeoutSec`：服务启动等待超时（秒），默认 300（可被 `DSH_SYSTRAY_STARTUP_TIMEOUT` 覆盖）
 - `updateMirror`：可选，GitHub 更新下载镜像前缀（国内网络友好，如 `https://ghproxy.net/`）
 - `harnessPrerelease`：是否把 alpha/beta/rc 视为 harness 可更新版本（默认关闭，仅更新稳定版）
+- `accountApiBase`：可选，账号同步服务（[dsh-connect](https://github.com/refyon/dsh-connect)）地址，默认官方正式域名。登录态与同步游标单独存放在同目录的 `account.json`（权限 0600，只含令牌与游标，不含密码）；在「设置 → 数据同步」退出登录即清除
 
 ## 仓库结构
 
