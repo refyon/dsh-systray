@@ -48,6 +48,23 @@ const I18N_EN = {
   splashStatus: "Preparing runtime environment…",
   splashCancel: "Cancel update",
   navGeneral: "General", navAbout: "About", navLogs: "Logs", navExport: "Export", navImport: "Import", navHelp: "Help",
+  navSync: "Data sync",
+  syncLoginTitle: "Sign in to dsh-connect",
+  syncLoginSub: "Signing in with an email code keeps your start-at-login switch, Harness version and online plugins in sync across machines; the first sign-in with an email registers it. Machine-specific settings (directories, ports) and local plugins are never uploaded.",
+  syncEmailTitle: "Email",
+  syncEmailSub: "The code is sent to this address and stays valid for 10 minutes",
+  syncEmailPh: "you@example.com",
+  syncCodeTitle: "Verification code",
+  syncCodeSub: "Click “Send code”, then enter the 6 digits you received",
+  btnSyncSend: "Send code",
+  btnSyncLogin: "Sign in",
+  syncScopeTitle: "What gets synced",
+  syncScopeSub: "Start-at-login, the selected Harness version (including the prerelease channel) and every online plugin. Directories, ports and local plugins are not synced.",
+  btnSyncNow: "Sync now",
+  btnSyncLogout: "Sign out",
+  syncRestartTitle: "Synced changes are waiting to take effect",
+  syncRestartSub: "To avoid interrupting your work the changes are saved but not applied yet. Click the button to merge and apply them.",
+  btnSyncApply: "Restart to apply",
   stAutoTitle: "Start at login", stAutoSub: "Start the background service and keep it in the tray after login",
   stLangTitle: "Interface language", stLangSub: "Tray menu and native dialogs switch with it; “Follow system” picks the OS language",
   langAuto: "Follow system (auto)",
@@ -98,7 +115,7 @@ const I18N_EN = {
   helpNoToken: "No access link with a token was found: the service wasn't started by this app (it was kept running after the last exit, or survived a reboot), and log rotation can drop that line. If this browser signed in before, just click “Open Web UI”; for another browser or a private window, click “Restart service” first to generate a new link.",
   helpRestarting: "Restarting the background service… “Copy access link” becomes available once it's ready (the current Web UI session drops briefly).",
 };
-const PAGE_I18N_KEY = { general: "navGeneral", about: "navAbout", logs: "navLogs", export: "navExport", import: "navImport", help: "navHelp" };
+const PAGE_I18N_KEY = { general: "navGeneral", sync: "navSync", about: "navAbout", logs: "navLogs", export: "navExport", import: "navImport", help: "navHelp" };
 
 function curLangCode() {
   return (state.cfg && state.cfg.curLang === "en") ? "en" : "zh";
@@ -254,6 +271,28 @@ const I18N_DYN = {
   "更新 DeepSeek Harness？": "Update DeepSeek Harness?",
   "更新期间服务会短暂重启，失败会自动回退。确认开始更新吗？": "The service restarts briefly and failures auto-rollback. Start now?",
   "尝试启用": "Try enabling",
+
+  // 数据同步（dsh-connect 账号）
+  "未登录": "Not signed in",
+  "登录已过期，请重新登录": "Your sign-in expired — please sign in again",
+  "同步中": "Syncing",
+  "同步中…": "Syncing…",
+  "已同步": "Synced",
+  "待同步 {0} 项": "{0} pending",
+  "同步失败": "Sync failed",
+  "已登录，尚未同步": "Signed in — not synced yet",
+  "已同步 · 最后同步 {0}": "Synced · last {0}",
+  "同步失败：{0}": "Sync failed: {0}",
+  "请先填写邮箱": "Enter your email first",
+  "请输入 6 位验证码": "Enter the 6-digit code",
+  "验证码已发送，{0} 分钟内有效": "Code sent — valid for {0} minutes",
+  "正在发送…": "Sending…",
+  "登录中…": "Signing in…",
+  "正在同步…": "Syncing…",
+  "同步已完成": "Sync completed",
+  "已退出登录": "Signed out",
+  "{0} 秒后可重发": "Resend in {0}s",
+  "同步功能尚未就绪": "Sync is not available in this build yet",
 };
 function tr(s) { return (curLangCode() === "en" && I18N_DYN[s]) || s; }
 function fmt(s) {
@@ -305,14 +344,14 @@ function applyStaticI18n() {
 
 // 动态区块统一重渲染（EN 生效后调用；各函数内部以 curLangCode() 决定语言）
 function rerenderDynamicText() {
-  [refreshService, renderPlugins, renderExportRows, renderImportRows].forEach((fn) => {
+  [refreshService, renderPlugins, renderExportRows, renderImportRows, refreshSync].forEach((fn) => {
     if (typeof fn === "function") { try { fn(); } catch (e) { console.error("rerenderDynamicText", fn && fn.name, e); } }
   });
 }
 
 // ==================== 页面路由 ====================
 
-const PAGE_TITLES = { general: "常规", about: "关于", logs: "日志", export: "导出", import: "导入", help: "帮助" };
+const PAGE_TITLES = { general: "常规", sync: "数据同步", about: "关于", logs: "日志", export: "导出", import: "导入", help: "帮助" };
 
 // 页标题按当前语言重刷：showPage 与「语言生效后」两条路径都要调——启动时 showPage(shotPage) 早于
 // GetConfig，此刻 curLangCode() 还是默认 zh，若只在这里设一次，英文配置的窗口会一直显示中文标题，
@@ -341,6 +380,8 @@ function showPage(name) {
   }
   // 帮助页：进入即刷新服务状态（按钮可用性与警告提示按运行态/令牌可用性渲染）
   if (name === "help") refreshService();
+  // 数据同步页：进入即拉取账号状态与同步进度
+  if (name === "sync") refreshSync();
 }
 
 /** 截图模式：把内容区滚动到 DSH_SYSTRAY_SHOT_SCROLL 指定位置（bottom=最底；数字=像素）。
@@ -2095,6 +2136,219 @@ function confirmDialog(title, msg, okLabel) {
 
 // ==================== 启动 ====================
 
+// ==================== 数据同步（dsh-connect 账号） ====================
+//
+// 页面三态：未登录（邮箱验证码入口）/ 已登录（账号 + 同步状态）/ 重启生效提示（拉取到改动后常驻）。
+// 状态来源是 Go 侧的 AccountStatus 快照（登录态、游标、待上报数、同步中/失败）。
+
+let syncResendTimer = null;
+
+/** syncFmtTime 把 Unix 秒格式化为本地「MM-DD HH:mm」。 */
+function syncFmtTime(unixSec) {
+  if (!unixSec) return "—";
+  const d = new Date(unixSec * 1000);
+  const p = (n) => String(n).padStart(2, "0");
+  return `${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
+}
+
+/** syncHint 页内提示（isError 时用语义红）。 */
+function syncHint(id, text, isError) {
+  const el = $(id);
+  if (!el) return;
+  el.textContent = text || "";
+  el.classList.toggle("is-error", !!isError);
+}
+
+/** syncStatusView 已登录时的状态行文案与语义色类。 */
+function syncStatusView(st) {
+  if (st.syncing) return { text: tr("同步中…"), cls: "sync-state-busy" };
+  if (st.syncError) return { text: fmt("同步失败：{0}", st.syncError), cls: "sync-state-error" };
+  if (st.pendingOps > 0) return { text: fmt("待同步 {0} 项", st.pendingOps), cls: "sync-state-pending" };
+  if (st.lastSyncedAt > 0) return { text: fmt("已同步 · 最后同步 {0}", syncFmtTime(st.lastSyncedAt)), cls: "sync-state-ok" };
+  return { text: tr("已登录，尚未同步"), cls: "" };
+}
+
+/** renderSyncNavStatus 左侧导航小字状态：灰=未登录 / 蓝=同步中 / 黄=待同步 / 红=失败 / 绿=已同步。 */
+function renderSyncNavStatus(st) {
+  const el = $("sync-nav-status");
+  if (!el) return;
+  let cls = "nav-status";
+  let text = "";
+  if (st.loggedIn) {
+    if (st.syncing) { cls += " is-syncing"; text = tr("同步中"); }
+    else if (st.syncError) { cls += " is-error"; text = tr("同步失败"); }
+    else if (st.pendingOps > 0) { cls += " is-pending"; text = fmt("待同步 {0} 项", st.pendingOps); }
+    else if (st.lastSyncedAt > 0) { cls += " is-ok"; text = tr("已同步"); }
+    else { text = tr("已登录，尚未同步"); }
+  }
+  el.className = cls;
+  el.textContent = text;
+}
+
+/** refreshSync 读取 Go 侧状态并渲染（未打开该页时也刷新左侧小字）。 */
+async function refreshSync() {
+  const g = bindings();
+  if (!g || typeof g.AccountStatus !== "function") return;
+  let st;
+  try {
+    st = await g.AccountStatus();
+  } catch (err) {
+    console.error("AccountStatus", err);
+    return;
+  }
+  renderSyncNavStatus(st || {});
+
+  const loginCard = $("sync-login");
+  const accCard = $("sync-account");
+  if (!loginCard || !accCard) return;
+
+  const loggedIn = !!(st && st.loggedIn);
+  loginCard.classList.toggle("hidden", loggedIn);
+  accCard.classList.toggle("hidden", !loggedIn);
+
+  if (loggedIn) {
+    $("sync-account-email").textContent = st.email || "—";
+    const view = syncStatusView(st);
+    const line = $("sync-status-line");
+    line.textContent = view.text;
+    line.className = "row-sub " + view.cls;
+    $("btn-sync-now").disabled = !!st.syncing;
+    // 重启生效提示：S4 起由 Go 侧给出 pendingApply 标记
+    const restart = $("sync-restart");
+    if (restart) restart.classList.toggle("hidden", !st.pendingApply);
+  } else if (st && (st.expireReason === "session_expired" || st.expireReason === "token_expired")) {
+    syncHint("sync-login-hint", tr("登录已过期，请重新登录"), true);
+  }
+}
+
+/** startSyncCountdown 发送验证码后的重发倒计时。 */
+function startSyncCountdown(sec) {
+  const btn = $("btn-sync-send");
+  if (!btn) return;
+  if (syncResendTimer) clearInterval(syncResendTimer);
+  let left = sec;
+  const tick = () => {
+    if (left <= 0) {
+      clearInterval(syncResendTimer);
+      syncResendTimer = null;
+      btn.disabled = false;
+      btn.textContent = curLangCode() === "en" ? I18N_EN.btnSyncSend : "发送验证码";
+      return;
+    }
+    btn.disabled = true;
+    btn.textContent = fmt("{0} 秒后可重发", left);
+    left -= 1;
+  };
+  tick();
+  syncResendTimer = setInterval(tick, 1000);
+}
+
+async function doSyncSendCode() {
+  const g = bindings();
+  if (!g) return;
+  const email = ($("sync-email").value || "").trim();
+  if (!email) { syncHint("sync-login-hint", tr("请先填写邮箱"), true); return; }
+  syncHint("sync-login-hint", tr("正在发送…"));
+  $("btn-sync-send").disabled = true;
+  try {
+    const res = await g.AccountRequestCode(email);
+    const mins = Math.max(1, Math.round(((res && res.expiresInSec) || 600) / 60));
+    syncHint("sync-login-hint", fmt("验证码已发送，{0} 分钟内有效", mins));
+    startSyncCountdown((res && res.resendAfterSec) || 60);
+    const code = $("sync-code");
+    if (code) code.focus();
+  } catch (err) {
+    syncHint("sync-login-hint", String(err), true);
+    $("btn-sync-send").disabled = false;
+  }
+}
+
+async function doSyncLogin() {
+  const g = bindings();
+  if (!g) return;
+  const email = ($("sync-email").value || "").trim();
+  const code = ($("sync-code").value || "").trim();
+  if (!email) { syncHint("sync-login-hint", tr("请先填写邮箱"), true); return; }
+  if (!/^\d{6}$/.test(code)) { syncHint("sync-login-hint", tr("请输入 6 位验证码"), true); return; }
+
+  $("btn-sync-login").disabled = true;
+  syncHint("sync-login-hint", tr("登录中…"));
+  try {
+    await g.AccountVerify(email, code);
+    $("sync-code").value = "";
+    syncHint("sync-login-hint", "");
+    // 登录后立即做一次同步检查（首次同步的「重启生效」提示由 Go 侧给出）
+    if (typeof g.AccountSyncNow === "function") {
+      try { await g.AccountSyncNow(); } catch (e) { console.error("AccountSyncNow", e); }
+    }
+  } catch (err) {
+    syncHint("sync-login-hint", String(err), true);
+  } finally {
+    $("btn-sync-login").disabled = false;
+    await refreshSync();
+  }
+}
+
+async function doSyncLogout() {
+  const g = bindings();
+  if (!g) return;
+  $("btn-sync-logout").disabled = true;
+  try {
+    await g.AccountLogout();
+    syncHint("sync-account-hint", tr("已退出登录"));
+    syncHint("sync-login-hint", "");
+  } catch (err) {
+    syncHint("sync-account-hint", String(err), true);
+  } finally {
+    $("btn-sync-logout").disabled = false;
+    await refreshSync();
+  }
+}
+
+async function doSyncNow() {
+  const g = bindings();
+  if (!g) return;
+  if (typeof g.AccountSyncNow !== "function") { syncHint("sync-account-hint", tr("同步功能尚未就绪"), true); return; }
+  syncHint("sync-account-hint", tr("正在同步…"));
+  try {
+    await g.AccountSyncNow();
+    syncHint("sync-account-hint", tr("同步已完成"));
+  } catch (err) {
+    syncHint("sync-account-hint", String(err), true);
+  } finally {
+    await refreshSync();
+  }
+}
+
+async function doSyncApply() {
+  const g = bindings();
+  if (!g) return;
+  if (typeof g.AccountApplyPending !== "function") { syncHint("sync-account-hint", tr("同步功能尚未就绪"), true); return; }
+  $("btn-sync-apply").disabled = true;
+  try {
+    await g.AccountApplyPending();
+  } catch (err) {
+    syncHint("sync-account-hint", String(err), true);
+  } finally {
+    $("btn-sync-apply").disabled = false;
+    await refreshSync();
+  }
+}
+
+function wireSync() {
+  const send = $("btn-sync-send");
+  if (!send) return;
+  send.addEventListener("click", doSyncSendCode);
+  $("btn-sync-login").addEventListener("click", doSyncLogin);
+  $("btn-sync-logout").addEventListener("click", doSyncLogout);
+  $("btn-sync-now").addEventListener("click", doSyncNow);
+  $("btn-sync-apply").addEventListener("click", doSyncApply);
+  const code = $("sync-code");
+  if (code) code.addEventListener("keydown", (e) => { if (e.key === "Enter") doSyncLogin(); });
+  const email = $("sync-email");
+  if (email) email.addEventListener("keydown", (e) => { if (e.key === "Enter") doSyncSendCode(); });
+}
+
 async function init() {
   snapshotStaticZh(); // 语言快照必须先于任何 en 覆盖（zh 还原基线）
   wireEvents();
@@ -2105,6 +2359,7 @@ async function init() {
   wireExport();
   wireImport();
   wireHelp();
+  wireSync();
 
   document.querySelectorAll(".nav-item").forEach((b) => {
     b.addEventListener("click", () => showPage(b.dataset.page));
@@ -2112,6 +2367,9 @@ async function init() {
 
   // 初始视图：等待 Go 侧 ui:show-splash 事件（非自启动时窗口显示 splash）
   showSplash("startup", tr("正在准备运行环境…"));
+
+  // 左侧「数据同步」小字状态：启动即渲染一次（未打开该页也要可见）
+  refreshSync();
 
   // 截图/预览：DSH_SYSTRAY_SHOT_PAGE 指定后直接显示对应页面；SHOT_SCROLL 指定滚动位置
   try {

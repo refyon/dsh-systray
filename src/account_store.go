@@ -40,6 +40,11 @@ type accountState struct {
 	BaselineDone bool `json:"baselineDone"`
 	// PendingOps 待上报的操作记录队列（上报成功即出队；登出时丢弃）。
 	PendingOps []accountPendingOp `json:"pendingOps,omitempty"`
+	// PendingRemote 已从服务器拉到、但**尚未应用**到本机的操作记录（点「重启生效」后合并并清空）。
+	// 跨托盘重启保留：提示必须一直存在，且不允许自动生效。
+	PendingRemote []accountPendingOp `json:"pendingRemote,omitempty"`
+	// PendingApply 是否存在待生效改动（= len(PendingRemote) > 0，随同一份状态持久化）。
+	PendingApply bool `json:"pendingApply,omitempty"`
 }
 
 // accountPendingOp 待上报的操作记录（本地队列项，见 account_ops.go）。

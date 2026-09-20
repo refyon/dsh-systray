@@ -908,6 +908,54 @@ input { font-family: inherit; }
 /* 帮助页状态提示行的失败态（如重启失败） */
 .help-busy-error { color: var(--danger); }
 
+/* ---------- 数据同步（dsh-connect 账号） ---------- */
+
+/* 左侧导航项：标题 + 一行小字状态（未登录时不占位） */
+.nav-item.has-status {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+}
+.nav-status {
+  font-size: var(--fs-xs);
+  font-weight: 400;
+  line-height: 1.4;
+}
+.nav-status:empty { display: none; }
+.nav-status.is-ok { color: var(--ok); }
+.nav-status.is-syncing { color: var(--primary); }
+.nav-status.is-pending { color: var(--warn); }
+.nav-status.is-error { color: var(--danger); }
+.nav-item.active .nav-status { color: var(--primary); }
+
+/* 表单：邮箱输入放宽（.input 默认 110px 居中，适合数字短输入） */
+.input-wide {
+  width: 260px;
+  text-align: left;
+}
+.row-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+}
+/* 页内提示行（发送验证码/登录结果），失败态用语义红 */
+.sync-hint {
+  color: var(--muted);
+  font-size: var(--fs-xs);
+  line-height: 1.5;
+}
+.sync-hint.is-error { color: var(--danger); }
+/* 状态行的语义色：与左侧小字一致，便于一眼分辨 */
+.sync-state-ok { color: var(--ok); }
+.sync-state-busy { color: var(--primary); }
+.sync-state-pending { color: var(--warn); }
+.sync-state-error { color: var(--danger); }
+/* 「重启生效」常驻提示 */
+.sync-restart-card {
+  border-left: 3px solid var(--warn);
+}
+
 /* ---------- Reduced motion ---------- */
 @media (prefers-reduced-motion: reduce) {
   * { transition: none !important; animation: none !important; }

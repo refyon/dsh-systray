@@ -26,6 +26,8 @@ type AccountStatusInfo struct {
 	Syncing      bool   `json:"syncing"`
 	SyncError    string `json:"syncError"`
 	PendingOps   int    `json:"pendingOps"`
+	// PendingApply 是否已有「拉到本机但尚未生效」的改动（前端据此常驻提示「重启生效」）。
+	PendingApply bool   `json:"pendingApply"`
 	APIBase      string `json:"apiBase"`
 }
 
@@ -72,6 +74,7 @@ func accountStatusLocked() AccountStatusInfo {
 		Syncing:      accountSyncing,
 		SyncError:    accountSyncErr,
 		PendingOps:   len(accountCur.PendingOps),
+		PendingApply: accountCur.PendingApply,
 		APIBase:      accountAPIBase(),
 	}
 }
