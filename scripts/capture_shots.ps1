@@ -199,6 +199,7 @@ SnapProcess 'about-bottom' 'about' 'bottom'
 SnapProcess 'logs'    'logs'
 SnapProcess 'export'  'export'
 SnapProcess 'import'  'import'
+SnapProcess 'sync'    'sync'
 
 Stop-AllInstances
 Remove-Item $readyFile -Force -ErrorAction SilentlyContinue

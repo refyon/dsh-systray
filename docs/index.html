@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title id="doc-title">dsh-systray · 桌面托盘，静默启动</title>
-<meta name="description" id="doc-desc" content="dsh-systray — Windows / macOS 桌面托盘：双击后台启动 DeepSeek Harness 本地服务，托盘常驻、开机自启、自动更新、数据一键迁移。">
+<meta name="description" id="doc-desc" content="dsh-systray — Windows / macOS 桌面托盘：双击后台启动 DeepSeek Harness 本地服务，托盘常驻、开机自启、自动更新、数据一键迁移、多机账号同步。">
 <style>
 :root{
   --bg:#f8fafc; --surface:#ffffff; --surface-2:#f1f5f9; --text:#0f172a; --muted:#64748b;
@@ -117,7 +117,7 @@ footer .sep{margin:0 8px;color:var(--border)}
     <img class="logo" src="icon.svg" alt="dsh-systray 图标" width="132" height="132">
     <div class="eyebrow">Windows · macOS</div>
     <h1>dsh-systray</h1>
-    <p class="sub" data-i18n="heroSub">轻量 · 可靠 · 可迁移——双击即启，托盘常驻，服务就绪一触即达。</p>
+    <p class="sub" data-i18n="heroSub">轻量 · 可靠 · 可迁移——双击即启，托盘常驻，多机数据随行。</p>
     <div class="actions">
       <a class="btn primary" id="dl-win" href="https://github.com/refyon/dsh-systray/releases/latest/download/dsh-systray-windows-x64.zip"><svg class="ico" viewBox="0 0 24 24" fill="currentColor"><path d="M3 5.5l8.5-1.2v8.4H3V5.5zm9.5-1.3L21 3v9.7h-8.5V4.2zM3 13.7h8.5v8.4L3 20.9v-7.2zm9.5.8H21v6.9l-8.5 1.3v-8.2z"/></svg><span data-i18n="dlWin">下载 Windows 版</span></a>
       <a class="btn ghost" id="dl-mac" href="https://github.com/refyon/dsh-systray/releases/latest/download/dsh-systray-macos-universal.zip"><svg class="ico" viewBox="0 0 24 24" fill="currentColor"><path d="M16.9 12.9c0-2.1 1.7-3.1 1.8-3.2-1-1.4-2.5-1.6-3-1.7-1.3-.1-2.5.8-3.2.8-.6 0-1.6-.8-2.7-.7-1.4 0-2.7.8-3.4 2-1.4 2.5-.4 6.2 1 8.2.7 1 1.5 2.1 2.6 2 .9 0 1.3-.6 2.5-.6s1.5.6 2.5.6c1 0 1.7-1 2.4-2 .7-1.1 1-2.1 1-2.2 0 0-2-1-2-3.2zM15 6.3c.6-.7 1-1.7.9-2.7-.8 0-1.9.6-2.5 1.3-.5.6-1 1.6-.9 2.6.9.1 1.9-.5 2.5-1.2z"/></svg><span data-i18n="dlMac">下载 macOS 版</span></a>
@@ -194,6 +194,10 @@ footer .sep{margin:0 8px;color:var(--border)}
         <h3 data-i18n="fg3T">可迁移 — 数据随身带</h3>
         <ul>
           <li>
+            <div class="ico"><svg viewBox="0 0 24 24"><path d="M19.35 10.04A7.49 7.49 0 0 0 12 4C9.11 4 6.6 5.64 5.35 8.04A5.99 5.99 0 0 0 0 14c0 3.31 2.69 6 6 6h13c2.76 0 5-2.24 5-5 0-2.64-1.78-4.88-4.65-5.96z"/></svg></div>
+            <div><b data-i18n="f14T">账号同步</b><span data-i18n="f14D">邮箱验证码登录后，开机自启、Harness 版本与在线插件在多台机器间同步；拉到的改动由你点「重启生效」才落地。</span></div>
+          </li>
+          <li>
             <div class="ico"><svg viewBox="0 0 24 24"><path d="M7 7h10M13 3l4 4-4 4M17 17H7m-4 4l4-4-4-4"/></svg></div>
             <div><b data-i18n="f9T">数据随身带</b><span data-i18n="f9D">会话与插件一键打包，换台机器也能无缝恢复。</span></div>
           </li>
@@ -241,9 +245,9 @@ footer .sep{margin:0 8px;color:var(--border)}
   var I18N = {
     zh: {
       title: "dsh-systray · 桌面托盘，静默启动",
-      desc: "dsh-systray — Windows / macOS 桌面托盘：双击后台启动 DeepSeek Harness 本地服务，托盘常驻、开机自启、自动更新、数据一键迁移。",
+      desc: "dsh-systray — Windows / macOS 桌面托盘：双击后台启动 DeepSeek Harness 本地服务，托盘常驻、开机自启、自动更新、数据一键迁移、多机账号同步。",
       logoAlt: "dsh-systray 图标",
-      heroSub: "轻量 · 可靠 · 可迁移——双击即启，托盘常驻，服务就绪一触即达。",
+      heroSub: "轻量 · 可靠 · 可迁移——双击即启，托盘常驻，多机数据随行。",
       dlWin: "下载 Windows 版", dlMac: "下载 macOS 版",
       verLabel: "当前版本", verSuffix: "· 由 CI 自动构建发布",
       featTitle: "轻量、可靠、可迁移",
@@ -262,6 +266,7 @@ footer .sep{margin:0 8px;color:var(--border)}
       f10T: "冲突智能处理", f10D: "导入时逐项恢复、冲突询问，自动备份现有内容。",
       f11T: "配置即数据", f11D: "配置与数据都在用户目录，随导出包完整迁移。",
       f12T: "跨平台一致", f12D: "Windows / macOS 同一套界面、同一份数据格式。",
+      f14T: "账号同步", f14D: "邮箱验证码登录后，开机自启、Harness 版本与在线插件在多台机器间同步；拉到的改动由你点「重启生效」才落地。",
       notesTitle: "开始使用",
       n1: "下载对应平台 zip 并解压到任意目录",
       n2: "<b>Windows</b>：双击 <code>dsh-systray.exe</code>（SmartScreen 提示时选「仍要运行」）",
@@ -271,13 +276,13 @@ footer .sep{margin:0 8px;color:var(--border)}
       fTag: "dsh-systray · DeepSeek Harness 桌面托盘",
       fLinkRel: "更新日志", fLinkSha: "SHA256 校验和", fLinkSrc: "源码 ↗",
       prevAria: "上一张", nextAria: "下一张", dotAria: "第 %d 张",
-      carCap: ["常规 — 自启与服务状态，一眼掌握", "关于（上）— 版本与各模块检查更新", "关于（下）— 已安装插件逐个管理", "日志 — 实时跟随，随看随清", "导出 — 会话插件，一键打包", "导入 — 无缝迁移，逐项恢复", "私有仓库插件 — 检查更新时的 GitHub 设备流授权"]
+      carCap: ["常规 — 自启与服务状态，一眼掌握", "关于（上）— 版本与各模块检查更新", "关于（下）— 已安装插件逐个管理", "日志 — 实时跟随，随看随清", "导出 — 会话插件，一键打包", "导入 — 无缝迁移，逐项恢复", "数据同步 — 邮箱验证码登录，设置随账号走", "私有仓库插件 — 检查更新时的 GitHub 设备流授权"]
     },
     en: {
       title: "dsh-systray · Desktop tray, silent startup",
-      desc: "dsh-systray — a Windows / macOS desktop tray app: launch the DeepSeek Harness local service in the background with a double-click; tray resident, autostart on boot, auto-update and one-click data migration.",
+      desc: "dsh-systray — a Windows / macOS desktop tray app: launch the DeepSeek Harness local service in the background with a double-click; tray resident, autostart on boot, auto-update, one-click data migration and account sync across machines.",
       logoAlt: "dsh-systray logo",
-      heroSub: "Lightweight · Reliable · Portable — double-click to start, lives in the tray, service ready at your fingertips.",
+      heroSub: "Lightweight · Reliable · Portable — double-click to start, lives in the tray, your data follows you across machines.",
       dlWin: "Download for Windows", dlMac: "Download for macOS",
       verLabel: "Version", verSuffix: "· built & released automatically by CI",
       featTitle: "Lightweight, Reliable, Portable",
@@ -296,6 +301,7 @@ footer .sep{margin:0 8px;color:var(--border)}
       f10T: "Smart conflict handling", f10D: "Restore item by item with conflict prompts, auto-backing up existing content.",
       f11T: "Config is data", f11D: "Config and data live under your user directory and migrate fully with the export bundle.",
       f12T: "Cross-platform consistent", f12D: "Same UI and same data format on Windows and macOS.",
+      f14T: "Account sync", f14D: "Sign in with an email code and your autostart switch, Harness version and online plugins stay in sync across machines; pulled changes apply only when you click “Apply &amp; restart”.",
       notesTitle: "Getting Started",
       n1: "Download the zip for your platform and extract it anywhere",
       n2: "<b>Windows</b>: double-click <code>dsh-systray.exe</code> (choose “More info → Run anyway” if SmartScreen appears)",
@@ -305,7 +311,7 @@ footer .sep{margin:0 8px;color:var(--border)}
       fTag: "dsh-systray · Desktop tray for DeepSeek Harness",
       fLinkRel: "Release Notes", fLinkSha: "SHA256 checksums", fLinkSrc: "Source ↗",
       prevAria: "Previous", nextAria: "Next", dotAria: "Slide %d",
-      carCap: ["General — autostart & service status at a glance", "About (top) — version & per-module update checks", "About (bottom) — manage installed plugins", "Logs — live view, clear with one click", "Export — sessions & plugins, one-click bundle", "Import — seamless migration, itemized restore", "Private-repo plugins — GitHub device-flow auth on update checks"]
+      carCap: ["General — autostart & service status at a glance", "About (top) — version & per-module update checks", "About (bottom) — manage installed plugins", "Logs — live view, clear with one click", "Export — sessions & plugins, one-click bundle", "Import — seamless migration, itemized restore", "Data sync — sign in with an email code, settings follow your account", "Private-repo plugins — GitHub device-flow auth on update checks"]
     }
   };
 
@@ -414,6 +420,7 @@ footer .sep{margin:0 8px;color:var(--border)}
     { en: 'shots-en/logs.webp',        zh: 'shots/logs.webp' },
     { en: 'shots-en/export.webp',      zh: 'shots/export.webp' },
     { en: 'shots-en/import.webp',      zh: 'shots/import.webp' },
+    { en: 'shots-en/sync.webp',        zh: 'shots/sync.webp' },
     { en: 'shots-en/github-auth.png',  zh: 'shots/github-auth.png' }
   ];
   var carImg = document.getElementById('car-img');

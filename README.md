@@ -28,7 +28,7 @@
 
 <img src="docs/screenshot-hero.webp" alt="dsh-systray 设置窗口与自动部署/安装 Harness 依赖" />
 
-dsh-systray 是一个 Windows / macOS 系统托盘应用，围绕三个核心特性设计：**轻量**（单文件免安装、免管理员权限、托盘常驻低占用）、**可靠**（环境自检自愈、启动失败自动回退、更新失败自动回滚）、**可迁移**（会话/插件/目录一键导出导入，换机无缝恢复）。双击即可后台拉起 DeepSeek Harness Web 本地服务，无需记忆端口。界面基于 [Wails v2](https://wails.io)（Go 后端 + WebView2 / WKWebView 前端）重构，设置窗口五页分类管理开机自启与后台服务、版本与更新（dsh-systray / Harness / 插件按模块独立检查）、实时日志，整体配色支持浅色 / 深色自动跟随系统，内置自动更新。
+dsh-systray 是一个 Windows / macOS 系统托盘应用，围绕三个核心特性设计：**轻量**（单文件免安装、免管理员权限、托盘常驻低占用）、**可靠**（环境自检自愈、启动失败自动回退、更新失败自动回滚）、**可迁移**（会话/插件/目录一键导出导入，换机无缝恢复）。双击即可后台拉起 DeepSeek Harness Web 本地服务，无需记忆端口。界面基于 [Wails v2](https://wails.io)（Go 后端 + WebView2 / WKWebView 前端）重构，设置窗口七页分类管理开机自启与后台服务、版本与更新（dsh-systray / Harness / 插件按模块独立检查）、数据同步、实时日志，整体配色支持浅色 / 深色自动跟随系统，内置自动更新。
 
 > [!IMPORTANT]
 > 这是一个社区维护的非官方工具，依赖快速演进的 `@deepseek-ai/dsh`。macOS 构建未经 Apple 公证，Windows 构建未做商业代码签名，首次运行可能需手动放行（Windows SmartScreen「仍要运行」/ macOS「右键 → 打开」）。首次启动约需 2–5 分钟自动部署环境。
@@ -92,35 +92,21 @@ dsh-systray 是一个 Windows / macOS 系统托盘应用，围绕三个核心特
 - `harnessPrerelease`：是否把 alpha/beta/rc 视为 harness 可更新版本（默认关闭，仅更新稳定版）
 - `accountApiBase`：可选，账号同步服务（[dsh-connect](https://github.com/refyon/dsh-connect)）地址，默认官方正式域名。登录态与同步游标单独存放在同目录的 `account.json`（权限 0600，只含令牌与游标，不含密码）；在「设置 → 数据同步」退出登录即清除
 
-## 仓库结构
-
-```
-src/                 Wails 项目根（Go 模块 + wails.json + 前端 + 构建资产；wails 命令都在这里执行）
-  ├── *.go           后端源码（main/app/platform_*/plugin_*/updater/exportimport …）
-  ├── frontend/dist  静态前端（go:embed 内嵌，零构建步骤）
-  ├── build/         Wails 构建资产（appicon.png、windows/icon.ico、darwin/Info.plist）
-  └── bootstrap/     首次运行安装脚本（go:embed，运行期写到临时目录执行）
-docs/                网站（index.html）+ 截图物料 + Release Notes + 图标源图
-scripts/             构建 / 截图 / 图标工具（build.ps1、capture_*.ps1、gen-icon.mjs …）
-```
-
-构建产物落在 `src/build/bin/`，仓库根不再存放编译产物。
-
 ## 架构
 
 ```
 ┌────────────────────────────── dsh-systray (Wails v2) ──────────────────────────────┐
-│  src/frontend/（静态 HTML/CSS/JS，go:embed 内嵌，零构建步骤）                       │
-│    ├── 启动/更新进度视图 + 设置五页（常规/关于/日志/导出/导入）                     │
-│    └── 浅色/深色设计令牌（style.css :root 与 prefers-color-scheme）                │
+│  src/frontend/（静态 HTML/CSS/JS，go:embed 内嵌，零构建步骤）                                       │
+│    ├── 启动/更新进度视图 + 设置七页（常规/关于/日志/导出/导入/数据同步/帮助）                       │
+│    └── 浅色/深色设计令牌（style.css :root 与 prefers-color-scheme）                                 │
 ├───────────────────────────────────────────────────────────────────────────────────┤
-│  Go 后端（src/）                                                                   │
-│    ├── main.go       入口：配置/单实例/服务编排/窗口生命周期                       │
-│    ├── app.go        Wails Bindings（配置/服务/日志/更新/导出导入）                │
-│    ├── platform_*.go 自启动/运行时/服务器/对话框/托盘图标（Windows/macOS）          │
-│    ├── updater.go      自动更新（exe / .app 整包替换，校验+回滚；harness 版本/预发布通道）  │
-│    ├── plugin_update.go 插件清单与单独检查/更新（npm、GitHub 默认分支、本地来源判定）       │
-│    └── exportimport.go / ziptool.go  数据打包与恢复                                        │
+│  Go 后端（src/）                                                                                    │
+│    ├── main.go       入口：配置/单实例/服务编排/窗口生命周期                                        │
+│    ├── app.go        Wails Bindings（配置/服务/日志/更新/导出导入）                                 │
+│    ├── platform_*.go 自启动/运行时/服务器/对话框/托盘图标（Windows/macOS）                          │
+│    ├── updater.go      自动更新（exe / .app 整包替换，校验+回滚；harness 版本/预发布通道）          │
+│    ├── plugin_update.go 插件清单与单独检查/更新（npm、GitHub 默认分支、本地来源判定）               │
+│    └── exportimport.go / ziptool.go  数据打包与恢复                                                 │
 └───────────────────────────────────────────────────────────────────────────────────┘
 ```
 

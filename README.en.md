@@ -28,7 +28,7 @@
 
 <img src="docs/screenshot-hero.webp" alt="dsh-systray settings window and automatic deployment / Harness dependency install" />
 
-dsh-systray is a Windows / macOS system-tray application built around three core traits: **Lightweight** (single-file, no install, no admin rights, low-footprint tray residency), **Reliable** (environment self-check & self-healing, auto-rollback on startup failure, auto-rollback on update failure), and **Portable** (one-click export/import of sessions, plugins and folders; seamless restore on another machine). A double-click starts the DeepSeek Harness Web local service in the background — no ports to remember. The UI is rebuilt on [Wails v2](https://wails.io) (Go backend + WebView2 / WKWebView frontend). The settings window organizes five pages: autostart & the background service, versions & updates (dsh-systray / Harness / plugins checked independently per module), and live logs; the color scheme follows the system light/dark mode and auto-update is built in.
+dsh-systray is a Windows / macOS system-tray application built around three core traits: **Lightweight** (single-file, no install, no admin rights, low-footprint tray residency), **Reliable** (environment self-check & self-healing, auto-rollback on startup failure, auto-rollback on update failure), and **Portable** (one-click export/import of sessions, plugins and folders; seamless restore on another machine). A double-click starts the DeepSeek Harness Web local service in the background — no ports to remember. The UI is rebuilt on [Wails v2](https://wails.io) (Go backend + WebView2 / WKWebView frontend). The settings window organizes seven pages: autostart & the background service, versions & updates (dsh-systray / Harness / plugins checked independently per module), data sync, and live logs; the color scheme follows the system light/dark mode and auto-update is built in.
 
 > [!IMPORTANT]
 > This is a community-maintained, unofficial tool that depends on the fast-moving `@deepseek-ai/dsh`. The macOS build is not notarized by Apple and the Windows build has no commercial code signing, so the first run may require a manual allow (Windows SmartScreen “Run anyway” / macOS “right-click → Open”). First launch takes about 2–5 minutes to deploy the environment automatically.
@@ -92,26 +92,12 @@ Designed around three core traits: **Lightweight, Reliable, Portable**.
 - `harnessPrerelease`: whether alpha/beta/rc builds count as updateable harness versions (off by default — only stable versions)
 - `accountApiBase`: optional base URL of the account-sync service ([dsh-connect](https://github.com/refyon/dsh-connect)); defaults to the official domain. The sign-in state and sync cursor live in a separate `account.json` in the same directory (mode 0600; it holds only the token and cursor, never a password) and are removed when you sign out on the "Data sync" page
 
-## Repository layout
-
-```
-src/                 Wails project root (Go module + wails.json + frontend + build assets; run wails here)
-  ├── *.go           backend sources (main/app/platform_*/plugin_*/updater/exportimport …)
-  ├── frontend/dist  static frontend (embedded via go:embed, zero build steps)
-  ├── build/         Wails build assets (appicon.png, windows/icon.ico, darwin/Info.plist)
-  └── bootstrap/     first-run install scripts (go:embed, written to a temp dir at runtime)
-docs/                website (index.html) + screenshots + release notes + icon sources
-scripts/             build / capture / icon tooling (build.ps1, capture_*.ps1, gen-icon.mjs …)
-```
-
-Build output lands in `src/build/bin/`; the repository root keeps no build artifacts.
-
 ## Architecture
 
 ```
 ┌────────────────────────────── dsh-systray (Wails v2) ──────────────────────────────┐
 │  src/frontend/ (static HTML/CSS/JS, embedded via go:embed, zero build steps)        │
-│    ├── startup/update progress view + five settings pages (general/about/logs/export/import)
+│    ├── startup/update progress view + seven settings pages (general/about/logs/export/import/sync/help)
 │    └── light/dark design tokens (style.css :root and prefers-color-scheme)          │
 ├───────────────────────────────────────────────────────────────────────────────────┤
 │  Go backend (src/)                                                                  │
