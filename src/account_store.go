@@ -86,6 +86,9 @@ type accountPendingOp struct {
 	Value json.RawMessage `json:"value"`
 	// CreatedAt 本地产生时间（仅用于展示与排障；合并以服务器时间为准）。
 	CreatedAt int64 `json:"createdAt"`
+	// Seq 服务器序号（历史遗留字段：本地队列为 0，待生效集合记录来源记录的序号，
+	// 用于把同步游标停在未应用记录之前）。
+	Seq int64 `json:"seq,omitempty"`
 }
 
 // accountStatePath account.json 路径（与 config.json 同目录）。
