@@ -24,14 +24,14 @@
     <aside class="sidebar">
       <nav class="nav" aria-label="设置分类">
         <button class="nav-item active" data-page="general" data-i18n="navGeneral">常规</button>
-        <button class="nav-item has-status" data-page="sync">
-          <span data-i18n="navSync">数据同步</span>
-          <span class="nav-status" id="sync-nav-status"></span>
         </button>
         <button class="nav-item" data-page="about" data-i18n="navAbout">关于</button>
         <button class="nav-item" data-page="logs" data-i18n="navLogs">日志</button>
         <button class="nav-item" data-page="export" data-i18n="navExport">导出</button>
         <button class="nav-item" data-page="import" data-i18n="navImport">导入</button>
+        <button class="nav-item has-status" data-page="sync">
+          <span data-i18n="navSync">数据同步</span>
+          <span class="nav-status" id="sync-nav-status"></span>
         <button class="nav-item" data-page="help" data-i18n="navHelp">帮助</button>
       </nav>
     </aside>
@@ -102,96 +102,6 @@
               <div class="row-sub" data-i18n="stResetSub">停止服务并按所选官方版本全新重装 Harness</div>
             </div>
             <button id="btn-reset-harness" class="btn btn-danger" data-i18n="btnReset">重置服务</button>
-          </div>
-        </div>
-      </section>
-
-      <!-- 数据同步（dsh-connect 账号） -->
-      <section id="page-sync" class="page hidden">
-        <!-- 未登录：注册/登录入口（邮箱验证码两态表单） -->
-        <div id="sync-login" class="card">
-          <div class="card-row">
-            <div class="row-text">
-              <div class="row-title" data-i18n="syncLoginTitle">登录 dsh-connect 账号</div>
-              <div class="row-sub" data-i18n="syncLoginSub">
-                用邮箱验证码登录后，开机自启动、Harness 版本与在线插件会随账号同步；首次使用该邮箱即自动注册。
-                不上传本机目录、端口等环境相关配置，本地插件也不同步。
-              </div>
-            </div>
-          </div>
-          <div class="card-row">
-            <div class="row-text">
-              <div class="row-title" data-i18n="syncEmailTitle">邮箱</div>
-              <div class="row-sub" data-i18n="syncEmailSub">验证码发到该邮箱，10 分钟内有效</div>
-            </div>
-            <input
-              id="sync-email"
-              class="input input-wide"
-              type="email"
-              autocomplete="email"
-              spellcheck="false"
-              data-i18n-ph="syncEmailPh"
-              placeholder="you@example.com"
-            />
-          </div>
-          <div class="card-row">
-            <div class="row-text">
-              <div class="row-title" data-i18n="syncCodeTitle">验证码</div>
-              <div class="row-sub" id="sync-code-sub" data-i18n="syncCodeSub">先点「发送验证码」，再填入收到的 6 位数字</div>
-            </div>
-            <div class="row-actions">
-              <input id="sync-code" class="input input-narrow" inputmode="numeric" maxlength="6" autocomplete="one-time-code" />
-              <button id="btn-sync-send" class="btn btn-outline btn-sm" data-i18n="btnSyncSend">发送验证码</button>
-            </div>
-          </div>
-          <div class="card-row">
-            <div class="row-text">
-              <div class="sync-hint" id="sync-login-hint"></div>
-            </div>
-            <button id="btn-sync-login" class="btn btn-primary btn-sm" data-i18n="btnSyncLogin">登录</button>
-          </div>
-        </div>
-
-        <!-- 已登录：账号信息 + 同步状态 -->
-        <div id="sync-account" class="card hidden">
-          <div class="card-row">
-            <div class="row-text">
-              <div class="row-title" id="sync-account-email">—</div>
-              <div class="row-sub" id="sync-status-line">—</div>
-            </div>
-            <div class="row-actions">
-              <button id="btn-sync-now" class="btn btn-outline btn-sm" data-i18n="btnSyncNow">立即同步</button>
-            </div>
-          </div>
-          <div class="card-row">
-            <div class="row-text">
-              <div class="row-title" data-i18n="syncScopeTitle">同步内容</div>
-              <div class="row-sub" data-i18n="syncScopeSub">
-                开机自启动开关、最后选用的 Harness 版本（含预发布通道）、所有在线插件的安装信息；
-                不含本机目录与服务端口，本地插件不同步。
-              </div>
-            </div>
-          </div>
-          <div class="card-row">
-            <div class="row-text">
-              <div class="sync-hint" id="sync-account-hint"></div>
-            </div>
-            <button id="btn-sync-logout" class="btn btn-muted btn-sm" data-i18n="btnSyncLogout">退出登录</button>
-          </div>
-        </div>
-
-        <!-- 重启生效：从服务器拉到本机改动后常驻提示（点按钮才生效） -->
-        <div id="sync-restart" class="card sync-restart-card hidden">
-          <div class="card-row">
-            <div class="row-text">
-              <div class="row-title" data-i18n="syncRestartTitle">有来自账号的同步改动待生效</div>
-              <div class="row-sub" id="sync-restart-sub" data-i18n="syncRestartSub">
-                为避免打断当前工作，改动已保存但未应用；点击右侧按钮后合并并生效。
-              </div>
-            </div>
-            <div class="row-actions">
-              <button id="btn-sync-apply" class="btn btn-primary btn-sm" data-i18n="btnSyncApply">重启生效</button>
-            </div>
           </div>
         </div>
       </section>
@@ -304,6 +214,96 @@
           <span id="imp-text" class="row-sub"></span>
           <div class="imp-cancel-row">
             <button id="btn-imp-cancel" class="btn btn-ghost btn-sm hidden" data-i18n="btnCancelRestore">取消恢复</button>
+          </div>
+        </div>
+      </section>
+
+      <!-- 数据同步（dsh-connect 账号） -->
+      <section id="page-sync" class="page hidden">
+        <!-- 未登录：注册/登录入口（邮箱验证码两态表单） -->
+        <div id="sync-login" class="card">
+          <div class="card-row">
+            <div class="row-text">
+              <div class="row-title" data-i18n="syncLoginTitle">登录 dsh-connect 账号</div>
+              <div class="row-sub" data-i18n="syncLoginSub">
+                用邮箱验证码登录后，开机自启动、Harness 版本与在线插件会随账号同步；首次使用该邮箱即自动注册。
+                不上传本机目录、端口等环境相关配置，本地插件也不同步。
+              </div>
+            </div>
+          </div>
+          <div class="card-row">
+            <div class="row-text">
+              <div class="row-title" data-i18n="syncEmailTitle">邮箱</div>
+              <div class="row-sub" data-i18n="syncEmailSub">验证码发到该邮箱，10 分钟内有效</div>
+            </div>
+            <input
+              id="sync-email"
+              class="input input-wide"
+              type="email"
+              autocomplete="email"
+              spellcheck="false"
+              data-i18n-ph="syncEmailPh"
+              placeholder="you@example.com"
+            />
+          </div>
+          <div class="card-row">
+            <div class="row-text">
+              <div class="row-title" data-i18n="syncCodeTitle">验证码</div>
+              <div class="row-sub" id="sync-code-sub" data-i18n="syncCodeSub">先点「发送验证码」，再填入收到的 6 位数字</div>
+            </div>
+            <div class="row-actions">
+              <input id="sync-code" class="input input-narrow" inputmode="numeric" maxlength="6" autocomplete="one-time-code" />
+              <button id="btn-sync-send" class="btn btn-outline btn-sm" data-i18n="btnSyncSend">发送验证码</button>
+            </div>
+          </div>
+          <div class="card-row">
+            <div class="row-text">
+              <div class="sync-hint" id="sync-login-hint"></div>
+            </div>
+            <button id="btn-sync-login" class="btn btn-primary btn-sm" data-i18n="btnSyncLogin">登录</button>
+          </div>
+        </div>
+
+        <!-- 已登录：账号信息 + 同步状态 -->
+        <div id="sync-account" class="card hidden">
+          <div class="card-row">
+            <div class="row-text">
+              <div class="row-title" id="sync-account-email">—</div>
+              <div class="row-sub" id="sync-status-line">—</div>
+            </div>
+            <div class="row-actions">
+              <button id="btn-sync-now" class="btn btn-outline btn-sm" data-i18n="btnSyncNow">立即同步</button>
+            </div>
+          </div>
+          <div class="card-row">
+            <div class="row-text">
+              <div class="row-title" data-i18n="syncScopeTitle">同步内容</div>
+              <div class="row-sub" data-i18n="syncScopeSub">
+                开机自启动开关、最后选用的 Harness 版本（含预发布通道）、所有在线插件的安装信息；
+                不含本机目录与服务端口，本地插件不同步。
+              </div>
+            </div>
+          </div>
+          <div class="card-row">
+            <div class="row-text">
+              <div class="sync-hint" id="sync-account-hint"></div>
+            </div>
+            <button id="btn-sync-logout" class="btn btn-muted btn-sm" data-i18n="btnSyncLogout">退出登录</button>
+          </div>
+        </div>
+
+        <!-- 重启生效：从服务器拉到本机改动后常驻提示（点按钮才生效） -->
+        <div id="sync-restart" class="card sync-restart-card hidden">
+          <div class="card-row">
+            <div class="row-text">
+              <div class="row-title" data-i18n="syncRestartTitle">有来自账号的同步改动待生效</div>
+              <div class="row-sub" id="sync-restart-sub" data-i18n="syncRestartSub">
+                为避免打断当前工作，改动已保存但未应用；点击右侧按钮后合并并生效。
+              </div>
+            </div>
+            <div class="row-actions">
+              <button id="btn-sync-apply" class="btn btn-primary btn-sm" data-i18n="btnSyncApply">重启生效</button>
+            </div>
           </div>
         </div>
       </section>
