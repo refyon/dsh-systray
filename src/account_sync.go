@@ -27,6 +27,9 @@ type accountSyncResult struct {
 	Pending   []string // 待生效的 key（升序）
 	Applied   int      // 应用阶段真正执行的变更数（仅在 Apply 时非 0）
 	Unchanged int      // 与服务端一致、无需应用的 key 数
+	// Reenqueued 本机现状已偏离、被重新放回待生效集合的「已应用记录」项数
+	// （手工删除 .dsh / harness 目录后仍能发现漂移的依据，见 accountReenqueueDriftedApplied）。
+	Reenqueued int
 	// Failed 应用阶段失败的 key → 原因。失败项保留在待生效集合，单项失败不中止整批。
 	Failed map[string]string
 	// Canceled 应用流程被用户取消（已应用的保留，剩余留待生效）。
@@ -165,6 +168,12 @@ func accountKeyTargetSatisfied(key string, value json.RawMessage) bool {
 		}
 		if !installed {
 			return false
+		}
+		// 本机版本读不到（包在但 package.json 缺失/无 version 字段）：**不**视为差异。
+		// 判读失败不等于版本不符——否则「已应用 且 读不到版本」会在每次同步里反复入队重装
+		// （2026-09-21 反复重装问题的另一形态）。
+		if cur.Version == "" {
+			return want.Spec == "" || normalizeSpecText(cur.Spec) == normalizeSpecText(want.Spec)
 		}
 		if want.Version != "" && !versionTargetSatisfied(cur.Version, want.Version) {
 			return false
@@ -452,6 +461,7 @@ func accountSetPendingApply(targets map[string]accountSyncTarget) {
 	sort.Slice(ops, func(i, j int) bool { return ops[i].Key < ops[j].Key })
 	accountCur.PendingRemote = ops
 	accountCur.PendingApply = len(ops) > 0
+	accountClampCursorLocked() // 兜底：待生效集合整体替换后，游标必须仍在它们之前
 	_ = saveAccountState(accountCur)
 }
 
@@ -509,15 +519,28 @@ func accountSyncPull(ctx context.Context, client *accountClient) (map[string]acc
 		applied[k] = v
 	}
 	accountMu.Unlock()
+	// remember 本轮确认「本机现状已满足」的记录：写入 AppliedVals，供下次启动/同步离线重判
+	// 漂移（见 accountReenqueueDriftedApplied）。
+	remember := make(map[string]appliedRecord)
 	pending := make(map[string]accountSyncTarget)
 	for key, t := range merged {
 		if t.FromLocal {
 			continue // 本地未上报的改动不需要「应用」，只等上报
 		}
 		if t.Seq > 0 && applied[key] >= t.Seq {
-			continue // 该服务器记录已应用到本机：状态读取口径差异不该让同一记录反复重装
+			// 已应用过的记录：只有本机**当前状态**仍满足目标才跳过。手工删除 .dsh /
+			// harness 目录后本机插件与版本被重置，此时若只看序号就会「显示已同步、
+			// 实际什么都没恢复」（2026-09-22 现场问题①）。
+			if accountKeyTargetSatisfied(key, t.Value) {
+				remember[key] = appliedRecord{Seq: t.Seq, Value: t.Value}
+				continue
+			}
+			logWarn("account", "已应用记录与本机状态不一致，重新入队 key=%s seq=%d", key, t.Seq)
+			pending[key] = t
+			continue
 		}
 		if accountKeyTargetSatisfied(key, t.Value) {
+			remember[key] = appliedRecord{Seq: t.Seq, Value: t.Value}
 			continue // 服务器值与本机当前值一致：不必提示重启
 		}
 		pending[key] = t
@@ -537,6 +560,9 @@ func accountSyncPull(ctx context.Context, client *accountClient) (map[string]acc
 
 	accountMu.Lock()
 	accountCur.Cursor = newCursor
+	for k, rec := range remember {
+		accountRememberAppliedLocked(k, rec.Value, rec.Seq)
+	}
 	accountMu.Unlock()
 	return pending, len(remote), nil
 }
@@ -594,6 +620,9 @@ func accountSyncNow(ctx context.Context, client *accountClient) (accountSyncResu
 		return res, err
 	}
 	accountSetPendingApply(pending)
+	// 已应用记录按本机现状兜底重判：拉取只看得到游标之后的记录，用户手动删除 .dsh /
+	// harness 目录时这些记录早已在游标之前（2026-09-22 现场问题①）。
+	res.Reenqueued = accountReenqueueDriftedApplied()
 	res.Pulled = pulled
 	res.Pending = accountPendingKeys()
 
@@ -679,6 +708,7 @@ func accountReportBaseline(ctx context.Context, client *accountClient) (int, err
 		if res.Cursor > accountCur.Cursor {
 			accountCur.Cursor = res.Cursor
 		}
+		accountClampCursorLocked() // 同上：上报推进的游标不得越过仍未生效的记录
 		accountMu.Unlock()
 	}
 	return sent, nil
@@ -739,7 +769,7 @@ func accountApplyPending(ctx context.Context, client *accountClient, notify func
 		pct := float64(i) / float64(len(targets))
 		if accountKeyTargetSatisfied(op.Key, op.Value) {
 			res.Unchanged += 1
-			accountMarkApplied(op.Key, op.Seq)
+			accountMarkApplied(op.Key, op.Value, op.Seq)
 			continue
 		}
 		notify(fmt.Sprintf(T("正在应用同步改动（%d/%d）：%s"), i+1, len(targets), accountApplyLabel(op.Key)), pct)
@@ -752,7 +782,7 @@ func accountApplyPending(ctx context.Context, client *accountClient, notify func
 			continue
 		}
 		res.Applied += 1
-		accountMarkApplied(op.Key, op.Seq)
+		accountMarkApplied(op.Key, op.Value, op.Seq)
 	}
 
 	// 3) 收尾：失败/取消的说明写入应用错误（与同步错误分离，直到下次应用成功才清除）
@@ -764,6 +794,9 @@ func accountApplyPending(ctx context.Context, client *accountClient, notify func
 	default:
 		accountClearApplyError()
 	}
+	// 失败/取消的项仍留在待生效集合：游标重新钳回它们之前（不变量）。这样用户再点「立即同步」
+	// 时这些记录还能被拉到、「重启生效」按钮会再次出现（2026-09-22 现场问题②）。
+	accountClampCursor()
 	res.Pending = accountPendingKeys()
 	return res, nil
 }
@@ -842,9 +875,9 @@ func isTransientNetworkError(err error) bool {
 	return false
 }
 
-// accountMarkApplied 记录某 key 已应用到本机：从待生效集合移除该 key、记下已应用序号并落盘。
+// accountMarkApplied 记录某 key 已应用到本机：从待生效集合移除该 key、记下已应用序号与目标值并落盘。
 // 逐项落盘（而非整批结束才写）：进程在应用中途退出时，已完成的项不会被当成「还没做」。
-func accountMarkApplied(key string, seq int64) {
+func accountMarkApplied(key string, value json.RawMessage, seq int64) {
 	accountMu.Lock()
 	defer accountMu.Unlock()
 	out := make([]accountPendingOp, 0, len(accountCur.PendingRemote))
@@ -856,13 +889,135 @@ func accountMarkApplied(key string, seq int64) {
 	}
 	accountCur.PendingRemote = out
 	accountCur.PendingApply = len(out) > 0
-	if seq > 0 {
-		if accountCur.AppliedSeqs == nil {
-			accountCur.AppliedSeqs = map[string]int64{}
+	accountRememberAppliedLocked(key, value, seq)
+	_ = saveAccountState(accountCur)
+}
+
+// accountRememberAppliedLocked 记下某 key 已应用的目标值与序号（调用方须持有 accountMu）。
+// 序号只作参考，目标值才是「本机被重置后能否重判漂移」的依据（见 accountState.AppliedVals）。
+func accountRememberAppliedLocked(key string, value json.RawMessage, seq int64) {
+	if seq <= 0 || len(value) == 0 {
+		return
+	}
+	if accountCur.AppliedSeqs == nil {
+		accountCur.AppliedSeqs = map[string]int64{}
+	}
+	accountCur.AppliedSeqs[key] = seq
+	if accountCur.AppliedVals == nil {
+		accountCur.AppliedVals = map[string]appliedRecord{}
+	}
+	accountCur.AppliedVals[key] = appliedRecord{Seq: seq, Value: append(json.RawMessage(nil), value...)}
+}
+
+// accountClampCursorLocked 把游标钳回最早一条未生效记录之前（调用方须持有 accountMu）。
+//
+// 不变量：Cursor 必须始终小于 PendingRemote 中所有记录的 seq。任何推进游标的路径——拉取、
+// 上报确认（accountFlushAck）、基线上报——都必须经过这里，否则游标一旦越过未生效记录，
+// 增量拉取再也取不到它们，下一次 accountSetPendingApply 的整体替换会把它们静默丢弃
+// （2026-09-22 现场问题②：插件同步失败后再点「立即同步」永远不再弹「重启生效」按钮）。
+// 返回是否发生了回拨。
+func accountClampCursorLocked() bool {
+	minSeq := int64(0)
+	for _, op := range accountCur.PendingRemote {
+		if op.Seq > 0 && (minSeq == 0 || op.Seq < minSeq) {
+			minSeq = op.Seq
 		}
-		accountCur.AppliedSeqs[key] = seq
+	}
+	if minSeq == 0 || accountCur.Cursor < minSeq {
+		return false
+	}
+	accountCur.Cursor = minSeq - 1
+	return true
+}
+
+// accountClampCursor 持锁包装：回拨后立即落盘（不变量跨托盘重启同样成立）。
+func accountClampCursor() {
+	accountMu.Lock()
+	defer accountMu.Unlock()
+	if accountClampCursorLocked() {
+		_ = saveAccountState(accountCur)
+	}
+}
+
+// accountMigrateCursorInvariant 存量 account.json 的一次性自愈（2026-09-22 现场问题①②）。
+//
+// 旧版本有两处缺陷：①上报确认时无条件把游标推进到服务器流头部（可能越过尚未生效的记录）；
+// ②已应用记录只存序号、不存目标值。存量状态因而可能是「游标已越过未生效记录」或
+// 「只有 appliedSeqs、没有 appliedVals」——此时增量拉取永远取不到那些记录，也没有可离线
+// 重判的目标值，表现为重启托盘后「显示已同步」、点多少次「立即同步」都不再出现「重启生效」
+// （问题①：手工删除 .dsh / harness 目录；问题②：插件同步失败）。
+//
+// 被越过的记录无法从本地还原（目标值可能根本没存下来），因此一次性把游标回拨到 0 做全量重拉：
+// 本机现状仍满足的记录重新记入 appliedVals（顺带完成老格式补值），不再满足的记录进入待生效
+// 集合，由用户点「重启生效」恢复。标记随 account.json 持久化，迁移只做一次。
+func accountMigrateCursorInvariant() {
+	accountMu.Lock()
+	defer accountMu.Unlock()
+	if accountCur.SyncInvariantOK {
+		return
+	}
+	accountCur.SyncInvariantOK = true
+	old := accountCur.Cursor
+	if old > 0 {
+		accountCur.Cursor = 0
 	}
 	_ = saveAccountState(accountCur)
+	if old > 0 {
+		logWarn("account", "存量同步状态迁移：游标回拨 %d → 0，下次同步全量重拉并按本机现状重判", old)
+	}
+}
+
+// accountReenqueueDriftedApplied 按本机现状重判「已应用记录」，把不再满足的项放回待生效集合。
+//
+// 为什么需要它：拉取阶段的重判（见 accountSyncPull）只作用于**本轮拉到**的记录，而服务器游标
+// 早已推进到已应用记录之后——手工删除 .dsh / harness 目录后，增量拉取永远拿不到那些记录，
+// 于是「已应用序号 + 本机现状」的漂移检查根本没机会执行，表现为重启托盘后显示「已同步」、
+// 插件却一个都没有，点「立即同步」也没有任何变化（2026-09-22 现场问题①）。
+//
+// 本函数只读本机状态（离线可用），并把游标回拨到最早一条漂移记录之前：这样后续拉取会重新
+// 取到这些记录，与「游标只推进到待生效记录之前」的不变量保持一致，也不会被下一轮
+// accountSetPendingApply 的整体替换冲掉。返回本次重新入队的项数。
+func accountReenqueueDriftedApplied() int {
+	accountMu.Lock()
+	defer accountMu.Unlock()
+	if len(accountCur.AppliedVals) == 0 {
+		return 0
+	}
+	inPending := make(map[string]bool, len(accountCur.PendingRemote))
+	for _, op := range accountCur.PendingRemote {
+		inPending[op.Key] = true
+	}
+	added, minSeq := 0, int64(0)
+	for key, rec := range accountCur.AppliedVals {
+		if inPending[key] || rec.Seq <= 0 || len(rec.Value) == 0 {
+			continue
+		}
+		if accountKeyTargetSatisfied(key, rec.Value) {
+			continue
+		}
+		accountCur.PendingRemote = append(accountCur.PendingRemote, accountPendingOp{
+			OpID:      fmt.Sprintf("pending-%s-%d", key, rec.Seq),
+			Key:       key,
+			Value:     rec.Value,
+			CreatedAt: time.Now().Unix(),
+			Seq:       rec.Seq,
+		})
+		if minSeq == 0 || rec.Seq < minSeq {
+			minSeq = rec.Seq
+		}
+		added++
+	}
+	if added == 0 {
+		return 0
+	}
+	sort.Slice(accountCur.PendingRemote, func(i, j int) bool { return accountCur.PendingRemote[i].Key < accountCur.PendingRemote[j].Key })
+	accountCur.PendingApply = true
+	if c := minSeq - 1; c >= 0 && c < accountCur.Cursor {
+		accountCur.Cursor = c
+	}
+	_ = saveAccountState(accountCur)
+	logWarn("account", "已应用记录与本机状态不一致：重新入队 %d 项，游标回拨至 %d", added, accountCur.Cursor)
+	return added
 }
 
 // accountApplyOrder 应用顺序：设置项（0-2）→ Harness 版本（3）→ 插件（4）。
@@ -910,6 +1065,6 @@ func (a *App) AccountSyncNow() (AccountStatusInfo, error) {
 		return accountSnapshot(), errors.New(accountErrorText(err))
 	}
 	accountClearSyncError()
-	logUI("同步检查完成", fmt.Sprintf("上报 %d 项，拉到 %d 条，待生效 %d 项", res.Uploaded, res.Pulled, len(res.Pending)))
+	logUI("同步检查完成", fmt.Sprintf("上报 %d 项，拉到 %d 条，待生效 %d 项，重入队 %d 项", res.Uploaded, res.Pulled, len(res.Pending), res.Reenqueued))
 	return accountSnapshot(), nil
 }

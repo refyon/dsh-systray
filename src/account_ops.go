@@ -156,6 +156,10 @@ func accountFlushAck(acked []accountPendingOp, cursor int64) {
 	if cursor > accountCur.Cursor {
 		accountCur.Cursor = cursor
 	}
+	// 服务器游标是账号全流位置（含其它设备的更高 seq）：无条件采用会越过仍未生效的记录，
+	// 增量拉取再也取不到它们，下一次 accountSetPendingApply 的整体替换会把它们静默丢弃
+	// （2026-09-22 现场问题②：插件同步失败后再点「立即同步」永远不再弹「重启生效」）。
+	accountClampCursorLocked()
 	accountCur.LastSyncedAt = time.Now().Unix()
 	accountSyncErr = ""
 	_ = saveAccountState(accountCur)

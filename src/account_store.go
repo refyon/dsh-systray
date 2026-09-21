@@ -52,6 +52,13 @@ func accountStateDirValue() string {
 	return accountStateDirOverride
 }
 
+// appliedRecord 一条已应用到本机的服务器记录（来源序号 + 目标值）。
+// 用途见 accountState.AppliedVals：游标推进后仍能按本机现状重判是否需要重新应用。
+type appliedRecord struct {
+	Seq   int64           `json:"seq"`
+	Value json.RawMessage `json:"value"`
+}
+
 // accountState 登录态与同步进度（account.json）。
 type accountState struct {
 	Token          string `json:"token"`
@@ -76,14 +83,28 @@ type accountState struct {
 	// PendingApply 是否存在待生效改动（= len(PendingRemote) > 0，随同一份状态持久化）。
 	PendingApply bool `json:"pendingApply,omitempty"`
 	// AppliedSeqs 各 key 已成功应用到本机的服务器记录序号（key → seq）。
-	// 拉取阶段的判定依据之一：seq ≤ 已应用序号的记录视为「已应用」，不再进入待生效集合——
+	// 拉取阶段的判定依据之一是「已应用 **且 本机当前状态仍满足**」——序号只表示曾经应用过，
+	// 不能单独当作「已生效」的凭据（手工删除 .dsh / harness 目录后序号还在，插件却已不在）。
 	// 本机状态读取口径与服务端目标值形态不完全一致时（如版本范围 vs 已装版本），
-	// 只靠状态比对会让同一条记录被反复重装（2026-09-21 现场问题：每次重启生效都重装
+	// 满足性判定负责避免同一条记录被反复重装（2026-09-21 现场问题：每次重启生效都重装
 	// dsh-cost-meter）。目标值更新（seq 更大）时自然重新进入待生效。
 	AppliedSeqs map[string]int64 `json:"appliedSeqs,omitempty"`
-	// LastReportedHarnessVersion 最近一次确认为「服务器已知」的本机 Harness 版本。
+	// AppliedVals 各 key 已应用的服务器记录目标值（key → {seq, value}）。
+	//
+	// 与 AppliedSeqs 并存、含义互补：序号只说明「曾经应用过」，而手工删除 .dsh /
+	// harness 目录后本机被重置、服务器游标却已推进到这些记录之后——后续增量拉取再也拿不到
+	// 它们，只靠拉取阶段的「已应用序号 + 本机现状」重判会整条漏掉（表现为重启托盘后
+	// 「显示已同步、插件列表却是空的」，2026-09-22 现场问题①）。保存目标值后，
+	// 启动与每次同步都能离线重判漂移并重新入队（见 accountReenqueueDriftedApplied）。
+	AppliedVals map[string]appliedRecord `json:"appliedVals,omitempty"`
+	// SyncInvariantOK 「游标恒小于未生效记录」不变量已建立（2026-09-22 存量迁移标记）。
+	// 旧版本会在「上报确认」时无条件把游标推进到服务器流头部，且已应用记录只存序号不存目标值，
+	// 存量 account.json 因而可能带着「游标已越过未生效记录」的坏状态；见 accountMigrateCursorInvariant。
+	SyncInvariantOK bool `json:"syncInvariantOK,omitempty"`
+	// LastReportedHarnessVersion 最近一次与服务端**对账**过的本机 Harness 版本
+	// （不一定已上报：版本下降属意外回退，只记对账、不覆盖账号上的「最后选用版本」）。
 	// 供两种情况补报：①首次基线时版本尚未可知（harness 仍在安装/识别失败）；
-	// ②版本在 dsh-systray 之外被改动（源码 checkout 切换、外部 npm 安装）。
+	// ②版本在 dsh-systray 之外被**升高**（源码 checkout 切换、外部 npm 安装）。
 	LastReportedHarnessVersion string `json:"lastReportedHarnessVersion,omitempty"`
 }
 

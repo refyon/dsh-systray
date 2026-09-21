@@ -63,6 +63,47 @@ func TestAccountPluginKeyUsesWebProfile(t *testing.T) {
 	}
 }
 
+// TestFlushAckClampsCursorBeforePending 上报确认不得把游标推进到未生效记录之后：
+// 服务器游标是账号全流位置（含其它设备的更高 seq），无条件采用会让待生效记录「落在游标之前」
+// ——增量拉取再也取不到，下一次同步的整体替换把它们静默丢弃
+// （2026-09-22 现场问题②：插件同步失败后再点「立即同步」永远不再弹「重启生效」按钮）。
+func TestFlushAckClampsCursorBeforePending(t *testing.T) {
+	setupAccountTest(t)
+	setAccountState(loggedInState())
+
+	key := accountPluginKey("pkg-fail")
+	accountSetPendingApply(map[string]accountSyncTarget{
+		key: {
+			Key:   key,
+			Value: json.RawMessage(`{"action":"update","spec":"^1.0.0","source":"npm","version":"1.0.2"}`),
+			Seq:   30,
+		},
+	})
+
+	if err := accountEnqueueOp(opKeyAutostart, true); err != nil {
+		t.Fatalf("登记本地改动失败: %v", err)
+	}
+	client, _ := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/ops/report" {
+			t.Errorf("未预期路径: %s", r.URL.Path)
+		}
+		_, _ = w.Write([]byte(`{"accepted":1,"duplicates":0,"cursor":50}`))
+	})
+	if n, err := accountFlushOps(context.Background(), client); err != nil || n != 1 {
+		t.Fatalf("上报失败: n=%d err=%v", n, err)
+	}
+
+	accountMu.Lock()
+	cursor := accountCur.Cursor
+	accountMu.Unlock()
+	if cursor != 29 {
+		t.Fatalf("游标应钳在未生效记录之前（29），实际 %d", cursor)
+	}
+	if st := accountSnapshot(); !st.PendingApply || st.PendingApplyCount != 1 {
+		t.Fatalf("待生效提示不得因上报推进游标而丢失：%+v", st)
+	}
+}
+
 func TestAccountEnqueueReplacesSameKeyAndPersists(t *testing.T) {
 	setupAccountTest(t)
 	setAccountState(loggedInState())

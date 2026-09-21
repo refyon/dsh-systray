@@ -87,6 +87,9 @@ func runAccountApplyFlow() {
 
 	splash := startSplash(T("正在应用同步改动…"))
 	setSplashPhase("sync") // 前端据此显示「应用同步改动」进度视图（带取消按钮）
+	// 整个同步过程不自动隐藏窗口（用户决策 2026-09-22）：harness 换版步骤会嵌套重置流程，
+	// 收尾时若隐藏窗口，用户就看不到后半程（插件）进度，也点不到「取消应用」。
+	splash.KeepWindow = true
 	// 与更新/重置/插件批处理互斥；托盘「设置」在应用期间只置前、不抢回设置页（见 updateProgressActive）
 	harnessOpBusy.Store(true)
 	defer harnessOpBusy.Store(false)
@@ -178,10 +181,19 @@ func syncApplyNote(res accountSyncResult, fatal string) string {
 // revalidatePendingApplyOnStartup 启动时重校验待生效集合（中断自愈）。
 //
 // 上一次应用可能被强杀（应用进行中用户退出托盘进程 / 进程崩溃）：account.json 里的集合与
-// 真实落地状态不再一致——已应用的项可能仍标着「待生效」。这里逐项用「已应用序号 + 本机当前
-// 状态」重判：已应用/已满足的丢弃并补记序号（避免下次拉取又入队），其余保留待生效。
+// 真实落地状态不再一致——已应用的项可能仍标着「待生效」。这里逐项用**本机当前状态**重判：
+// 已满足的丢弃并补记序号（避免下次拉取又入队），其余保留待生效。
 // **不自动续跑**：应用是显式动作，由用户再点「重启生效」。
 func revalidatePendingApplyOnStartup() {
+	// 先做存量迁移：旧版本可能留下「游标已越过未生效记录」的坏状态（见 accountMigrateCursorInvariant），
+	// 回拨到 0 让下一次同步全量重拉并按本机现状重判。
+	accountMigrateCursorInvariant()
+
+	// 再按本机现状重判「已应用记录」并放回待生效集合：手工删除 .dsh / harness 目录后服务器
+	// 游标已推进到这些记录之后，增量拉取再也拿不到它们，只重校验 PendingRemote 会整条漏掉
+	// （2026-09-22 现场问题①：重启托盘显示「已同步」，插件列表却是空的）。
+	accountReenqueueDriftedApplied()
+
 	accountMu.Lock()
 	pending := append([]accountPendingOp(nil), accountCur.PendingRemote...)
 	applied := make(map[string]int64, len(accountCur.AppliedSeqs))
@@ -206,10 +218,8 @@ func revalidatePendingApplyOnStartup() {
 	kept := make([]accountPendingOp, 0, len(pending))
 	dropped := 0
 	for _, op := range pending {
-		if op.Seq > 0 && applied[op.Key] >= op.Seq {
-			dropped++
-			continue
-		}
+		// 判定只看本机当前状态：已应用序号只作参考——本机被重置（删除 .dsh / harness
+		// 目录）后该序号不代表改动仍生效，必须保留待生效（2026-09-22 现场问题①）。
 		if accountKeyTargetSatisfied(op.Key, op.Value) {
 			if op.Seq > 0 {
 				applied[op.Key] = op.Seq

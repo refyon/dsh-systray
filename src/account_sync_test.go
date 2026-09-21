@@ -5,7 +5,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"os"
 	"strconv"
+	"strings"
 	"testing"
 )
 
@@ -344,23 +346,94 @@ func TestPluginSpecSatisfiedToleratesSpecShape(t *testing.T) {
 	}
 }
 
-// TestSyncPullSkipsAppliedSeqs 已应用过的服务器记录不再进入待生效集合：
-// 本机状态读取口径与目标值形态不完全一致时，同一记录不该被反复应用（现场问题④）。
-func TestSyncPullSkipsAppliedSeqs(t *testing.T) {
+// TestSyncPullAppliedSeqsRecheckedAgainstLocal 已应用过的服务器记录按**本机当前状态**重判：
+// 本机仍满足才跳过；本机被重置（删除 .dsh / harness 目录后插件与版本消失）时必须重新入队，
+// 否则会出现「显示已同步、实际什么都没恢复」（2026-09-22 现场问题①）。
+func TestSyncPullAppliedSeqsRecheckedAgainstLocal(t *testing.T) {
+	useTempHarnessDir(t)
+	writeInstalledHarnessVersion(t, "1.2.3")
+
+	remoteOps := func(ver string) string {
+		return `{"ops":[{"seq":5,"opId":"h1","key":"setting:harness_version","value":"` + ver + `","deviceId":"d","updatedAt":1}],"cursor":5,"hasMore":false}`
+	}
+	pullWith := func(t *testing.T, body string) map[string]accountSyncTarget {
+		t.Helper()
+		client, _ := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+			_, _ = w.Write([]byte(body))
+		})
+		pending, _, err := accountSyncPull(context.Background(), client)
+		if err != nil {
+			t.Fatalf("拉取失败: %v", err)
+		}
+		return pending
+	}
+
+	t.Run("本机仍满足→跳过（同一记录不反复应用）", func(t *testing.T) {
+		setupAccountTest(t)
+		st := loggedInState()
+		st.AppliedSeqs = map[string]int64{opKeyHarnessVersion: 5}
+		setAccountState(st)
+
+		if pending := pullWith(t, remoteOps("1.2.3")); len(pending) != 0 {
+			t.Fatalf("本机仍满足时不应进入待生效：%+v", pending)
+		}
+	})
+
+	t.Run("本机已偏离→重新入队", func(t *testing.T) {
+		setupAccountTest(t)
+		st := loggedInState()
+		st.AppliedSeqs = map[string]int64{opKeyHarnessVersion: 5}
+		setAccountState(st)
+
+		pending := pullWith(t, remoteOps("9.9.9-not-installed"))
+		if _, ok := pending[opKeyHarnessVersion]; !ok {
+			t.Fatalf("已应用序号但本机版本不符时应重新入队：%+v", pending)
+		}
+	})
+}
+
+// TestSyncPullReenqueuesMissingPlugin 本机插件被删除（删除 .dsh 目录后被重置）时，
+// 即使该记录曾应用过也必须重新进入待生效（现场问题①：显示已同步、插件却没恢复）。
+func TestSyncPullReenqueuesMissingPlugin(t *testing.T) {
 	setupAccountTest(t)
+	oldLocal := accountLocalPluginValueFn
+	t.Cleanup(func() { accountLocalPluginValueFn = oldLocal })
+	accountLocalPluginValueFn = func(profile, name string) (pluginOpValue, bool) {
+		return pluginOpValue{}, false // 本机没有该插件（被重置）
+	}
+	key := accountPluginKey("pkg-gone")
 	st := loggedInState()
-	st.AppliedSeqs = map[string]int64{opKeyHarnessVersion: 5}
+	st.AppliedSeqs = map[string]int64{key: 7}
 	setAccountState(st)
 
 	client, _ := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
-		_, _ = w.Write([]byte(`{"ops":[{"seq":5,"opId":"h1","key":"setting:harness_version","value":"9.9.9-sync","deviceId":"d","updatedAt":1}],"cursor":5,"hasMore":false}`))
+		_, _ = w.Write([]byte(`{"ops":[{"seq":7,"opId":"p1","key":"` + key + `","value":{"action":"update","spec":"^1.0.0","source":"npm","version":"1.0.2"},"deviceId":"d","updatedAt":1}],"cursor":7,"hasMore":false}`))
 	})
 	pending, _, err := accountSyncPull(context.Background(), client)
 	if err != nil {
 		t.Fatalf("拉取失败: %v", err)
 	}
-	if len(pending) != 0 {
-		t.Fatalf("已应用序号的记录不应再进入待生效：%+v", pending)
+	if _, ok := pending[key]; !ok {
+		t.Fatalf("插件已被本机删除时应重新入队：%+v", pending)
+	}
+}
+
+// TestKeyTargetSatisfiedPluginVersionUnreadable 本机已装但版本读不到时不判为差异：
+// 判读失败不等于版本不符——否则「已应用 且 读不到版本」会在每次同步里反复入队重装
+// （修复①不能把 2026-09-21 的反复重装问题带回来）。
+func TestKeyTargetSatisfiedPluginVersionUnreadable(t *testing.T) {
+	old := accountLocalPluginValueFn
+	t.Cleanup(func() { accountLocalPluginValueFn = old })
+	accountLocalPluginValueFn = func(profile, name string) (pluginOpValue, bool) {
+		return pluginOpValue{Action: "install", Spec: "^1.0.0", Source: "npm", Version: ""}, true
+	}
+	v := func(x pluginOpValue) json.RawMessage { b, _ := json.Marshal(x); return b }
+
+	if !accountKeyTargetSatisfied(accountPluginKey("pkg-x"), v(pluginOpValue{Action: "update", Spec: "^1.0.0", Version: "1.0.2"})) {
+		t.Fatal("版本读不到但声明一致时应判定为已满足（判读失败不等于差异）")
+	}
+	if accountKeyTargetSatisfied(accountPluginKey("pkg-x"), v(pluginOpValue{Action: "update", Spec: "github:owner/repo", Version: ""})) {
+		t.Fatal("声明不同且版本不可比时应判定为未满足")
 	}
 }
 
@@ -378,7 +451,7 @@ func TestRevalidatePendingApplyOnStartup(t *testing.T) {
 	st.PendingRemote = []accountPendingOp{
 		// 已满足（本机版本一致）→ 应丢弃
 		{Key: opKeyHarnessVersion, Value: json.RawMessage(`"` + installedHarnessVersion() + `"`), Seq: 3},
-		// 已应用序号覆盖 → 应丢弃（即使本机状态看起来不满足）
+		// 已应用序号覆盖但本机状态不满足（已装 1.0.2 不满足目标 ^9.0.0）→ 应保留
 		{Key: accountPluginKey("pkg-a"), Value: json.RawMessage(`{"action":"update","spec":"^9.0.0","version":"9.0.0"}`), Seq: 4},
 		// 仍需应用 → 应保留
 		{Key: opKeyAutostart, Value: json.RawMessage(strconv.FormatBool(!isAutostartEnabled())), Seq: 6},
@@ -390,11 +463,193 @@ func TestRevalidatePendingApplyOnStartup(t *testing.T) {
 	revalidatePendingApplyOnStartup()
 
 	keys := accountPendingKeys()
-	if len(keys) != 1 || keys[0] != opKeyAutostart {
-		t.Fatalf("重校验后应只剩仍需应用的项，实际 %v", keys)
+	if len(keys) != 2 || keys[0] != accountPluginKey("pkg-a") || keys[1] != opKeyAutostart {
+		t.Fatalf("重校验后应保留本机状态不满足的项（已应用序号不代表仍生效），实际 %v", keys)
 	}
 	if st := accountSnapshot(); !st.PendingApply || st.ApplyError != "" {
 		t.Fatalf("应保留待生效提示并复位旧的应用失败原因：%+v", st)
+	}
+}
+
+// TestReenqueueDriftedAppliedCatchesResetDirs 手工删除 .dsh / harness 目录后，服务器游标已推进到
+// 已应用记录之后（增量拉取再也拿不到它们），必须靠持久化的目标值重判漂移并重新入队
+// （2026-09-22 现场问题①：重启托盘显示「已同步」，插件列表却是空的）。
+func TestReenqueueDriftedAppliedCatchesResetDirs(t *testing.T) {
+	setupAccountTest(t)
+	oldLocal := accountLocalPluginValueFn
+	t.Cleanup(func() { accountLocalPluginValueFn = oldLocal })
+	accountLocalPluginValueFn = func(profile, name string) (pluginOpValue, bool) {
+		return pluginOpValue{}, false // 本机插件已被删除（目录重置）
+	}
+	key := accountPluginKey("pkg-gone")
+	st := loggedInState()
+	st.Cursor = 20
+	st.AppliedSeqs = map[string]int64{key: 7}
+	st.AppliedVals = map[string]appliedRecord{
+		key: {Seq: 7, Value: json.RawMessage(`{"action":"update","spec":"^1.0.0","source":"npm","version":"1.0.2"}`)},
+	}
+	setAccountState(st)
+
+	if n := accountReenqueueDriftedApplied(); n != 1 {
+		t.Fatalf("应重新入队 1 项，实际 %d", n)
+	}
+	if keys := accountPendingKeys(); len(keys) != 1 || keys[0] != key {
+		t.Fatalf("漂移项应回到待生效集合：%v", keys)
+	}
+	accountMu.Lock()
+	cursor, pending := accountCur.Cursor, accountCur.PendingApply
+	accountMu.Unlock()
+	if cursor != 6 {
+		t.Fatalf("游标应回拨到漂移记录之前（6），实际 %d", cursor)
+	}
+	if !pending || !accountSnapshot().PendingApply {
+		t.Fatal("应标记待生效（前端据此常驻显示「重启生效」）")
+	}
+	if n := accountReenqueueDriftedApplied(); n != 0 {
+		t.Fatalf("已在待生效集合中的项不应重复入队：%d", n)
+	}
+}
+
+// TestReenqueueDriftedAppliedSkipsSatisfied 本机仍满足时不重判入队：正常启动不得凭空产生
+// 「重启生效」提示，也不得无谓回拨游标（否则每次启动都会重拉一遍历史记录）。
+func TestReenqueueDriftedAppliedSkipsSatisfied(t *testing.T) {
+	setupAccountTest(t)
+	oldLocal := accountLocalPluginValueFn
+	t.Cleanup(func() { accountLocalPluginValueFn = oldLocal })
+	accountLocalPluginValueFn = func(profile, name string) (pluginOpValue, bool) {
+		return pluginOpValue{Action: "update", Spec: "^1.0.0", Source: "npm", Version: "1.0.2"}, true
+	}
+	key := accountPluginKey("pkg-a")
+	st := loggedInState()
+	st.Cursor = 20
+	st.AppliedSeqs = map[string]int64{key: 7}
+	st.AppliedVals = map[string]appliedRecord{
+		key: {Seq: 7, Value: json.RawMessage(`{"action":"update","spec":"^1.0.0","source":"npm","version":"1.0.2"}`)},
+	}
+	setAccountState(st)
+
+	if n := accountReenqueueDriftedApplied(); n != 0 {
+		t.Fatalf("本机仍满足时不应入队：%d", n)
+	}
+	if keys := accountPendingKeys(); len(keys) != 0 {
+		t.Fatalf("不应产生待生效项：%v", keys)
+	}
+	accountMu.Lock()
+	cursor := accountCur.Cursor
+	accountMu.Unlock()
+	if cursor != 20 {
+		t.Fatalf("无漂移时不得回拨游标，实际 %d", cursor)
+	}
+}
+
+// TestStartupRevalidationRequeuesDriftedApplied 启动重校验覆盖「已应用记录漂移」：
+// 删目录后重启时 PendingRemote 本就为空，旧实现只看 PendingRemote 会整条漏掉漂移。
+func TestStartupRevalidationRequeuesDriftedApplied(t *testing.T) {
+	useTempHarnessDir(t)
+	writeInstalledHarnessVersion(t, "1.2.3")
+	setupAccountTest(t)
+	st := loggedInState()
+	st.Cursor = 20
+	st.AppliedSeqs = map[string]int64{opKeyHarnessVersion: 5}
+	st.AppliedVals = map[string]appliedRecord{
+		opKeyHarnessVersion: {Seq: 5, Value: json.RawMessage(`"9.9.9-not-installed"`)},
+	}
+	setAccountState(st)
+
+	revalidatePendingApplyOnStartup()
+
+	if keys := accountPendingKeys(); len(keys) != 1 || keys[0] != opKeyHarnessVersion {
+		t.Fatalf("启动重校验应把漂移记录放回待生效：%v", keys)
+	}
+	if st := accountSnapshot(); !st.PendingApply || st.PendingApplyCount != 1 {
+		t.Fatalf("应标记待生效 1 项（前端「重启生效」按钮）：%+v", st)
+	}
+}
+
+// TestSyncNowReenqueuesDriftedApplied 「立即同步」路径同样兜底重判漂移：托盘运行期间用户手动
+// 删除目录时，本轮拉取为空也必须重新给出待生效提示。
+func TestSyncNowReenqueuesDriftedApplied(t *testing.T) {
+	useTempHarnessDir(t) // 版本读不到 → 版本对账提前返回，测试不触发真实网络
+	setupAccountTest(t)
+	oldLocal := accountLocalPluginValueFn
+	t.Cleanup(func() { accountLocalPluginValueFn = oldLocal })
+	accountLocalPluginValueFn = func(profile, name string) (pluginOpValue, bool) {
+		return pluginOpValue{}, false
+	}
+	key := accountPluginKey("pkg-gone")
+	st := loggedInState()
+	st.BaselineDone = true
+	st.Cursor = 9
+	st.AppliedVals = map[string]appliedRecord{
+		key: {Seq: 9, Value: json.RawMessage(`{"action":"update","spec":"^1.0.0","source":"npm","version":"1.0.2"}`)},
+	}
+	setAccountState(st)
+
+	client, _ := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"ops":[],"cursor":9,"hasMore":false}`)) // 游标之后没有新记录
+	})
+	res, err := accountSyncNow(context.Background(), client)
+	if err != nil {
+		t.Fatalf("同步失败: %v", err)
+	}
+	if res.Reenqueued != 1 {
+		t.Fatalf("同步应重判出 1 项漂移，实际 %d", res.Reenqueued)
+	}
+	if keys := accountPendingKeys(); len(keys) != 1 || keys[0] != key {
+		t.Fatalf("漂移项应进入待生效集合：%v", keys)
+	}
+}
+
+// TestAppliedValsPersistAcrossReload 已应用目标值与序号一起落盘并在下次读取时还原
+// （跨托盘重启后仍能重判漂移）。
+func TestAppliedValsPersistAcrossReload(t *testing.T) {
+	setupAccountTest(t)
+	setAccountState(loggedInState())
+	key := accountPluginKey("pkg-a")
+	val := json.RawMessage(`{"action":"update","spec":"^1.0.0","source":"npm","version":"1.0.2"}`)
+	accountMarkApplied(key, val, 9)
+
+	loaded := loadAccountState()
+	rec, ok := loaded.AppliedVals[key]
+	if !ok || rec.Seq != 9 {
+		t.Fatalf("已应用目标值应随 account.json 持久化：%+v", loaded.AppliedVals)
+	}
+	// 落盘经 json.MarshalIndent 重新缩进，按语义比较（不比较字面量空白）。
+	var gotVal, wantVal pluginOpValue
+	if err := json.Unmarshal(rec.Value, &gotVal); err != nil {
+		t.Fatalf("已应用目标值不是合法 JSON：%v（%s）", err, rec.Value)
+	}
+	_ = json.Unmarshal(val, &wantVal)
+	if gotVal != wantVal {
+		t.Fatalf("已应用目标值内容不符：%+v != %+v", gotVal, wantVal)
+	}
+	if loaded.AppliedSeqs[key] != 9 {
+		t.Fatalf("旧字段 AppliedSeqs 应继续维护（向后兼容）：%+v", loaded.AppliedSeqs)
+	}
+	if loaded.PendingApply || len(loaded.PendingRemote) != 0 {
+		t.Fatalf("应用成功后不应留待生效项：%+v", loaded.PendingRemote)
+	}
+}
+
+// TestAccountStateLegacyAppliedSeqsLoads 旧版 account.json（只有 appliedSeqs、没有 appliedVals）
+// 必须照常读取：新增字段不得把老用户读成未登录。
+func TestAccountStateLegacyAppliedSeqsLoads(t *testing.T) {
+	setupAccountTest(t)
+	p := accountStatePath()
+	if p == "" {
+		t.Fatal("测试应已注入 account.json 目录")
+	}
+	legacy := `{"token":"tok-1","issuedAt":1,"tokenExpiresAt":9999999999,"email":"user@example.com",` +
+		`"appliedSeqs":{"plugin:web:pkg-a":7}}`
+	if err := os.WriteFile(p, []byte(legacy), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	st := loadAccountState()
+	if st.Token != "tok-1" || st.AppliedSeqs["plugin:web:pkg-a"] != 7 {
+		t.Fatalf("旧格式登录态应完整读取：%+v", st)
+	}
+	if len(st.AppliedVals) != 0 {
+		t.Fatalf("旧格式无 appliedVals，应为空：%+v", st.AppliedVals)
 	}
 }
 
@@ -415,5 +670,177 @@ func TestRevalidatePendingApplyClearsWhenAllDone(t *testing.T) {
 	}
 	if st := accountSnapshot(); st.PendingApply {
 		t.Fatal("PendingApply 应复位")
+	}
+}
+
+// ---------- 游标不变量：上传确认不得越过未生效记录，存量状态一次性迁移 ----------
+
+// testOp 假服务器上的一条账号记录（value 为 JSON 字面量）。
+type testOp struct {
+	seq   int64
+	key   string
+	value string
+}
+
+// fakeOpsServer 假服务器：/v1/ops/since 按 since 只返回 seq 更大的记录（复刻服务端增量语义
+// ——必须尊重 since，否则「游标被推到未生效记录之后」这类缺陷在测试里看不见）；
+// /v1/ops/report 返回给定的上报后游标。
+func fakeOpsServer(t *testing.T, ops []testOp, reportCursor int64) *accountClient {
+	t.Helper()
+	client, _ := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/ops/since":
+			since, _ := strconv.ParseInt(r.URL.Query().Get("cursor"), 10, 64)
+			maxSeq := since
+			var out []string
+			for _, op := range ops {
+				if op.seq <= since {
+					continue
+				}
+				if op.seq > maxSeq {
+					maxSeq = op.seq
+				}
+				out = append(out, fmt.Sprintf(
+					`{"seq":%d,"opId":"op-%d","key":%s,"value":%s,"deviceId":"d","updatedAt":1}`,
+					op.seq, op.seq, strconv.Quote(op.key), op.value))
+			}
+			_, _ = w.Write([]byte(fmt.Sprintf(`{"ops":[%s],"cursor":%d,"hasMore":false}`, strings.Join(out, ","), maxSeq)))
+		case "/v1/ops/report":
+			_, _ = w.Write([]byte(fmt.Sprintf(`{"accepted":1,"duplicates":0,"cursor":%d}`, reportCursor)))
+		default:
+			t.Errorf("未预期路径: %s", r.URL.Path)
+		}
+	})
+	return client
+}
+
+// TestCursorInvariantMigrationRewindsLegacyStateOnce 存量 account.json（旧版本写入：游标已越过
+// 未生效记录 / 已应用记录只有序号没有目标值）一次性把游标回拨到 0 做全量重拉，此后不再回拨。
+func TestCursorInvariantMigrationRewindsLegacyStateOnce(t *testing.T) {
+	setupAccountTest(t)
+	st := loggedInState()
+	st.BaselineDone = true
+	st.Cursor = 50
+	st.AppliedSeqs = map[string]int64{accountPluginKey("pkg-a"): 7} // 老格式：没有 appliedVals
+	setAccountState(st)
+
+	accountMigrateCursorInvariant()
+
+	accountMu.Lock()
+	cursor, marked := accountCur.Cursor, accountCur.SyncInvariantOK
+	accountMu.Unlock()
+	if cursor != 0 || !marked {
+		t.Fatalf("存量状态应回拨游标到 0 并置迁移标记：cursor=%d marked=%v", cursor, marked)
+	}
+
+	// 迁移只做一次：再次调用不得把已推进的游标再拉回 0（否则每次启动都重拉一遍历史记录）
+	accountMu.Lock()
+	accountCur.Cursor = 33
+	accountMu.Unlock()
+	accountMigrateCursorInvariant()
+	accountMu.Lock()
+	cursor = accountCur.Cursor
+	accountMu.Unlock()
+	if cursor != 33 {
+		t.Fatalf("迁移应只执行一次，实际游标被再次回拨到 %d", cursor)
+	}
+}
+
+// TestLegacyStateRecoversAfterReset 老格式 account.json + 本机被重置（删 .dsh / harness 目录）：
+// 迁移后全量重拉必须重新给出待生效项，而不是继续显示「已同步」
+// （2026-09-22 现场问题①；上一版修复依赖 appliedVals，对存量老格式无效）。
+func TestLegacyStateRecoversAfterReset(t *testing.T) {
+	useTempHarnessDir(t) // 版本读不到 → 版本对账提前返回，不触发真实网络
+	setupAccountTest(t)
+	oldLocal := accountLocalPluginValueFn
+	t.Cleanup(func() { accountLocalPluginValueFn = oldLocal })
+	accountLocalPluginValueFn = func(profile, name string) (pluginOpValue, bool) {
+		return pluginOpValue{}, false // 目录被删：插件全部消失
+	}
+	key := accountPluginKey("pkg-gone")
+	st := loggedInState()
+	st.BaselineDone = true
+	st.Cursor = 50 // 旧版本把游标推到了记录之后：增量拉取永远取不到
+	st.AppliedSeqs = map[string]int64{key: 7}
+	setAccountState(st)
+
+	accountMigrateCursorInvariant() // 启动重校验的第一步
+
+	client := fakeOpsServer(t, []testOp{
+		{seq: 7, key: key, value: `{"action":"update","spec":"^1.0.0","source":"npm","version":"1.0.2"}`},
+	}, 50)
+	if _, err := accountSyncNow(context.Background(), client); err != nil {
+		t.Fatalf("同步失败: %v", err)
+	}
+	if keys := accountPendingKeys(); len(keys) != 1 || keys[0] != key {
+		t.Fatalf("全量重拉后应给出待生效项（否则表现为「已同步」）：%v", keys)
+	}
+	if st := accountSnapshot(); !st.PendingApply {
+		t.Fatalf("应标记待生效（前端「重启生效」按钮）：%+v", st)
+	}
+}
+
+// TestApplyFailureKeepsRestartButtonAcrossSyncs 插件应用失败后，再点「立即同步」必须能再次出现
+// 「重启生效」（2026-09-22 现场问题②）。
+//
+// 复现链：应用 Harness 版本时其重置流程结束会补报版本 → 异步上报确认把游标推到服务器头部
+// （越过仍待生效的插件记录）→ 插件应用失败 → 记录留在待生效但落在游标之前 → 下一次同步的
+// 整体替换把它静默丢弃，用户怎么点同步都不再弹按钮。
+func TestApplyFailureKeepsRestartButtonAcrossSyncs(t *testing.T) {
+	useTempHarnessDir(t)
+	setupAccountTest(t)
+	setAccountState(loggedInState())
+	oldLocal := accountLocalPluginValueFn
+	t.Cleanup(func() { accountLocalPluginValueFn = oldLocal })
+	accountLocalPluginValueFn = func(profile, name string) (pluginOpValue, bool) {
+		return pluginOpValue{}, false // 本机没有该插件：目标必须进入待生效
+	}
+	oldPlg := applyPluginOpFn
+	t.Cleanup(func() { applyPluginOpFn = oldPlg })
+	applyPluginOpFn = func(string, pluginOpValue) error { return fmt.Errorf("安装失败：模拟故障") }
+
+	key := accountPluginKey("pkg-fail")
+	client := fakeOpsServer(t, []testOp{
+		{seq: 30, key: key, value: `{"action":"update","spec":"^1.0.0","source":"npm","version":"1.0.2"}`},
+	}, 50)
+
+	if _, err := accountSyncNow(context.Background(), client); err != nil {
+		t.Fatalf("同步失败: %v", err)
+	}
+	if keys := accountPendingKeys(); len(keys) != 1 || keys[0] != key {
+		t.Fatalf("同步后应给出待生效项：%v", keys)
+	}
+
+	// 模拟「Harness 版本已应用 → 重置流程补报版本 → 异步上报确认」把游标推到服务器头部
+	if err := accountEnqueueOp(opKeyHarnessVersion, "9.9.9-applied"); err != nil {
+		t.Fatalf("登记失败: %v", err)
+	}
+	if _, err := accountFlushOps(context.Background(), client); err != nil {
+		t.Fatalf("上报失败: %v", err)
+	}
+
+	res, err := accountApplyPending(context.Background(), client, nil)
+	if err != nil {
+		t.Fatalf("单项失败不应作为整批致命错误返回: %v", err)
+	}
+	if len(res.Failed) != 1 || res.Failed[key] == "" {
+		t.Fatalf("插件应用应失败并保留在待生效：%+v", res.Failed)
+	}
+	accountMu.Lock()
+	cursor := accountCur.Cursor
+	accountMu.Unlock()
+	if cursor != 29 {
+		t.Fatalf("应用失败后游标必须停在未生效记录之前（29），实际 %d", cursor)
+	}
+
+	// 用户再点「立即同步」：必须能重新拉到这条记录并再次给出「重启生效」
+	if _, err := accountSyncNow(context.Background(), client); err != nil {
+		t.Fatalf("再次同步失败: %v", err)
+	}
+	if keys := accountPendingKeys(); len(keys) != 1 || keys[0] != key {
+		t.Fatalf("失败项必须能再次进入待生效（否则再也弹不出「重启生效」）：%v", keys)
+	}
+	if st := accountSnapshot(); !st.PendingApply {
+		t.Fatalf("应保留重启提示：%+v", st)
 	}
 }

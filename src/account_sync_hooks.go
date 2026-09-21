@@ -105,10 +105,14 @@ func accountRememberHarnessVersion(v string) {
 //
 // 覆盖两种「版本不上报」的盲区（2026-09-21 评估问题②）：
 //   - 服务器上没有该 key 的记录（含首次基线时 harness 仍在安装、版本读不到）；
-//   - 版本在 dsh-systray 之外被改动（源码 checkout 切换、外部 npm 安装）。
+//   - 版本在 dsh-systray 之外被**升高**（源码 checkout 切换、外部 npm 安装）。
 //
 // 不覆盖的情况：本机从未对账过，而服务器已有该 key 的记录——此时按 LWW 与「待生效」
 // 流程收敛（避免两台机器启动时互相把版本推回去）。
+//
+// 版本**下降**同样不补报（2026-09-22 现场问题②）：手工删除 .dsh / harness 目录后由
+// bootstrap 装回默认版本属意外回退，上报会以更大 seq 覆盖账号上的「最后选用版本」，
+// 使同步永远回不到原版本；差异留给拉取阶段进入待生效，由用户点「重启生效」恢复。
 func accountReconcileHarnessVersion(ctx context.Context, client *accountClient) {
 	cur := normalizeVersionText(installedHarnessVersion())
 	if cur == "" || !accountLoggedIn() {
@@ -128,12 +132,22 @@ func accountReconcileHarnessVersion(ctx context.Context, client *accountClient) 
 		accountRememberHarnessVersion(cur) // 服务器已有记录：只记「已对账」，不覆盖他人选择
 		return
 	}
+	if has && prev != "" && compareVersions(cur, prev) < 0 {
+		// 意外回退（非托盘内重置）：只记对账、不上报，避免覆盖账号版本
+		accountRememberHarnessVersion(cur)
+		logInfo("account", "本机 Harness 版本低于账号记录（%s < %s）：按意外回退处理，不覆盖账号版本", cur, prev)
+		return
+	}
 	if err := accountEnqueueOp(opKeyHarnessVersion, cur); err != nil {
 		return
 	}
 	accountRememberHarnessVersion(cur)
 	accountSyncKick()
-	logInfo("account", "服务器缺少本机 Harness 版本记录，已补报：%s", cur)
+	if has {
+		logInfo("account", "本机 Harness 版本已在 dsh-systray 之外升高，已补报：%s", cur)
+	} else {
+		logInfo("account", "服务器缺少本机 Harness 版本记录，已补报：%s", cur)
+	}
 }
 
 // accountServerHasKey 服务器上是否存在该 key 的记录（分页扫描；用于判定「服务器还没有

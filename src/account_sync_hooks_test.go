@@ -1,7 +1,9 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
+	"net/http"
 	"os"
 	"path/filepath"
 	"testing"
@@ -236,5 +238,111 @@ func TestReportSettingHooks(t *testing.T) {
 	op, _ = pendingByKey(t, opKeyHarnessPrerelease)
 	if string(op.Value) != "false" {
 		t.Fatalf("同 key 应保留最新值 false，实际 %s", op.Value)
+	}
+}
+
+// ---------- Harness 版本对账 ----------
+
+// useTempHarnessDir 把 harnessDir 指向临时目录（installedHarnessVersion 的读取源），测试结束还原。
+func useTempHarnessDir(t *testing.T) {
+	t.Helper()
+	old := harnessDir
+	harnessDir = t.TempDir()
+	t.Cleanup(func() { harnessDir = old })
+}
+
+// writeInstalledHarnessVersion 写入「已安装」的 harness 版本号。
+func writeInstalledHarnessVersion(t *testing.T, v string) {
+	t.Helper()
+	dir := filepath.Join(harnessDir, "node_modules", "@deepseek-ai", "dsh")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("建目录失败: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "package.json"), []byte(`{"version":"`+v+`"}`), 0o644); err != nil {
+		t.Fatalf("写 package.json 失败: %v", err)
+	}
+}
+
+// serverHasHarnessVersion 假服务端：服务器上已有该 key 的记录。
+func serverHasHarnessVersion(t *testing.T, value string) *accountClient {
+	t.Helper()
+	client, _ := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"ops":[{"seq":9,"opId":"h1","key":"setting:harness_version","value":"` + value + `","deviceId":"d","updatedAt":1}],"cursor":9,"hasMore":false}`))
+	})
+	return client
+}
+
+// TestReconcileHarnessVersionSkipsDowngrade 本机版本低于账号记录（删除 .dsh / harness 目录后
+// bootstrap 装回默认版本的意外回退）时不上报：上报会以更大 seq 覆盖服务器上的「最后选用版本」，
+// 使同步永远回不到原版本（2026-09-22 现场问题②）。
+func TestReconcileHarnessVersionSkipsDowngrade(t *testing.T) {
+	setupAccountTest(t)
+	setAccountAPIBase("http://127.0.0.1:1") // 兜底：意外触发上报时指向死地址，只验证登记
+	useTempHarnessDir(t)
+	writeInstalledHarnessVersion(t, "0.1.2-rc.2")
+
+	st := loggedInState()
+	st.LastReportedHarnessVersion = "0.1.6-alpha.2"
+	setAccountState(st)
+
+	accountReconcileHarnessVersion(context.Background(), serverHasHarnessVersion(t, "0.1.6-alpha.2"))
+
+	if n := accountPendingCount(); n != 0 {
+		t.Fatalf("版本回退不应上报（会覆盖账号版本），实际登记 %d 条", n)
+	}
+	accountMu.Lock()
+	got := accountCur.LastReportedHarnessVersion
+	accountMu.Unlock()
+	if got != "0.1.2-rc.2" {
+		t.Fatalf("应记录已对账版本，实际 %q", got)
+	}
+}
+
+// TestReconcileHarnessVersionReportsUpgrade 版本在 dsh-systray 之外被升高时补报（原有盲区覆盖保持）。
+func TestReconcileHarnessVersionReportsUpgrade(t *testing.T) {
+	setupAccountTest(t)
+	setAccountAPIBase("http://127.0.0.1:1") // 上报入口指向死地址：只验证登记，不触网
+	useTempHarnessDir(t)
+	writeInstalledHarnessVersion(t, "0.1.6-alpha.2")
+
+	st := loggedInState()
+	st.LastReportedHarnessVersion = "0.1.2-rc.2"
+	setAccountState(st)
+
+	accountReconcileHarnessVersion(context.Background(), serverHasHarnessVersion(t, "0.1.2-rc.2"))
+	waitAccountSync() // 等异步上报结束（死地址必失败，记录留在队列里）
+
+	op, ok := pendingByKey(t, opKeyHarnessVersion)
+	if !ok {
+		t.Fatal("外部升高版本应补报")
+	}
+	if string(op.Value) != `"0.1.6-alpha.2"` {
+		t.Fatalf("应上报本机版本，实际 %s", op.Value)
+	}
+}
+
+// TestReconcileHarnessVersionReportsWhenServerLacksKey 服务器没有该 key 的记录时补报本机版本
+// （首次基线时版本尚未可知的盲区，原有行为）。
+func TestReconcileHarnessVersionReportsWhenServerLacksKey(t *testing.T) {
+	setupAccountTest(t)
+	setAccountAPIBase("http://127.0.0.1:1")
+	useTempHarnessDir(t)
+	writeInstalledHarnessVersion(t, "0.1.6-alpha.2")
+
+	st := loggedInState() // LastReportedHarnessVersion 为空：尚未对账过
+	setAccountState(st)
+
+	client, _ := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"ops":[],"cursor":0,"hasMore":false}`))
+	})
+	accountReconcileHarnessVersion(context.Background(), client)
+	waitAccountSync()
+
+	op, ok := pendingByKey(t, opKeyHarnessVersion)
+	if !ok {
+		t.Fatal("服务器缺少记录时应补报本机版本")
+	}
+	if string(op.Value) != `"0.1.6-alpha.2"` {
+		t.Fatalf("应上报本机版本，实际 %s", op.Value)
 	}
 }

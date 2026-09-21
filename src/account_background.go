@@ -118,7 +118,7 @@ func accountBackgroundTick(ctx context.Context) {
 		log.Printf("[account] 后台同步失败: %v", err)
 	} else {
 		accountClearSyncError()
-		log.Printf("[account] 后台同步完成：上报 %d 项，拉到 %d 条，待生效 %d 项", res.Uploaded, res.Pulled, len(res.Pending))
+		log.Printf("[account] 后台同步完成：上报 %d 项，拉到 %d 条，待生效 %d 项，重入队 %d 项", res.Uploaded, res.Pulled, len(res.Pending), res.Reenqueued)
 	}
 	emitAccountChanged()
 }
