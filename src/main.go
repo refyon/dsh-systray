@@ -543,8 +543,9 @@ func main() {
 // onStartup Wails 应用启动回调：建立上下文、启动 macOS 托盘、开始后台服务编排。
 func onStartup(ctx context.Context) {
 	appCtx = ctx
-	loadStartupPendingPluginOps() // 跨托盘重启保留「待应用变更未生效」提示（逐条校验后载入）
-	startAccountBackground(ctx)   // 启动自动登录校验 + 每 20 分钟一次的后台同步检查（需求④⑤）
+	loadStartupPendingPluginOps()     // 跨托盘重启保留「待应用变更未生效」提示（逐条校验后载入）
+	revalidatePendingApplyOnStartup() // 同步待生效集合按本机现状重校验（上次应用中途退出的自愈）
+	startAccountBackground(ctx)       // 启动自动登录校验 + 每 20 分钟一次的后台同步检查（需求④⑤）
 	if runtime.GOOS == "darwin" {
 		// 系统关机/注销/重启回调须在托盘启动前注册，避免通知竞态丢失。
 		// true=关机/注销开始（跳过停服询问直接放行）；false=会话恢复（FUS 切回，复位）。
@@ -656,10 +657,16 @@ func onBeforeClose(ctx context.Context) bool {
 	return true
 }
 
-// onShutdown 退出清理：终止进行中的更新、按 keepServerRunning 保留或停止后台服务。
+// onShutdown 退出清理：终止进行中的更新/同步应用、按 keepServerRunning 保留或停止后台服务。
 func onShutdown(ctx context.Context) {
 	quitting.Store(true)
 	cancelActiveUpdate()
+	// 同步「重启生效」中途退出是允许的（用户决策）：取消应用循环并让已完成的项保持落盘，
+	// 下次启动由 revalidatePendingApplyOnStartup 重校验待生效集合，不留半途假象。
+	if accountApplyBusy() {
+		log.Printf("sync apply in progress: cancelling before exit")
+		cancelAccountApply()
+	}
 	if keepServerRunning.Load() {
 		keepPID := 0
 		if serverCmd != nil && serverCmd.Process != nil {
@@ -828,6 +835,11 @@ func bootstrapService() {
 	// 回退到导入前状态（服务随后按正常流程拉起并健康校验）
 	if n := recoverInterruptedImport(); n > 0 {
 		splash.Update(fmt.Sprintf("已检测到上次未完成的导入恢复，自动回退 %d 个环境…", n), 0.87)
+	}
+	// 2.6) 上次插件操作（同步应用/更新/删除）在快照后被强杀：残骸按「操作前状态」还原，
+	// 避免半装的依赖树被服务加载（被撤销的那一项仍是待生效，下次同步会重新给出）
+	for _, pf := range enumeratePluginProfiles() {
+		recoverInterruptedPluginSnapshot(pf.dir)
 	}
 
 	// 3) 启动服务

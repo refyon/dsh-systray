@@ -184,11 +184,19 @@ func harnessGitTagForVersion(version string) (string, error) {
 	return "", fmt.Errorf("harness 仓库中未找到版本 %s 对应的 tag（dsh-v%s / dsh-%s）", version, version, version)
 }
 
-// failReset 重置失败统一收尾：尽力把服务拉回可用后弹窗报告。
-// runHarnessReset 在第 0 步就 killServer 了，各失败分支若只弹窗返回，用户会同时面对
+// resetResult 一次重置/版本应用的结果。同步「重启生效」走静默通道（popup=nil），
+// 按本结果判定成功与失败原因并反馈到进度视图与状态提示。
+type resetResult struct {
+	OK   bool
+	Err  string // 失败原因（用户可读，已含收尾建议）
+	Note string // 成功说明（含清理提示）
+}
+
+// failResetFlow 重置失败统一收尾：尽力把服务拉回可用后回报（popup 非 nil 时弹原生对话框）。
+// runHarnessResetFlow 在第 0 步就 killServer 了，各失败分支若直接返回，用户会同时面对
 // 「重置失败」与「服务停摆」——2026-09-10 mac 实证：重置安装失败虽已还原目录，服务却一直
 // 停着（22:29:47 停 → 22:38:13 才被后续更新拉起），只能手动点重启。
-func failReset(splash *SplashState, msg string) {
+func failResetFlow(splash *SplashState, msg string, popup func(string)) resetResult {
 	recovered := true
 	if !serverResponding(webURL) {
 		recovered = restartAndVerifyServer()
@@ -197,18 +205,34 @@ func failReset(splash *SplashState, msg string) {
 		msg += "\n\n服务未能自动恢复，请点击「重启服务」后重试。"
 	}
 	splash.Close()
-	showMessageBox(msg, appName)
+	if popup != nil {
+		popup(msg)
+	}
+	return resetResult{Err: msg}
 }
 
-// runHarnessReset 重置 DeepSeek Harness：停服务 →（可选）清会话/清插件 →
+// runHarnessReset 重置 DeepSeek Harness（常规页「重置服务」按钮）：带原生对话框的 UI 入口。
+// 实现见 runHarnessResetFlow；同步应用的「重启生效」走 popup=nil 的静默通道复用同一实现。
+func runHarnessReset(clearSessions, clearPlugins bool, reqTarget string) {
+	runHarnessResetFlow(clearSessions, clearPlugins, reqTarget, func(msg string) {
+		showMessageBox(msg, appName)
+	})
+}
+
+// runHarnessResetFlow 重置 DeepSeek Harness：停服务 →（可选）清会话/清插件 →
 // 全新安装 reqTarget（前端从「重置目标版本」下拉选择的任意官方 npm 版本，含更高版本与
 // 预发布；默认选中当前版本=同版本重装）→ 重启校验。reqTarget 为空或格式非法为防御性
 // 失败（前端已保证传具体版本：候选与默认目标均在弹窗打开时由 GetResetVersions 一次查证，
 // 这里不再触网查询）。clearSessions / clearPlugins 由前端勾选弹窗传入（版本回退始终执行，
-// 必选项）。重置后启动受阻时按「不回滚优先」处置：先禁用点名嫌疑用户插件，仍失败再禁用
+// 必选项）。
+//
+// popup 为弹窗通道：nil = 静默（同步应用的「重启生效」用，进度与结果由调用方呈现），
+// 非 nil = 每条结束信息交给它弹原生对话框（常规页按钮行为不变）。
+//
+// 重置后启动受阻时按「不回滚优先」处置：先禁用点名嫌疑用户插件，仍失败再禁用
 // 全部用户插件，任一成功即保留新版本；两级都失败（核心故障）才还原备份目录。
 // 异步执行（按钮触发后 go 调用）。
-func runHarnessReset(clearSessions, clearPlugins bool, reqTarget string) {
+func runHarnessResetFlow(clearSessions, clearPlugins bool, reqTarget string, popup func(string)) resetResult {
 	splash := startSplash(T("正在重置 DeepSeek Harness…"))
 	defer splash.Close()
 	harnessOpBusy.Store(true) // 与插件操作批处理互斥（两者都会停服 + 跑 pnpm）
@@ -224,9 +248,8 @@ func runHarnessReset(clearSessions, clearPlugins bool, reqTarget string) {
 
 	// 0.5) 形态判定：npm 预构建 / 缺失 → npm 全新安装；源码 checkout → 暂不支持自动清空重装。
 	if isSourceHarnessDir() {
-		failReset(splash, "重置失败：当前为源码 checkout 形态，暂不支持自动清空目录重装。\n"+
-			"请先在 Web UI 切换到 npm 预构建形态后再重置，或手动处理源码目录。\n\n日志："+unifiedLogPath())
-		return
+		return failResetFlow(splash, "重置失败：当前为源码 checkout 形态，暂不支持自动清空目录重装。\n"+
+			"请先在 Web UI 切换到 npm 预构建形态后再重置，或手动处理源码目录。\n\n日志："+unifiedLogPath(), popup)
 	}
 
 	// 1) 目标版本：弹窗已选（GetResetVersions 在弹窗打开时查过 npm 列表并给出默认目标）；
@@ -235,13 +258,11 @@ func runHarnessReset(clearSessions, clearPlugins bool, reqTarget string) {
 	splash.Update(T("正在准备全新安装…"), 0.2)
 	target := reqTarget
 	if target == "" {
-		failReset(splash, "重置失败：未选择重置目标版本，请重新打开弹窗选择后再试。\n\n日志："+unifiedLogPath())
-		return
+		return failResetFlow(splash, "重置失败：未选择重置目标版本，请重新打开弹窗选择后再试。\n\n日志："+unifiedLogPath(), popup)
 	}
 	if !validResetTarget(target) {
-		failReset(splash, fmt.Sprintf("重置失败：目标版本 %q 格式非法，请重新打开弹窗选择。\n\n日志：%s",
-			target, unifiedLogPath()))
-		return
+		return failResetFlow(splash, fmt.Sprintf("重置失败：目标版本 %q 格式非法，请重新打开弹窗选择。\n\n日志：%s",
+			target, unifiedLogPath()), popup)
 	}
 	log.Printf("reset: clean reinstall to %s (shape=npm) clearSessions=%v clearPlugins=%v explicitTarget=%v",
 		orDash(target), clearSessions, clearPlugins, true)
@@ -253,14 +274,12 @@ func runHarnessReset(clearSessions, clearPlugins bool, reqTarget string) {
 	if _, serr := os.Stat(harnessDir); serr == nil {
 		splash.Update(T("正在清空原 harness 目录…"), 0.35)
 		if rerr := os.Rename(harnessDir, bakDir); rerr != nil {
-			failReset(splash, "重置失败：无法备份原目录（"+rerr.Error()+"）。\n\n请检查文件占用后重试。\n\n日志："+unifiedLogPath())
-			return
+			return failResetFlow(splash, "重置失败：无法备份原目录（"+rerr.Error()+"）。\n\n请检查文件占用后重试。\n\n日志："+unifiedLogPath(), popup)
 		}
 	}
 	if err := os.MkdirAll(harnessDir, 0o755); err != nil {
 		_ = os.Rename(bakDir, harnessDir) // 尽力还原
-		failReset(splash, "重置失败：无法创建新目录（"+err.Error()+"）。\n\n日志："+unifiedLogPath())
-		return
+		return failResetFlow(splash, "重置失败：无法创建新目录（"+err.Error()+"）。\n\n日志："+unifiedLogPath(), popup)
 	}
 	restoreBackup := func() {
 		_ = os.RemoveAll(harnessDir)
@@ -275,8 +294,7 @@ func runHarnessReset(clearSessions, clearPlugins bool, reqTarget string) {
 	rerr := ensureNpmHarnessVersionPinned(target, family)
 	if rerr != nil {
 		restoreBackup()
-		failReset(splash, "重置失败：全新安装未能完成，已还原原目录。\n"+rerr.Error())
-		return
+		return failResetFlow(splash, "重置失败：全新安装未能完成，已还原原目录。\n"+rerr.Error(), popup)
 	}
 	// 旧目录备份保留到「重启健康校验通过」后再删除：重置后新版启动受阻（插件不兼容/核心
 	// 故障）时可整体还原到重置前的可运行目录；备份在下方「校验通过 / 自愈成功 / 核心故障还原」
@@ -322,10 +340,9 @@ func runHarnessReset(clearSessions, clearPlugins bool, reqTarget string) {
 		}
 		if !ok {
 			// 核心故障：还原重置前目录，不留半成品（备份此前一直保留）。还原后必须把服务拉回
-			// 可用状态，否则用户同时面对「重置失败」与「服务停摆」（failReset 负责收尾弹窗）。
+			// 可用状态，否则用户同时面对「重置失败」与「服务停摆」（failResetFlow 负责收尾）。
 			restoreBackup()
-			failReset(splash, "重置未能完成：已尝试自动禁用不兼容插件，服务仍无法启动（核心故障），已还原重置前的版本。\n\n日志："+unifiedLogPath()+cleanupNotes)
-			return
+			return failResetFlow(splash, "重置未能完成：已尝试自动禁用不兼容插件，服务仍无法启动（核心故障），已还原重置前的版本。\n\n日志："+unifiedLogPath()+cleanupNotes, popup)
 		}
 		// 自愈成功：保留新版本（禁用清单可于「关于页 → 已安装插件」检查更新/重新启用）
 		_ = os.RemoveAll(bakDir)
@@ -349,8 +366,10 @@ func runHarnessReset(clearSessions, clearPlugins bool, reqTarget string) {
 		if clearPlugins {
 			detail += "\n· 已安装插件已清除"
 		}
-		showMessageBox(detail+cleanupNotes, appName)
-		return
+		if popup != nil {
+			popup(detail + cleanupNotes)
+		}
+		return resetResult{OK: true, Note: detail + cleanupNotes}
 	}
 	// 校验通过：备份不再需要，回退后的状态即新的良好基线，旧 LKG 不应再用于回退
 	_ = os.RemoveAll(bakDir)
@@ -365,7 +384,10 @@ func runHarnessReset(clearSessions, clearPlugins bool, reqTarget string) {
 	}
 	detail += "· 版本：已全新安装 " + withV(target) + "（原 harness 目录文件已全部清空）\n"
 	detail += "服务已重启。" + cleanupNotes
-	showMessageBox(detail, appName)
+	if popup != nil {
+		popup(detail)
+	}
+	return resetResult{OK: true, Note: detail}
 }
 
 // ==================== 重置内容统计（弹窗勾选前展示数量） ====================

@@ -122,7 +122,7 @@ footer .sep{margin:0 8px;color:var(--border)}
       <a class="btn primary" id="dl-win" href="https://github.com/refyon/dsh-systray/releases/latest/download/dsh-systray-windows-x64.zip"><svg class="ico" viewBox="0 0 24 24" fill="currentColor"><path d="M3 5.5l8.5-1.2v8.4H3V5.5zm9.5-1.3L21 3v9.7h-8.5V4.2zM3 13.7h8.5v8.4L3 20.9v-7.2zm9.5.8H21v6.9l-8.5 1.3v-8.2z"/></svg><span data-i18n="dlWin">下载 Windows 版</span></a>
       <a class="btn ghost" id="dl-mac" href="https://github.com/refyon/dsh-systray/releases/latest/download/dsh-systray-macos-universal.zip"><svg class="ico" viewBox="0 0 24 24" fill="currentColor"><path d="M16.9 12.9c0-2.1 1.7-3.1 1.8-3.2-1-1.4-2.5-1.6-3-1.7-1.3-.1-2.5.8-3.2.8-.6 0-1.6-.8-2.7-.7-1.4 0-2.7.8-3.4 2-1.4 2.5-.4 6.2 1 8.2.7 1 1.5 2.1 2.6 2 .9 0 1.3-.6 2.5-.6s1.5.6 2.5.6c1 0 1.7-1 2.4-2 .7-1.1 1-2.1 1-2.2 0 0-2-1-2-3.2zM15 6.3c.6-.7 1-1.7.9-2.7-.8 0-1.9.6-2.5 1.3-.5.6-1 1.6-.9 2.6.9.1 1.9-.5 2.5-1.2z"/></svg><span data-i18n="dlMac">下载 macOS 版</span></a>
     </div>
-    <div class="ver-chip"><span data-i18n="verLabel">当前版本</span> <b id="version">v0.8.0</b> <span data-i18n="verSuffix">· 由 CI 自动构建发布</span></div>
+    <div class="ver-chip"><span data-i18n="verLabel">当前版本</span> <b id="version">v0.10.0</b> <span data-i18n="verSuffix">· 由 CI 自动构建发布</span></div>
   </section>
 
   <section class="hub" id="screenshots">
@@ -195,7 +195,7 @@ footer .sep{margin:0 8px;color:var(--border)}
         <ul>
           <li>
             <div class="ico"><svg viewBox="0 0 24 24"><path d="M19.35 10.04A7.49 7.49 0 0 0 12 4C9.11 4 6.6 5.64 5.35 8.04A5.99 5.99 0 0 0 0 14c0 3.31 2.69 6 6 6h13c2.76 0 5-2.24 5-5 0-2.64-1.78-4.88-4.65-5.96z"/></svg></div>
-            <div><b data-i18n="f14T">账号同步</b><span data-i18n="f14D">邮箱验证码登录后，开机自启、Harness 版本与在线插件在多台机器间同步；拉到的改动由你点「重启生效」才落地。</span></div>
+            <div><b data-i18n="f14T">账号同步</b><span data-i18n="f14D">邮箱验证码登录后，开机自启、Harness 版本与在线插件在多台机器间同步；拉到的改动显示为「待生效」，由你点「重启生效」进进度视图后落地。</span></div>
           </li>
           <li>
             <div class="ico"><svg viewBox="0 0 24 24"><path d="M7 7h10M13 3l4 4-4 4M17 17H7m-4 4l4-4-4-4"/></svg></div>
@@ -266,7 +266,7 @@ footer .sep{margin:0 8px;color:var(--border)}
       f10T: "冲突智能处理", f10D: "导入时逐项恢复、冲突询问，自动备份现有内容。",
       f11T: "配置即数据", f11D: "配置与数据都在用户目录，随导出包完整迁移。",
       f12T: "跨平台一致", f12D: "Windows / macOS 同一套界面、同一份数据格式。",
-      f14T: "账号同步", f14D: "邮箱验证码登录后，开机自启、Harness 版本与在线插件在多台机器间同步；拉到的改动由你点「重启生效」才落地。",
+      f14T: "账号同步", f14D: "邮箱验证码登录后，开机自启、Harness 版本与在线插件在多台机器间同步；拉到的改动显示为「待生效」，由你点「重启生效」进进度视图后落地。",
       notesTitle: "开始使用",
       n1: "下载对应平台 zip 并解压到任意目录",
       n2: "<b>Windows</b>：双击 <code>dsh-systray.exe</code>（SmartScreen 提示时选「仍要运行」）",
@@ -301,7 +301,7 @@ footer .sep{margin:0 8px;color:var(--border)}
       f10T: "Smart conflict handling", f10D: "Restore item by item with conflict prompts, auto-backing up existing content.",
       f11T: "Config is data", f11D: "Config and data live under your user directory and migrate fully with the export bundle.",
       f12T: "Cross-platform consistent", f12D: "Same UI and same data format on Windows and macOS.",
-      f14T: "Account sync", f14D: "Sign in with an email code and your autostart switch, Harness version and online plugins stay in sync across machines; pulled changes apply only when you click “Apply &amp; restart”.",
+      f14T: "Account sync", f14D: "Sign in with an email code and your autostart switch, Harness version and online plugins stay in sync across machines; pulled changes show as “waiting to apply” and land only after you click “Restart to apply” and watch the progress view.",
       notesTitle: "Getting Started",
       n1: "Download the zip for your platform and extract it anywhere",
       n2: "<b>Windows</b>: double-click <code>dsh-systray.exe</code> (choose “More info → Run anyway” if SmartScreen appears)",

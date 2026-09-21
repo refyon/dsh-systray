@@ -290,6 +290,21 @@ const I18N_DYN = {
   "登录中…": "Signing in…",
   "正在同步…": "Syncing…",
   "同步已完成": "Sync completed",
+  "同步检查完成，本机已是最新": "Sync check complete — this machine is up to date",
+  "同步检查完成，{0} 项改动等待重启生效": "Sync check complete — {0} change(s) are waiting to be applied",
+  "待生效 {0} 项": "{0} waiting to apply",
+  "待生效": "Waiting to apply",
+  "有待生效的同步改动": "Changes waiting to apply",
+  "，点「重启生效」应用": " — click “Restart to apply”",
+  "上次应用失败：{0}": "Last apply failed: {0}",
+  "上次应用失败：{0}。剩余改动已保留，可再次点击应用续做。": "Last apply failed: {0}. The remaining changes are kept — click apply again to continue.",
+  "共 {0} 项改动已保存但尚未生效；点击右侧按钮后合并并生效。": "{0} change(s) saved but not applied yet; click the button to merge and apply them.",
+  "正在应用…": "Applying…",
+  "重启生效": "Restart to apply",
+  "正在应用同步改动…": "Applying synced changes…",
+  "取消应用": "Cancel apply",
+  "已取消应用，剩余改动留待生效": "Apply canceled — the remaining changes stay pending",
+  "同步改动已生效：应用 {0} 项": "Synced changes applied: {0} item(s)",
   "已退出登录": "Signed out",
   "{0} 秒后可重发": "Resend in {0}s",
   "同步功能尚未就绪": "Sync is not available in this build yet",
@@ -400,8 +415,11 @@ function applyShotScroll() {
 function showSplash(mode, statusText) {
   state.splashMode = mode || "startup";
   const cancelBtn = $("splash-cancel");
-  cancelBtn.classList.toggle("hidden", state.splashMode !== "update");
-  cancelBtn.disabled = false; // 每次进入 update 视图重置可取消状态
+  // 可取消的进度视图：更新（下载/安装）与应用同步改动（取消后剩余项仍待生效）
+  const cancellable = state.splashMode === "update" || state.splashMode === "sync";
+  cancelBtn.classList.toggle("hidden", !cancellable);
+  cancelBtn.textContent = tr(state.splashMode === "sync" ? "取消应用" : "取消更新");
+  cancelBtn.disabled = false; // 每次进入进度视图重置可取消状态
   $("splash-status").textContent = statusText || tr("正在准备运行环境…");
   $("splash-fill").style.width = "0%";
   $("splash").classList.remove("hidden");
@@ -1900,12 +1918,34 @@ function wireEvents() {
   // 账号/同步状态变化（登录、后台同步完成、令牌失效）→ 刷新「数据同步」页与左侧小字状态
   EventsOn("account:changed", () => { refreshSync(); });
 
+  // 同步改动应用结束（成功/取消/失败，Go 侧统一 emit sync:apply:done）：
+  // 收起进度视图、复位按钮、刷新插件与服务状态，并把结果写进页内提示。
+  EventsOn("sync:apply:done", (d) => {
+    state.splashMode = "";
+    showSettings();
+    const btn = $("btn-sync-apply");
+    if (btn) btn.disabled = false;
+    loadPlugins();     // 应用可能新增/更新/移除插件
+    refreshService();  // 应用期间服务被停过并重启
+    const err = d && d.error;
+    if (err) {
+      syncHint("sync-account-hint", err, true);
+    } else if (d && d.canceled) {
+      syncHint("sync-account-hint", tr("已取消应用，剩余改动留待生效"));
+    } else {
+      syncHint("sync-account-hint", fmt("同步改动已生效：应用 {0} 项", (d && d.applied) || 0));
+    }
+    refreshSync();
+  });
+
   EventsOn("splash:progress", (d) => {
     if (!d) return;
     // 相位复位事件（空文本 + 0 进度）只用于后端复位相位，不应把已收起的进度视图重新拉起：
     // 它若晚于 update:done 到达，窗口就停在进度视图（表现＝更新完成后不退出更新窗口）。
     const phaseReset = !d.text && d.pct === 0;
-    if (d.phase === "update" && !phaseReset && state.splashMode !== "update") showSplash("update", d.text || tr("正在更新…"));
+    if ((d.phase === "update" || d.phase === "sync") && !phaseReset && state.splashMode !== d.phase) {
+      showSplash(d.phase, d.text || tr(d.phase === "sync" ? "正在应用同步改动…" : "正在更新…"));
+    }
     if (d.phase === "startup" && !phaseReset) {
       $("splash").classList.remove("hidden");
       $("settings").classList.add("hidden");
@@ -2088,13 +2128,18 @@ function wireEvents() {
   });
 }
 
-// 取消更新：请求 Go 中止并等待 update:done 统一收尾（复位按钮/回到设置页）。
+// 取消进度流程：更新 → CancelUpdate；同步改动应用 → CancelSyncApply（已应用的保留）。
 function wireSplashCancel() {
   const btn = $("splash-cancel");
   btn.addEventListener("click", () => {
     btn.disabled = true; // 防重复点击（Go 端「替换重启」阶段也会忽略取消）
     $("splash-status").textContent = tr("正在取消…");
-    bindings().CancelUpdate();
+    const g = bindings();
+    if (state.splashMode === "sync") {
+      if (typeof g.CancelSyncApply === "function") g.CancelSyncApply();
+      return;
+    }
+    g.CancelUpdate();
   });
 }
 
@@ -2167,11 +2212,21 @@ function syncStatusView(st) {
   if (st.syncing) return { text: tr("同步中…"), cls: "sync-state-busy" };
   if (st.syncError) return { text: fmt("同步失败：{0}", st.syncError), cls: "sync-state-error" };
   if (st.pendingOps > 0) return { text: fmt("待同步 {0} 项", st.pendingOps), cls: "sync-state-pending" };
+  // 有待生效改动时**不能**说「已同步」：改动还没落到本机，点「重启生效」才应用（问题⑥）
+  if (st.pendingApply) return { text: applyPendingText(st), cls: "sync-state-pending" };
+  if (st.applyError) return { text: fmt("上次应用失败：{0}", st.applyError), cls: "sync-state-error" };
   if (st.lastSyncedAt > 0) return { text: fmt("已同步 · 最后同步 {0}", syncFmtTime(st.lastSyncedAt)), cls: "sync-state-ok" };
   return { text: tr("已登录，尚未同步"), cls: "" };
 }
 
-/** renderSyncNavStatus 左侧导航小字状态：灰=未登录 / 蓝=同步中 / 黄=待同步 / 红=失败 / 绿=已同步。 */
+/** applyPendingText 待生效状态行文案（含上次应用失败原因）。 */
+function applyPendingText(st) {
+  const n = st.pendingApplyCount || 0;
+  const base = n > 0 ? fmt("待生效 {0} 项", n) : tr("有待生效的同步改动");
+  return st.applyError ? base + " · " + fmt("上次应用失败：{0}", st.applyError) : base + tr("，点「重启生效」应用");
+}
+
+/** renderSyncNavStatus 左侧导航小字状态：灰=未登录 / 蓝=同步中 / 黄=待同步·待生效 / 红=失败 / 绿=已同步。 */
 function renderSyncNavStatus(st) {
   const el = $("sync-nav-status");
   if (!el) return;
@@ -2181,6 +2236,7 @@ function renderSyncNavStatus(st) {
     if (st.syncing) { cls += " is-syncing"; text = tr("同步中"); }
     else if (st.syncError) { cls += " is-error"; text = tr("同步失败"); }
     else if (st.pendingOps > 0) { cls += " is-pending"; text = fmt("待同步 {0} 项", st.pendingOps); }
+    else if (st.pendingApply) { cls += " is-pending"; text = st.pendingApplyCount > 0 ? fmt("待生效 {0} 项", st.pendingApplyCount) : tr("待生效"); }
     else if (st.lastSyncedAt > 0) { cls += " is-ok"; text = tr("已同步"); }
     else { text = tr("已登录，尚未同步"); }
   }
@@ -2215,10 +2271,23 @@ async function refreshSync() {
     const line = $("sync-status-line");
     line.textContent = view.text;
     line.className = "row-sub " + view.cls;
-    $("btn-sync-now").disabled = !!st.syncing;
-    // 重启生效提示：S4 起由 Go 侧给出 pendingApply 标记
+    $("btn-sync-now").disabled = !!st.syncing || !!st.applying;
+    // 重启生效提示：Go 侧给出 pendingApply 标记；应用进行中禁用按钮避免重复触发
     const restart = $("sync-restart");
     if (restart) restart.classList.toggle("hidden", !st.pendingApply);
+    const applyBtn = $("btn-sync-apply");
+    if (applyBtn) {
+      applyBtn.disabled = !!st.applying;
+      applyBtn.textContent = st.applying ? tr("正在应用…") : tr("重启生效");
+    }
+    if (st.pendingApply) {
+      const sub = $("sync-restart-sub");
+      if (sub) {
+        sub.textContent = st.applyError
+          ? fmt("上次应用失败：{0}。剩余改动已保留，可再次点击应用续做。", st.applyError)
+          : fmt("共 {0} 项改动已保存但尚未生效；点击右侧按钮后合并并生效。", st.pendingApplyCount || 0);
+      }
+    }
   } else if (st && (st.expireReason === "session_expired" || st.expireReason === "token_expired")) {
     syncHint("sync-login-hint", tr("登录已过期，请重新登录"), true);
   }
@@ -2315,7 +2384,14 @@ async function doSyncNow() {
   syncHint("sync-account-hint", tr("正在同步…"));
   try {
     await g.AccountSyncNow();
-    syncHint("sync-account-hint", tr("同步已完成"));
+    const st = (typeof g.AccountStatus === "function") ? await g.AccountStatus() : null;
+    if (st && st.pendingApply) {
+      // 「同步检查完成」不等于「已生效」：拉到的改动要用户点「重启生效」才落地（问题④⑥）
+      syncHint("sync-account-hint", fmt("同步检查完成，{0} 项改动等待重启生效", st.pendingApplyCount || 0));
+      showPage("sync");
+    } else {
+      syncHint("sync-account-hint", tr("同步检查完成，本机已是最新"));
+    }
   } catch (err) {
     syncHint("sync-account-hint", String(err), true);
   } finally {
@@ -2323,18 +2399,21 @@ async function doSyncNow() {
   }
 }
 
-async function doSyncApply() {
+// 重启生效：长操作（停服 → 安装/重装 → 重启校验，分钟级），改为「进度视图 + 事件收尾」——
+// 不再 await 整个调用（否则按钮自始至终无进度、失败也只在末尾给出）。
+function doSyncApply() {
   const g = bindings();
   if (!g) return;
   if (typeof g.AccountApplyPending !== "function") { syncHint("sync-account-hint", tr("同步功能尚未就绪"), true); return; }
   $("btn-sync-apply").disabled = true;
+  syncHint("sync-account-hint", tr("正在应用同步改动…"));
+  showSplash("sync", tr("正在应用同步改动…"));
   try {
-    await g.AccountApplyPending();
+    const p = g.AccountApplyPending(); // 结果经 sync:apply:done 事件回报
+    if (p && typeof p.catch === "function") p.catch(() => {});
   } catch (err) {
+    showSettings();
     syncHint("sync-account-hint", String(err), true);
-  } finally {
-    $("btn-sync-apply").disabled = false;
-    await refreshSync();
   }
 }
 

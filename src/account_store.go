@@ -70,10 +70,21 @@ type accountState struct {
 	// PendingOps 待上报的操作记录队列（上报成功即出队；登出时丢弃）。
 	PendingOps []accountPendingOp `json:"pendingOps,omitempty"`
 	// PendingRemote 已从服务器拉到、但**尚未应用**到本机的操作记录（点「重启生效」后合并并清空）。
-	// 跨托盘重启保留：提示必须一直存在，且不允许自动生效。
+	// 跨托盘重启保留：提示必须一直存在，且不允许自动生效。启动时会重校验（见
+	// revalidatePendingApplyOnStartup）：应用中途退出进程时不能把这份集合原样当作事实。
 	PendingRemote []accountPendingOp `json:"pendingRemote,omitempty"`
 	// PendingApply 是否存在待生效改动（= len(PendingRemote) > 0，随同一份状态持久化）。
 	PendingApply bool `json:"pendingApply,omitempty"`
+	// AppliedSeqs 各 key 已成功应用到本机的服务器记录序号（key → seq）。
+	// 拉取阶段的判定依据之一：seq ≤ 已应用序号的记录视为「已应用」，不再进入待生效集合——
+	// 本机状态读取口径与服务端目标值形态不完全一致时（如版本范围 vs 已装版本），
+	// 只靠状态比对会让同一条记录被反复重装（2026-09-21 现场问题：每次重启生效都重装
+	// dsh-cost-meter）。目标值更新（seq 更大）时自然重新进入待生效。
+	AppliedSeqs map[string]int64 `json:"appliedSeqs,omitempty"`
+	// LastReportedHarnessVersion 最近一次确认为「服务器已知」的本机 Harness 版本。
+	// 供两种情况补报：①首次基线时版本尚未可知（harness 仍在安装/识别失败）；
+	// ②版本在 dsh-systray 之外被改动（源码 checkout 切换、外部 npm 安装）。
+	LastReportedHarnessVersion string `json:"lastReportedHarnessVersion,omitempty"`
 }
 
 // accountPendingOp 待上报的操作记录（本地队列项，见 account_ops.go）。

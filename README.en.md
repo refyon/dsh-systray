@@ -65,7 +65,7 @@ Designed around three core traits: **Lightweight, Reliable, Portable**.
 - **Logs**: the Logs page follows app.log / server.log live, shows full paths, auto-scrolls to the newest writes and supports one-click clearing
 
 ### Portable — data travels with you, seamless restore on another machine
-- **Account sync (dsh-connect)**: after signing in with an email code, your **start-at-login switch**, the **selected Harness version (including the prerelease channel)** and **every online plugin** follow the account across machines. Machine-specific settings (directories, ports) and local plugins (`file:` / `local`) are never uploaded. Pulled changes **never apply automatically** — the "Data sync" page keeps a persistent "restart to apply" prompt, and the button merges by "latest per key" (duplicate reports are idempotent, removals are tombstones that cannot come back). A background check runs every 20 minutes and the left nav shows a small colour-coded status (syncing / pending / failed / synced + time)
+- **Account sync (dsh-connect)**: after signing in with an email code, your **start-at-login switch**, the **selected Harness version (including the prerelease channel)** and **every online plugin** follow the account across machines. Machine-specific settings (directories, ports) and local plugins (`file:` / `local`) are never uploaded. Pulled changes **never apply automatically** — the "Data sync" page keeps a persistent "restart to apply" prompt; the button opens a progress view (per-item text + cancel) and merges by "latest per key" (duplicate reports are idempotent, removals are tombstones that cannot come back), and a failed item can be retried without redoing the rest. Until changes land, the status reads "N waiting to apply" rather than "Synced". A background check runs every 20 minutes and the left nav shows a small colour-coded status (syncing / pending / waiting to apply / failed / synced + time)
 - **Export / Import**: sessions, installed plugins and chosen file directories are bundled into a zip backup; import parses the bundle to list restorable items, prompts on conflicts with automatic backups, and pauses/restarts the background service during restore
 - **Config is data**: all configuration lives under the user directory (`config.json`), data under `~/.dsh`, and both migrate fully with the export bundle
 - **Cross-platform consistency**: same UI and same data format on Windows and macOS (design tokens in [DESIGN.md](DESIGN.md))
@@ -122,8 +122,8 @@ Run the build commands inside `src/` (the Wails project root = the directory hol
 
 | Platform | Build command (run inside `src/`) |
 | --- | --- |
-| Windows | `wails build -s -clean -platform windows/amd64 -ldflags "-X main.appVersion=v0.9.5"` |
-| macOS | `wails build -s -clean -platform darwin/universal -ldflags "-X main.appVersion=v0.9.5"` |
+| Windows | `wails build -s -clean -platform windows/amd64 -ldflags "-X main.appVersion=v0.10.0"` |
+| macOS | `wails build -s -clean -platform darwin/universal -ldflags "-X main.appVersion=v0.10.0"` |
 
 > - Output: `src/build/bin/dsh-systray.exe` (Windows) / `src/build/bin/dsh-systray.app` (macOS); the repository root keeps no build artifacts
 > - `-s`: skips the frontend build (embeds `src/frontend/dist` directly); after frontend changes simply re-run `wails build`

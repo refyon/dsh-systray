@@ -65,7 +65,7 @@ dsh-systray 是一个 Windows / macOS 系统托盘应用，围绕三个核心特
 - **日志**：「日志」页实时跟踪 app.log / server.log，显示完整路径，自动跟随最新写入，支持一键清空
 
 ### 可迁移 —— 数据随身带，换机无缝恢复
-- **账号同步（dsh-connect）**：邮箱验证码登录后，**开机自启动**、**最后选用的 Harness 版本（含预发布通道）**与**所有在线插件**随账号在多台机器间同步；本机目录、端口等环境相关配置与本地插件（`file:` / `local`）不上传。拉到的改动**不会自动生效**——设置页「数据同步」里常驻「重启生效」提示，点按钮才按「每 key 取最新」合并落地（重复上报幂等、删除是墓碑不会复活）；后台每 20 分钟自动检查一次，左侧「数据同步」项以小字彩色状态显示（同步中 / 待同步 / 同步失败 / 已同步+时间）
+- **账号同步（dsh-connect）**：邮箱验证码登录后，**开机自启动**、**最后选用的 Harness 版本（含预发布通道）**与**所有在线插件**随账号在多台机器间同步；本机目录、端口等环境相关配置与本地插件（`file:` / `local`）不上传。拉到的改动**不会自动生效**——设置页「数据同步」里常驻「重启生效」提示，点按钮进入进度视图（逐项文案 + 取消），按「每 key 取最新」合并落地（重复上报幂等、删除是墓碑不会复活）、单项失败可续做；未落地前状态显示「待生效 N 项」而非「已同步」。后台每 20 分钟自动检查一次，左侧「数据同步」项以小字彩色状态显示（同步中 / 待同步 / 待生效 / 同步失败 / 已同步+时间）
 - **导出 / 导入**：会话记录、已安装插件、自选文件目录打包为 zip 备份；导入时解析压缩包罗列可恢复项，冲突询问并自动备份，恢复期间自动暂停/重启后台服务
 - **配置即数据**：全部配置保存在用户目录（`config.json`），数据在 `~/.dsh`，随导出包完整迁移
 - **跨平台一致**：Windows / macOS 同一套界面与数据格式（设计令牌见 [DESIGN.md](DESIGN.md)）
@@ -122,8 +122,8 @@ dsh-systray 是一个 Windows / macOS 系统托盘应用，围绕三个核心特
 
 | 平台 | 构建命令（在 `src/` 下执行） |
 | --- | --- |
-| Windows | `wails build -s -clean -platform windows/amd64 -ldflags "-X main.appVersion=v0.9.5"` |
-| macOS | `wails build -s -clean -platform darwin/universal -ldflags "-X main.appVersion=v0.9.5"` |
+| Windows | `wails build -s -clean -platform windows/amd64 -ldflags "-X main.appVersion=v0.10.0"` |
+| macOS | `wails build -s -clean -platform darwin/universal -ldflags "-X main.appVersion=v0.10.0"` |
 
 > - 产物：`src/build/bin/dsh-systray.exe`（Windows）/ `src/build/bin/dsh-systray.app`（macOS），仓库根不再输出编译产物
 > - `-s`：跳过前端构建（直接内嵌 `src/frontend/dist`）；改动前端后无需其他步骤，直接重新 `wails build`

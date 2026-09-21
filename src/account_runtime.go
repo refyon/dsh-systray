@@ -27,8 +27,15 @@ type AccountStatusInfo struct {
 	SyncError    string `json:"syncError"`
 	PendingOps   int    `json:"pendingOps"`
 	// PendingApply 是否已有「拉到本机但尚未生效」的改动（前端据此常驻提示「重启生效」）。
-	PendingApply bool   `json:"pendingApply"`
-	APIBase      string `json:"apiBase"`
+	PendingApply bool `json:"pendingApply"`
+	// PendingApplyCount 待生效改动项数（前端状态行「待生效 N 项」；0 表示无待生效）。
+	PendingApplyCount int `json:"pendingApplyCount"`
+	// Applying 是否正在执行「重启生效」应用流程（进度视图进行中）。
+	Applying bool `json:"applying"`
+	// ApplyError 最近一次应用失败的说明（与 SyncError 分离：后台同步成功不会把它清掉，
+	// 避免「应用失败后下一次同步检查就把状态显示成已同步」）。
+	ApplyError string `json:"applyError"`
+	APIBase    string `json:"apiBase"`
 }
 
 // AccountCodeResult 验证码请求结果（前端据此做重发倒计时）。
@@ -42,6 +49,11 @@ var (
 	accountCur     accountState
 	accountSyncing bool
 	accountSyncErr string
+	// accountApplying 「重启生效」应用流程进行中（与后台同步/手动同步互斥）。
+	accountApplying bool
+	// accountApplyErr 最近一次应用失败说明；与 accountSyncErr 分离：
+	// 同步检查成功只清同步错误，应用失败要一直显示到下次应用成功为止。
+	accountApplyErr string
 )
 
 // initAccountState 启动时载入登录态（只读，不阻塞启动）。
@@ -76,12 +88,68 @@ func accountClearSyncError() {
 	accountMu.Unlock()
 }
 
+// accountSetApplyError 记录最近一次「重启生效」应用失败原因（不清除同步状态）。
+func accountSetApplyError(msg string) {
+	accountMu.Lock()
+	accountApplyErr = msg
+	accountMu.Unlock()
+}
+
+// accountClearApplyError 清除应用失败状态（应用全部成功时调用）。
+func accountClearApplyError() {
+	accountMu.Lock()
+	accountApplyErr = ""
+	accountMu.Unlock()
+}
+
+// accountApplyBusy 是否有「重启生效」应用流程在跑（后台同步据此让路，避免并发改写待生效集合）。
+func accountApplyBusy() bool {
+	accountMu.Lock()
+	defer accountMu.Unlock()
+	return accountApplying
+}
+
+// accountSetApplying 置位/复位应用流程标记。
+func accountSetApplying(on bool) {
+	accountMu.Lock()
+	accountApplying = on
+	accountMu.Unlock()
+}
+
+// accountSyncBusy 是否有同步检查在跑（后台 tick 与手动同步互斥用）。
+func accountSyncBusy() bool {
+	accountMu.Lock()
+	defer accountMu.Unlock()
+	return accountSyncing
+}
+
+// beginAccountSync 尝试置位「同步进行中」：已有同步或应用在跑时返回 false。
+// 后台 tick 与手动同步共用，避免两路并发拉取/改写待生效集合。
+func beginAccountSync() bool {
+	accountMu.Lock()
+	defer accountMu.Unlock()
+	if accountSyncing || accountApplying {
+		return false
+	}
+	accountSyncing = true
+	return true
+}
+
+// endAccountSync 复位「同步进行中」。
+func endAccountSync() {
+	accountMu.Lock()
+	accountSyncing = false
+	accountMu.Unlock()
+}
+
 // clearAccountRuntime 复位进程内登录态（登出与测试用）。
 func clearAccountRuntime() {
 	accountMu.Lock()
 	accountCur = accountState{}
 	accountSyncing = false
 	accountSyncErr = ""
+	accountApplying = false
+	accountApplyErr = ""
 	accountMu.Unlock()
 }
 
@@ -105,7 +173,15 @@ func accountStatusLocked() AccountStatusInfo {
 		SyncError:    accountSyncErr,
 		PendingOps:   len(accountCur.PendingOps),
 		PendingApply: accountCur.PendingApply,
-		APIBase:      accountAPIBase(),
+		PendingApplyCount: func() int {
+			if !accountCur.PendingApply {
+				return 0
+			}
+			return len(accountCur.PendingRemote)
+		}(),
+		Applying:   accountApplying,
+		ApplyError: accountApplyErr,
+		APIBase:    accountAPIBase(),
 	}
 }
 

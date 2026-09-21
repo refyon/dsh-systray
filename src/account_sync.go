@@ -14,10 +14,9 @@ import (
 	"errors"
 	"fmt"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
-
-	wruntime "github.com/wailsapp/wails/v2/pkg/runtime"
 )
 
 // accountSyncResult 一次同步检查的结果（状态页与测试断言用）。
@@ -28,6 +27,10 @@ type accountSyncResult struct {
 	Pending   []string // 待生效的 key（升序）
 	Applied   int      // 应用阶段真正执行的变更数（仅在 Apply 时非 0）
 	Unchanged int      // 与服务端一致、无需应用的 key 数
+	// Failed 应用阶段失败的 key → 原因。失败项保留在待生效集合，单项失败不中止整批。
+	Failed map[string]string
+	// Canceled 应用流程被用户取消（已应用的保留，剩余留待生效）。
+	Canceled bool
 }
 
 // accountSyncTarget 合并后某个 key 的目标值。
@@ -119,27 +122,33 @@ func profileContains(declared, want string) bool {
 var accountLocalPluginValueFn = accountLocalPluginValue
 
 // accountKeyTargetSatisfied 本机当前状态是否已满足目标值（相同则不必进入待生效集合）。
+//
+// 目标值解析失败时**不**视为已满足：这些值来自服务器，无法应用时应让用户看到
+// （进入待生效 → 应用时给出明确原因），而不是静默丢掉（2026-09-21 评估：harness
+// 版本记录一旦形态异常就被当作「已满足」，表现为「版本根本没同步」且无任何提示）。
 func accountKeyTargetSatisfied(key string, value json.RawMessage) bool {
 	switch {
 	case key == opKeyAutostart:
 		var want bool
 		if json.Unmarshal(value, &want) != nil {
-			return true // 值坏了：当作已满足，避免用非法值改系统设置
+			accountLogBadTarget(key, value)
+			return false // 值坏了：当作未满足，由应用阶段给出明确失败原因（不会真的改系统设置）
 		}
 		return isAutostartEnabled() == want
 	case key == opKeyHarnessPrerelease:
 		var want bool
 		if json.Unmarshal(value, &want) != nil {
-			return true
+			accountLogBadTarget(key, value)
+			return false
 		}
 		return harnessPrereleaseOverride == want
 	case key == opKeyHarnessVersion:
 		var want string
 		if json.Unmarshal(value, &want) != nil {
-			return true
+			accountLogBadTarget(key, value)
+			return false
 		}
-		cur := strings.TrimPrefix(installedHarnessVersion(), "v")
-		return strings.TrimPrefix(strings.TrimSpace(want), "v") == cur
+		return normalizeVersionText(want) == normalizeVersionText(installedHarnessVersion())
 	case strings.HasPrefix(key, "plugin:"):
 		profile, name, ok := splitPluginKey(key)
 		if !ok {
@@ -147,7 +156,8 @@ func accountKeyTargetSatisfied(key string, value json.RawMessage) bool {
 		}
 		var want pluginOpValue
 		if json.Unmarshal(value, &want) != nil {
-			return true
+			accountLogBadTarget(key, value)
+			return false
 		}
 		cur, installed := accountLocalPluginValueFn(profile, name)
 		if want.Action == "remove" {
@@ -156,15 +166,177 @@ func accountKeyTargetSatisfied(key string, value json.RawMessage) bool {
 		if !installed {
 			return false
 		}
-		if want.Version != "" && cur.Version != want.Version {
+		if want.Version != "" && !versionTargetSatisfied(cur.Version, want.Version) {
 			return false
 		}
-		if want.Spec != "" && cur.Spec != want.Spec {
+		if want.Spec != "" && !pluginSpecSatisfied(cur, want.Spec) {
 			return false
 		}
 		return true
 	}
 	return true
+}
+
+// accountLogBadTarget 记录目标值解析失败（不静默：便于排障与用户反馈）。
+func accountLogBadTarget(key string, value json.RawMessage) {
+	logWarn("account", "同步目标值无法解析，按未满足处理 key=%s value=%.120s", key, string(value))
+}
+
+// normalizeVersionText 归一化版本文本：去空白与前导 v / dsh- / dsh-v 前缀（循环剥离）。
+func normalizeVersionText(s string) string {
+	s = strings.TrimSpace(s)
+	for i := 0; i < 3; i++ {
+		switch {
+		case strings.HasPrefix(s, "dsh-v"), strings.HasPrefix(s, "dsh-"):
+			s = strings.TrimPrefix(strings.TrimPrefix(s, "dsh-"), "v")
+		case strings.HasPrefix(s, "v"), strings.HasPrefix(s, "V"):
+			s = s[1:]
+		default:
+			return s
+		}
+	}
+	return s
+}
+
+// normalizeSpecText 归一化依赖声明文本：去空白、大小写不敏感、github:owner/repo 与
+// https://github.com/owner/repo(.git) 视为同一来源（跨机声明写法可能不同）。
+func normalizeSpecText(s string) string {
+	s = strings.TrimSpace(s)
+	low := strings.ToLower(s)
+	for _, p := range []string{"git+https://github.com/", "https://github.com/", "git://github.com/", "github:"} {
+		if strings.HasPrefix(low, p) {
+			s = s[len(p):]
+			break
+		}
+	}
+	return strings.ToLower(strings.TrimSuffix(strings.TrimSpace(s), ".git"))
+}
+
+// pluginSpecSatisfied 本机插件是否满足服务器目标的 spec 声明：声明一致（归一化后）即满足；
+// 否则只要已装版本满足该范围也算满足（跨机可能出现 ^1.7.30 与 1.7.30 的写法差异）。
+func pluginSpecSatisfied(cur pluginOpValue, wantSpec string) bool {
+	if normalizeSpecText(cur.Spec) == normalizeSpecText(wantSpec) {
+		return true
+	}
+	return cur.Version != "" && versionTargetSatisfied(cur.Version, wantSpec)
+}
+
+// versionTargetSatisfied 已安装版本是否满足目标（精确版本 / ^ ~ 范围 / 比较符 / x 通配 / latest）。
+// 这是「同一记录被反复重装」的判定闸口：服务器记录的 Version 字段可能是范围值（如 ^1.7.30），
+// 与已装版本（1.7.30）做字符串比较必然不等（2026-09-21 现场问题）。
+func versionTargetSatisfied(installed, target string) bool {
+	ver := normalizeVersionText(installed)
+	tgt := strings.TrimSpace(target)
+	if ver == "" {
+		return false
+	}
+	if tgt == "" {
+		return true
+	}
+	for _, part := range strings.Split(tgt, "||") {
+		if versionRangeMatches(ver, strings.TrimSpace(part)) {
+			return true
+		}
+	}
+	return false
+}
+
+// versionRangeMatches 单个范围子句是否满足（|| 由调用方拆分）。
+func versionRangeMatches(ver, rng string) bool {
+	r := normalizeVersionText(rng)
+	if r == "" || r == "*" || r == "x" || strings.EqualFold(r, "latest") {
+		return true
+	}
+	switch {
+	case strings.HasPrefix(r, "^"):
+		return caretSatisfied(ver, strings.TrimPrefix(r, "^"))
+	case strings.HasPrefix(r, "~"):
+		return tildeSatisfied(ver, strings.TrimPrefix(r, "~"))
+	case strings.HasPrefix(r, ">="):
+		return compareVersions(ver, strings.TrimSpace(r[2:])) >= 0
+	case strings.HasPrefix(r, "<="):
+		return compareVersions(ver, strings.TrimSpace(r[2:])) <= 0
+	case strings.HasPrefix(r, ">"):
+		return compareVersions(ver, strings.TrimSpace(r[1:])) > 0
+	case strings.HasPrefix(r, "<"):
+		return compareVersions(ver, strings.TrimSpace(r[1:])) < 0
+	case strings.HasPrefix(r, "="):
+		return compareVersions(ver, strings.TrimSpace(r[1:])) == 0
+	}
+	if strings.ContainsAny(r, "xX*") {
+		return strings.HasPrefix(ver, wildcardPrefix(r))
+	}
+	return compareVersions(ver, r) == 0
+}
+
+// caretSatisfied ^X.Y.Z：>= X.Y.Z 且 < 下一主版本（0.x.y 时按 npm 语义 < 下一非零段）。
+func caretSatisfied(ver, base string) bool {
+	base = strings.TrimSpace(base)
+	if compareVersions(ver, base) < 0 {
+		return false
+	}
+	nums := numericPartsOf(base)
+	switch {
+	case len(nums) == 0:
+		return true
+	case nums[0] > 0:
+		return compareVersions(ver, fmt.Sprintf("%d.0.0", nums[0]+1)) < 0
+	case len(nums) == 1:
+		return compareVersions(ver, "1.0.0") < 0
+	case nums[1] > 0:
+		return compareVersions(ver, fmt.Sprintf("0.%d.0", nums[1]+1)) < 0
+	case len(nums) == 2:
+		return compareVersions(ver, "0.1.0") < 0
+	default:
+		return compareVersions(ver, fmt.Sprintf("0.0.%d", nums[2]+1)) < 0
+	}
+}
+
+// tildeSatisfied ~X.Y.Z：>= X.Y.Z 且 < X.(Y+1).0（只写主版本时 < (X+1).0.0），npm 语义。
+func tildeSatisfied(ver, base string) bool {
+	base = strings.TrimSpace(base)
+	if compareVersions(ver, base) < 0 {
+		return false
+	}
+	nums := numericPartsOf(base)
+	switch {
+	case len(nums) == 0:
+		return true
+	case len(nums) == 1:
+		return compareVersions(ver, fmt.Sprintf("%d.0.0", nums[0]+1)) < 0
+	default:
+		return compareVersions(ver, fmt.Sprintf("%d.%d.0", nums[0], nums[1]+1)) < 0
+	}
+}
+
+// wildcardPrefix 把 "1.7.x" 之类的通配范围转成前缀 "1.7."。
+func wildcardPrefix(r string) string {
+	parts := strings.Split(r, ".")
+	var out []string
+	for _, p := range parts {
+		if p == "" || p == "x" || p == "X" || p == "*" {
+			break
+		}
+		out = append(out, p)
+	}
+	if len(out) == 0 {
+		return ""
+	}
+	return strings.Join(out, ".") + "."
+}
+
+// numericPartsOf 取版本文本的数值段（非数值段截断）。
+func numericPartsOf(v string) []int {
+	num, _ := splitVersionParts(v)
+	var out []int
+	for _, p := range num {
+		n, err := strconv.Atoi(strings.TrimSpace(p))
+		if err != nil {
+			break
+		}
+		out = append(out, n)
+	}
+	return out
 }
 
 // splitPluginKey 解析 `plugin:<profile>:<name>`。
@@ -188,15 +360,33 @@ var (
 		saveCurrentConfig()
 		return nil
 	}
-	// applyHarnessVersionFn 安装指定 Harness 版本（复用重置链路：停服 → 安装 → 校验 → 重启）。
+	// applyHarnessVersionFn 安装指定 Harness 版本（复用重置链路：停服 → 全新安装 → 校验 → 重启）。
+	//
+	// 与常规页「重置服务」共用同一实现，但走**静默通道**（popup=nil）：不弹原生对话框
+	// （应用流程自带进度视图），失败以错误返回给应用循环——单项失败不阻断同批其它改动。
 	applyHarnessVersionFn = func(ver string) error {
-		if strings.TrimSpace(ver) == "" {
-			return errors.New("目标版本为空")
+		ver = normalizeVersionText(ver)
+		if ver == "" {
+			return errors.New(T("目标版本为空"))
 		}
-		prev := installedHarnessVersion()
-		runHarnessReset(false, false, ver)
-		if strings.TrimPrefix(installedHarnessVersion(), "v") == strings.TrimPrefix(prev, "v") {
-			return fmt.Errorf("安装 %s 未生效（当前仍为 %s）", ver, prev)
+		if isSourceHarnessDir() {
+			// 源码 checkout 形态不支持自动清空重装（重置链路同口径）：明确报错并保留待生效。
+			return errors.New(T("本机 Harness 为源码 checkout 形态，暂不支持自动同步版本（可在常规页手动处理）"))
+		}
+		out := runHarnessResetFlow(false, false, ver, nil)
+		if !out.OK {
+			return errors.New(out.Err)
+		}
+		if cur := normalizeVersionText(installedHarnessVersion()); cur != ver {
+			return fmt.Errorf(T("安装 %s 未生效（当前仍为 %s）"), ver, orDash(cur))
+		}
+		// harness 换版后各 profile 的插件树仍按旧 harness 解析（pnpm 的 .modules.yaml /
+		// junction / 虚拟商店都是旧一代），与「更新 Harness」流程的第 3.5 步同口径对齐——
+		// 不对齐会出现「插件装上了但 harness 加载不了」（2026-09-21 现场 DSHPREFLIGHT 实证）。
+		if dir, ok := webProfileDir(); ok {
+			if rerr := reconcileProfileDeps(dir); rerr != nil {
+				logWarn("account", "harness 换版后 profile 依赖对齐失败（已由启动校验兜底）: %v", rerr)
+			}
 		}
 		return nil
 	}
@@ -224,7 +414,7 @@ func applyKeyTarget(key string, value json.RawMessage) error {
 		if err := json.Unmarshal(value, &ver); err != nil {
 			return err
 		}
-		return applyHarnessVersionFn(strings.TrimPrefix(strings.TrimSpace(ver), "v"))
+		return applyHarnessVersionFn(normalizeVersionText(ver))
 	case strings.HasPrefix(key, "plugin:"):
 		_, name, ok := splitPluginKey(key)
 		if !ok {
@@ -313,13 +503,22 @@ func accountSyncPull(ctx context.Context, client *accountClient) (map[string]acc
 	}
 
 	merged := mergeOps(local, remote)
+	accountMu.Lock()
+	applied := make(map[string]int64, len(accountCur.AppliedSeqs))
+	for k, v := range accountCur.AppliedSeqs {
+		applied[k] = v
+	}
+	accountMu.Unlock()
 	pending := make(map[string]accountSyncTarget)
 	for key, t := range merged {
-		if !t.FromLocal && accountKeyTargetSatisfied(key, t.Value) {
-			continue // 服务器值与本机当前值一致：不必提示重启
-		}
 		if t.FromLocal {
 			continue // 本地未上报的改动不需要「应用」，只等上报
+		}
+		if t.Seq > 0 && applied[key] >= t.Seq {
+			continue // 该服务器记录已应用到本机：状态读取口径差异不该让同一记录反复重装
+		}
+		if accountKeyTargetSatisfied(key, t.Value) {
+			continue // 服务器值与本机当前值一致：不必提示重启
 		}
 		pending[key] = t
 	}
@@ -363,7 +562,9 @@ func accountSyncNow(ctx context.Context, client *accountClient) (accountSyncResu
 			return res, berr
 		}
 		if empty {
-			// 服务器为空：以本机现状上报基线（决策②），本轮无需拉取
+			// 服务器为空：以本机现状上报基线（决策②），本轮无需拉取。
+			// 基线的同步范围含 Harness 版本（collectBaselineOps）：初始化即一并上报，
+			// 后续机器才能在服务器上看到本机的「最后选用版本」。
 			n, err := accountReportBaseline(ctx, client)
 			if err != nil {
 				return res, err
@@ -373,6 +574,11 @@ func accountSyncNow(ctx context.Context, client *accountClient) (accountSyncResu
 			accountMu.Lock()
 			accountCur.BaselineDone = true
 			accountCur.LastSyncedAt = time.Now().Unix()
+			// 版本已随基线发出则记下（避免重复补报）；基线时版本尚且未知（harness 仍在
+			// 安装）则保持空，由 accountReconcileHarnessVersion 在后续同步里补报。
+			if v := normalizeVersionText(installedHarnessVersion()); v != "" {
+				accountCur.LastReportedHarnessVersion = v
+			}
 			_ = saveAccountState(accountCur)
 			accountMu.Unlock()
 			return res, nil
@@ -396,6 +602,10 @@ func accountSyncNow(ctx context.Context, client *accountClient) (accountSyncResu
 	accountCur.LastSyncedAt = time.Now().Unix()
 	_ = saveAccountState(accountCur)
 	accountMu.Unlock()
+
+	// 4) 对账本机 Harness 版本：服务器上还没有该记录（或版本在应用外变过）时补报，
+	//    保证「初始化时一并上报」不因基线时刻版本未知而落空。
+	accountReconcileHarnessVersion(ctx, client)
 	return res, nil
 }
 
@@ -476,64 +686,183 @@ func accountReportBaseline(ctx context.Context, client *accountClient) (int, err
 
 // ---------- 应用：点「重启生效」后合并并落地 ----------
 
+// applyRetryDelays 应用失败后的重试等待（首项为首次尝试）。仅「网络瞬断」类错误重试：
+// 非网络原因（版本不存在、格式非法、形态不支持）重试也不会成功，直接如实上报。
+var applyRetryDelays = []time.Duration{0, 5 * time.Second}
+
 // accountApplyPending 把待生效集合应用到本机（只处理与当前值不同的 key）。
 //
-// 顺序：设置项 → Harness 版本 → 插件（升序）。任何一项失败都会中止并保留剩余待生效集合，
-// 由用户重试；已成功应用的部分会从集合里移除。
-func accountApplyPending(ctx context.Context, client *accountClient) (accountSyncResult, error) {
+// 顺序：设置项 → Harness 版本 → 插件（升序）。逐 key 隔离：任何一项失败都**不中止整批**
+// ——失败项记入 res.Failed 并保留在待生效集合（下次同步/再点一次续做），其余项照常应用。
+// 应用成功的项立即从集合移除并记录已应用序号（进程中途退出也不会留下「已生效」假象）。
+// notify 推进度文案（可为 nil）。
+func accountApplyPending(ctx context.Context, client *accountClient, notify func(text string, pct float64)) (accountSyncResult, error) {
 	var res accountSyncResult
+	if notify == nil {
+		notify = func(string, float64) {}
+	}
 
-	// 1) 先把本地改动推上去、再拉一次最新（时间点合并：应用前对齐到服务器最新状态）
-	if _, err := accountFlushOps(ctx, client); err != nil && accountErrorCode(err) == accErrUnauthorized {
-		return res, err
+	// 1) 先把本地改动推上去、再拉一次最新（时间点合并：应用前对齐到服务器最新状态）。
+	//    网络不可用不阻断应用：按本地已保存的待生效集合继续（离线可用）。
+	if _, err := accountFlushOps(ctx, client); err != nil {
+		if accountErrorCode(err) == accErrUnauthorized {
+			return res, err
+		}
+		logWarn("account", "应用前上报失败（继续应用本地待生效集合）: %v", err)
 	}
-	pending, pulled, err := accountSyncPull(ctx, client)
-	if err == nil {
+	if pending, pulled, err := accountSyncPull(ctx, client); err == nil {
 		accountSetPendingApply(pending)
+		res.Pulled = pulled
+	} else if accountErrorCode(err) == accErrUnauthorized {
+		return res, err
+	} else {
+		logWarn("account", "应用前拉取失败（按本地待生效集合继续）: %v", err)
 	}
-	res.Pulled = pulled
 
 	// 2) 逐 key 应用（设置项优先，插件最后）
 	accountMu.Lock()
 	targets := append([]accountPendingOp(nil), accountCur.PendingRemote...)
 	accountMu.Unlock()
 	if len(targets) == 0 {
-		accountMu.Lock()
-		accountCur.PendingApply = false
-		_ = saveAccountState(accountCur)
-		accountMu.Unlock()
+		accountSetPendingApplyRemaining(nil) // 顺带把 PendingApply 复位（持锁写盘）
+		accountClearApplyError()
 		res.Pending = accountPendingKeys()
 		return res, nil
 	}
 	sort.Slice(targets, func(i, j int) bool { return accountApplyOrder(targets[i].Key) < accountApplyOrder(targets[j].Key) })
 
-	remaining := make([]accountPendingOp, 0, len(targets))
-	applied := 0
 	for i, op := range targets {
+		if ctx.Err() != nil {
+			res.Canceled = true
+			break
+		}
+		pct := float64(i) / float64(len(targets))
 		if accountKeyTargetSatisfied(op.Key, op.Value) {
 			res.Unchanged += 1
+			accountMarkApplied(op.Key, op.Seq)
 			continue
 		}
-		if err := applyKeyTarget(op.Key, op.Value); err != nil {
-			remaining = append(remaining, targets[i:]...)
-			accountSetPendingApplyRemaining(remaining)
-			accountSetSyncError(err.Error())
-			res.Applied = applied
-			return res, err
+		notify(fmt.Sprintf(T("正在应用同步改动（%d/%d）：%s"), i+1, len(targets), accountApplyLabel(op.Key)), pct)
+		if err := applyKeyTargetWithRetry(ctx, op.Key, op.Value, notify, pct); err != nil {
+			if res.Failed == nil {
+				res.Failed = map[string]string{}
+			}
+			res.Failed[op.Key] = err.Error()
+			logWarn("account", "同步改动应用失败 key=%s: %v", op.Key, err)
+			continue
 		}
-		applied += 1
+		res.Applied += 1
+		accountMarkApplied(op.Key, op.Seq)
 	}
-	res.Applied = applied
-	accountSetPendingApplyRemaining(nil)
 
-	accountMu.Lock()
-	accountCur.LastSyncedAt = time.Now().Unix()
-	accountCur.BaselineDone = true
-	accountSyncErr = ""
-	_ = saveAccountState(accountCur)
-	accountMu.Unlock()
+	// 3) 收尾：失败/取消的说明写入应用错误（与同步错误分离，直到下次应用成功才清除）
+	switch {
+	case len(res.Failed) > 0:
+		accountSetApplyError(fmt.Sprintf(T("有 %d 项同步改动应用失败：%s"), len(res.Failed), strings.Join(sortedFailureLabels(res.Failed), "、")))
+	case res.Canceled:
+		accountSetApplyError(T("应用已取消，剩余改动留待生效"))
+	default:
+		accountClearApplyError()
+	}
 	res.Pending = accountPendingKeys()
 	return res, nil
+}
+
+// sortedFailureLabels 失败 key 的界面名（升序，提示文案稳定可读）。
+func sortedFailureLabels(failed map[string]string) []string {
+	out := make([]string, 0, len(failed))
+	for k := range failed {
+		out = append(out, accountApplyLabel(k))
+	}
+	sort.Strings(out)
+	return out
+}
+
+// accountApplyLabel 待生效/失败项的界面名（进度与提示文案用）。
+func accountApplyLabel(key string) string {
+	switch key {
+	case opKeyAutostart:
+		return T("开机自启动")
+	case opKeyHarnessPrerelease:
+		return T("预发布通道")
+	case opKeyHarnessVersion:
+		return T("Harness 版本")
+	}
+	if _, name, ok := splitPluginKey(key); ok {
+		return T("插件") + " " + name
+	}
+	return key
+}
+
+// applyKeyTargetWithRetry 应用单个 key：网络瞬断类失败按 applyRetryDelays 退避重试。
+// 每次尝试都是自洽事务（插件路径自带快照/回退），失败后重试不会留下半成品。
+func applyKeyTargetWithRetry(ctx context.Context, key string, value json.RawMessage, notify func(string, float64), pct float64) error {
+	var lastErr error
+	for i, wait := range applyRetryDelays {
+		if wait > 0 {
+			notify(fmt.Sprintf(T("网络异常，%d 秒后重试（第 %d 次）…"), int(wait.Seconds()), i+1), pct)
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-time.After(wait):
+			}
+		}
+		err := applyKeyTarget(key, value)
+		if err == nil {
+			return nil
+		}
+		lastErr = err
+		if !isTransientNetworkError(err) {
+			return err
+		}
+		logWarn("account", "应用 %s 网络异常，准备重试: %v", key, err)
+	}
+	return lastErr
+}
+
+// isTransientNetworkError 失败是否属于「网络瞬断」类（值得退避重试）。
+// 覆盖 pnpm / git / HTTP 各层报错形态（2026-09-21 日志实证：git ls-remote
+// "Failed to connect to github.com port 443"、ECONNRESET、ETIMEDOUT）。
+func isTransientNetworkError(err error) bool {
+	if err == nil {
+		return false
+	}
+	s := strings.ToLower(err.Error())
+	for _, k := range []string{
+		"econnreset", "etimedout", "econnrefused", "econnaborted", "eai_again", "enotfound", "epipe",
+		"socket hang up", "unexpected eof", "failed to connect", "could not connect",
+		"connection reset", "connection refused", "network is unreachable",
+		"no such host", "temporary failure in name resolution", "i/o timeout",
+		"timeout", "timed out", "502", "503", "504", "exit status 128",
+	} {
+		if strings.Contains(s, k) {
+			return true
+		}
+	}
+	return false
+}
+
+// accountMarkApplied 记录某 key 已应用到本机：从待生效集合移除该 key、记下已应用序号并落盘。
+// 逐项落盘（而非整批结束才写）：进程在应用中途退出时，已完成的项不会被当成「还没做」。
+func accountMarkApplied(key string, seq int64) {
+	accountMu.Lock()
+	defer accountMu.Unlock()
+	out := make([]accountPendingOp, 0, len(accountCur.PendingRemote))
+	for _, op := range accountCur.PendingRemote {
+		if op.Key == key {
+			continue
+		}
+		out = append(out, op)
+	}
+	accountCur.PendingRemote = out
+	accountCur.PendingApply = len(out) > 0
+	if seq > 0 {
+		if accountCur.AppliedSeqs == nil {
+			accountCur.AppliedSeqs = map[string]int64{}
+		}
+		accountCur.AppliedSeqs[key] = seq
+	}
+	_ = saveAccountState(accountCur)
 }
 
 // accountApplyOrder 应用顺序：设置项（0-2）→ Harness 版本（3）→ 插件（4）。
@@ -562,18 +891,18 @@ func accountSetPendingApplyRemaining(ops []accountPendingOp) {
 
 // AccountSyncNow 立即做一次同步检查（登录后与后台定期都会调用；不应用任何改动）。
 func (a *App) AccountSyncNow() (AccountStatusInfo, error) {
+	if accountApplyBusy() {
+		// 应用流程进行中：两边都会改写待生效集合，直接拒绝比并发写坏状态更安全
+		return accountSnapshot(), errors.New(T("正在应用同步改动，请稍候再试"))
+	}
+	if !beginAccountSync() {
+		return accountSnapshot(), errors.New(T("正在同步，请稍候再试"))
+	}
+	defer endAccountSync()
+
 	client := newAccountClient("")
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
-
-	accountMu.Lock()
-	accountSyncing = true
-	accountMu.Unlock()
-	defer func() {
-		accountMu.Lock()
-		accountSyncing = false
-		accountMu.Unlock()
-	}()
 
 	res, err := accountSyncNow(ctx, client)
 	if err != nil {
@@ -582,31 +911,5 @@ func (a *App) AccountSyncNow() (AccountStatusInfo, error) {
 	}
 	accountClearSyncError()
 	logUI("同步检查完成", fmt.Sprintf("上报 %d 项，拉到 %d 条，待生效 %d 项", res.Uploaded, res.Pulled, len(res.Pending)))
-	return accountSnapshot(), nil
-}
-
-// AccountApplyPending 点「重启生效」：合并本地与服务器的操作记录并落地到本机。
-func (a *App) AccountApplyPending() (AccountStatusInfo, error) {
-	client := newAccountClient("")
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
-	defer cancel()
-
-	accountMu.Lock()
-	accountSyncing = true
-	accountMu.Unlock()
-	defer func() {
-		accountMu.Lock()
-		accountSyncing = false
-		accountMu.Unlock()
-	}()
-
-	res, err := accountApplyPending(ctx, client)
-	if err != nil {
-		return accountSnapshot(), errors.New(accountErrorText(err))
-	}
-	logUI("同步改动已生效", fmt.Sprintf("应用 %d 项，另有 %d 项本就一致", res.Applied, res.Unchanged))
-	if res.Applied > 0 && appCtx != nil {
-		wruntime.EventsEmit(appCtx, "plugins:changed", nil) // 关于页插件列表按新状态刷新
-	}
 	return accountSnapshot(), nil
 }

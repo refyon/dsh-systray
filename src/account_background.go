@@ -97,18 +97,21 @@ func accountVerifySession(ctx context.Context) {
 
 // accountBackgroundTick 一次后台同步检查（不应用任何改动）。
 func accountBackgroundTick(ctx context.Context) {
+	// 应用流程进行中：两边都会改写待生效集合，本轮直接跳过（应用结束后的下次 tick 自然补上）
+	if accountApplyBusy() {
+		log.Printf("[account] 后台同步跳过：正在应用同步改动")
+		return
+	}
+	if !beginAccountSync() {
+		log.Printf("[account] 后台同步跳过：已有同步在进行")
+		return
+	}
+	defer endAccountSync()
+
 	cctx, cancel := context.WithTimeout(ctx, 60*time.Second)
 	defer cancel()
 
-	accountMu.Lock()
-	accountSyncing = true
-	accountMu.Unlock()
-
 	res, err := accountSyncNow(cctx, newAccountClient(""))
-
-	accountMu.Lock()
-	accountSyncing = false
-	accountMu.Unlock()
 
 	if err != nil {
 		accountSetSyncError(accountErrorText(err))

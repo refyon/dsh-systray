@@ -170,6 +170,26 @@ var i18nEnMap = map[string]string{
 	"退出登录":             "Signed out",
 	"请求登录验证码失败":        "Failed to request the verification code",
 	"登录失败":             "Sign-in failed",
+
+	// 同步「重启生效」应用流程（进度视图 / 单项失败 / 中断自愈）
+	"正在应用同步改动…":       "Applying synced changes…",
+	"正在对齐账号同步数据…":     "Aligning account sync data…",
+	"正在应用同步改动（%d/%d）：%s": "Applying synced changes (%d/%d): %s",
+	"网络异常，%d 秒后重试（第 %d 次）…": "Network hiccup — retrying in %ds (attempt %d)…",
+	"有 %d 项同步改动应用失败：%s":   "%d synced change(s) failed to apply: %s",
+	"有 %d 项同步改动应用失败：\n· %s\n\n失败项已保留为待生效，修复网络或稍后可再点「重启生效」续做。\n\n日志：%s": "%d synced change(s) failed to apply:\n· %s\n\nThe failed items stay pending — fix the network or click “Restart to apply” again later to continue.\n\nLog: %s",
+	"应用已取消，剩余改动留待生效":                  "Apply canceled — the remaining changes stay pending",
+	"同步改动应用已取消：已生效的改动保留，剩余改动留待下次应用。": "Synced-change apply was canceled: applied items are kept and the rest stay pending.",
+	"正在应用同步改动，请稍候再试":                  "Synced changes are being applied — please try again shortly",
+	"正在同步，请稍候再试":                      "A sync is already running — please try again shortly",
+	"同步改动已是最新，无需应用":                   "Synced changes are already up to date",
+	"开机自启动":                           "Start at login",
+	"预发布通道":                           "Prerelease channel",
+	"Harness 版本":                       "Harness version",
+	"插件":                              "Plugin",
+	"目标版本为空":                          "Target version is empty",
+	"本机 Harness 为源码 checkout 形态，暂不支持自动同步版本（可在常规页手动处理）": "This machine runs Harness from a source checkout — automatic version sync is not supported (use the General page instead)",
+	"安装 %s 未生效（当前仍为 %s）":                "Installing %s did not take effect (still %s)",
 }
 
 // ghAuthPromptMsg 私有仓库插件的 GitHub 授权询问文案（gh.go 与测试共用）。

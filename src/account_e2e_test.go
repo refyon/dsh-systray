@@ -104,7 +104,7 @@ func TestAccountE2ELiveServer(t *testing.T) {
 	t.Logf("上报闭环成功：服务器可见 %s=%v（游标 %d，共 %d 条）", opKeyHarnessPrerelease, probe, page.Cursor, len(page.Ops))
 
 	// 4) 用本地策略再走一次「应用」路径的空转（待生效集合为空时不应有任何动作）
-	applied, err := accountApplyPending(ctx, client)
+	applied, err := accountApplyPending(ctx, client, nil)
 	if err != nil {
 		t.Fatalf("应用路径失败: %v", err)
 	}

@@ -82,9 +82,13 @@ func TestKeyTargetSatisfiedSettings(t *testing.T) {
 		t.Fatal("Harness 版本不同应判定为未满足")
 	}
 
-	// 坏值不应改写系统设置：视为已满足
-	if !accountKeyTargetSatisfied(opKeyAutostart, json.RawMessage(`"not-a-bool"`)) {
-		t.Fatal("非法值应视为已满足（避免用坏值改系统设置）")
+	// 坏值不得被当作「已满足」：否则同步会静默丢记录（表现为「根本没同步」且无提示）。
+	// 正确行为是进入待生效，由应用阶段给出明确失败原因（不会真的用坏值改系统设置）。
+	if accountKeyTargetSatisfied(opKeyAutostart, json.RawMessage(`"not-a-bool"`)) {
+		t.Fatal("非法值不应视为已满足（应进入待生效并给出原因）")
+	}
+	if accountKeyTargetSatisfied(opKeyHarnessVersion, json.RawMessage(`{"v":"1.0.0"}`)) {
+		t.Fatal("非字符串的版本值不应视为已满足")
 	}
 }
 
@@ -210,7 +214,7 @@ func TestApplyPendingAppliesInOrderAndClears(t *testing.T) {
 	if _, err := accountSyncNow(context.Background(), client); err != nil {
 		t.Fatalf("同步检查失败: %v", err)
 	}
-	res, err := accountApplyPending(context.Background(), client)
+	res, err := accountApplyPending(context.Background(), client, nil)
 	if err != nil {
 		t.Fatalf("应用失败: %v", err)
 	}
@@ -240,7 +244,10 @@ func TestApplyPendingAppliesInOrderAndClears(t *testing.T) {
 	}
 }
 
-func TestApplyPendingFailureKeepsRemaining(t *testing.T) {
+// TestApplyPendingFailureKeepsOthersGoing 单项失败不中止整批：
+// 失败项保留在待生效集合、其余项照常应用（2026-09-21 评估问题③：此前首个失败即中止，
+// 用户点一次「重启生效」只能推进到第一个网络失败的插件）。
+func TestApplyPendingFailureKeepsOthersGoing(t *testing.T) {
 	setupAccountTest(t)
 	setAccountState(loggedInState())
 
@@ -265,18 +272,148 @@ func TestApplyPendingFailureKeepsRemaining(t *testing.T) {
 	if _, err := accountSyncNow(context.Background(), client); err != nil {
 		t.Fatalf("同步检查失败: %v", err)
 	}
-	res, err := accountApplyPending(context.Background(), client)
-	if err == nil {
-		t.Fatal("有一项失败时应返回错误")
+	res, err := accountApplyPending(context.Background(), client, nil)
+	if err != nil {
+		t.Fatalf("单项失败不应作为整批致命错误返回: %v", err)
 	}
-	if applied != 1 || res.Applied != 1 {
-		t.Fatalf("失败前的项应已应用（autostart），实际 applied=%d res.Applied=%d", applied, res.Applied)
+	if applied != 2 || res.Applied != 2 {
+		t.Fatalf("失败项之外的改动应继续应用，实际 applied=%d res.Applied=%d", applied, res.Applied)
+	}
+	if len(res.Failed) != 1 || res.Failed[opKeyHarnessPrerelease] == "" {
+		t.Fatalf("失败项应记入 res.Failed：%+v", res.Failed)
 	}
 	keys := accountPendingKeys()
-	if len(keys) != 2 {
-		t.Fatalf("失败项与后续项应保留待生效，实际 %v", keys)
+	if len(keys) != 1 || keys[0] != opKeyHarnessPrerelease {
+		t.Fatalf("失败项应保留待生效（下次可续做），实际 %v", keys)
 	}
-	if st := accountSnapshot(); !st.PendingApply || st.SyncError == "" {
-		t.Fatalf("快照应保留重启提示与失败原因：%+v", st)
+	st := accountSnapshot()
+	if !st.PendingApply || st.ApplyError == "" {
+		t.Fatalf("快照应保留重启提示与应用失败原因：%+v", st)
+	}
+	if st.SyncError != "" {
+		t.Fatalf("应用失败不得写进同步错误（否则下次同步检查会把状态刷成「已同步」）：%+v", st)
+	}
+}
+
+// ---------- 目标值形态容错（2026-09-21 现场问题：同一记录被反复重装） ----------
+
+func TestVersionTargetSatisfied(t *testing.T) {
+	cases := []struct {
+		installed, target string
+		want              bool
+	}{
+		{"1.7.30", "^1.7.30", true}, // 服务器记录 Version 字段是范围（现场形态）
+		{"1.7.31", "^1.7.30", true}, // 范围内
+		{"2.0.0", "^1.7.30", false}, // 越界
+		{"1.7.30", "1.7.30", true},  // 精确
+		{"v1.7.30", "1.7.30", true}, // v 前缀
+		{"1.7.30", "v1.7.30", true}, // 目标带 v
+		{"1.7.30", "~1.7.0", true},  // ~ 范围
+		{"1.8.0", "~1.7.0", false},  // ~ 越界
+		{"1.7.30", ">=1.7.0", true}, // 比较符
+		{"1.6.0", ">=1.7.0", false},
+		{"1.7.30", "1.x", true},    // 通配
+		{"1.7.30", "latest", true}, // latest
+		{"1.7.30", "9.9.9", false}, // 不同版本
+		{"", "^1.7.30", false},     // 本机版本未知 → 未满足（由应用阶段给出原因）
+		{"0.2.1", "^0.2.0", true},  // 0.x 的 caret 语义
+		{"0.3.0", "^0.2.0", false},
+	}
+	for _, c := range cases {
+		if got := versionTargetSatisfied(c.installed, c.target); got != c.want {
+			t.Fatalf("versionTargetSatisfied(%q, %q) = %v，期望 %v", c.installed, c.target, got, c.want)
+		}
+	}
+}
+
+func TestPluginSpecSatisfiedToleratesSpecShape(t *testing.T) {
+	cur := pluginOpValue{Action: "update", Spec: "github:refyon/dsh-ui-taste", Source: "github", Version: "0.2.1"}
+	if !pluginSpecSatisfied(cur, "github:refyon/dsh-ui-taste") {
+		t.Fatal("声明一致应判定为满足")
+	}
+	if !pluginSpecSatisfied(cur, "https://github.com/refyon/dsh-ui-taste.git") {
+		t.Fatal("github 声明写法差异应判定为满足（归一化后同一来源）")
+	}
+	if pluginSpecSatisfied(cur, "github:refyon/other-plugin") {
+		t.Fatal("不同来源不应判定为满足")
+	}
+	// 依赖声明写法不同但已装版本满足范围：也算满足（跨机 ^1.7.30 vs 1.7.30）
+	npm := pluginOpValue{Action: "update", Spec: "1.7.30", Source: "npm", Version: "1.7.30"}
+	if !pluginSpecSatisfied(npm, "^1.7.30") {
+		t.Fatal("已装版本满足目标范围应判定为满足")
+	}
+}
+
+// TestSyncPullSkipsAppliedSeqs 已应用过的服务器记录不再进入待生效集合：
+// 本机状态读取口径与目标值形态不完全一致时，同一记录不该被反复应用（现场问题④）。
+func TestSyncPullSkipsAppliedSeqs(t *testing.T) {
+	setupAccountTest(t)
+	st := loggedInState()
+	st.AppliedSeqs = map[string]int64{opKeyHarnessVersion: 5}
+	setAccountState(st)
+
+	client, _ := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"ops":[{"seq":5,"opId":"h1","key":"setting:harness_version","value":"9.9.9-sync","deviceId":"d","updatedAt":1}],"cursor":5,"hasMore":false}`))
+	})
+	pending, _, err := accountSyncPull(context.Background(), client)
+	if err != nil {
+		t.Fatalf("拉取失败: %v", err)
+	}
+	if len(pending) != 0 {
+		t.Fatalf("已应用序号的记录不应再进入待生效：%+v", pending)
+	}
+}
+
+// TestRevalidatePendingApplyOnStartup 启动重校验：已满足/已应用序号的项丢弃，
+// 仍需应用的项保留（应用中途退出后不把半途状态当成事实）。
+func TestRevalidatePendingApplyOnStartup(t *testing.T) {
+	setupAccountTest(t)
+	oldLocal := accountLocalPluginValueFn
+	t.Cleanup(func() { accountLocalPluginValueFn = oldLocal })
+	accountLocalPluginValueFn = func(profile, name string) (pluginOpValue, bool) {
+		return pluginOpValue{Action: "update", Spec: "^1.0.0", Source: "npm", Version: "1.0.2"}, true
+	}
+
+	st := loggedInState()
+	st.PendingRemote = []accountPendingOp{
+		// 已满足（本机版本一致）→ 应丢弃
+		{Key: opKeyHarnessVersion, Value: json.RawMessage(`"` + installedHarnessVersion() + `"`), Seq: 3},
+		// 已应用序号覆盖 → 应丢弃（即使本机状态看起来不满足）
+		{Key: accountPluginKey("pkg-a"), Value: json.RawMessage(`{"action":"update","spec":"^9.0.0","version":"9.0.0"}`), Seq: 4},
+		// 仍需应用 → 应保留
+		{Key: opKeyAutostart, Value: json.RawMessage(strconv.FormatBool(!isAutostartEnabled())), Seq: 6},
+	}
+	st.AppliedSeqs = map[string]int64{accountPluginKey("pkg-a"): 4}
+	st.PendingApply = true
+	setAccountState(st)
+
+	revalidatePendingApplyOnStartup()
+
+	keys := accountPendingKeys()
+	if len(keys) != 1 || keys[0] != opKeyAutostart {
+		t.Fatalf("重校验后应只剩仍需应用的项，实际 %v", keys)
+	}
+	if st := accountSnapshot(); !st.PendingApply || st.ApplyError != "" {
+		t.Fatalf("应保留待生效提示并复位旧的应用失败原因：%+v", st)
+	}
+}
+
+// TestRevalidatePendingApplyClearsWhenAllDone 全部已满足时清空待生效（下次启动不再提示重启）。
+func TestRevalidatePendingApplyClearsWhenAllDone(t *testing.T) {
+	setupAccountTest(t)
+	st := loggedInState()
+	st.PendingRemote = []accountPendingOp{
+		{Key: opKeyHarnessVersion, Value: json.RawMessage(`"` + installedHarnessVersion() + `"`), Seq: 3},
+	}
+	st.PendingApply = true
+	setAccountState(st)
+
+	revalidatePendingApplyOnStartup()
+
+	if keys := accountPendingKeys(); len(keys) != 0 {
+		t.Fatalf("全部已满足时应清空待生效集合，实际 %v", keys)
+	}
+	if st := accountSnapshot(); st.PendingApply {
+		t.Fatal("PendingApply 应复位")
 	}
 }

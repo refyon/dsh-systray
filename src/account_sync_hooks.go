@@ -79,8 +79,8 @@ func reportSettingPrerelease(on bool) {
 // 在「更新 / 重置 Harness」流程结束时调用：与流程开始前的版本比较，只有真的变了才上报——
 // 这样不必在长流程里找成功点，失败回滚时版本未变，自然不会产生错误记录。
 func reportHarnessVersionIfChanged(prev string) {
-	cur := strings.TrimPrefix(strings.TrimSpace(installedHarnessVersion()), "v")
-	if cur == "" || cur == strings.TrimPrefix(strings.TrimSpace(prev), "v") {
+	cur := normalizeVersionText(installedHarnessVersion())
+	if cur == "" || cur == normalizeVersionText(prev) {
 		return
 	}
 	if !accountLoggedIn() {
@@ -89,8 +89,83 @@ func reportHarnessVersionIfChanged(prev string) {
 	if err := accountEnqueueOp(opKeyHarnessVersion, cur); err != nil {
 		return
 	}
+	accountRememberHarnessVersion(cur)
 	accountSyncKick()
 }
+
+// accountRememberHarnessVersion 记录「本机版本已与服务端对账」（落盘，避免重复扫描/上报）。
+func accountRememberHarnessVersion(v string) {
+	accountMu.Lock()
+	accountCur.LastReportedHarnessVersion = normalizeVersionText(v)
+	_ = saveAccountState(accountCur)
+	accountMu.Unlock()
+}
+
+// accountReconcileHarnessVersion 对账本机 Harness 版本并补齐服务器缺失的记录。
+//
+// 覆盖两种「版本不上报」的盲区（2026-09-21 评估问题②）：
+//   - 服务器上没有该 key 的记录（含首次基线时 harness 仍在安装、版本读不到）；
+//   - 版本在 dsh-systray 之外被改动（源码 checkout 切换、外部 npm 安装）。
+//
+// 不覆盖的情况：本机从未对账过，而服务器已有该 key 的记录——此时按 LWW 与「待生效」
+// 流程收敛（避免两台机器启动时互相把版本推回去）。
+func accountReconcileHarnessVersion(ctx context.Context, client *accountClient) {
+	cur := normalizeVersionText(installedHarnessVersion())
+	if cur == "" || !accountLoggedIn() {
+		return
+	}
+	accountMu.Lock()
+	prev := normalizeVersionText(accountCur.LastReportedHarnessVersion)
+	accountMu.Unlock()
+	if prev == cur {
+		return // 已对账且无变化
+	}
+	has, err := accountServerHasKey(ctx, client, opKeyHarnessVersion)
+	if err != nil {
+		return // 网络/服务端问题：留给下次同步
+	}
+	if has && prev == "" {
+		accountRememberHarnessVersion(cur) // 服务器已有记录：只记「已对账」，不覆盖他人选择
+		return
+	}
+	if err := accountEnqueueOp(opKeyHarnessVersion, cur); err != nil {
+		return
+	}
+	accountRememberHarnessVersion(cur)
+	accountSyncKick()
+	logInfo("account", "服务器缺少本机 Harness 版本记录，已补报：%s", cur)
+}
+
+// accountServerHasKey 服务器上是否存在该 key 的记录（分页扫描；用于判定「服务器还没有
+// 本机 Harness 版本记录」这一初始化补报条件）。
+func accountServerHasKey(ctx context.Context, client *accountClient, key string) (bool, error) {
+	accountMu.Lock()
+	token := accountCur.Token
+	accountMu.Unlock()
+	if token == "" {
+		return false, &accountError{Code: accErrUnauthorized, Message: "未登录"}
+	}
+	cursor := int64(0)
+	for i := 0; i < accountOpsScanMaxPages; i++ {
+		page, err := client.OpsSince(ctx, token, cursor, accountOpsPageSize)
+		if err != nil {
+			return false, err
+		}
+		for _, op := range page.Ops {
+			if op.Key == key {
+				return true, nil
+			}
+		}
+		if !page.HasMore || page.Cursor <= cursor {
+			return false, nil
+		}
+		cursor = page.Cursor
+	}
+	return false, nil
+}
+
+// accountOpsScanMaxPages 单次「按 key 扫描服务器记录」的页数上限（防御性：正常账号记录数极少）。
+const accountOpsScanMaxPages = 20
 
 // reportPluginBatchChanges 批处理结果确定后（含自愈/回退）上报成功的**在线**插件变更。
 func reportPluginBatchChanges(tasks []*pluginOpTask) {
