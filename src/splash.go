@@ -12,6 +12,9 @@ import (
 type SplashState struct {
 	Update func(text string, fraction float64)
 	Close  func()
+	// KeepWindow 收尾时不隐藏主窗口（仅同步「重启生效」应用流程置 true）：该流程要求全过程
+	// 可见，完成后停在设置页展示结果，而不是把窗口收起来（2026-09-22 用户决策）。
+	KeepWindow bool
 }
 
 // SetOnClose 设置用户关闭进度窗口时的回调（true=允许关闭并中止；false=取消关闭继续运行）。
@@ -62,20 +65,22 @@ func startSplash(text string) *SplashState {
 	if text != "" {
 		emitSplash(text, 0)
 	}
-	return &SplashState{
-		Update: func(t string, f float64) { emitSplash(t, f) },
-		Close: func() {
-			emitSplash("", 1)
-			splashActive.Store(false)
-			// 关进度视图必须同时把设置页还回来：进度视图是整块顶掉设置页显示的，而收尾事件
-			// （update:done）只有更新类流程才发——插件批量操作与「重启后台服务」此前既没有
-			// 收尾事件、又不会有 splash:progress 让前端复位，窗口就一直停在进度视图
-			//（2026-09-17 现场问题：插件更新完成后不退出重启中页面）。这里复用启动完成的
-			// splash:done 语义（前端切回设置页 + 刷新服务状态），重复发送无害。
-			notifySplashDone()
+	s := &SplashState{}
+	s.Update = func(t string, f float64) { emitSplash(t, f) }
+	s.Close = func() {
+		emitSplash("", 1)
+		splashActive.Store(false)
+		// 关进度视图必须同时把设置页还回来：进度视图是整块顶掉设置页显示的，而收尾事件
+		// （update:done）只有更新类流程才发——插件批量操作与「重启后台服务」此前既没有
+		// 收尾事件、又不会有 splash:progress 让前端复位，窗口就一直停在进度视图
+		//（2026-09-17 现场问题：插件更新完成后不退出重启中页面）。这里复用启动完成的
+		// splash:done 语义（前端切回设置页 + 刷新服务状态），重复发送无害。
+		notifySplashDone()
+		if !s.KeepWindow {
 			hideMainWindow()
-		},
+		}
 	}
+	return s
 }
 
 // splash 进度状态快照：窗口被用户关掉后再打开时按它把进度视图还原（见 replayActiveSplash）。

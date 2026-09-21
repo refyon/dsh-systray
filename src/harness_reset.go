@@ -211,6 +211,22 @@ func failResetFlow(splash *SplashState, msg string, popup func(string)) resetRes
 	return resetResult{Err: msg}
 }
 
+// resetFlowSplash 重置流程的进度视图。常规入口（popup != nil，用户点「重置服务」）自建一个并
+// 由调用方收尾；同步「重启生效」的静默通道（silent=true）若外层应用流程已有进度视图，则复用它
+// ——自建会把相位打回 startup（前端从「应用同步改动」视图切到通用启动视图、取消按钮消失），
+// 并会在 harness 步结束时关掉视图/隐藏窗口，而外层的插件步骤还在跑（2026-09-22 现场问题②：
+// harness 同步完进度窗口自动关闭、后半程进度无处可看）。
+// 返回 (进度视图, 是否由调用方负责收尾)。
+func resetFlowSplash(silent bool) (*SplashState, bool) {
+	if silent && splashActive.Load() {
+		return &SplashState{
+			Update: func(text string, pct float64) { emitSplash(text, pct) },
+			Close:  func() {}, // 收尾交给外层应用流程：它才知道整批是否做完
+		}, false
+	}
+	return startSplash(T("正在重置 DeepSeek Harness…")), true
+}
+
 // runHarnessReset 重置 DeepSeek Harness（常规页「重置服务」按钮）：带原生对话框的 UI 入口。
 // 实现见 runHarnessResetFlow；同步应用的「重启生效」走 popup=nil 的静默通道复用同一实现。
 func runHarnessReset(clearSessions, clearPlugins bool, reqTarget string) {
@@ -233,10 +249,14 @@ func runHarnessReset(clearSessions, clearPlugins bool, reqTarget string) {
 // 全部用户插件，任一成功即保留新版本；两级都失败（核心故障）才还原备份目录。
 // 异步执行（按钮触发后 go 调用）。
 func runHarnessResetFlow(clearSessions, clearPlugins bool, reqTarget string, popup func(string)) resetResult {
-	splash := startSplash(T("正在重置 DeepSeek Harness…"))
-	defer splash.Close()
-	harnessOpBusy.Store(true) // 与插件操作批处理互斥（两者都会停服 + 跑 pnpm）
-	defer harnessOpBusy.Store(false)
+	splash, ownSplash := resetFlowSplash(popup == nil)
+	if ownSplash {
+		defer splash.Close()
+	}
+	// 与插件操作批处理互斥（两者都会停服 + 跑 pnpm）。用 Swap 保留进入前的值：同步「重启生效」
+	// 的应用流程外层早已置位，内层结束时若直接 Store(false)，后半程（插件）就失去了互斥保护。
+	prevBusy := harnessOpBusy.Swap(true)
+	defer harnessOpBusy.Store(prevBusy)
 	prevVer := installedHarnessVersion()
 	// 重置结束（含失败还原）时按「版本是否真的变了」上报操作记录（选择的目标版本即"最后选用的版本"）。
 	defer reportHarnessVersionIfChanged(prevVer)
