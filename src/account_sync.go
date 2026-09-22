@@ -30,6 +30,10 @@ type accountSyncResult struct {
 	// Reenqueued 本机现状已偏离、被重新放回待生效集合的「已应用记录」项数
 	// （手工删除 .dsh / harness 目录后仍能发现漂移的依据，见 accountReenqueueDriftedApplied）。
 	Reenqueued int
+	// PluginsReported 本次对账登记/补报的本地在线插件条数（服务器上没有记录、在托盘外升高了
+	// 版本、或已删除后又装回来的插件，见 accountReconcileLocalPlugins）。登记后本次同步的上报
+	// 阶段即送出，因此统计的是「本次登记」而非「本次送达」。
+	PluginsReported int
 	// Failed 应用阶段失败的 key → 原因。失败项保留在待生效集合，单项失败不中止整批。
 	Failed map[string]string
 	// Canceled 应用流程被用户取消（已应用的保留，剩余留待生效）。
@@ -632,9 +636,11 @@ func accountSyncNow(ctx context.Context, client *accountClient) (accountSyncResu
 	_ = saveAccountState(accountCur)
 	accountMu.Unlock()
 
-	// 4) 对账本机 Harness 版本：服务器上还没有该记录（或版本在应用外变过）时补报，
-	//    保证「初始化时一并上报」不因基线时刻版本未知而落空。
+	// 4) 对账本机 Harness 版本与本地在线插件：服务器上还没有该记录（或版本在应用外变过）时补报，
+	//    保证「初始化时一并上报」不因基线时刻版本未知而落空（插件对账另见 accountReconcileLocalPlugins：
+	//    用 npm / pnpm 直接装的插件不会经过托盘，不补报就永远进不了账号记录）。
 	accountReconcileHarnessVersion(ctx, client)
+	res.PluginsReported = accountReconcileLocalPlugins(ctx, client)
 	return res, nil
 }
 
@@ -1065,6 +1071,6 @@ func (a *App) AccountSyncNow() (AccountStatusInfo, error) {
 		return accountSnapshot(), errors.New(accountErrorText(err))
 	}
 	accountClearSyncError()
-	logUI("同步检查完成", fmt.Sprintf("上报 %d 项，拉到 %d 条，待生效 %d 项，重入队 %d 项", res.Uploaded, res.Pulled, len(res.Pending), res.Reenqueued))
+	logUI("同步检查完成", fmt.Sprintf("上报 %d 项，拉到 %d 条，待生效 %d 项，重入队 %d 项，插件补报 %d 项", res.Uploaded, res.Pulled, len(res.Pending), res.Reenqueued, res.PluginsReported))
 	return accountSnapshot(), nil
 }

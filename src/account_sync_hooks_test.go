@@ -3,9 +3,11 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -238,6 +240,238 @@ func TestReportSettingHooks(t *testing.T) {
 	op, _ = pendingByKey(t, opKeyHarnessPrerelease)
 	if string(op.Value) != "false" {
 		t.Fatalf("同 key 应保留最新值 false，实际 %s", op.Value)
+	}
+}
+
+// ---------- 本地插件对账补报 ----------
+
+// stubLocalPlugins 替换本机插件快照（不触碰真实 dshHome），测试结束还原。
+func stubLocalPlugins(t *testing.T, plugins ...accountLocalPlugin) {
+	t.Helper()
+	old := accountLocalPluginsSnapshotFn
+	m := map[string]accountLocalPlugin{}
+	for _, p := range plugins {
+		m[p.Name] = p
+	}
+	accountLocalPluginsSnapshotFn = func() map[string]accountLocalPlugin { return m }
+	t.Cleanup(func() { accountLocalPluginsSnapshotFn = old })
+}
+
+// captureFakeOpsServer 在 fakeOpsServer 之外额外记录上报请求体（断言「补报真的送到了服务器」用）。
+func captureFakeOpsServer(t *testing.T, ops []testOp) (*accountClient, *[]map[string]any) {
+	t.Helper()
+	var reports []map[string]any
+	client, _ := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/ops/since":
+			_, _ = w.Write([]byte(opsSinceBody(ops, 0)))
+		case "/v1/ops/report":
+			reports = append(reports, readJSONBody(t, r))
+			_, _ = w.Write([]byte(`{"accepted":1,"duplicates":0,"cursor":100}`))
+		default:
+			t.Errorf("未预期路径: %s", r.URL.Path)
+			w.WriteHeader(http.StatusNotFound)
+		}
+	})
+	return client, &reports
+}
+
+// opsServerWithUpdatedAt 假服务器：单条记录、可指定 updatedAt（时间戳判定用例要用真实秒数）。
+func opsServerWithUpdatedAt(t *testing.T, key, value string, seq, updatedAt int64) *accountClient {
+	t.Helper()
+	client, _ := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/ops/since" {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		_, _ = w.Write([]byte(fmt.Sprintf(
+			`{"ops":[{"seq":%d,"opId":"o-%d","key":%q,"value":%s,"deviceId":"other","updatedAt":%d}],"cursor":%d,"hasMore":false}`,
+			seq, seq, key, value, updatedAt, seq)))
+	})
+	return client
+}
+
+// opsSinceBody 拼 /v1/ops/since 的响应体（测试记录默认 updatedAt=1：时间戳判定单独用上面的服务器）。
+func opsSinceBody(ops []testOp, updatedAt int64) string {
+	var out []string
+	maxSeq := int64(0)
+	for _, op := range ops {
+		out = append(out, fmt.Sprintf(
+			`{"seq":%d,"opId":"op-%d","key":%q,"value":%s,"deviceId":"other","updatedAt":%d}`,
+			op.seq, op.seq, op.key, op.value, updatedAt))
+		if op.seq > maxSeq {
+			maxSeq = op.seq
+		}
+	}
+	return fmt.Sprintf(`{"ops":[%s],"cursor":%d,"hasMore":false}`, strings.Join(out, ","), maxSeq)
+}
+
+// runPluginReconcile 跑一次插件对账并返回补报条数（上报入口指向死地址：只验证登记，不触网）。
+func runPluginReconcile(t *testing.T, ops []testOp, local ...accountLocalPlugin) int {
+	t.Helper()
+	setupAccountTest(t)
+	setAccountAPIBase("http://127.0.0.1:1")
+	setAccountState(loggedInState())
+	stubLocalPlugins(t, local...)
+	return accountReconcileLocalPlugins(context.Background(), fakeOpsServer(t, ops, 0))
+}
+
+// pendingPluginValue 读取队列中某插件的目标值。
+func pendingPluginValue(t *testing.T, name string) (pluginOpValue, bool) {
+	t.Helper()
+	op, ok := pendingByKey(t, accountPluginKey(name))
+	if !ok {
+		return pluginOpValue{}, false
+	}
+	var v pluginOpValue
+	if err := json.Unmarshal(op.Value, &v); err != nil {
+		t.Fatalf("value 不是合法 JSON: %v (%s)", err, op.Value)
+	}
+	return v, true
+}
+
+// TestReconcileLocalPluginsReportsMissingRecord 账号上完全没有该插件的记录时补报
+// （托盘外 npm/pnpm 直接安装的主盲区：不补报，其它机器点多少次「立即同步」都是 0 条）。
+func TestReconcileLocalPluginsReportsMissingRecord(t *testing.T) {
+	lp := accountLocalPlugin{Name: "dsh-code-index", Spec: "^1.0.0", Source: "npm", Version: "1.0.3", InstalledAt: 2000}
+	if n := runPluginReconcile(t, nil, lp); n != 1 {
+		t.Fatalf("账号无记录应补报 1 条，实际 %d", n)
+	}
+	v, ok := pendingPluginValue(t, "dsh-code-index")
+	if !ok {
+		t.Fatal("缺少补报记录")
+	}
+	if v.Action != "install" || v.Spec != "^1.0.0" || v.Source != "npm" || v.Version != "1.0.3" {
+		t.Fatalf("补报字段错误: %+v", v)
+	}
+}
+
+// TestReconcileLocalPluginsSkipsExistingRecord 账号上已有同版本记录（含本机自己此前上报的）时不重复补报。
+func TestReconcileLocalPluginsSkipsExistingRecord(t *testing.T) {
+	ops := []testOp{{seq: 9, key: accountPluginKey("pkg-a"),
+		value: `{"action":"update","spec":"^1.0.0","source":"npm","version":"1.0.3"}`}}
+	lp := accountLocalPlugin{Name: "pkg-a", Spec: "^1.0.0", Source: "npm", Version: "1.0.3", InstalledAt: 2000}
+	if n := runPluginReconcile(t, ops, lp); n != 0 {
+		t.Fatalf("账号已有同版本记录不应补报，实际 %d", n)
+	}
+}
+
+// TestReconcileLocalPluginsSkipsOldInstallAfterRemoteRemove 服务器最新记录是**删除**且删除时间
+// 晚于本机安装时间：本机这个是删除前的旧安装，删除方胜，不把它装回来（墓碑不复活）。
+func TestReconcileLocalPluginsSkipsOldInstallAfterRemoteRemove(t *testing.T) {
+	setupAccountTest(t)
+	setAccountAPIBase("http://127.0.0.1:1")
+	setAccountState(loggedInState())
+	stubLocalPlugins(t, accountLocalPlugin{Name: "pkg-a", Spec: "^1.0.0", Source: "npm", Version: "1.0.3", InstalledAt: 2000})
+	client := opsServerWithUpdatedAt(t, accountPluginKey("pkg-a"), `{"action":"remove"}`, 20, 3000)
+
+	if n := accountReconcileLocalPlugins(context.Background(), client); n != 0 {
+		t.Fatalf("删除记录晚于本机安装时间：不应补报，实际 %d 条", n)
+	}
+}
+
+// TestReconcileLocalPluginsReportsLaterInstall 删除记录之后本机又装回来：补报（本机装得更晚）。
+func TestReconcileLocalPluginsReportsLaterInstall(t *testing.T) {
+	setupAccountTest(t)
+	setAccountAPIBase("http://127.0.0.1:1")
+	setAccountState(loggedInState())
+	stubLocalPlugins(t, accountLocalPlugin{Name: "pkg-a", Spec: "^1.0.0", Source: "npm", Version: "1.0.3", InstalledAt: 3000})
+	client := opsServerWithUpdatedAt(t, accountPluginKey("pkg-a"), `{"action":"remove"}`, 20, 2000)
+
+	if n := accountReconcileLocalPlugins(context.Background(), client); n != 1 {
+		t.Fatalf("本机安装晚于删除记录应补报 1 条，实际 %d", n)
+	}
+	if v, _ := pendingPluginValue(t, "pkg-a"); v.Action != "install" {
+		t.Fatalf("删后重装应报 action=install，实际 %+v", v)
+	}
+}
+
+// TestReconcileLocalPluginsReportsUpgrade 托盘外把插件升到更高版本：补报（与 Harness 版本同口径）。
+func TestReconcileLocalPluginsReportsUpgrade(t *testing.T) {
+	ops := []testOp{{seq: 9, key: accountPluginKey("pkg-a"),
+		value: `{"action":"update","spec":"^1.0.0","source":"npm","version":"1.0.3"}`}}
+	lp := accountLocalPlugin{Name: "pkg-a", Spec: "^1.0.0", Source: "npm", Version: "1.0.5", InstalledAt: 2000}
+	if n := runPluginReconcile(t, ops, lp); n != 1 {
+		t.Fatalf("本机版本更高应补报 1 条，实际 %d", n)
+	}
+	if v, _ := pendingPluginValue(t, "pkg-a"); v.Action != "update" || v.Version != "1.0.5" {
+		t.Fatalf("升级补报字段错误: %+v", v)
+	}
+}
+
+// TestReconcileLocalPluginsSkipsDowngrade 本机版本低于账号记录（意外回退）时不覆盖账号记录。
+func TestReconcileLocalPluginsSkipsDowngrade(t *testing.T) {
+	ops := []testOp{{seq: 9, key: accountPluginKey("pkg-a"),
+		value: `{"action":"update","spec":"^1.0.0","source":"npm","version":"1.0.5"}`}}
+	lp := accountLocalPlugin{Name: "pkg-a", Spec: "^1.0.0", Source: "npm", Version: "1.0.3", InstalledAt: 2000}
+	if n := runPluginReconcile(t, ops, lp); n != 0 {
+		t.Fatalf("版本回退不应补报（会覆盖账号记录），实际 %d 条", n)
+	}
+}
+
+// TestReconcileLocalPluginsNotLoggedIn 未登录时不动（连服务器都不该查）。
+func TestReconcileLocalPluginsNotLoggedIn(t *testing.T) {
+	setupAccountTest(t)
+	setAccountAPIBase("http://127.0.0.1:1")
+	setAccountState(accountState{})
+	stubLocalPlugins(t, accountLocalPlugin{Name: "pkg-a", Spec: "^1.0.0", Source: "npm", Version: "1.0.3", InstalledAt: 2000})
+	if n := accountReconcileLocalPlugins(context.Background(), fakeOpsServer(t, nil, 0)); n != 0 {
+		t.Fatalf("未登录不应补报，实际 %d", n)
+	}
+	if n := accountPendingCount(); n != 0 {
+		t.Fatalf("未登录不应产生本地残队，实际 %d", n)
+	}
+}
+
+// TestReconcileLocalPluginsPendingNotDuplicated 已有待上报记录（本次同步前半程刚补报过）时不重复登记。
+func TestReconcileLocalPluginsPendingNotDuplicated(t *testing.T) {
+	// 同步流程内的形态：上报阶段已登记 → 对账阶段看到队列里已有同 key 记录，不再登记（但算作本次补报）
+	setupAccountTest(t)
+	setAccountAPIBase("http://127.0.0.1:1")
+	setAccountState(loggedInState())
+	stubLocalPlugins(t, accountLocalPlugin{Name: "pkg-a", Spec: "^1.0.0", Source: "npm", Version: "1.0.3", InstalledAt: 2000})
+	if err := accountEnqueueOp(accountPluginKey("pkg-a"),
+		pluginOpValue{Action: "install", Spec: "^1.0.0", Source: "npm", Version: "1.0.3"}); err != nil {
+		t.Fatalf("预置待上报记录失败: %v", err)
+	}
+
+	before := accountPendingCount()
+	if n := accountReconcileLocalPlugins(context.Background(), fakeOpsServer(t, nil, 0)); n != 1 {
+		t.Fatalf("队列里已有该插件记录：应算作本次补报 1 条，实际 %d", n)
+	}
+	if after := accountPendingCount(); after != before {
+		t.Fatalf("不应重复登记：before=%d after=%d", before, after)
+	}
+}
+
+// TestReconcileLocalPluginsUploadsToServer 补报的记录经一次同步送到服务器（请求体含该插件记录）。
+func TestReconcileLocalPluginsUploadsToServer(t *testing.T) {
+	setupAccountTest(t)
+	st := loggedInState()
+	st.BaselineDone, st.Cursor = true, 5 // 已完成首次同步：跳过基线分支，走「拉取 + 对账」
+	setAccountState(st)
+	stubLocalPlugins(t, accountLocalPlugin{Name: "dsh-code-index", Spec: "^1.0.0", Source: "npm", Version: "1.0.3", InstalledAt: 2000})
+	client, reports := captureFakeOpsServer(t, nil)
+	setAccountAPIBase(client.base) // 异步上报走同一个假服务器（生产用默认域名）
+
+	res, err := accountSyncNow(context.Background(), client)
+	waitAccountSync()
+	if err != nil {
+		t.Fatalf("同步检查失败: %v", err)
+	}
+	if res.PluginsReported != 1 {
+		t.Fatalf("应补报 1 个插件，实际 %d（res=%+v）", res.PluginsReported, res)
+	}
+	if len(*reports) == 0 {
+		t.Fatal("没有向服务器上报任何记录")
+	}
+	ops, _ := (*reports)[0]["ops"].([]any)
+	if len(ops) != 1 {
+		t.Fatalf("应上报 1 条记录，实际 %d（%v）", len(ops), (*reports)[0])
+	}
+	rec, _ := ops[0].(map[string]any)
+	if rec["key"] != "plugin:web:dsh-code-index" {
+		t.Fatalf("上报 key 错误: %v", rec["key"])
 	}
 }
 
