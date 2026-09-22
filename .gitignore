@@ -17,6 +17,9 @@ plugin-update.log
 Thumbs.db
 .DS_Store
 
+# 插件生成的本机索引目录（dsh-code-index 等，根目录下的 .*index/）
+/.*index/
+
 # 图标/网站预览物料（不提交）
 docs/preview*.png
 
