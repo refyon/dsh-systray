@@ -35,7 +35,12 @@ type AccountStatusInfo struct {
 	// ApplyError 最近一次应用失败的说明（与 SyncError 分离：后台同步成功不会把它清掉，
 	// 避免「应用失败后下一次同步检查就把状态显示成已同步」）。
 	ApplyError string `json:"applyError"`
-	APIBase    string `json:"apiBase"`
+	// StartupChecked 本会话是否已做过启动同步检查（启动即做一次；完成后为 true）。
+	// 界面据此把「尚未检查」与「已同步」区分开：检查完成前显示「正在检查同步…」，
+	// 不能因为上一会话留下的 lastSyncedAt 就显示绿色「已同步」——那条记录可能早已
+	// 落后于服务器（2026-09-22 现场：启动显示已同步，手点同步才弹出「重启生效」）。
+	StartupChecked bool   `json:"startupChecked"`
+	APIBase        string `json:"apiBase"`
 }
 
 // AccountCodeResult 验证码请求结果（前端据此做重发倒计时）。
@@ -54,6 +59,9 @@ var (
 	// accountApplyErr 最近一次应用失败说明；与 accountSyncErr 分离：
 	// 同步检查成功只清同步错误，应用失败要一直显示到下次应用成功为止。
 	accountApplyErr string
+	// accountStartupChecked 本会话是否已做过启动同步检查（托盘每次启动重置为 false，
+	// 由启动检查或手动「立即同步」置位；见 AccountStatusInfo.StartupChecked）。
+	accountStartupChecked bool
 )
 
 // initAccountState 启动时载入登录态（只读，不阻塞启动）。
@@ -150,6 +158,7 @@ func clearAccountRuntime() {
 	accountSyncErr = ""
 	accountApplying = false
 	accountApplyErr = ""
+	accountStartupChecked = false
 	accountMu.Unlock()
 }
 
@@ -179,10 +188,18 @@ func accountStatusLocked() AccountStatusInfo {
 			}
 			return len(accountCur.PendingRemote)
 		}(),
-		Applying:   accountApplying,
-		ApplyError: accountApplyErr,
-		APIBase:    accountAPIBase(),
+		Applying:       accountApplying,
+		ApplyError:     accountApplyErr,
+		StartupChecked: accountStartupChecked,
+		APIBase:        accountAPIBase(),
 	}
+}
+
+// accountMarkStartupChecked 标记「本会话已做过启动同步检查」（手动同步成功同样算已检查）。
+func accountMarkStartupChecked() {
+	accountMu.Lock()
+	accountStartupChecked = true
+	accountMu.Unlock()
 }
 
 // accountDeviceSelf 上报给服务端的设备信息（不采集硬件 UUID）。

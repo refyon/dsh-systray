@@ -1066,6 +1066,11 @@ func (a *App) AccountSyncNow() (AccountStatusInfo, error) {
 	defer cancel()
 
 	res, err := accountSyncNow(ctx, client)
+	// 手动同步成功同样算「本会话已检查」：用户在启动检查之前手点同步后，状态行应立刻
+	// 按本次结果渲染，不能继续显示「正在检查同步…」。
+	if err == nil {
+		accountMarkStartupChecked()
+	}
 	if err != nil {
 		accountSetSyncError(accountErrorText(err))
 		return accountSnapshot(), errors.New(accountErrorText(err))

@@ -281,6 +281,7 @@ const I18N_DYN = {
   "待同步 {0} 项": "{0} pending",
   "同步失败": "Sync failed",
   "已登录，尚未同步": "Signed in — not synced yet",
+  "正在检查同步…": "Checking sync…",
   "已同步 · 最后同步 {0}": "Synced · last {0}",
   "同步失败：{0}": "Sync failed: {0}",
   "请先填写邮箱": "Enter your email first",
@@ -2215,6 +2216,9 @@ function syncStatusView(st) {
   // 有待生效改动时**不能**说「已同步」：改动还没落到本机，点「重启生效」才应用（问题⑥）
   if (st.pendingApply) return { text: applyPendingText(st), cls: "sync-state-pending" };
   if (st.applyError) return { text: fmt("上次应用失败：{0}", st.applyError), cls: "sync-state-error" };
+  // 本会话还没检查过：account.json 里的 lastSyncedAt 是上一会话留下的，不能据此显示
+  // 「已同步」——服务器上可能已有本机没拉到的记录（启动即检查，检查完成前显示检查中）
+  if (!st.startupChecked) return { text: tr("正在检查同步…"), cls: "sync-state-busy" };
   if (st.lastSyncedAt > 0) return { text: fmt("已同步 · 最后同步 {0}", syncFmtTime(st.lastSyncedAt)), cls: "sync-state-ok" };
   return { text: tr("已登录，尚未同步"), cls: "" };
 }
@@ -2237,6 +2241,7 @@ function renderSyncNavStatus(st) {
     else if (st.syncError) { cls += " is-error"; text = tr("同步失败"); }
     else if (st.pendingOps > 0) { cls += " is-pending"; text = fmt("待同步 {0} 项", st.pendingOps); }
     else if (st.pendingApply) { cls += " is-pending"; text = st.pendingApplyCount > 0 ? fmt("待生效 {0} 项", st.pendingApplyCount) : tr("待生效"); }
+    else if (!st.startupChecked) { cls += " is-syncing"; text = tr("正在检查同步…"); }
     else if (st.lastSyncedAt > 0) { cls += " is-ok"; text = tr("已同步"); }
     else { text = tr("已登录，尚未同步"); }
   }

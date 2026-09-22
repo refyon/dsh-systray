@@ -19,8 +19,14 @@ import (
 const (
 	// accountSyncInterval 后台定期同步周期（用户决策：20 分钟）。
 	accountSyncInterval = 20 * time.Minute
-	// accountStartupGrace 启动后首次后台检查的延迟：等托盘与服务编排先就位。
-	accountStartupGrace = 20 * time.Second
+	// accountStartupGrace 启动后首次同步检查的延迟：只等托盘与界面就位。
+	//
+	// 不能等太久：这段时间里界面还没有本次会话的同步结果，而 account.json 里的
+	// lastSyncedAt 是**上一会话**留下的——旧值会让状态行显示绿色「已同步」，而服务器上
+	// 可能早已有本机没拉到的记录（2026-09-22 现场：启动显示已同步，手点「立即同步」
+	// 才弹出「重启生效」）。首次检查本身只读本机文件 + 一次网络请求，与服务启动无依赖，
+	// 因此这里只留够界面就绪的时间；等待期间界面显示「正在检查同步…」。
+	accountStartupGrace = 5 * time.Second
 )
 
 // startAccountBackground 启动后台循环（由 onStartup 调用；截图模式与绑定生成进程不启动）。
@@ -38,7 +44,7 @@ func startAccountBackground(ctx context.Context) {
 		if accountLoggedIn() {
 			accountVerifySession(ctx)
 			if accountLoggedIn() { // 校验可能因令牌失效而清空登录态
-				accountBackgroundTick(ctx)
+				accountBackgroundTick(ctx) // 内部无论成败都会标记「本会话已检查」
 			}
 		}
 		ticker := time.NewTicker(accountSyncInterval)
@@ -112,6 +118,10 @@ func accountBackgroundTick(ctx context.Context) {
 	defer cancel()
 
 	res, err := accountSyncNow(cctx, newAccountClient(""))
+
+	// 本次会话已经检查过（无论成败）：界面据此把「尚未检查」与「已同步」分开显示
+	// （失败会走 SyncError 分支，不会因为标记了已检查就显示成绿色）。
+	accountMarkStartupChecked()
 
 	if err != nil {
 		accountSetSyncError(accountErrorText(err))
