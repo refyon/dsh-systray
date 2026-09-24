@@ -1,4 +1,4 @@
-﻿﻿# 构建 dsh-systray.exe（Wails 规范构建：自动嵌入 src/build/windows/icon.ico 图标资源 + production 标签）
+﻿# 构建 dsh-systray.exe（Wails 规范构建：自动嵌入 src/build/windows/icon.ico 图标资源 + production 标签）
 # 注意：必须用 wails build（不能 go build）——纯 go build 会命中 Wails 错误桩并丢失 exe/窗口图标。
 # Go 模块、wails.json、build/、frontend/ 都在 src\（Wails 项目根，见仓库整理），
 # 因此 wails 命令一律在 src\ 下执行；编译产物留在 src\build\bin\，仓库根不再放编译产物。
