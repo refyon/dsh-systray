@@ -57,6 +57,10 @@ func accountStateDirValue() string {
 type appliedRecord struct {
 	Seq   int64           `json:"seq"`
 	Value json.RawMessage `json:"value"`
+	// UpdatedAt 该记录在服务器上的写入时间（Unix 秒）：判定「本机更晚的安装是否已盖过这条
+	// 删除墓碑」的权威时间（见 accountKeyTargetSatisfiedAt）。旧版本写入的记录缺该字段，
+	// 读到 0 表示时间未知——此时不按时间判定，行为与旧版一致，下一次拉到该记录即补齐。
+	UpdatedAt int64 `json:"updatedAt,omitempty"`
 }
 
 // accountState 登录态与同步进度（account.json）。
@@ -121,6 +125,9 @@ type accountPendingOp struct {
 	// Seq 服务器序号（历史遗留字段：本地队列为 0，待生效集合记录来源记录的序号，
 	// 用于把同步游标停在未应用记录之前）。
 	Seq int64 `json:"seq,omitempty"`
+	// UpdatedAt 来源记录在服务器上的写入时间（Unix 秒；本地队列项为 0）。
+	// 与 Seq 一起用于判定这条待生效记录是否已被本机更晚的安装盖过（删除墓碑场景）。
+	UpdatedAt int64 `json:"updatedAt,omitempty"`
 }
 
 // accountStatePath account.json 路径（与 config.json 同目录）。

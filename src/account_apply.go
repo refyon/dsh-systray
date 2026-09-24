@@ -220,7 +220,7 @@ func revalidatePendingApplyOnStartup() {
 	for _, op := range pending {
 		// 判定只看本机当前状态：已应用序号只作参考——本机被重置（删除 .dsh / harness
 		// 目录）后该序号不代表改动仍生效，必须保留待生效（2026-09-22 现场问题①）。
-		if accountKeyTargetSatisfied(op.Key, op.Value) {
+		if accountKeyTargetSatisfiedAt(op.Key, op.Value, op.UpdatedAt) {
 			if op.Seq > 0 {
 				applied[op.Key] = op.Seq
 			}

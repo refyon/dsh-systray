@@ -122,6 +122,31 @@ func TestKeyTargetSatisfiedPlugins(t *testing.T) {
 	}
 }
 
+// TestKeyTargetSatisfiedRemoveUsesTimestamp 删除墓碑的时间戳判据（2026-09-24 现场修复）：
+// 本机装着时，只有「本机安装时间晚于该墓碑的写入时间」才算已满足（墓碑已被更晚的安装盖过，
+// 本机是删掉后又装回来的）；安装更早或时间未知时保守视为未满足（删除方胜）。
+func TestKeyTargetSatisfiedRemoveUsesTimestamp(t *testing.T) {
+	oldVal, oldTime := accountLocalPluginValueFn, accountLocalPluginInstallTimeForFn
+	t.Cleanup(func() { accountLocalPluginValueFn, accountLocalPluginInstallTimeForFn = oldVal, oldTime })
+	accountLocalPluginValueFn = func(profile, name string) (pluginOpValue, bool) {
+		return pluginOpValue{Action: "update", Spec: "^1.7.35", Source: "npm", Version: "1.7.35"}, true
+	}
+	accountLocalPluginInstallTimeForFn = func(profile, name string) int64 { return 3000 }
+
+	key := accountPluginKey("dsh-cost-meter")
+	remove := json.RawMessage(`{"action":"remove","spec":"^1.7.35","source":"npm","version":""}`)
+
+	if !accountKeyTargetSatisfiedAt(key, remove, 2000) {
+		t.Fatal("本机安装（3000）晚于删除墓碑（2000）：应视为已满足（墓碑已被盖过）")
+	}
+	if accountKeyTargetSatisfiedAt(key, remove, 4000) {
+		t.Fatal("本机安装（3000）早于删除墓碑（4000）：不应视为已满足（删除方胜）")
+	}
+	if accountKeyTargetSatisfiedAt(key, remove, 0) {
+		t.Fatal("墓碑写入时间未知时应保守视为未满足")
+	}
+}
+
 // ---------- 拉取：游标不能越过未应用的记录 ----------
 
 func TestSyncPullKeepsCursorBeforePending(t *testing.T) {
@@ -607,7 +632,7 @@ func TestAppliedValsPersistAcrossReload(t *testing.T) {
 	setAccountState(loggedInState())
 	key := accountPluginKey("pkg-a")
 	val := json.RawMessage(`{"action":"update","spec":"^1.0.0","source":"npm","version":"1.0.2"}`)
-	accountMarkApplied(key, val, 9)
+	accountMarkApplied(key, val, 9, 1700000000)
 
 	loaded := loadAccountState()
 	rec, ok := loaded.AppliedVals[key]

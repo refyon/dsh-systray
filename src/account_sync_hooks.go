@@ -235,6 +235,25 @@ func accountLocalPluginInstallTime(dirs []string, name string) int64 {
 	return 0
 }
 
+// accountLocalPluginInstallTimeFor 按 profile + 插件名查本机安装时间（口径与
+// accountLocalPluginsSnapshot 一致）：找不到该插件（未装 / 非在线来源）返回 0。
+// 供「删除墓碑是否已被本机更晚的安装盖过」判定使用（见 accountKeyTargetSatisfiedAt）。
+func accountLocalPluginInstallTimeFor(profile, name string) int64 {
+	for _, row := range buildPluginRows() {
+		if row.Name != name {
+			continue
+		}
+		if profile != "" && !profileContains(row.Profile, profile) {
+			continue
+		}
+		if !isOnlinePluginSource(row.Source) {
+			continue
+		}
+		return accountLocalPluginInstallTime(row.Locs, row.Name)
+	}
+	return 0
+}
+
 // accountLocalPluginsSnapshot 本机参与同步的在线插件快照（只含已生效、未处于待应用变更的插件）。
 func accountLocalPluginsSnapshot() map[string]accountLocalPlugin {
 	marks := pluginPendingMarks()
@@ -404,14 +423,17 @@ func reportPluginBatchChanges(tasks []*pluginOpTask) {
 		if t == nil || !t.ok || t.recordOnly {
 			continue
 		}
-		if t.op != "update" && t.op != "remove" { // enable 只改本地激活状态，不在同步范围
+		// enable 只改本地激活状态，不在同步范围。install 由托盘安装动作产生：此前被跳过，
+		// 于是「托盘内重装」没有自己的上报通道，只能等对账兜底——而对账一旦被待生效集合挡住
+		// 就永远补不上去（2026-09-24 现场：重装 dsh-cost-meter 后账号记录始终停在 remove 墓碑）。
+		if t.op != "install" && t.op != "update" && t.op != "remove" {
 			continue
 		}
 		if !isOnlinePluginSource(t.row.Source) {
 			continue
 		}
 		val := pluginOpValue{Action: t.op, Spec: t.row.Spec, Source: t.row.Source}
-		if t.op == "update" {
+		if t.op == "install" || t.op == "update" {
 			val.Version = t.newVer
 			if val.Version == "" {
 				val.Version = t.target

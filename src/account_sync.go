@@ -46,6 +46,9 @@ type accountSyncTarget struct {
 	Value     json.RawMessage
 	Seq       int64 // 服务器序号；0 = 来自本地未上报队列
 	FromLocal bool
+	// UpdatedAt 服务器写入时间（Unix 秒；本地队列项为 0）：与 Seq 一起供本机现状重判使用
+	// （见 accountKeyTargetSatisfiedAt）。
+	UpdatedAt int64
 }
 
 // accountSyncKeySupported 是否属于同步范围（只同步 web profile 的在线插件 + 三个设置项）。
@@ -78,7 +81,7 @@ func mergeOps(local []accountPendingOp, remote []accountOpRecord) map[string]acc
 		if ok && prev.FromLocal {
 			continue // 本地未上报优先，服务器记录不覆盖
 		}
-		out[op.Key] = accountSyncTarget{Key: op.Key, Value: op.Value, Seq: op.Seq}
+		out[op.Key] = accountSyncTarget{Key: op.Key, Value: op.Value, Seq: op.Seq, UpdatedAt: op.UpdatedAt}
 	}
 
 	for _, op := range local {
@@ -128,12 +131,25 @@ func profileContains(declared, want string) bool {
 // accountLocalPluginValueFn 本机插件状态查询（测试可替换，避免依赖真实 dshHome 目录）。
 var accountLocalPluginValueFn = accountLocalPluginValue
 
-// accountKeyTargetSatisfied 本机当前状态是否已满足目标值（相同则不必进入待生效集合）。
+// accountLocalPluginInstallTimeForFn 本机插件安装时间查询（测试可替换，避免依赖真实 dshHome 目录）。
+var accountLocalPluginInstallTimeForFn = accountLocalPluginInstallTimeFor
+
+// accountKeyTargetSatisfied 本机当前状态是否已满足目标值（时间未知的兼容入口）。
+//
+// 等价于 accountKeyTargetSatisfiedAt(key, value, 0)：调用方拿不到服务器写入时间时使用，
+// 行为与旧版一致（不按时间判定）；能拿到时间的路径必须传时间，见下。
+func accountKeyTargetSatisfied(key string, value json.RawMessage) bool {
+	return accountKeyTargetSatisfiedAt(key, value, 0)
+}
+
+// accountKeyTargetSatisfiedAt 本机当前状态是否已满足目标值（相同则不必进入待生效集合）。
+//
+// updatedAt 是这条目标记录在服务器上的写入时间（Unix 秒；0 = 未知），只有删除墓碑判定用到它。
 //
 // 目标值解析失败时**不**视为已满足：这些值来自服务器，无法应用时应让用户看到
 // （进入待生效 → 应用时给出明确原因），而不是静默丢掉（2026-09-21 评估：harness
 // 版本记录一旦形态异常就被当作「已满足」，表现为「版本根本没同步」且无任何提示）。
-func accountKeyTargetSatisfied(key string, value json.RawMessage) bool {
+func accountKeyTargetSatisfiedAt(key string, value json.RawMessage, updatedAt int64) bool {
 	switch {
 	case key == opKeyAutostart:
 		var want bool
@@ -168,7 +184,19 @@ func accountKeyTargetSatisfied(key string, value json.RawMessage) bool {
 		}
 		cur, installed := accountLocalPluginValueFn(profile, name)
 		if want.Action == "remove" {
-			return !installed
+			if !installed {
+				return true
+			}
+			// 本机装着，但装的时间**晚于**这条删除记录的写入时间 → 本机是「删掉后又装回来」，
+			// 该墓碑已被这次安装盖过：视为已满足，不再进待生效集合。否则它会每轮被拉取/漂移检查
+			// 重新入队，而对账又会跳过所有待生效 key，install 就永远补报不上去（2026-09-24 现场：
+			// dsh-cost-meter 重装后账号记录始终停在 remove 墓碑、插件补报恒为 0）。
+			// 判据与对账 accountReconcileLocalPlugins 的「本机安装更新 → 补报 install」同口径：
+			// 时间以服务器 updatedAt 为权威；时间未知（旧记录 / 本地队列项）时保守视为未满足。
+			if updatedAt > 0 && accountLocalPluginInstallTimeForFn(profile, name) > updatedAt {
+				return true
+			}
+			return false
 		}
 		if !installed {
 			return false
@@ -456,6 +484,7 @@ func accountSetPendingApply(targets map[string]accountSyncTarget) {
 			Value:     t.Value,
 			CreatedAt: time.Now().Unix(),
 			Seq:       t.Seq,
+			UpdatedAt: t.UpdatedAt,
 		}
 	}
 	ops := make([]accountPendingOp, 0, len(byKey))
@@ -535,16 +564,16 @@ func accountSyncPull(ctx context.Context, client *accountClient) (map[string]acc
 			// 已应用过的记录：只有本机**当前状态**仍满足目标才跳过。手工删除 .dsh /
 			// harness 目录后本机插件与版本被重置，此时若只看序号就会「显示已同步、
 			// 实际什么都没恢复」（2026-09-22 现场问题①）。
-			if accountKeyTargetSatisfied(key, t.Value) {
-				remember[key] = appliedRecord{Seq: t.Seq, Value: t.Value}
+			if accountKeyTargetSatisfiedAt(key, t.Value, t.UpdatedAt) {
+				remember[key] = appliedRecord{Seq: t.Seq, Value: t.Value, UpdatedAt: t.UpdatedAt}
 				continue
 			}
 			logWarn("account", "已应用记录与本机状态不一致，重新入队 key=%s seq=%d", key, t.Seq)
 			pending[key] = t
 			continue
 		}
-		if accountKeyTargetSatisfied(key, t.Value) {
-			remember[key] = appliedRecord{Seq: t.Seq, Value: t.Value}
+		if accountKeyTargetSatisfiedAt(key, t.Value, t.UpdatedAt) {
+			remember[key] = appliedRecord{Seq: t.Seq, Value: t.Value, UpdatedAt: t.UpdatedAt}
 			continue // 服务器值与本机当前值一致：不必提示重启
 		}
 		pending[key] = t
@@ -565,7 +594,7 @@ func accountSyncPull(ctx context.Context, client *accountClient) (map[string]acc
 	accountMu.Lock()
 	accountCur.Cursor = newCursor
 	for k, rec := range remember {
-		accountRememberAppliedLocked(k, rec.Value, rec.Seq)
+		accountRememberAppliedLocked(k, rec.Value, rec.Seq, rec.UpdatedAt)
 	}
 	accountMu.Unlock()
 	return pending, len(remote), nil
@@ -773,9 +802,9 @@ func accountApplyPending(ctx context.Context, client *accountClient, notify func
 			break
 		}
 		pct := float64(i) / float64(len(targets))
-		if accountKeyTargetSatisfied(op.Key, op.Value) {
+		if accountKeyTargetSatisfiedAt(op.Key, op.Value, op.UpdatedAt) {
 			res.Unchanged += 1
-			accountMarkApplied(op.Key, op.Value, op.Seq)
+			accountMarkApplied(op.Key, op.Value, op.Seq, op.UpdatedAt)
 			continue
 		}
 		notify(fmt.Sprintf(T("正在应用同步改动（%d/%d）：%s"), i+1, len(targets), accountApplyLabel(op.Key)), pct)
@@ -788,7 +817,7 @@ func accountApplyPending(ctx context.Context, client *accountClient, notify func
 			continue
 		}
 		res.Applied += 1
-		accountMarkApplied(op.Key, op.Value, op.Seq)
+		accountMarkApplied(op.Key, op.Value, op.Seq, op.UpdatedAt)
 	}
 
 	// 3) 收尾：失败/取消的说明写入应用错误（与同步错误分离，直到下次应用成功才清除）
@@ -881,9 +910,9 @@ func isTransientNetworkError(err error) bool {
 	return false
 }
 
-// accountMarkApplied 记录某 key 已应用到本机：从待生效集合移除该 key、记下已应用序号与目标值并落盘。
-// 逐项落盘（而非整批结束才写）：进程在应用中途退出时，已完成的项不会被当成「还没做」。
-func accountMarkApplied(key string, value json.RawMessage, seq int64) {
+// accountMarkApplied 记录某 key 已应用到本机：从待生效集合移除该 key、记下已应用序号、目标值与
+// 来源时间并落盘。逐项落盘（而非整批结束才写）：进程在应用中途退出时，已完成的项不会被当成「还没做」。
+func accountMarkApplied(key string, value json.RawMessage, seq, updatedAt int64) {
 	accountMu.Lock()
 	defer accountMu.Unlock()
 	out := make([]accountPendingOp, 0, len(accountCur.PendingRemote))
@@ -895,13 +924,14 @@ func accountMarkApplied(key string, value json.RawMessage, seq int64) {
 	}
 	accountCur.PendingRemote = out
 	accountCur.PendingApply = len(out) > 0
-	accountRememberAppliedLocked(key, value, seq)
+	accountRememberAppliedLocked(key, value, seq, updatedAt)
 	_ = saveAccountState(accountCur)
 }
 
-// accountRememberAppliedLocked 记下某 key 已应用的目标值与序号（调用方须持有 accountMu）。
-// 序号只作参考，目标值才是「本机被重置后能否重判漂移」的依据（见 accountState.AppliedVals）。
-func accountRememberAppliedLocked(key string, value json.RawMessage, seq int64) {
+// accountRememberAppliedLocked 记下某 key 已应用的目标值、序号与来源时间（调用方须持有 accountMu）。
+// 序号只作参考，目标值才是「本机被重置后能否重判漂移」的依据（见 accountState.AppliedVals）；
+// updatedAt（服务器写入时间）供「本机更晚的安装是否已盖过删除墓碑」判定使用（0 = 未知）。
+func accountRememberAppliedLocked(key string, value json.RawMessage, seq, updatedAt int64) {
 	if seq <= 0 || len(value) == 0 {
 		return
 	}
@@ -912,7 +942,7 @@ func accountRememberAppliedLocked(key string, value json.RawMessage, seq int64) 
 	if accountCur.AppliedVals == nil {
 		accountCur.AppliedVals = map[string]appliedRecord{}
 	}
-	accountCur.AppliedVals[key] = appliedRecord{Seq: seq, Value: append(json.RawMessage(nil), value...)}
+	accountCur.AppliedVals[key] = appliedRecord{Seq: seq, Value: append(json.RawMessage(nil), value...), UpdatedAt: updatedAt}
 }
 
 // accountClampCursorLocked 把游标钳回最早一条未生效记录之前（调用方须持有 accountMu）。
@@ -998,7 +1028,7 @@ func accountReenqueueDriftedApplied() int {
 		if inPending[key] || rec.Seq <= 0 || len(rec.Value) == 0 {
 			continue
 		}
-		if accountKeyTargetSatisfied(key, rec.Value) {
+		if accountKeyTargetSatisfiedAt(key, rec.Value, rec.UpdatedAt) {
 			continue
 		}
 		accountCur.PendingRemote = append(accountCur.PendingRemote, accountPendingOp{
@@ -1007,6 +1037,7 @@ func accountReenqueueDriftedApplied() int {
 			Value:     rec.Value,
 			CreatedAt: time.Now().Unix(),
 			Seq:       rec.Seq,
+			UpdatedAt: rec.UpdatedAt,
 		})
 		if minSeq == 0 || rec.Seq < minSeq {
 			minSeq = rec.Seq

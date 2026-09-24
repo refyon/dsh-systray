@@ -54,6 +54,7 @@ func TestReportPluginBatchChangesFilters(t *testing.T) {
 	tasks := []*pluginOpTask{
 		{op: "update", name: "pkg-a", ok: true, row: PluginRow{Name: "pkg-a", Spec: "^1.0.0", Source: "npm"}, newVer: "1.0.2"},
 		{op: "remove", name: "pkg-b", ok: true, row: PluginRow{Name: "pkg-b", Spec: "github:o/r", Source: "github"}},
+		{op: "install", name: "pkg-e", ok: true, row: PluginRow{Name: "pkg-e", Spec: "^2.0.0", Source: "npm"}, newVer: "2.0.0"},
 		{op: "update", name: "pkg-c", ok: false, row: PluginRow{Name: "pkg-c", Source: "npm"}},                        // 失败项不上报
 		{op: "update", name: "local-1", ok: true, row: PluginRow{Name: "local-1", Spec: "file:../x", Source: "file"}}, // 本地插件不上报
 		{op: "enable", name: "pkg-d", ok: true, row: PluginRow{Name: "pkg-d", Source: "npm"}},                         // 启用不在同步范围
@@ -62,8 +63,8 @@ func TestReportPluginBatchChangesFilters(t *testing.T) {
 	}
 	reportPluginBatchChanges(tasks)
 
-	if n := accountPendingCount(); n != 2 {
-		t.Fatalf("应只登记 2 条（在线且成功的 update/remove），实际 %d：%+v", n, accountCur.PendingOps)
+	if n := accountPendingCount(); n != 3 {
+		t.Fatalf("应只登记 3 条（在线且成功的 install/update/remove），实际 %d：%+v", n, accountCur.PendingOps)
 	}
 
 	upd, ok := pendingByKey(t, accountPluginKey("pkg-a"))
@@ -88,6 +89,20 @@ func TestReportPluginBatchChangesFilters(t *testing.T) {
 	}
 	if rv.Action != "remove" || rv.Version != "" {
 		t.Fatalf("删除记录应为墓碑（action=remove，无版本）: %+v", rv)
+	}
+
+	// 托盘内安装也必须有上报通道（此前 install 被过滤掉，只剩对账兜底——对账一旦被待生效
+	// 集合挡住就永远补不上去，见 2026-09-24 现场）
+	inst, ok := pendingByKey(t, accountPluginKey("pkg-e"))
+	if !ok {
+		t.Fatal("缺少 pkg-e 的安装记录（托盘内安装应上报 install）")
+	}
+	var iv pluginOpValue
+	if err := json.Unmarshal(inst.Value, &iv); err != nil {
+		t.Fatalf("value 不是合法 JSON: %v (%s)", err, inst.Value)
+	}
+	if iv.Action != "install" || iv.Spec != "^2.0.0" || iv.Source != "npm" || iv.Version != "2.0.0" {
+		t.Fatalf("安装记录字段错误: %+v", iv)
 	}
 }
 
@@ -383,6 +398,127 @@ func TestReconcileLocalPluginsReportsLaterInstall(t *testing.T) {
 	}
 	if v, _ := pendingPluginValue(t, "pkg-a"); v.Action != "install" {
 		t.Fatalf("删后重装应报 action=install，实际 %+v", v)
+	}
+}
+
+// tombstoneSyncServer 假服务器：单条删除墓碑记录（带真实 updatedAt），并接受上报。
+func tombstoneSyncServer(t *testing.T, key string, value string, seq, updatedAt int64) *accountClient {
+	t.Helper()
+	client, _ := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/ops/since":
+			_, _ = w.Write([]byte(fmt.Sprintf(
+				`{"ops":[{"seq":%d,"opId":"o-%d","key":%q,"value":%s,"deviceId":"other","updatedAt":%d}],"cursor":%d,"hasMore":false}`,
+				seq, seq, key, value, updatedAt, seq)))
+		case "/v1/ops/report":
+			_, _ = w.Write([]byte(`{"accepted":1,"duplicates":0,"cursor":100}`))
+		default:
+			t.Errorf("未预期路径: %s", r.URL.Path)
+			w.WriteHeader(http.StatusNotFound)
+		}
+	})
+	return client
+}
+
+// TestSyncUnblocksPendingTombstoneAndReportsInstall 回归 2026-09-24 现场（dsh-cost-meter）：
+// 一条**早于本机安装**的删除墓碑卡在待生效集合里时，对账会被「待生效即跳过」挡住，install
+// 永远补报不上去（实测：插件补报恒为 0、待生效恒为 1 项、游标每轮回拨到 29）。
+// 修复后该墓碑在拉取与漂移重判时都判为「已被本机更晚的安装盖过」：待生效集合清空，
+// 对账随即补报 install。
+func TestSyncUnblocksPendingTombstoneAndReportsInstall(t *testing.T) {
+	setupAccountTest(t)
+	setAccountState(loggedInState())
+	setAccountAPIBase("http://127.0.0.1:1")
+
+	const (
+		installAt   = int64(3000) // 本机安装时间（晚于墓碑）
+		tombstoneAt = int64(2000) // 服务器删除记录时间
+		name        = "dsh-cost-meter"
+	)
+	key := accountPluginKey(name)
+	remove := json.RawMessage(`{"action":"remove","spec":"^1.7.35","source":"npm","version":""}`)
+
+	// 本机：插件已装（生产环境由 buildPluginRows 供数，这里用桩替代）
+	stubLocalPlugins(t, accountLocalPlugin{Name: name, Spec: "^1.7.35", Source: "npm", Version: "1.7.35", InstalledAt: installAt})
+	oldVal, oldTime := accountLocalPluginValueFn, accountLocalPluginInstallTimeForFn
+	t.Cleanup(func() { accountLocalPluginValueFn, accountLocalPluginInstallTimeForFn = oldVal, oldTime })
+	accountLocalPluginValueFn = func(profile, n string) (pluginOpValue, bool) {
+		if n != name {
+			return pluginOpValue{}, false
+		}
+		return pluginOpValue{Action: "update", Spec: "^1.7.35", Source: "npm", Version: "1.7.35"}, true
+	}
+	accountLocalPluginInstallTimeForFn = func(profile, n string) int64 { return installAt }
+
+	// 现场状态：墓碑曾被应用（appliedVals），并卡在待生效集合里
+	accountMu.Lock()
+	accountCur.Cursor = 29
+	accountCur.AppliedSeqs = map[string]int64{key: 30}
+	accountCur.AppliedVals = map[string]appliedRecord{key: {Seq: 30, Value: remove, UpdatedAt: tombstoneAt}}
+	accountCur.PendingRemote = []accountPendingOp{{OpID: "pending-" + key + "-30", Key: key, Value: remove, CreatedAt: 1, Seq: 30, UpdatedAt: tombstoneAt}}
+	accountCur.PendingApply = true
+	accountMu.Unlock()
+
+	client := tombstoneSyncServer(t, key, string(remove), 30, tombstoneAt)
+	if _, err := accountSyncNow(context.Background(), client); err != nil {
+		t.Fatalf("同步失败: %v", err)
+	}
+
+	if keys := accountPendingKeys(); len(keys) != 0 {
+		t.Fatalf("被更晚安装盖过的墓碑不应留在待生效集合，实际 %v", keys)
+	}
+	v, ok := pendingPluginValue(t, name)
+	if !ok || v.Action != "install" {
+		t.Fatalf("应对账补报 install，实际 %+v（存在=%v）", v, ok)
+	}
+	if v.Version != "1.7.35" || v.Source != "npm" {
+		t.Fatalf("补报字段错误: %+v", v)
+	}
+}
+
+// TestSyncKeepsPendingTombstoneWhenLocalInstallOlder 反向保护：本机安装**早于**墓碑（真正的
+// 「别的设备删掉了」）时，墓碑仍留在待生效集合、对账也不补报——修复不能把删除意图放跑。
+func TestSyncKeepsPendingTombstoneWhenLocalInstallOlder(t *testing.T) {
+	setupAccountTest(t)
+	setAccountState(loggedInState())
+	setAccountAPIBase("http://127.0.0.1:1")
+
+	const (
+		installAt   = int64(1000) // 本机安装时间（早于墓碑）
+		tombstoneAt = int64(2000)
+		name        = "dsh-cost-meter"
+	)
+	key := accountPluginKey(name)
+	remove := json.RawMessage(`{"action":"remove","spec":"^1.7.35","source":"npm","version":""}`)
+
+	stubLocalPlugins(t, accountLocalPlugin{Name: name, Spec: "^1.7.35", Source: "npm", Version: "1.7.35", InstalledAt: installAt})
+	oldVal, oldTime := accountLocalPluginValueFn, accountLocalPluginInstallTimeForFn
+	t.Cleanup(func() { accountLocalPluginValueFn, accountLocalPluginInstallTimeForFn = oldVal, oldTime })
+	accountLocalPluginValueFn = func(profile, n string) (pluginOpValue, bool) {
+		if n != name {
+			return pluginOpValue{}, false
+		}
+		return pluginOpValue{Action: "update", Spec: "^1.7.35", Source: "npm", Version: "1.7.35"}, true
+	}
+	accountLocalPluginInstallTimeForFn = func(profile, n string) int64 { return installAt }
+
+	accountMu.Lock()
+	accountCur.Cursor = 29
+	accountCur.AppliedSeqs = map[string]int64{key: 30}
+	accountCur.AppliedVals = map[string]appliedRecord{key: {Seq: 30, Value: remove, UpdatedAt: tombstoneAt}}
+	accountMu.Unlock()
+
+	client := tombstoneSyncServer(t, key, string(remove), 30, tombstoneAt)
+	if _, err := accountSyncNow(context.Background(), client); err != nil {
+		t.Fatalf("同步失败: %v", err)
+	}
+
+	keys := accountPendingKeys()
+	if len(keys) != 1 || keys[0] != key {
+		t.Fatalf("本机安装早于墓碑时应保留待生效（等用户点重启生效删除），实际 %v", keys)
+	}
+	if _, ok := pendingPluginValue(t, name); ok {
+		t.Fatal("不应把本机这个删除前的旧安装补报为 install")
 	}
 }
 
