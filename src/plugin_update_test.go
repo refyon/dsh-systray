@@ -420,3 +420,50 @@ func TestDisabledNames(t *testing.T) {
 		t.Errorf("empty disabledNames = %q, want empty", s)
 	}
 }
+
+// TestPickNpmLatest 官方与镜像 latest 并行查询结果择优：版本高者胜（新鲜度），
+// 版本相同时取镜像（下载更快）。2026-09-24 实测镜像 310 Mbps vs 官方 14 Mbps。
+func TestPickNpmLatest(t *testing.T) {
+	cases := []struct {
+		name  string
+		cands []npmLatestCand
+		wantV string
+		wantR string
+	}{
+		{
+			name: "镜像与官方同版本→取镜像",
+			cands: []npmLatestCand{
+				{ver: "1.7.10", registry: npmOfficialRegistry},
+				{ver: "1.7.10", registry: npmMirrorRegistry},
+			},
+			wantV: "1.7.10", wantR: npmMirrorRegistry,
+		},
+		{
+			name: "镜像滞后（官方更新）→取官方",
+			cands: []npmLatestCand{
+				{ver: "1.7.11", registry: npmOfficialRegistry},
+				{ver: "1.7.10", registry: npmMirrorRegistry},
+			},
+			wantV: "1.7.11", wantR: npmOfficialRegistry,
+		},
+		{
+			name: "仅镜像可用→取镜像",
+			cands: []npmLatestCand{
+				{},
+				{ver: "0.2.2", registry: npmMirrorRegistry},
+			},
+			wantV: "0.2.2", wantR: npmMirrorRegistry,
+		},
+		{
+			name:  "两个源都失败→空",
+			cands: []npmLatestCand{{}, {}},
+			wantV: "", wantR: "",
+		},
+	}
+	for _, c := range cases {
+		got := pickNpmLatest(c.cands)
+		if got.ver != c.wantV || got.registry != c.wantR {
+			t.Errorf("%s: pickNpmLatest = {%q,%q}, want {%q,%q}", c.name, got.ver, got.registry, c.wantV, c.wantR)
+		}
+	}
+}

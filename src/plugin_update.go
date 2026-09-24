@@ -32,10 +32,17 @@ import (
 	wruntime "github.com/wailsapp/wails/v2/pkg/runtime"
 )
 
-// pluginRegistries npm registry 查询候选：先官方，失败回退国内镜像（与 GitHub 镜像策略同理）。
+// npm 官方 registry 与国内镜像常量（安装源选优、逐版本可用性探测共用）。
+const (
+	npmOfficialRegistry = "https://registry.npmjs.org"
+	npmMirrorRegistry   = "https://registry.npmmirror.com"
+)
+
+// pluginRegistries npm registry 查询候选：官方与镜像（顺序只影响顺序调用方——
+// fetchNpmLatestWithSource 是并行查询两源后选优，见该函数）。
 var pluginRegistries = []string{
-	"https://registry.npmjs.org",
-	"https://registry.npmmirror.com",
+	npmOfficialRegistry,
+	npmMirrorRegistry,
 }
 
 // ==================== 单插件操作结果事件（Go → 前端行状态刷新） ====================
@@ -79,13 +86,16 @@ const pluginCheckDeadline = 15 * time.Second
 // （2026-09-08 复盘：mirror.ghproxy.com 挂起吃掉整段 15s，restrict-discipline 检查更新报超时）。
 const pluginCheckCandidateTimeout = 6 * time.Second
 
-// installRegistry 探测/缓存安装用 registry：官方可达用官方，不可达自动切 npmmirror——
-// 坏网络/被墙时 pnpm install 不再因 registry.npmjs.org error(23) 整体失败
-// （new_device.log 实证 deepseek-idesign-0.2.2.tgz 反复下载失败）。
+// installRegistry 探测/缓存安装用 registry：**优先 npmmirror**，不可达才回退官方。
+// 依据（2026-09-24 本机实测）：npmmirror 单连接/8 并发 55/310 Mbps、元数据 ttfb 43-87ms；
+// 官方 registry 5/14 Mbps、ttfb 0.5-2.1s——插件与 profile 依赖安装的大头是逐包元数据与
+// tarball，换镜像后这一段快一个数量级（旧实现「官方可达用官方」正是更新慢的主因之一）。
+// 版本新鲜度不受影响：需要精确版本时由 harnessRegistryForVersion 逐版本判定该版本是否已在
+// 镜像上，镜像滞后（刚发布的版本）自动改走官方。
 var (
 	installRegistryMu   sync.Mutex
 	installRegistryDone bool
-	installRegistryVal  = "https://registry.npmjs.org"
+	installRegistryVal  = npmOfficialRegistry
 )
 
 func installRegistry() string {
@@ -95,21 +105,35 @@ func installRegistry() string {
 		return installRegistryVal
 	}
 	installRegistryDone = true
+	if probeNpmRegistry(npmMirrorRegistry) {
+		installRegistryVal = npmMirrorRegistry
+		return installRegistryVal
+	}
+	if probeNpmRegistry(npmOfficialRegistry) {
+		installRegistryVal = npmOfficialRegistry
+		return installRegistryVal
+	}
+	// 两者都探测失败：沿用旧默认官方，避免把安装源永久钉在恰好在探测时不可达的镜像上
+	// （探测结果在进程内缓存，选错会一直错到重启）。
+	installRegistryVal = npmOfficialRegistry
+	return installRegistryVal
+}
+
+// probeNpmRegistry 探测 registry 是否可用：4s 上限，非 200/网络失败均算不可用。
+func probeNpmRegistry(reg string) bool {
 	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Second)
 	defer cancel()
-	if req, err := http.NewRequestWithContext(ctx, "GET",
-		"https://registry.npmjs.org/@deepseek-ai%2fdsh/latest", nil); err == nil {
-		req.Header.Set("User-Agent", "dsh-systray/"+appVersion)
-		if resp, rerr := http.DefaultClient.Do(req); rerr == nil {
-			resp.Body.Close()
-			if resp.StatusCode == http.StatusOK {
-				installRegistryVal = "https://registry.npmjs.org"
-				return installRegistryVal
-			}
-		}
+	req, err := http.NewRequestWithContext(ctx, "GET", reg+"/@deepseek-ai%2fdsh/latest", nil)
+	if err != nil {
+		return false
 	}
-	installRegistryVal = "https://registry.npmmirror.com"
-	return installRegistryVal
+	req.Header.Set("User-Agent", "dsh-systray/"+appVersion)
+	resp, rerr := http.DefaultClient.Do(req)
+	if rerr != nil {
+		return false
+	}
+	resp.Body.Close()
+	return resp.StatusCode == http.StatusOK
 }
 
 // PluginRow 插件列表中一个用户插件的展示与动作信息。
@@ -613,21 +637,63 @@ func npmRegistryPath(name string) string {
 	return strings.ReplaceAll(name, "/", "%2f")
 }
 
+// npmLatestCand 单个 registry 的 dist-tag latest 查询结果（ver 为空表示该源不可用）。
+type npmLatestCand struct {
+	ver      string
+	registry string
+}
+
+// pickNpmLatest 从各 registry 的查询结果里挑出应安装的目标（纯函数，便于单测）：
+// 版本号最高者胜出（官方与镜像并行查询，刚发布的版本不会因镜像同步滞后而看不见）；
+// 版本相同时取镜像（实测 310 Mbps vs 官方 14 Mbps，下载更快）。都查不到返回零值。
+func pickNpmLatest(cands []npmLatestCand) npmLatestCand {
+	var best npmLatestCand
+	for _, c := range cands {
+		if c.ver == "" {
+			continue
+		}
+		switch {
+		case best.ver == "":
+			best = c
+		case compareVersions(c.ver, best.ver) > 0:
+			best = c
+		case compareVersions(c.ver, best.ver) == 0 &&
+			c.registry != npmOfficialRegistry && best.registry == npmOfficialRegistry:
+			best = c
+		}
+	}
+	return best
+}
+
 // fetchNpmLatestWithSource 查询 npm dist-tag latest 版本，并返回应答的 registry 地址
 // （更新安装时显式指定同一 registry，保证「检查到的版本」与「安装到的版本」同源）。
+// 官方与镜像**并行**查询、结果择优：整体延迟＝较慢一方（与原先"官方先行"相当），
+// 但官方保证新鲜度、镜像在版本相同时提供更快的下载源。
 func fetchNpmLatestWithSource(name string) (ver, registry string, err error) {
+	ch := make(chan npmLatestCand, len(pluginRegistries))
 	for _, reg := range pluginRegistries {
-		body, e := getWithMirrors([]string{reg + "/" + npmRegistryPath(name) + "/latest"}, pluginCheckDeadline)
-		if e != nil {
-			continue
-		}
-		var m struct {
-			Version string `json:"version"`
-		}
-		if json.Unmarshal(body, &m) != nil || m.Version == "" {
-			continue
-		}
-		return strings.TrimPrefix(strings.TrimSpace(m.Version), "v"), reg, nil
+		go func(reg string) {
+			body, e := getWithMirrors([]string{reg + "/" + npmRegistryPath(name) + "/latest"}, pluginCheckDeadline)
+			if e != nil {
+				ch <- npmLatestCand{}
+				return
+			}
+			var m struct {
+				Version string `json:"version"`
+			}
+			if json.Unmarshal(body, &m) != nil || m.Version == "" {
+				ch <- npmLatestCand{}
+				return
+			}
+			ch <- npmLatestCand{strings.TrimPrefix(strings.TrimSpace(m.Version), "v"), reg}
+		}(reg)
+	}
+	cands := make([]npmLatestCand, 0, len(pluginRegistries))
+	for range pluginRegistries {
+		cands = append(cands, <-ch)
+	}
+	if best := pickNpmLatest(cands); best.ver != "" {
+		return best.ver, best.registry, nil
 	}
 	return "", "", fmt.Errorf("npm registry 查询失败")
 }

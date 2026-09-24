@@ -1251,21 +1251,76 @@ func sourceDepsInstalled() bool {
 	return err == nil
 }
 
+// pnpmEnvVars 生成 pnpm 配置环境变量：**同一键同时写 npm_config_X 与 pnpm_config_X 两个前缀**。
+// 依据（2026-09-24 本机实测，同一台机器、同一份 .npmrc，用 registry 指向不可达地址判定是否生效）：
+//   - pnpm 10.34.5（托盘自带便携运行时的版本）只认 npm_config_*；
+//   - pnpm 11.7.0（PATH 上的系统 pnpm）只认 pnpm_config_*——它的 config reader 前缀就是
+//     "pnpm_config_"（@pnpm/config/reader/lib/env.js），npm_config_* 仅对少数键生效。
+//
+// 键名用下划线（child_concurrency → childConcurrency），连字符写法两边都不认（实测）。
+// 两个前缀都写后，两种 pnpm 版本都能拿到 registry / fetch-retries / prefer-offline 等配置；
+// 旧实现只写 npm_config_*，在 pnpm ≥ 11 上这些配置全部静默失效。
+func pnpmEnvVars(kv ...string) []string {
+	out := make([]string, 0, len(kv)*2)
+	for _, e := range kv {
+		out = append(out, "npm_config_"+e, "pnpm_config_"+e)
+	}
+	return out
+}
+
 // pnpmTunedEnv 慢机器调优：限制并发、克隆式安装（参考 dsh-desktop）；网络故障快速失败
 // ——单请求 15s 超时、不重试（fetch_retries=0）：坏网络下 registry 拉取失败一次即放弃，
 // 让上层立即进入收尾（自愈/自动禁用），避免每轮 install 卡 2-4 分钟（new_device.log 实证
-// 「Will retry in 10 seconds…2 retries left」的多档重试循环）。registry 官方不可达自动切
-// npmmirror（installRegistry 探测一次并缓存）。
+// 「Will retry in 10 seconds…2 retries left」的多档重试循环）。registry 取首选源
+// （installRegistry：npmmirror 优先、不可达回退官方，探测一次并缓存）。
 func pnpmTunedEnv() []string {
-	return []string{
-		"PNPM_MAX_WORKERS=1",
-		"npm_config_child_concurrency=1",
-		"npm_config_package_import_method=clone-or-copy",
-		"npm_config_side_effects_cache=false",
-		"npm_config_fetch_retries=0",
-		"npm_config_fetch_timeout=15000",
-		"npm_config_registry=" + installRegistry(),
+	env := []string{"PNPM_MAX_WORKERS=1"}
+	return append(env, pnpmEnvVars(
+		"child_concurrency=1",
+		"package_import_method=clone-or-copy",
+		"side_effects_cache=false",
+		"fetch_retries=0",
+		"fetch_timeout=15000",
+		// 离线优先：store 已有的包不再回源校验元数据（harness 更新后逐 profile 的对齐
+		// 绝大多数依赖已命中 store，此前每个 profile 都要把整棵树的元数据重取一遍）。
+		// 缺包/缺元数据时仍会正常下载，不影响首次解析。
+		"prefer_offline=true",
+		"registry="+installRegistry(),
+	)...)
+}
+
+// pnpmTunedEnvWithRegistry 同 pnpmTunedEnv，但把 registry 换成 reg（空则保持首选 registry）。
+func pnpmTunedEnvWithRegistry(reg string) []string {
+	env := pnpmTunedEnv()
+	if reg == "" {
+		return env
 	}
+	out := make([]string, 0, len(env))
+	for _, kv := range env {
+		switch {
+		case strings.HasPrefix(kv, "npm_config_registry="), strings.HasPrefix(kv, "pnpm_config_registry="):
+			out = append(out, kv[:strings.IndexByte(kv, '=')+1]+reg)
+		default:
+			out = append(out, kv)
+		}
+	}
+	return out
+}
+
+// harnessRegistryOverride 本次 harness 安装应使用的 registry（空 = 首选 installRegistry()）。
+// 由 harnessRegistryForVersion 按目标版本在镜像上的可见性决定（见 runHarnessUpdate 预检），
+// 避免镜像同步滞后把刚发布的版本挡死（ERR_PNPM_NO_MATCHING_VERSION）。
+var harnessRegistryOverride string
+
+// pnpmHarnessEnv harness 目录 pnpm 命令的环境：只覆盖 registry 与离线优先，不带 profile 侧的
+// 重度调优档（PNPM_MAX_WORKERS=1 / child_concurrency=1 等是为 Windows 文件占用与杀软干扰调的，
+// harness 安装不需要；clone-or-copy 也会让大目录安装更慢）。
+func pnpmHarnessEnv() []string {
+	reg := harnessRegistryOverride
+	if reg == "" {
+		reg = installRegistry()
+	}
+	return pnpmEnvVars("registry="+reg, "prefer_offline=true")
 }
 
 // runSourceDepsInstall 源码模式：pnpm install（输出改写进统一日志，模块 install）。
@@ -1383,7 +1438,10 @@ func runNpmHarnessAdd(ver string) (string, error) {
 	defer cancel()
 	cmd := exec.CommandContext(ctx, pnpmCmd(), "add", "@deepseek-ai/dsh@"+ver, "--save-exact")
 	cmd.Dir = harnessDir
-	cmd.Env = append(os.Environ(), pnpmTunedEnv()...)
+	// registry 按目标版本的镜像可见性选定：镜像有该版本用镜像（快），刚发布、镜像尚未同步
+	// 的版本用官方（正确性优先，见 harnessRegistryForVersion）。
+	reg, _ := harnessRegistryForVersion(ver)
+	cmd.Env = append(os.Environ(), pnpmTunedEnvWithRegistry(reg)...)
 	hideCmdWindow(cmd)
 	var buf bytes.Buffer
 	w := newModuleLogWriter("install")

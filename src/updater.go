@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
+	"crypto/tls"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -604,11 +605,24 @@ func installedHarnessVersion() string {
 	return ""
 }
 
+// harnessCmdEnv 子进程环境：pnpm 命令追加安装源与离线偏好（pnpmHarnessEnv），
+// 其它命令（git 等）返回 nil——exec.Cmd 为空时原样继承进程环境。
+// 依据（2026-09-24 实测）：harness 更新与依赖安装的大头在逐包元数据与 tarball 下载，
+// 默认 registry（官方）14 Mbps / 元数据 ttfb 0.5-2.1s，镜像 310 Mbps / 43-87ms。
+func harnessCmdEnv(name string) []string {
+	switch strings.ToLower(filepath.Base(name)) {
+	case "pnpm", "pnpm.cmd", "pnpm.exe":
+		return append(os.Environ(), pnpmHarnessEnv()...)
+	}
+	return nil
+}
+
 // runHarnessCmd 在 harness 目录执行命令，输出按行改写进统一日志（模块 harness）。
 // 每次执行前写入一条命令分隔头，便于日后从日志直接归因失败命令。
 func runHarnessCmd(name string, args ...string) error {
 	cmd := exec.Command(name, args...)
 	cmd.Dir = harnessDir
+	cmd.Env = harnessCmdEnv(name)
 	hideCmdWindow(cmd)
 	w := newModuleLogWriter("harness")
 	_, _ = fmt.Fprintf(w, "\n===== %s %s =====\n", name, strings.Join(args, " "))
@@ -624,6 +638,7 @@ func runHarnessCmd(name string, args ...string) error {
 func runHarnessCmdTail(name string, args ...string) (string, error) {
 	cmd := exec.Command(name, args...)
 	cmd.Dir = harnessDir
+	cmd.Env = harnessCmdEnv(name)
 	hideCmdWindow(cmd)
 	var buf bytes.Buffer
 	w := newModuleLogWriter("harness")
@@ -642,13 +657,18 @@ func isGitHarnessDir() bool {
 	return err == nil
 }
 
-// npmHarnessVersionAvailable 查询 npm registry 是否已发布该精确版本（pnpm view）。
-// 供 npm 形态更新前预检：GitHub Release 常先于 npm 发布，直接 pnpm add 会失败且原因晦涩。
+// npmHarnessVersionAvailableOn 查询指定 registry 是否已发布该精确版本（pnpm view --registry；
+// registry 为空时沿用 pnpm 环境默认，不额外指定）。
+// 供 harness 更新前预检：GitHub Release 常先于 npm 发布，直接 pnpm add 会失败且原因晦涩。
 // 返回 false 表示未找到该版本或查询失败（网络/registry 异常，调用方给用户可理解文案）。
-func npmHarnessVersionAvailable(version string) bool {
+func npmHarnessVersionAvailableOn(version, registry string) bool {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, pnpmCmd(), "view", "@deepseek-ai/dsh@"+version, "version")
+	args := []string{"view", "@deepseek-ai/dsh@" + version, "version"}
+	if registry != "" {
+		args = append(args, "--registry", registry)
+	}
+	cmd := exec.CommandContext(ctx, pnpmCmd(), args...)
 	cmd.Dir = harnessDir
 	cmd.Env = append(os.Environ(), pnpmTunedEnv()...)
 	hideCmdWindow(cmd)
@@ -659,15 +679,57 @@ func npmHarnessVersionAvailable(version string) bool {
 	return strings.TrimSpace(string(out)) != ""
 }
 
+// harnessRegistryForVersion 选定安装指定精确版本应使用的 registry，并报告该版本是否可见：
+//   - 镜像可见 → 镜像（2026-09-24 实测 310 Mbps / 元数据 ttfb 70ms，官方 14 Mbps / 1-2s）；
+//   - 仅官方可见 → 官方（镜像同步滞后于官方发布，用镜像会 ERR_PNPM_NO_MATCHING_VERSION）；
+//   - 都不可见 → 首选 registry 且 available=false（调用方提示"可能尚未同步到 npm"）。
+//
+// ver 为空或 "latest" 时不做逐版本判定（"latest" 由 pnpm 自行解析），返回首选 registry。
+func harnessRegistryForVersion(ver string) (registry string, available bool) {
+	if ver == "" || ver == "latest" {
+		return installRegistry(), true
+	}
+	if npmHarnessVersionAvailableOn(ver, npmMirrorRegistry) {
+		return npmMirrorRegistry, true
+	}
+	if npmHarnessVersionAvailableOn(ver, npmOfficialRegistry) {
+		return npmOfficialRegistry, true
+	}
+	return installRegistry(), false
+}
+
 // npmHarnessPublishedVersions 列出 npm registry 上 @deepseek-ai/dsh 的全部已发布版本号。
+// **官方优先**（更新检查与重置目标必须看得见刚发布的版本——镜像同步有分钟级滞后，先问镜像会
+// 把"有新版本"误报成"已是最新"），官方不可达时回退首选镜像（npmmirror，官方被墙的场景）。
 // 供 npm 预构建形态的「重置回退目标」解析使用：npm 形态安装走 npm，目标必须是 npm 已发布
 // 版本——GitHub Release tag 常领先于 npm（如 0.1.3-alpha.1 有 tag 但未发 npm），直接采用
 // GitHub tag 会 pnpm add "No matching version found"（实测 ERR_PNPM_NO_MATCHING_VERSION）。
-// 解析容忍 pnpm 输出形态差异：优先 JSON 数组，失败按行剥离引号/括号兜底。
 func npmHarnessPublishedVersions() ([]string, error) {
+	regs := []string{npmOfficialRegistry}
+	if mirror := installRegistry(); mirror != npmOfficialRegistry {
+		regs = append(regs, mirror)
+	}
+	var lastErr error
+	for _, reg := range regs {
+		versions, err := npmVersionsOn(reg)
+		if err == nil {
+			return versions, nil
+		}
+		lastErr = err
+	}
+	return nil, lastErr
+}
+
+// npmVersionsOn 查询指定 registry 上 @deepseek-ai/dsh 的全部版本号（registry 为空用环境默认）。
+// 解析容忍 pnpm 输出形态差异：优先 JSON 数组，失败按行剥离引号/括号兜底。
+func npmVersionsOn(registry string) ([]string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, pnpmCmd(), "view", "@deepseek-ai/dsh", "versions", "--json")
+	args := []string{"view", "@deepseek-ai/dsh", "versions", "--json"}
+	if registry != "" {
+		args = append(args, "--registry", registry)
+	}
+	cmd := exec.CommandContext(ctx, pnpmCmd(), args...)
 	cmd.Dir = harnessDir
 	cmd.Env = append(os.Environ(), pnpmTunedEnv()...)
 	hideCmdWindow(cmd)
@@ -1050,6 +1112,7 @@ func cleanupHarnessSnapshot() {
 func runHarnessCmdCapture(name string, args ...string) string {
 	cmd := exec.Command(name, args...)
 	cmd.Dir = harnessDir
+	cmd.Env = harnessCmdEnv(name)
 	hideCmdWindow(cmd)
 	out, err := cmd.Output()
 	if err != nil {
@@ -1230,12 +1293,15 @@ func runHarnessUpdate(latest string) {
 	switch {
 	case npmMode:
 		// 预检目标版本已发布到 npm：GitHub Release 常先于 npm 发布，目标可能装不了——
-		// 尽早给出明确原因，避免停服务后才失败回退。
+		// 尽早给出明确原因，避免停服务后才失败回退。预检同时选定本次安装的 registry：
+		// 目标版本在镜像上可见就用镜像（快），镜像尚未同步（刚发布的版本）则用官方（正确）。
 		ver := latest
 		if ver == "" {
 			ver = "latest"
 		}
-		if ver != "latest" && !npmHarnessVersionAvailable(ver) {
+		reg, available := harnessRegistryForVersion(ver)
+		harnessRegistryOverride = reg
+		if ver != "latest" && !available {
 			finishHarnessUpdate(splash,
 				"无法更新 DeepSeek Harness：\n\nnpm registry 上未找到 @deepseek-ai/dsh@"+ver+
 					"（该版本 GitHub 已发布但可能尚未同步到 npm，或 registry/网络异常）。\n未对当前版本做任何改动。\n\n"+
@@ -1243,6 +1309,7 @@ func runHarnessUpdate(latest string) {
 				false, "npm registry 上未找到目标版本")
 			return
 		}
+		log.Printf("harness update: install %s via %s", ver, reg)
 	case sourceMode:
 		if !isGitHarnessDir() {
 			finishHarnessUpdate(splash,
@@ -1692,19 +1759,233 @@ func buildMirrors() []string {
 	return out
 }
 
+// 分段下载参数。依据（2026-09-24 本机实测，GitHub Release 资产）：
+// 单连接被限到 0.1-1.4 Mbps、多连接可达 19-20 Mbps——单连接限速是更新包下载慢（5MB 要 2-7
+// 分钟）的主因，分段并发把这条链路的余量吃满。
+// 首段只用于探测（小范围请求拿总长度 + 判断源是否支持 Range），随后的各段**均分整文件**：
+// 首段若取大块（曾用 4MB），5MB 的包里它独占 80% 数据而其余段只剩小尾巴，等于没并发。
+const (
+	downloadProbeSize        = 128 << 10 // 探测请求大小（字节浪费上限）
+	downloadSegmentThreads   = 4         // 常规分段数
+	downloadSegmentMax       = 8         // 大文件分段数
+	downloadSegmentMinSize   = 4 << 20   // 小于该大小不分段（多几次往返不划算）
+	downloadSegmentThreshold = 16 << 20  // 超过该大小用更多分段
+)
+
+// downloadClient 下载专用 HTTP 客户端：**禁用 HTTP/2**，保证每个分段各占一条 TCP 连接。
+// 依据（2026-09-24 本机实测，ghfast.top 中转）：镜像支持 h2，Go 的多个 Range 请求会在同一条
+// TCP 连接上多路复用，于是又回到「单连接限速」——同一文件 4 段只跑到 1.1 Mbps；同一时刻改用
+// 4 条 HTTP/1.1 连接（Node 对照）则 4.1 Mbps。禁用 h2 后分段才真正并发。
+// 两处都要设：NextProtos 覆盖克隆自 DefaultTransport 的 ALPN 列表（否则服务端仍选 h2，而
+// TLSNextProto 已置空，会直接报 malformed HTTP response），TLSNextProto 非 nil 空表则关闭
+// Go 的自动 h2 装配（见 net/http 文档）。
+var downloadClient = &http.Client{
+	Timeout: updateDLTimeout,
+	Transport: func() *http.Transport {
+		tr := http.DefaultTransport.(*http.Transport).Clone()
+		if tr.TLSClientConfig == nil {
+			tr.TLSClientConfig = &tls.Config{}
+		} else {
+			tr.TLSClientConfig = tr.TLSClientConfig.Clone()
+		}
+		tr.TLSClientConfig.NextProtos = []string{"http/1.1"}
+		tr.TLSNextProto = map[string]func(string, *tls.Conn) http.RoundTripper{}
+		tr.MaxIdleConnsPerHost = 16
+		return tr
+	}(),
+}
+
+// downloadOnce 下载单个候选 URL 到 dest（带整体超时与进度回调）。
+// 先发一个小 Range 请求探测：206 说明支持分段（随后整文件均分并发下载），200 说明源忽略
+// Range——该响应本身就是完整内容，直接顺序写入（等价单连接行为，不额外多发请求）。
 func downloadOnce(ctx context.Context, url, dest string, onProgress func(pct float64)) error {
-	client := &http.Client{Timeout: updateDLTimeout}
+	probe, total, err := requestRange(ctx, downloadClient, url, 0, downloadProbeSize-1)
+	if err != nil {
+		return err
+	}
+	// 源忽略 Range（200）或文件不超过探测大小：这一个响应即完整内容
+	if probe.StatusCode != http.StatusPartialContent || total <= downloadProbeSize {
+		return writeBodyTo(probe, dest, onProgress)
+	}
+	probe.Body.Close() // 探测段丢弃（≤128KB）
+	if total < downloadSegmentMinSize {
+		return downloadSequential(ctx, downloadClient, url, dest, onProgress)
+	}
+	return downloadSegmented(ctx, downloadClient, url, dest, total, onProgress)
+}
+
+// downloadSequential 不带 Range 的整取（中小文件：不值得分段）。
+func downloadSequential(ctx context.Context, client *http.Client, url, dest string, onProgress func(pct float64)) error {
 	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
 	if err != nil {
 		return err
 	}
 	req.Header.Set("User-Agent", "dsh-systray/"+appVersion)
+	req.Header.Set("Accept-Encoding", "identity")
 	resp, err := client.Do(req)
 	if err != nil {
 		return err
 	}
+	return writeBodyTo(resp, dest, onProgress)
+}
+
+// downloadSegmented 把 [0, total) 均分为若干段并发下载（每段一个连接，整体并发）。
+func downloadSegmented(ctx context.Context, client *http.Client, url, dest string, total int64,
+	onProgress func(pct float64)) error {
+	out, err := os.OpenFile(dest, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o644)
+	if err != nil {
+		return err
+	}
+	defer out.Close()
+	if err := out.Truncate(total); err != nil {
+		return err
+	}
+
+	segCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	var done atomic.Int64
+	// 进度回调串行化：各段并发写入时都会回调，而前端 splash 状态不是并发安全的。
+	var reportMu sync.Mutex
+	report := func() {
+		if onProgress == nil {
+			return
+		}
+		reportMu.Lock()
+		onProgress(float64(done.Load()) / float64(total))
+		reportMu.Unlock()
+	}
+
+	n := int64(downloadSegmentThreads)
+	if total > downloadSegmentThreshold {
+		n = int64(downloadSegmentMax)
+	}
+	each := (total + n - 1) / n
+	var (
+		wg       sync.WaitGroup
+		errMu    sync.Mutex
+		firstErr error
+	)
+	fail := func(e error) {
+		errMu.Lock()
+		if firstErr == nil {
+			firstErr = e
+			cancel() // 任一段失败即中止其余段（整体由上层换镜像重下）
+		}
+		errMu.Unlock()
+	}
+	for i := int64(0); i < n; i++ {
+		start := i * each
+		if start >= total {
+			break
+		}
+		end := start + each - 1
+		if end > total-1 {
+			end = total - 1
+		}
+		wg.Add(1)
+		go func(start, end int64) {
+			defer wg.Done()
+			if e := copyRangeInto(segCtx, client, url, out, start, end, func(k int64) {
+				done.Add(k)
+				report()
+			}); e != nil {
+				fail(e)
+			}
+		}(start, end)
+	}
+	wg.Wait()
+	errMu.Lock()
+	defer errMu.Unlock()
+	if firstErr != nil {
+		return firstErr
+	}
+	report() // 收尾进度（1.0）
+	return nil
+}
+
+// requestRange 发起带 Range 的 GET，返回响应与 Content-Range 给出的总长度（无则 0）。
+func requestRange(ctx context.Context, client *http.Client, url string, start, end int64) (*http.Response, int64, error) {
+	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
+	if err != nil {
+		return nil, 0, err
+	}
+	req.Header.Set("User-Agent", "dsh-systray/"+appVersion)
+	req.Header.Set("Accept-Encoding", "identity") // 分段必须落在未压缩实体上
+	req.Header.Set("Range", fmt.Sprintf("bytes=%d-%d", start, end))
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, 0, err
+	}
+	total := contentRangeTotal(resp.Header.Get("Content-Range"))
+	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusPartialContent {
+		resp.Body.Close()
+		return nil, 0, fmt.Errorf("HTTP %d", resp.StatusCode)
+	}
+	return resp, total, nil
+}
+
+// contentRangeTotal 解析 "bytes 0-4194303/10485760" 的总长度（缺失/非法返回 0）。
+func contentRangeTotal(v string) int64 {
+	i := strings.LastIndexByte(v, '/')
+	if i < 0 {
+		return 0
+	}
+	n, err := strconv.ParseInt(strings.TrimSpace(v[i+1:]), 10, 64)
+	if err != nil || n <= 0 {
+		return 0
+	}
+	return n
+}
+
+// copyRangeInto 下载 [start, end] 区间并写入文件对应偏移；长度不符视为失败（防截断/缓存残缺）。
+func copyRangeInto(ctx context.Context, client *http.Client, url string, dst *os.File, start, end int64,
+	onWrite func(int64)) error {
+	resp, _, err := requestRange(ctx, client, url, start, end)
+	if err != nil {
+		return err
+	}
 	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
+	if resp.StatusCode != http.StatusPartialContent {
+		return fmt.Errorf("HTTP %d（源拒绝分段请求）", resp.StatusCode)
+	}
+	n, err := copyBodyAt(dst, resp.Body, start, onWrite)
+	if err != nil {
+		return err
+	}
+	if want := end - start + 1; n != want {
+		return fmt.Errorf("分段长度不符：%d/%d 字节", n, want)
+	}
+	return nil
+}
+
+// copyBodyAt 把 src 顺序写入 dst 的 off 起始处，返回写入字节数（每块回调增量）。
+func copyBodyAt(dst *os.File, src io.Reader, off int64, onWrite func(int64)) (int64, error) {
+	buf := make([]byte, 256*1024)
+	var written int64
+	for {
+		n, rerr := src.Read(buf)
+		if n > 0 {
+			if _, werr := dst.WriteAt(buf[:n], off+written); werr != nil {
+				return written, werr
+			}
+			written += int64(n)
+			if onWrite != nil {
+				onWrite(int64(n))
+			}
+		}
+		if rerr == io.EOF {
+			return written, nil
+		}
+		if rerr != nil {
+			return written, rerr
+		}
+	}
+}
+
+// writeBodyTo 顺序写入完整响应体（源不支持 Range 或文件不超过首段时使用）。
+func writeBodyTo(resp *http.Response, dest string, onProgress func(pct float64)) error {
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusPartialContent {
 		return fmt.Errorf("HTTP %d", resp.StatusCode)
 	}
 	out, err := os.Create(dest)
@@ -1727,13 +2008,12 @@ func downloadOnce(ctx context.Context, url, dest string, onProgress func(pct flo
 			}
 		}
 		if rerr == io.EOF {
-			break
+			return nil
 		}
 		if rerr != nil {
 			return rerr
 		}
 	}
-	return nil
 }
 
 // downloadWithRetry 带「停滞看门狗」与重试的下载，供 GitHub CLI 这类大文件使用：

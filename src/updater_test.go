@@ -1,11 +1,19 @@
 package main
 
 import (
+	"bytes"
+	"context"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
+	"time"
 )
 
 // TestUpdatePayloadPathNested 更新包兼容一层子目录（历史 `dist/` 前缀布局）：
@@ -234,5 +242,122 @@ func TestResolveNpmUpdateTarget(t *testing.T) {
 	// 空版本表：错误返回
 	if _, _, err = resolveNpmUpdateTarget(nil, false); err == nil {
 		t.Error("empty versions: want error")
+	}
+}
+
+// ==================== 分段下载（2026-09-24 加速：单连接被限速，改多连接 Range 并发） ====================
+
+// segmentPayload 构造超过分段阈值（downloadSegmentMinSize）的测试负载。
+func segmentPayload() []byte {
+	p := make([]byte, downloadSegmentMinSize*2+12345)
+	for i := range p {
+		p[i] = byte(i*7 + i/251)
+	}
+	return p
+}
+
+// TestDownloadOnceSegmentedRange 支持 Range 的源：走多连接分段，内容逐字节一致且进度到 1。
+func TestDownloadOnceSegmentedRange(t *testing.T) {
+	payload := segmentPayload()
+	var rangeReqs int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Range") != "" {
+			atomic.AddInt32(&rangeReqs, 1)
+		}
+		http.ServeContent(w, r, "blob.bin", time.Now(), bytes.NewReader(payload))
+	}))
+	defer srv.Close()
+
+	dest := filepath.Join(t.TempDir(), "blob.bin")
+	var lastPct float64
+	if err := downloadOnce(context.Background(), srv.URL+"/blob.bin", dest, func(p float64) { lastPct = p }); err != nil {
+		t.Fatalf("downloadOnce: %v", err)
+	}
+	got, err := os.ReadFile(dest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(got, payload) {
+		t.Fatalf("content mismatch: got %d bytes, want %d", len(got), len(payload))
+	}
+	if n := atomic.LoadInt32(&rangeReqs); n < 2 {
+		t.Fatalf("expected multiple range requests (分段并发), got %d", n)
+	}
+	if lastPct < 0.999 {
+		t.Fatalf("progress did not reach 1.0: %v", lastPct)
+	}
+}
+
+// TestDownloadOnceFallbackWhenRangeIgnored 忽略 Range 的源：回退单连接顺序写入（不因分段失败）。
+func TestDownloadOnceFallbackWhenRangeIgnored(t *testing.T) {
+	payload := segmentPayload()
+	var rangeReqs int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Range") != "" {
+			atomic.AddInt32(&rangeReqs, 1)
+		}
+		// 忽略 Range：一律返回 200 + 全量内容
+		w.Header().Set("Content-Length", strconv.Itoa(len(payload)))
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write(payload)
+	}))
+	defer srv.Close()
+
+	dest := filepath.Join(t.TempDir(), "blob.bin")
+	if err := downloadOnce(context.Background(), srv.URL+"/blob.bin", dest, nil); err != nil {
+		t.Fatalf("downloadOnce: %v", err)
+	}
+	got, err := os.ReadFile(dest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(got, payload) {
+		t.Fatalf("content mismatch: got %d bytes, want %d", len(got), len(payload))
+	}
+	if n := atomic.LoadInt32(&rangeReqs); n != 1 {
+		t.Fatalf("expected exactly 1 request (顺序回退，不重复下载), got %d", n)
+	}
+}
+
+// TestDownloadOnceSegmentedTruncatedSegment 段内容短于请求区间（源截断）必须报错，
+// 不能把带空洞的文件当成功交给上层解压。
+func TestDownloadOnceSegmentedTruncatedSegment(t *testing.T) {
+	payload := segmentPayload()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Range") != "" && r.Header.Get("Range") != "bytes=0-131071" {
+			// 非探测段的区间请求：谎报 Content-Range 但只发一半数据
+			w.Header().Set("Content-Range", fmt.Sprintf("bytes %s/%d",
+				strings.TrimPrefix(r.Header.Get("Range"), "bytes="), len(payload)))
+			w.WriteHeader(http.StatusPartialContent)
+			_, _ = w.Write(payload[:len(payload)/2])
+			return
+		}
+		http.ServeContent(w, r, "blob.bin", time.Now(), bytes.NewReader(payload))
+	}))
+	defer srv.Close()
+
+	dest := filepath.Join(t.TempDir(), "blob.bin")
+	if err := downloadOnce(context.Background(), srv.URL+"/blob.bin", dest, nil); err == nil {
+		t.Fatal("expected error on truncated segment, got nil")
+	}
+}
+
+// TestContentRangeTotal Content-Range 解析：正常、缺失、非法、total=* 都不得误判。
+func TestContentRangeTotal(t *testing.T) {
+	cases := []struct {
+		in   string
+		want int64
+	}{
+		{"bytes 0-4194303/10485760", 10485760},
+		{"bytes 0-0/1", 1},
+		{"", 0},
+		{"bytes 0-99/*", 0},
+		{"garbage", 0},
+		{"bytes 0-99/abc", 0},
+	}
+	for _, c := range cases {
+		if got := contentRangeTotal(c.in); got != c.want {
+			t.Errorf("contentRangeTotal(%q) = %d, want %d", c.in, got, c.want)
+		}
 	}
 }
