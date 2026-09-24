@@ -1272,11 +1272,13 @@ func registerSystray() {
 	runtime.LockOSThread()
 	if err := wt.initInstance(); err != nil {
 		log.Printf("systray error: unable to init instance: %s\n", err)
+		notifyFail(fmt.Errorf("托盘初始化失败（%v）", err))
 		return
 	}
 
 	if err := wt.createMenu(); err != nil {
 		log.Printf("systray error: unable to create menu: %s\n", err)
+		notifyFail(fmt.Errorf("托盘菜单创建失败（%v）", err))
 		return
 	}
 

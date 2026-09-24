@@ -15,6 +15,11 @@ var (
 	menuItems     = make(map[uint32]*MenuItem)
 	menuItemsLock sync.RWMutex
 
+	// systrayFail 托盘初始化失败回调（可选）：注册由 SetOnFail 设置。
+	// 未设置时失败只写日志——进程没有任何界面，用户看不到托盘图标也看不到窗口，
+	// 表现为"双击没反应"，无从判断是没启动还是启动后崩了（2026-09-24 现场）。
+	systrayFail func(error)
+
 	// onSystemPowerChange 系统电源/会话状态回调（仅 macOS 由 NSWorkspace 通知触发）。
 	// 参数 true=关机/重启/注销已开始（应用退出应跳过交互询问，避免阻塞系统退出）；
 	// false=会话恢复（如快速用户切换切回，此前置位应复位，恢复交互询问）。
@@ -94,6 +99,19 @@ func Run(onReady, onExit func()) {
 // 设置鼠标左键双击事件的时间间隔 默认500毫秒
 func SetDClickTimeMinInterval(value int64) {
 	dClickTimeMinInterval = value
+}
+
+// SetOnFail 设置托盘初始化失败回调：托盘窗口/图标注册失败时被调用（在托盘 goroutine 上）。
+// 未设置时失败仅写日志，调用方（GUI 程序）会表现为"静默无界面"。
+func SetOnFail(fn func(error)) {
+	systrayFail = fn
+}
+
+// notifyFail 向注册的失败回调上报（未设置时静默，由调用方日志兜底）。
+func notifyFail(err error) {
+	if systrayFail != nil {
+		systrayFail(err)
+	}
 }
 
 // 设置托盘鼠标左键点击事件

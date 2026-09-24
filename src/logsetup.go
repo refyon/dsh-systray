@@ -37,18 +37,83 @@ func unifiedLogPath() string {
 	return filepath.Join(logDir, unifiedLogName)
 }
 
-// initUnifiedLog 打开统一日志句柄（进程级）。返回是否成功：失败时调用方可回退目录再试
-// （见 main()）。失败不阻塞功能，但为可诊断，main() 已把 log 同时接 stderr。
-func initUnifiedLog() bool {
+// initUnifiedLog 打开统一日志句柄（进程级），返回失败原因（nil = 成功）。
+//
+// 为什么返回原因：本函数失败时调用方会把日志整体回退到临时目录，而回退后**日志页（读主
+// 目录）永远看不到这些行**，表现为"日志时有时无"（2026-09-24 现场：同一个二进制，有的
+// 启动写主目录、有的写 Temp）。把失败原因带出去，调用方才能在启动首行与 stderr 里说清
+// "为什么这次写到 Temp 了"。
+func initUnifiedLog() error {
 	if err := os.MkdirAll(logDir, 0o755); err != nil {
-		return false
+		return fmt.Errorf("创建日志目录 %s 失败: %w", logDir, err)
 	}
 	f, err := os.OpenFile(unifiedLogPath(), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
 	if err != nil {
-		return false
+		return fmt.Errorf("打开日志文件 %s 失败: %w", unifiedLogPath(), err)
 	}
 	unifiedFile = f
-	return true
+	return nil
+}
+
+// initUnifiedLogWithRepair 先直接打开主日志；失败则尝试自愈后重试，全程把动作与原因写进
+// 调用方可见的说明。返回 (是否成功, 自愈/失败说明)。
+//
+// 自愈顺序：
+//  1. chmod 0644 —— 修 POSIX 权限位（macOS 上最常见的不可写原因）；
+//  2. 改名让位 —— 目标文件本身打不开（典型：它由提权进程创建，其 ACL 不含当前受限令牌的
+//     写权限）时，把旧文件改名为 .stale-<时间戳> 保留现场，再新建一个。目录可写即可成功，
+//     这样主目录不会被整体放弃、日志页仍能看到本次启动。
+//
+// 仍失败才由调用方回退临时目录；此时说明里带上失败原因与文件属主，便于定位。
+func initUnifiedLogWithRepair() (bool, string) {
+	if err := initUnifiedLog(); err == nil {
+		return true, ""
+	} else {
+		first := err
+		notes := make([]string, 0, 2)
+
+		// 1) 权限位（POSIX 语义；Windows 上是 no-op）
+		_ = os.Chmod(unifiedLogPath(), 0o644)
+		if err2 := initUnifiedLog(); err2 == nil {
+			return true, "已修正日志文件权限位后重开"
+		}
+
+		// 2) 关键自愈：给日志目录打「低完整性可写」标签。
+		//    Windows 默认只给 %TEMP% 打该标签；受限/低完整性进程因此能在 Temp 落盘、却写不了
+		//    %APPDATA%，导致日志整体回退到 Temp（日志页看不到）。打标签后主目录恢复可写。
+		lowNote := ""
+		if lerr := ensureLowIntegrityWritable(logDir); lerr != nil {
+			lowNote = "；打低完整性标签失败(" + lerr.Error() + ")"
+		} else {
+			lowNote = "；已给日志目录打低完整性可写标签"
+		}
+		if err3 := initUnifiedLog(); err3 == nil {
+			return true, "日志目录修正后重开" + lowNote
+		}
+
+		// 3) 目标文件本身打不开（多为提权进程创建、ACL 不含当前令牌）→ 改名让位保留现场后新建
+		if rerr := renameStaleLog(unifiedLogPath()); rerr == nil {
+			if err4 := initUnifiedLog(); err4 == nil {
+				return true, "原日志文件打不开，已改名让位并新建" + lowNote
+			}
+		}
+
+		if werr := logWritableByCurrentToken(unifiedLogPath()); werr != nil {
+			notes = append(notes, "复核仍不可写："+werr.Error())
+		}
+		if len(notes) > 0 {
+			return false, "主日志不可写（" + strings.Join(notes, "；") + "）" + lowNote + "：" + first.Error()
+		}
+		return false, "主日志不可写" + lowNote + "：" + first.Error()
+	}
+}
+
+// renameStaleLog 把无法打开的目标文件改名为 .stale-<时间戳>，为新建让位（保留现场，不删除）。
+func renameStaleLog(path string) error {
+	if _, err := os.Stat(path); err != nil {
+		return nil // 不存在：无需让位
+	}
+	return os.Rename(path, fmt.Sprintf("%s.stale-%d", path, time.Now().Unix()))
 }
 
 // reopenUnifiedLog 轮转后重建统一日志句柄。POSIX（mac）允许 rename 打开中的文件：

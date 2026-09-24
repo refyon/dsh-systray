@@ -67,8 +67,8 @@ func TestRotateReopensHandle(t *testing.T) {
 	dir := useTempLogDir(t)
 	t.Cleanup(func() { lastBootLogBase.Store(0) })
 	p := filepath.Join(dir, unifiedLogName)
-	if !initUnifiedLog() {
-		t.Fatal("initUnifiedLog failed")
+	if err := initUnifiedLog(); err != nil {
+		t.Fatalf("initUnifiedLog failed: %v", err)
 	}
 	t.Cleanup(func() {
 		unifiedMu.Lock()

@@ -19,6 +19,8 @@ import (
 	"time"
 	"unsafe"
 
+	"golang.org/x/sys/windows"
+
 	"dsh-systray/internal/systray"
 )
 
@@ -112,6 +114,65 @@ const (
 )
 
 var serverCmd *exec.Cmd
+
+// processExecutionContext 返回当前进程的执行上下文，用于启动日志与托盘失败诊断：
+// 完整性级别（High=已提权 / Medium=标准用户）+ 会话号 + 令牌用户 SID。
+//
+// 用途：托盘注册（RegisterClassEx/CreateWindowEx/Shell_NotifyIcon）失败时会返回
+// Access is denied，而"是否被提权""是否与资源管理器同会话"正是两个常见诱因。把这两项
+// 钉进启动日志，就能一眼对照"能起来的那次"与"起不来的那次"差在哪里（2026-09-24 现场）。
+// 用 golang.org/x/sys/windows：它已随 Wails 进入依赖树（go.mod indirect），
+// 标准库 syscall 在这版 Go 上没有 OpenProcessToken/TokenIntegrityLevel 的可用封装。
+func processExecutionContext() string {
+	level := "unknown"
+	user := "unknown"
+	if h, err := windows.OpenCurrentProcessToken(); err == nil {
+		defer h.Close()
+		if tu, err := h.GetTokenUser(); err == nil && tu != nil && tu.User.Sid != nil {
+			user = tu.User.Sid.String()
+		}
+		if rid, err := tokenIntegrityLevel(h); err == nil {
+			switch {
+			case rid >= 0x4000:
+				level = "System"
+			case rid >= 0x3000:
+				level = "High(已提权)"
+			case rid >= 0x2000:
+				level = "Medium(标准)"
+			default:
+				level = "Low"
+			}
+		}
+	}
+
+	session := "?"
+	var sid uint32
+	if err := windows.ProcessIdToSessionId(uint32(os.Getpid()), &sid); err == nil {
+		session = strconv.FormatUint(uint64(sid), 10)
+	}
+	return "integrity=" + level + " session=" + session + " user=" + user
+}
+
+// tokenIntegrityLevel 读取令牌完整性级别 RID。x/sys 没有 GetTokenIntegrityLevel 封装，
+// 用 GetTokenInformation(TokenIntegrityLevel) 取缓冲区：TOKEN_INTEGRITY_LEVEL 结构体
+// 之后紧跟 SID，最后一个子权威即级别 RID（0x2000=Medium、0x3000=High、0x4000=System）。
+func tokenIntegrityLevel(h windows.Token) (uint32, error) {
+	var n uint32
+	// 先探长度（预期返回 ERROR_INSUFFICIENT_BUFFER）
+	_ = windows.GetTokenInformation(h, windows.TokenIntegrityLevel, nil, 0, &n)
+	if n == 0 {
+		n = 64
+	}
+	buf := make([]byte, n)
+	if err := windows.GetTokenInformation(h, windows.TokenIntegrityLevel, &buf[0], n, &n); err != nil {
+		return 0, err
+	}
+	sid := (*windows.SIDAndAttributes)(unsafe.Pointer(&buf[0])).Sid
+	if sid == nil || sid.SubAuthorityCount() == 0 {
+		return 0, errors.New("token integrity level: empty SID")
+	}
+	return sid.SubAuthority(uint32(sid.SubAuthorityCount() - 1)), nil
+}
 
 // candidateHarnessDirs 探测候选：各盘符的 \deepseek-harness + 官方默认目录（用户主目录下）
 // + 旧版私有目录（%LOCALAPPDATA%\Programs\dsh-systray-harness，仅迁移接管已存在部署）。

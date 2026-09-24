@@ -465,14 +465,24 @@ func main() {
 		cfgDir = os.TempDir()
 	}
 	logDir = filepath.Join(cfgDir, "dsh-systray", "logs")
+	if v := strings.TrimSpace(os.Getenv("DSH_SYSTRAY_LOG_DIR")); v != "" {
+		logDir = expandTildePath(v) // 显式覆盖（诊断/特殊部署用）
+	}
+	logFallbackNote := ""
 	if !bindingsRun {
 		// 统一日志：所有行为（自身/UI/托盘/子进程）写入 logDir/dsh-systray.log
 		// （进程级单例句柄，行格式 ts [LEVEL] [module] message；见 logsetup.go）。
-		// 默认目录创建/打开失败时回退系统临时目录，保证日志总有着落（此前失败完全
-		// 静默丢弃，表现为"日志为空"且无从诊断）。
-		if !initUnifiedLog() && !strings.HasPrefix(logDir, os.TempDir()) {
+		// **优先保住主目录**：先直接打开，失败则 chmod / 改名让位后重试（自愈），只有自愈也
+		// 不成功才回退系统临时目录，并把原因写进启动日志与 stderr——否则日志页（读主目录）
+		// 看不到这次启动，表现为"日志时有时无"（2026-09-24 现场）。
+		if ok, note := initUnifiedLogWithRepair(); !ok {
+			logFallbackNote = note
 			logDir = filepath.Join(os.TempDir(), "dsh-systray", "logs")
-			initUnifiedLog()
+			if _, note2 := initUnifiedLogWithRepair(); note2 != "" {
+				logFallbackNote += "；临时目录也不可用：" + note2
+			}
+		} else if note != "" {
+			logFallbackNote = note
 		}
 		mergeLegacyLogs() // 升级迁移：合并旧多文件日志后删除源文件（须先于任何新日志写入）
 		// stderr 双写：macOS 上从 Console/unified 日志也能看到应用日志（诊断兜底）
@@ -480,8 +490,14 @@ func main() {
 	}
 	log.SetFlags(log.LstdFlags)
 	if !bindingsRun {
-		// 启动首行：固定记录版本/pid/日志路径，便于对照「日志页显示路径」与实际落盘位置
-		log.Printf("dsh-systray v%s starting (pid=%d), log file: %s", appVersion, os.Getpid(), unifiedLogPath())
+		if logFallbackNote != "" {
+			log.Printf("[log] 日志落盘说明：%s", logFallbackNote)
+		}
+		// 启动首行：固定记录版本/pid/日志路径/执行上下文（完整性级别+会话号），
+		// 便于对照「日志页显示路径」与实际落盘位置，并在托盘注册失败时可一眼看出
+		// "能起来的那次"与"起不来的那次"是否处在不同执行上下文。
+		log.Printf("dsh-systray v%s starting (pid=%d), log file: %s, %s",
+			appVersion, os.Getpid(), unifiedLogPath(), processExecutionContext())
 	}
 
 	release, acquired := acquireSingleInstance()
@@ -505,6 +521,14 @@ func main() {
 	// Windows：托盘在独立 goroutine 自建窗口+消息循环，与 Wails 事件循环共存。
 	// macOS：托盘通过 RunWithExternalLoop 集成（见 onStartup），不接管 NSApplication。
 	if runtime.GOOS == "windows" && !bindingsRun {
+		// 托盘初始化失败必须让用户看见：本程序没有主窗口（StartHidden），失败时既无图标也
+		// 无窗口，只能靠弹窗告知，否则表现为"双击没反应"（2026-09-24 现场：initInstance
+		// 返回 Access is denied，只写日志就 return，用户与排查者都无从判断）。
+		systray.SetOnFail(func(err error) {
+			log.Printf("systray failed: %v", err)
+			showMessageBox(TF("系统托盘未能启动，程序无法继续运行。\n\n%v\n\n日志：%s", err, unifiedLogPath()), appName)
+			os.Exit(1)
+		})
 		go systray.Run(onReady, onExit)
 	}
 
@@ -559,6 +583,12 @@ func onStartup(ctx context.Context) {
 			}
 		})
 		startSignalHandling() // SIGTERM/SIGINT（launchd 注销/关机路径）→ 优雅退出不弹窗
+		// 与 Windows 对称：托盘注册失败必须可见（本程序无主窗口，失败即"毫无反应"）
+		systray.SetOnFail(func(err error) {
+			log.Printf("systray failed: %v", err)
+			showMessageBox(TF("系统托盘未能启动，程序无法继续运行。\n\n%v\n\n日志：%s", err, unifiedLogPath()), appName)
+			os.Exit(1)
+		})
 		start, _ := systray.RunWithExternalLoop(onReady, onExit)
 		start()
 	}
