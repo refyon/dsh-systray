@@ -166,6 +166,7 @@ func saveCurrentConfig() {
 		HarnessDir:        harnessDir,
 		StartupTimeoutSec: int(startupTimeout / time.Second),
 		UpdateMirror:      updateMirrorOverride,
+		MirrorBase:        mirrorBase,
 		HarnessPrerelease: harnessPrereleaseOverride,
 		Language:          langPref,
 		PendingPluginOps:  pluginPendingOps(),

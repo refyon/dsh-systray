@@ -4,6 +4,25 @@
 > `## vX.Y.Z` 区块（最新在上）。CI 推送 `v*` tag 后会自动把该区块作为 GitHub Release 正文；
 > 找不到对应区块时回退为 GitHub 自动生成（提交列表）。
 
+## v0.10.8
+
+自 v0.10.7 起（新增「自建 GitHub 中转 Worker」支持：私有仓插件更新也走 Cloudflare 边缘）：
+
+### 新增
+
+- **`mirrorBase` 配置项**：填入自建中转 Worker 的基址（如 `https://dsh-mirror.example.com`）后：
+  - **下载全走中转**：自更新包、GitHub CLI、字体、版本查询一律先走 `<base>/gh/`，直连与第三方镜像仍作为回退保留（镜像链顺序：`<base>/gh/` → 显式 updateMirror → 直连 → 第三方镜像，端点重复时去重）；
+  - **私有仓插件**（`github:` 来源）的安装与更新改用 `<base>/p/<owner>/<repo>/tar.gz/<commit>`：用 GitHub API 解析该仓库默认分支（或 spec 里的 `#ref`）的**最新提交**，钉成不可变地址（便于 Worker 侧缓存、结果可复现）；解析失败（无凭据 / 网络异常 / 仓库不可见）自动回退原生 `pnpm update`，不影响原有能力；
+  - **凭据自动补齐**：为该 host 追加 `//<host>/:tokenHelper=<gh-token 包装器>`，与 codeload 同一套机制（token 仍由 gh 从系统凭据库读出、不落盘），pnpm 10 / 11 均生效；
+  - 插件来源分类识别中转 tarball 地址为 **github 来源且可更新**，不会显示成「以固定压缩包地址安装，无法判断更新」。
+- **收益（本机国内网络实测）**：同一 5.1MB 资产，GitHub 直连 0.1–0.4 Mbps、第三方镜像约 2.9 Mbps、自建 Worker（R2 命中）**9–12 Mbps**；私有仓原先走 codeload 直连约 0.2 Mbps。
+
+### 测试
+
+- 新增 5 例：中转地址组装/解析（拒绝非配置 host、拒绝分支名这类可变地址）、未配置 `mirrorBase` 时不改写、来源分类、`github:` spec 解析、镜像链顺序——其中「直连候选不得被误删」一条正是回归测试抓出的首版实现缺陷；
+- **端到端（真实私有仓，pnpm 10.34.5 与 11.7.0 双版本）**：仅凭 npmrc 授权（不带任何显式请求头）执行 `pnpm add https://<mirror>/p/refyon/<私有仓>/tar.gz/<sha>` 安装成功；
+- 全量 `go test -count=1 ./...` 绿。
+
 ## v0.10.7
 
 自 v0.10.6 起（修复「装过私有仓插件的机器上，托盘自带 pnpm 10.34.5 之后什么包都装不动」）：

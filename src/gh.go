@@ -397,7 +397,29 @@ func writeCodeloadTokenHelper(bin string) error {
 	if err != nil {
 		return err
 	}
-	return upsertUserNpmrcLine(codeloadTokenHelperKey + path)
+	if err := upsertUserNpmrcLine(codeloadTokenHelperKey + path); err != nil {
+		return err
+	}
+	// 自建中转 Worker（mirrorBase）同样要凭据：私有仓 tarball 走 `<base>/p/...`，
+	// pnpm 需要该 host 的 token 才会带 Authorization（与 codeload 同一套 npmrc 机制）。
+	if h := mirrorHost(); h != "" {
+		if err := upsertUserNpmrcLineForKey("//"+h+"/:tokenHelper=", "//"+h+"/:tokenHelper="+path); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// mirrorHost 自建中转 Worker 的 host（未配置 mirrorBase 时为空）。
+func mirrorHost() string {
+	if mirrorBase == "" {
+		return ""
+	}
+	u, err := url.Parse(mirrorBase)
+	if err != nil || u.Host == "" {
+		return ""
+	}
+	return u.Host
 }
 
 // removeLegacyCodeloadTokenHelper 删除旧格式（值含空白 = 带参数）的 codeload tokenHelper 行。
@@ -456,6 +478,11 @@ func dropLegacyTokenHelperLine(content string) (string, bool) {
 
 // upsertUserNpmrcLine 把单行配置写入/更新到用户级 npmrc（幂等 + 原子写，保留其它配置）。
 func upsertUserNpmrcLine(line string) error {
+	return upsertUserNpmrcLineForKey(codeloadTokenHelperKey, line)
+}
+
+// upsertUserNpmrcLineForKey 同 upsertUserNpmrcLine，但按任意 key 前缀匹配（多 host 凭据用）。
+func upsertUserNpmrcLineForKey(key, line string) error {
 	p, err := userNpmrcPath()
 	if err != nil {
 		return err
@@ -466,7 +493,7 @@ func upsertUserNpmrcLine(line string) error {
 	} else if !os.IsNotExist(rerr) {
 		return rerr
 	}
-	next, changed := upsertNpmrcTokenHelper(cur, line)
+	next, changed := upsertNpmrcKeyedLine(key, cur, line)
 	if !changed {
 		return nil
 	}
@@ -508,9 +535,15 @@ func npmrcTokenHelperPathSafe(bin string) bool {
 	return !strings.ContainsAny(bin, "$%`\"'")
 }
 
-// upsertNpmrcTokenHelper 在 npmrc 文本里写入或更新 tokenHelper 行，返回新内容与是否变更。
-// 只动这一行：同键历史重复行合并为一行，其余内容原样保留（含原有换行风格）。
+// upsertNpmrcTokenHelper 在 npmrc 文本里写入或更新 codeload 的 tokenHelper 行（兼容既有调用）。
 func upsertNpmrcTokenHelper(content, line string) (string, bool) {
+	return upsertNpmrcKeyedLine(codeloadTokenHelperKey, content, line)
+}
+
+// upsertNpmrcKeyedLine 在 npmrc 文本里写入或更新以 key 开头的行，返回新内容与是否变更。
+// 只动匹配 key 的那一行：同键历史重复行合并为一行，其余内容原样保留（含原有换行风格）。
+// key 泛化是为了支持多个 host 的凭据（codeload 与自建中转 Worker 各一行）。
+func upsertNpmrcKeyedLine(key, content, line string) (string, bool) {
 	nl := "\n"
 	if strings.Contains(content, "\r\n") {
 		nl = "\r\n"
@@ -523,7 +556,7 @@ func upsertNpmrcTokenHelper(content, line string) (string, bool) {
 	replaced := false
 	for _, ln := range lines {
 		ln = strings.TrimSuffix(ln, "\r")
-		if strings.HasPrefix(strings.TrimSpace(ln), codeloadTokenHelperKey) {
+		if strings.HasPrefix(strings.TrimSpace(ln), key) {
 			if replaced {
 				continue // 历史重复行：合并为一行
 			}

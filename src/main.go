@@ -109,6 +109,11 @@ type appConfig struct {
 	HarnessDir        string `json:"harnessDir"`
 	StartupTimeoutSec int    `json:"startupTimeoutSec"`
 	UpdateMirror      string `json:"updateMirror"`
+	// MirrorBase 自建 GitHub 中转 Worker 的基址（如 https://dsh-mirror.example.com）。
+	// 设置后：① 所有 GitHub 下载走 `<base>/gh/`（等价 updateMirror 前缀，自动排在最前）；
+	// ② 私有仓（github: 来源）插件改用 `<base>/p/<owner>/<repo>/tar.gz/<sha>` 安装/更新——
+	// 国内直连 codeload 实测 0.2 Mbps，经 Cloudflare 边缘 9-12 Mbps。
+	MirrorBase string `json:"mirrorBase,omitempty"`
 	// HarnessPrerelease 允许把 alpha/beta/rc 等预发布版视为 DeepSeek Harness 的可更新版本（默认关闭）。
 	HarnessPrerelease bool `json:"harnessPrerelease"`
 	// Language 界面语言偏好：auto（跟随系统）| zh | en；缺省 auto。运行时解析见 i18n.go。
@@ -188,6 +193,9 @@ func applyConfigFile(cfg *appConfig, path string) {
 	}
 	if f.UpdateMirror != "" {
 		cfg.UpdateMirror = f.UpdateMirror
+	}
+	if v := strings.TrimRight(strings.TrimSpace(f.MirrorBase), "/"); v != "" {
+		cfg.MirrorBase = v
 	}
 	if f.HarnessPrerelease {
 		cfg.HarnessPrerelease = true
@@ -423,6 +431,7 @@ func main() {
 
 	cfg := loadConfig()
 	updateMirrorOverride = cfg.UpdateMirror
+	mirrorBase = strings.TrimRight(cfg.MirrorBase, "/")
 	harnessPrereleaseOverride = cfg.HarnessPrerelease
 	setAccountAPIBase(strings.TrimSpace(cfg.AccountAPIBase))
 	port = cfg.Port
@@ -800,14 +809,14 @@ func bootstrapService() {
 		log.Printf("configured harness dir %s not found, falling back to default %s", harnessDir, defaultHarnessDir())
 		harnessDir = defaultHarnessDir()
 		harnessDirExplicit = false
-		saveConfig(appConfig{Port: port, HarnessDir: harnessDir, StartupTimeoutSec: int(startupTimeout / time.Second), UpdateMirror: updateMirrorOverride, HarnessPrerelease: harnessPrereleaseOverride, Language: langPref})
+		saveConfig(appConfig{Port: port, HarnessDir: harnessDir, StartupTimeoutSec: int(startupTimeout / time.Second), UpdateMirror: updateMirrorOverride, MirrorBase: mirrorBase, HarnessPrerelease: harnessPrereleaseOverride, Language: langPref})
 	}
 
 	// 未显式配置时：自动探测已存在的 harness 源码 checkout（如各盘符根目录下的 deepseek-harness）
 	if !harnessDirExplicit {
 		if found := findExistingHarnessDir(); found != "" {
 			harnessDir = found
-			saveConfig(appConfig{Port: port, HarnessDir: harnessDir, StartupTimeoutSec: int(startupTimeout / time.Second), UpdateMirror: updateMirrorOverride, HarnessPrerelease: harnessPrereleaseOverride, Language: langPref})
+			saveConfig(appConfig{Port: port, HarnessDir: harnessDir, StartupTimeoutSec: int(startupTimeout / time.Second), UpdateMirror: updateMirrorOverride, MirrorBase: mirrorBase, HarnessPrerelease: harnessPrereleaseOverride, Language: langPref})
 			log.Printf("detected existing harness at %s", found)
 		}
 	}

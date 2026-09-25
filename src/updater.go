@@ -1845,14 +1845,24 @@ func downloadFileWithProgress(ctx context.Context, url, dest string, onProgress 
 
 // buildMirrors 返回镜像优先顺序：用户配置镜像 → 默认列表。
 func buildMirrors() []string {
-	if updateMirrorOverride == "" {
-		return updateMirrors
+	// 自建中转 Worker（mirrorBase）排在最前：未显式配置 updateMirror 时，它就是首选镜像。
+	var out []string
+	if mirrorBase != "" {
+		out = append(out, mirrorBase+"/gh/")
 	}
-	out := []string{updateMirrorOverride}
+	if updateMirrorOverride != "" && updateMirrorOverride != mirrorBase+"/gh/" {
+		out = append(out, updateMirrorOverride)
+	}
 	for _, m := range updateMirrors {
-		if m != updateMirrorOverride {
-			out = append(out, m)
+		// 注意 updateMirrorOverride 为空时不能与空前缀（直连候选）比较后跳过——那会误删直连回退
+		if (updateMirrorOverride != "" && m == updateMirrorOverride) ||
+			(mirrorBase != "" && m == mirrorBase+"/gh/") {
+			continue
 		}
+		out = append(out, m)
+	}
+	if len(out) == 0 {
+		return updateMirrors
 	}
 	return out
 }

@@ -253,6 +253,11 @@ func classifyPluginSpec(spec string) (source string, canUpdate bool, reason stri
 		(!strings.HasPrefix(spec, "@") && specGitHubShorthandRe.MatchString(spec)):
 		return "github", true, ""
 	case strings.HasPrefix(low, "http://"), strings.HasPrefix(low, "https://"):
+		// 中转 Worker 的私有仓 tarball 地址（<base>/p/…/tar.gz/<sha>）：来源仍是 GitHub，
+		// 且可继续「更新」（重新解析默认分支最新提交），不能按普通固定压缩包处理。
+		if _, _, _, ok := parseMirrorTarballURL(spec); ok {
+			return "github", true, ""
+		}
 		if isTarballSpec(spec) {
 			return "tarball", false, "以固定压缩包地址安装，无法判断更新"
 		}
@@ -1076,10 +1081,98 @@ func pluginUpdateArgs(row PluginRow, target, registry string) ([]string, error) 
 		}
 		return []string{"add", row.Name + "@" + target, "--registry", registry}, nil
 	case "github":
+		// 自建中转 Worker：把 github: spec 改成 `<base>/p/<owner>/<repo>/tar.gz/<sha>`——
+		// 国内直连 codeload 实测 0.2 Mbps，走 Cloudflare 边缘 9-12 Mbps（本机实测）。
+		// 解析不出（无 gh 凭据 / 网络失败 / repo 不可见）时退回原生 pnpm update。
+		if spec, err := mirrorTarballSpec(row.Spec); err == nil && spec != "" {
+			log.Printf("plugin update: %s via mirror tarball %s", row.Name, spec)
+			return []string{"add", spec}, nil
+		} else if err != nil {
+			log.Printf("plugin update: mirror tarball for %s unavailable: %v", row.Name, err)
+		}
 		return []string{"update", row.Name}, nil
 	default:
 		return nil, fmt.Errorf("该插件无远程更新来源：%s", row.Reason)
 	}
+}
+
+// mirrorBase 自建 GitHub 中转 Worker 的基址（config.json 的 mirrorBase；空 = 不启用）。
+var mirrorBase string
+
+// specGitHubRepoRefRe 从显式 github: spec 里取 owner/repo 与可选 ref。
+var specGitHubRepoRefRe = regexp.MustCompile(`(?i)^github:([^/#\s]+)/([^/#\s]+?)(?:\.git)?(?:#([^\s]+))?$`)
+
+// mirrorTarballSpec 把 GitHub 来源 spec（github:owner/repo[#ref]）或已改写过的
+// `<base>/p/...` 地址解析为「固定 commit 的中转 tarball 地址」。
+//   - 入参是 github: spec → 通过 GitHub API 解析 ref（缺省为默认分支）对应的提交 SHA；
+//   - 入参已是中转 tarball 地址 → 从地址里取 owner/repo，重新解析默认分支的最新提交
+//     （这样同一个插件可以持续「更新」）。
+//
+// 未配置 mirrorBase、非 GitHub 来源、或解析失败时返回 ("", nil) 交调用方回退原生路径。
+func mirrorTarballSpec(spec string) (string, error) {
+	if mirrorBase == "" {
+		return "", nil
+	}
+	owner, repo := "", ""
+	if m := specGitHubRepoRefRe.FindStringSubmatch(strings.TrimSpace(spec)); m != nil {
+		owner, repo = m[1], m[2]
+		sha, err := resolveGitHubCommit(owner, repo, m[3])
+		if err != nil {
+			return "", err
+		}
+		return mirrorTarballURL(owner, repo, sha), nil
+	}
+	if o, r, _, ok := parseMirrorTarballURL(spec); ok {
+		owner, repo = o, r
+		sha, err := resolveGitHubCommit(owner, repo, "")
+		if err != nil {
+			return "", err
+		}
+		return mirrorTarballURL(owner, repo, sha), nil
+	}
+	return "", nil
+}
+
+// mirrorTarballURL 组装中转 Worker 的私有仓 tarball 地址（commit SHA 不可变，便于缓存）。
+func mirrorTarballURL(owner, repo, sha string) string {
+	return fmt.Sprintf("%s/p/%s/%s/tar.gz/%s", mirrorBase, owner, repo, sha)
+}
+
+// mirrorTarballURLRe 匹配中转 tarball 地址：<base>/p/<owner>/<repo>/tar.gz/<sha>。
+var mirrorTarballURLRe = regexp.MustCompile(`^https?://[^/]+/p/([^/]+)/([^/]+)/tar\.gz/([0-9a-fA-F]{7,40})$`)
+
+// parseMirrorTarballURL 解析中转 tarball 地址（host 必须是配置的 mirrorBase，避免误认第三方 URL）。
+func parseMirrorTarballURL(spec string) (owner, repo, sha string, ok bool) {
+	s := strings.TrimSpace(spec)
+	m := mirrorTarballURLRe.FindStringSubmatch(s)
+	if m == nil {
+		return "", "", "", false
+	}
+	if mirrorBase != "" && !strings.HasPrefix(strings.ToLower(s), strings.ToLower(mirrorBase)+"/") {
+		return "", "", "", false
+	}
+	return m[1], m[2], m[3], true
+}
+
+// resolveGitHubCommit 用 gh 凭据查 GitHub API，取 owner/repo 在 ref（空 = 默认分支）上的最新提交 SHA。
+func resolveGitHubCommit(owner, repo, ref string) (string, error) {
+	apiURL := fmt.Sprintf("https://api.github.com/repos/%s/%s/commits", owner, repo)
+	if ref != "" {
+		apiURL += "/" + url.PathEscape(ref)
+	} else {
+		apiURL += "?per_page=1"
+	}
+	body, err := getWithMirrors([]string{apiURL}, pluginCheckDeadline)
+	if err != nil {
+		return "", fmt.Errorf("解析 %s/%s 的提交失败：%w", owner, repo, err)
+	}
+	var commits []struct {
+		SHA string `json:"sha"`
+	}
+	if json.Unmarshal(body, &commits) != nil || len(commits) == 0 || commits[0].SHA == "" {
+		return "", fmt.Errorf("解析 %s/%s 的提交失败：响应不含 commit", owner, repo)
+	}
+	return commits[0].SHA, nil
 }
 
 // noteBuildScriptWarning github 类插件更新依赖其 prepare 构建脚本（pnpm ≥10 会受

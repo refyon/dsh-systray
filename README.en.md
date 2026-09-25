@@ -122,8 +122,8 @@ Run the build commands inside `src/` (the Wails project root = the directory hol
 
 | Platform | Build command (run inside `src/`) |
 | --- | --- |
-| Windows | `wails build -s -clean -platform windows/amd64 -ldflags "-X main.appVersion=v0.10.7"` |
-| macOS | `wails build -s -clean -platform darwin/universal -ldflags "-X main.appVersion=v0.10.7"` |
+| Windows | `wails build -s -clean -platform windows/amd64 -ldflags "-X main.appVersion=v0.10.8"` |
+| macOS | `wails build -s -clean -platform darwin/universal -ldflags "-X main.appVersion=v0.10.8"` |
 
 > - Output: `src/build/bin/dsh-systray.exe` (Windows) / `src/build/bin/dsh-systray.app` (macOS); the repository root keeps no build artifacts
 > - `-s`: skips the frontend build (embeds `src/frontend/dist` directly); after frontend changes simply re-run `wails build`

@@ -29,6 +29,13 @@ func pluginDepArg(name, spec string) string {
 	if s == "" {
 		return name
 	}
+	// 自建中转 Worker 启用时：github: spec 改写为固定 commit 的中转 tarball 地址
+	//（解析失败则原样回退，不影响安装）。
+	if mirrorBase != "" {
+		if u, err := mirrorTarballSpec(s); err == nil && u != "" {
+			return u
+		}
+	}
 	if specGitHubShorthandRe.MatchString(s) {
 		return s
 	}
