@@ -134,6 +134,95 @@ func TestPickHarnessVersion(t *testing.T) {
 	}
 }
 
+// TestPickFreshHarnessVersion 全新机器首次部署的目标版本：在「稳定版 ∪ rc 候选版」里取版本号最大者，
+// alpha/beta 不参与；新版本线只发了 alpha 时停在上一版本线的 rc；无可选版本时返回空（调用方回退内置兜底）。
+func TestPickFreshHarnessVersion(t *testing.T) {
+	cases := []struct {
+		name string
+		in   []string
+		want string
+	}{
+		// 2026-09-25 npm 真实版本表（节选：含历史 rc、各版本线 alpha 与最新两条 rc）
+		{"real-npm-versions", []string{
+			"0.1.0-rc.8", "0.1.1-rc.1", "0.1.1-rc.2", "0.1.2-alpha.5", "0.1.2-rc.1",
+			"0.1.3-alpha.2", "0.1.5-alpha.2", "0.1.5-rc.3", "0.1.6-alpha.2",
+			"0.1.7-alpha.2", "0.1.7-rc.1", "0.1.7-rc.2",
+		}, "0.1.7-rc.2"},
+		{"stable-beats-own-rc", []string{"0.1.7-rc.2", "0.1.7"}, "0.1.7"},
+		{"newer-line-alpha-only", []string{"0.1.7-rc.2", "0.1.8-alpha.1"}, "0.1.7-rc.2"},
+		{"prefix-tolerated", []string{"dsh-v0.1.5-rc.3", "v0.1.7-rc.2"}, "0.1.7-rc.2"},
+		{"rc-name-not-alpha-trap", []string{"0.1.1-rc.2", "0.1.6-beta.1", "0.1.4-rcx.1"}, "0.1.1-rc.2"},
+		{"alpha-only", []string{"0.1.8-alpha.1", "0.1.8-beta.2"}, ""},
+		{"empty", nil, ""},
+	}
+	for _, c := range cases {
+		if got := pickFreshHarnessVersion(c.in); got != c.want {
+			t.Errorf("%s: pickFreshHarnessVersion=%q, want %q", c.name, got, c.want)
+		}
+	}
+}
+
+// TestIsRCVersion rc 判定（首次部署只认 rc 与稳定版）。
+func TestIsRCVersion(t *testing.T) {
+	cases := []struct {
+		v    string
+		want bool
+	}{
+		{"0.1.7-rc.2", true},
+		{"dsh-v0.1.7-rc.1", true},
+		{"0.1.7-rc", true},
+		{"0.1.7-alpha.2", false},
+		{"0.1.7-beta.1", false},
+		{"0.1.7-rcx.1", false},
+		{"0.1.7", false},
+		{"", false},
+	}
+	for _, c := range cases {
+		if got := isRCVersion(c.v); got != c.want {
+			t.Errorf("isRCVersion(%q)=%v, want %v", c.v, got, c.want)
+		}
+	}
+}
+
+// TestPrereleaseChannelActive 生效的预发布通道：开关已开恒为真；开关关闭时看本机在跑的版本——
+// 预发布（rc/alpha）视为生效，稳定版或读不到版本不生效。
+func TestPrereleaseChannelActive(t *testing.T) {
+	oldDir, oldPre := harnessDir, harnessPrereleaseOverride
+	t.Cleanup(func() { harnessDir, harnessPrereleaseOverride = oldDir, oldPre })
+
+	// writeInstalled 把「已装 harness」伪造成指定版本（installedHarnessVersion 读 npm 包头一个命中）
+	writeInstalled := func(v string) {
+		harnessDir = t.TempDir()
+		dir := filepath.Join(harnessDir, "node_modules", "@deepseek-ai", "dsh")
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, "package.json"), []byte(`{"version":"`+v+`"}`), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	harnessPrereleaseOverride = true
+	writeInstalled("0.1.7") // 开关已开：即便装的是稳定版也生效
+	if !prereleaseChannelActive() {
+		t.Error("switch on: prereleaseChannelActive()=false, want true")
+	}
+
+	harnessPrereleaseOverride = false
+	writeInstalled("0.1.7-rc.2")
+	if !prereleaseChannelActive() {
+		t.Error("installed rc + switch off: want true（本机在跑预发布，通道视为生效）")
+	}
+	writeInstalled("0.1.7")
+	if prereleaseChannelActive() {
+		t.Error("installed stable + switch off: want false")
+	}
+	harnessDir = filepath.Join(t.TempDir(), "absent") // 未安装/版本读不到
+	if prereleaseChannelActive() {
+		t.Error("unknown installed version: want false")
+	}
+}
+
 // TestResolveHarnessLatest 预发布通道关闭时的“无法获取”修复：仓库只有预发布时，
 // 应返回说明文案而非空错误；通道开启或存在稳定版时无说明。
 func TestResolveHarnessLatest(t *testing.T) {

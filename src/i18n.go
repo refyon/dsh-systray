@@ -106,7 +106,7 @@ var i18nEnMap = map[string]string{
 	"正在下载 Node.js / pnpm 运行时（首次约 1-3 分钟）…": "Downloading the Node.js / pnpm runtime (first run ~1-3 min)…",
 	"正在安装 harness 依赖（首次约 2-5 分钟）…":         "Installing harness dependencies (first run ~2-5 min)…",
 	"正在构建 harness 前端产物（首次约 1-3 分钟）…":       "Building harness frontend assets (first run ~1-3 min)…",
-	"正在安装 DeepSeek Harness（首次约 2-5 分钟）…":   "Installing DeepSeek Harness (first run ~2-5 min)…",
+	"正在安装 DeepSeek Harness %s（首次约 2-5 分钟）…": "Installing DeepSeek Harness %s (first run ~2-5 min)…",
 	"正在查询最新版本…":                            "Querying the latest version…",
 	"正在重试启动后台服务…":                          "Retrying to start the background service…",
 	"更新失败，正在回退到上一可用版本…":                    "Update failed — rolling back to the last working version…",

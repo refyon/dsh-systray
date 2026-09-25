@@ -73,6 +73,19 @@ var updateMirrorOverride string
 // harnessPrereleaseOverride 是否允许把 harness 预发布版（alpha/beta/rc）作为可更新版本（config.json 的 harnessPrerelease）。
 var harnessPrereleaseOverride bool
 
+// prereleaseChannelActive 「生效的预发布通道」判定：用户开关已开，或本机当前装的就是预发布版。
+// 后者修的是「本机在跑 rc，却因开关默认关闭而永远收不到更新提示」：npm 上 @deepseek-ai/dsh
+// 至今没有稳定版（2026-09-25 核实：27 个已发布版本全部带 -rc/-alpha 后缀），通道关闭时
+// 更新检查没有任何可选目标，只会显示「npm 上暂无稳定版本」——装了什么版本就永远停在那儿。
+// 只用于「应更新到哪个版本」的判定；开关自身的状态（设置页显示、账号同步上报）仍以
+// harnessPrereleaseOverride 为准，本判定不改配置。已装版本读不到（空）时按未开处理。
+func prereleaseChannelActive() bool {
+	if harnessPrereleaseOverride {
+		return true
+	}
+	return !isStableVersion(installedHarnessVersion())
+}
+
 // updateFinalizing 是否已进入「替换并重启」不可取消阶段（此后再点取消不应中断替换，
 // 否则会产生半更新状态）。由各平台在调用 replaceAndRelaunch 前置位。
 var updateFinalizing atomic.Bool
@@ -431,14 +444,15 @@ func restartBackgroundService(onState func(stage string)) bool {
 // 版本源与「重置服务」保持一致（修复：0.1.2-rc.1 已发 npm 但 GitHub Release 列表缺失时，
 // 重置显示 0.1.2-rc.1、检查更新却停在 0.1.1-rc.2 的不一致）：
 //   - npm 预构建形态 → npm registry 已发布版本（GitHub Release 常领先/缺失，而安装走 npm，
-//     必须以 npm 真实存在的版本为准）。目标按「预发布通道」开关选取：开启取版本号最大
-//     （与源码形态 resolveHarnessLatest 一致）；关闭仅取稳定版，npm 无稳定版时不提供更新
-//     目标、只返回说明（修复：未开通道仍“检测到”npm 最新预发布 0.1.3-alpha.2 的误报）；
+//     必须以 npm 真实存在的版本为准）。目标按**生效的预发布通道**选取（prereleaseChannelActive：
+//     开关已开，或本机在跑的版本本身就是预发布）：生效取版本号最大（与源码形态
+//     resolveHarnessLatest 一致）；未生效仅取稳定版，npm 无稳定版时不提供更新目标、只返回说明
+//     （修复：未开通道仍“检测到”npm 最新预发布 0.1.3-alpha.2 的误报）；
 //   - 源码 checkout 形态 → GitHub Release（源码更新切 git tag，以 Release 为准）。
 func queryHarnessUpdate() (latest, cur string, newer bool, note string) {
 	cur = installedHarnessVersion()
 	if isNpmHarnessReady() {
-		best, n, err := fetchNpmResetTarget(harnessPrereleaseOverride)
+		best, n, err := fetchNpmResetTarget(prereleaseChannelActive())
 		if err != nil {
 			log.Printf("harness update check (npm) failed: %v", err)
 			return "", cur, false, ""
@@ -460,7 +474,7 @@ func queryHarnessUpdate() (latest, cur string, newer bool, note string) {
 		log.Printf("harness update check failed: %v", err)
 		return "", cur, false, ""
 	}
-	latest, _, note = resolveHarnessLatest(tags, harnessPrereleaseOverride)
+	latest, _, note = resolveHarnessLatest(tags, prereleaseChannelActive())
 	if latest == "" {
 		return "", cur, false, note
 	}
@@ -583,6 +597,31 @@ func pickHarnessVersion(tags []string, allowPrerelease bool) string {
 			continue
 		}
 		if !allowPrerelease && !isStableVersion(v) {
+			continue
+		}
+		if best == "" || compareVersions(v, best) > 0 {
+			best = v
+		}
+	}
+	return best
+}
+
+// isRCVersion 判断版本是否为 rc 候选版（预发布标识符首段为 rc，如 0.1.7-rc.2）。容忍前导 v / dsh-。
+// alpha/beta 等更早期阶段不算：首次部署只在「稳定版 ∪ rc」里选（用户口径=最新版本号的 rc.1 及更新的候选版）。
+func isRCVersion(v string) bool {
+	_, pre := splitVersionParts(v)
+	return len(pre) > 0 && pre[0] == "rc"
+}
+
+// pickFreshHarnessVersion 选全新机器首次部署的目标版本：在「稳定版 ∪ rc 候选版」里取版本号最大者
+// （如 0.1.7-rc.2 > 0.1.5-rc.3 > 0.1.1-rc.2）。alpha/beta 不参与——首次部署不落到更早期阶段；
+// 新版本线只发了 alpha 时停在上一版本线的 rc（如 0.1.8-alpha.1 已发但只有 alpha → 仍选 0.1.7-rc.2）。
+// 没有任何 rc/稳定版（极端情况）时返回空，由调用方回退内置兜底版本。
+func pickFreshHarnessVersion(versions []string) string {
+	best := ""
+	for _, v := range versions {
+		v = strings.TrimPrefix(strings.TrimPrefix(v, "dsh-"), "v")
+		if v == "" || (!isStableVersion(v) && !isRCVersion(v)) {
 			continue
 		}
 		if best == "" || compareVersions(v, best) > 0 {

@@ -865,8 +865,17 @@ func bootstrapService() {
 			}
 		}
 	case "missing":
-		splash.Update(T("正在安装 DeepSeek Harness（首次约 2-5 分钟）…"), 0.35)
-		if err := ensureNpmHarness(); err != nil {
+		ver := freshHarnessInstallVersion()
+		// 首装目标为预发布（npm 至今无稳定版，实际总是 rc）→ 同步打开「预发布通道」开关并落盘：
+		// 开关状态与本机真正在跑的版本一致，否则装完就因通道关闭而看不到任何更新目标
+		// （npm 无稳定版 → 检查更新永远“暂无可用更新”）。npm 将来出了稳定版则不再自动开启。
+		if !isStableVersion(ver) && !harnessPrereleaseOverride {
+			harnessPrereleaseOverride = true
+			saveCurrentConfig()
+			log.Printf("first-run: prerelease channel enabled (installed %s is a prerelease)", ver)
+		}
+		splash.Update(fmt.Sprintf(T("正在安装 DeepSeek Harness %s（首次约 2-5 分钟）…"), withV(ver)), 0.35)
+		if err := ensureNpmHarnessVersion(ver); err != nil {
 			splash.Close()
 			showMessageBox("安装 DeepSeek Harness 失败：\n"+err.Error()+"\n\n日志："+unifiedLogPath(), appName)
 			return
@@ -1358,14 +1367,39 @@ func runSourceDepsInstall() error {
 	return nil
 }
 
-// ensureNpmHarness 全新机器：安装 npm 预构建产物 @deepseek-ai/dsh（免 git / 免构建）。
-// 默认版本钉在官方初始 rc（历史行为；显式最新版走 ensureNpmHarnessVersion）。
-func ensureNpmHarness() error {
-	return ensureNpmHarnessVersion("0.1.1-rc.2")
+// fallbackHarnessVersion 首次部署的兜底版本：仅在 npm 版本查询失败（离线/registry 异常）
+// 或已发布版本里找不到 rc/稳定版时使用。正常路径由 freshHarnessInstallVersion 取现网最新候选版。
+const fallbackHarnessVersion = "0.1.1-rc.2"
+
+// freshHarnessInstallVersion 全新机器首次部署的版本：查询 npm 已发布版本，在「稳定版 ∪ rc 候选版」
+// 里取最新（如 0.1.7-rc.2 > 0.1.5-rc.3 > 0.1.1-rc.2），新机器直接落到当前最新候选版。
+// 修复：此前这里写死 ensureNpmHarness("0.1.1-rc.2")（2026-08-23 当时的 npm 最新版），
+// 上游连发 0.1.2→0.1.7 后新机器仍装旧版，且因「预发布通道」默认关闭、npm 上从无稳定版
+// 而永远收不到更新提示（见 queryHarnessUpdate/fetchNpmResetTarget）。
+// 查询失败或无可选版本时回退 fallbackHarnessVersion，保证首次部署不因查询失败而中止。
+func freshHarnessInstallVersion() string {
+	// npmVersionsOn 在 harnessDir 下执行 pnpm view：全新机器该目录要到安装时才创建
+	// （此前由 ensureNpmHarnessVersionPinned 建），先建目录，否则子进程 chdir 直接失败。
+	if err := os.MkdirAll(harnessDir, 0o755); err != nil {
+		log.Printf("first-run: create harness dir %s failed: %v (fallback %s)", harnessDir, err, fallbackHarnessVersion)
+		return fallbackHarnessVersion
+	}
+	versions, err := npmHarnessPublishedVersions()
+	if err != nil {
+		log.Printf("first-run: query npm versions failed: %v (fallback %s)", err, fallbackHarnessVersion)
+		return fallbackHarnessVersion
+	}
+	if best := pickFreshHarnessVersion(versions); best != "" {
+		log.Printf("first-run: install harness %s (npm 已发布 %d 个版本，最高 rc/稳定版=%s)", best, len(versions), best)
+		return best
+	}
+	log.Printf("first-run: npm 无 rc/稳定版可用，回退 %s", fallbackHarnessVersion)
+	return fallbackHarnessVersion
 }
 
 // ensureNpmHarnessVersion 在 harnessDir 安装 npm 预构建产物 @deepseek-ai/dsh@ver
-// （脚手架与白名单复刻 ensureNpmHarness 的历史语义；用于「重置=清空目录后全新安装最新版」）。
+// （脚手架与白名单复刻 ensureNpmHarness 的历史语义；调用方：全新机器首次部署
+// freshHarnessInstallVersion，以及「重置=清空目录后全新安装所选版本」）。
 func ensureNpmHarnessVersion(ver string) error {
 	return ensureNpmHarnessVersionPinned(ver, nil)
 }
