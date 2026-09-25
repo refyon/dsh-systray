@@ -349,6 +349,8 @@ func startServer() (bool, <-chan error) {
 		return false, nil
 	}
 	serverCmd = cmd
+	serverStartGen.Add(1) // 新代次：仍在观察旧进程的启动校验据此让位
+	serverStopByTray.Store(false)
 	serverStartedPort = port // 记录实际启动端口（端口修改提示与状态展示依据）
 	trackChildProcess(cmd.Process)
 	exitCh := make(chan error, 1)
@@ -363,8 +365,9 @@ func startServer() (bool, <-chan error) {
 }
 
 func killServer() {
-	setServerTokenURL("")    // 服务已停：旧访问链接（旧 token）不再对应当前服务，清缓存
-	clearPersistedTokenURL() // 连同缓存文件一并清除（下次启动不应再沿用）
+	serverStopByTray.Store(true) // 托盘主动停服：启动健康校验据此让位（见 serverStopByTray 说明）
+	setServerTokenURL("")        // 服务已停：旧访问链接（旧 token）不再对应当前服务，清缓存
+	clearPersistedTokenURL()     // 连同缓存文件一并清除（下次启动不应再沿用）
 	if serverCmd != nil && serverCmd.Process != nil {
 		_ = serverCmd.Process.Kill() // 本进程拉起的 node 直接 SIGKILL
 		serverCmd = nil

@@ -1214,6 +1214,28 @@ var serverReadyMarkerRe = regexp.MustCompile(`dsh web: https?://`)
 // lateBootWatchActive 后台兜底监视是否在跑（同一时刻只允许一个）。
 var lateBootWatchActive atomic.Bool
 
+// serverStopByTray / serverStartGen 服务进程的「停服意图」与「启动代次」：
+// killServer 置 serverStopByTray=true；startServer 成功拉起后置 false 并递增 serverStartGen。
+//
+// 为什么必须有：健康校验观察的是「本进程拉起的那个 node 进程」，而更新 harness / 插件批处理 /
+// 同步应用 / 重置 / 导入都会主动停服再换版本——此时校验器看到的进程退出**不是启动失败**。
+// 没有这对标记，任何落在校验窗口内的同步应用都会被判成启动失败，进而报「启动日志存在加载错误」
+// 并触发一次注定落空的 LKG 回退（2026-09-25 全新首启实证：23:38:07 同步应用停服装插件，
+// 冷启动校验误报，弹「启动失败，且自动回退…仍未能启动」）。
+var (
+	serverStopByTray atomic.Bool
+	serverStartGen   atomic.Int64
+)
+
+// bootVerifyResult 启动健康校验结果三态：健康 / 失败 / 让位（被主动停服或新进程取代）。
+type bootVerifyResult int
+
+const (
+	bootHealthy    bootVerifyResult = iota // 窗口内无加载错误、进程未退出
+	bootFailed                             // 命中加载错误特征，或进程异常退出（无人主动停服）
+	bootSuperseded                         // 校验期间服务被托盘主动停止/被新进程取代：本次校验作废
+)
+
 // verifyServerBoot 就绪后的健康校验：周期扫描 server.log 从 before 起的追加段，并监听进程退出。
 // 覆盖“HTTP 已就绪但插件/依赖加载错误更晚刷出”的漏判（错误常迟于就绪数秒出现，曾导致
 // 混装版本的异常启动被当作成功、甚至把 LKG 误清）。任一命中立即判失败；窗口结束仍未命中为健康。
@@ -1230,23 +1252,26 @@ func verifyServerBootAfterChange(before int64, exited <-chan error) bool {
 // 冷启动验证通过）时用加长窗口，常规启动仍走短窗口——不为此让每次启动多等一分钟。
 // 注意：存在 LKG 时**不做提前通过**——该路径通过后立即清 LKG，等满窗口才能确保「迟到的加载
 // 错误」仍处于可回退状态（这正是加长窗口存在的意义）。
-func verifyServerBootOnColdStart(before int64, exited <-chan error) bool {
+func verifyServerBootOnColdStart(before int64, exited <-chan error) bootVerifyResult {
 	if hasAnyLkg() {
 		return verifyServerBootPolling(before, exited, bootVerifySettleAfterHarnessChange, false)
 	}
-	return verifyServerBootWithin(before, exited, bootVerifySettle)
+	return verifyServerBootPolling(before, exited, bootVerifySettle, true)
 }
 
 // verifyServerBootWithin 健康校验实现：轮询「追加段加载错误 / 进程退出」，任一命中即失败；
 // 命中就绪标志且静默期已过则提前返回成功，剩余窗口交给 startLateBootWatch 后台兜底。
+// 让位（bootSuperseded）按未通过处理：调用方都是操作自身的重启校验，让位说明更外层流程
+// 已接管服务生命周期，由它收尾。
 func verifyServerBootWithin(before int64, exited <-chan error, settle time.Duration) bool {
-	return verifyServerBootPolling(before, exited, settle, true)
+	return verifyServerBootPolling(before, exited, settle, true) == bootHealthy
 }
 
 // verifyServerBootPolling allowFastExit=true 时启用「就绪标志 + 静默期」提前通过。
-func verifyServerBootPolling(before int64, exited <-chan error, settle time.Duration, allowFastExit bool) bool {
+func verifyServerBootPolling(before int64, exited <-chan error, settle time.Duration, allowFastExit bool) bootVerifyResult {
 	start := time.Now()
 	deadline := start.Add(settle)
+	gen := serverStartGen.Load() // 本次校验观察的服务代次：期间被新进程取代即作废
 	last := ""
 	lastChange := start
 	for {
@@ -1256,12 +1281,15 @@ func verifyServerBootPolling(before int64, exited <-chan error, settle time.Dura
 			lastChange = time.Now()
 		}
 		if hasBootErrorMarkers(lines) {
-			return false // 加载错误出现即失败（无论窗口剩余多少）
+			return bootFailed // 加载错误出现即失败（无论窗口剩余多少）
 		}
 		if exited != nil {
 			select {
 			case <-exited:
-				return false // 进程提前退出（启动后崩溃）
+				if serverExitIsSuperseded(gen) {
+					return bootSuperseded // 主动停服/被新进程取代：交由停服那个操作自己的校验收尾
+				}
+				return bootFailed // 进程提前退出（启动后崩溃）
 			default:
 			}
 		}
@@ -1269,11 +1297,11 @@ func verifyServerBootPolling(before int64, exited <-chan error, settle time.Dura
 			time.Since(lastChange) >= bootVerifyQuietPeriod &&
 			serverReadyMarkerRe.MatchString(lines) {
 			startLateBootWatch(before, deadline)
-			return true
+			return bootHealthy
 		}
 		remain := time.Until(deadline)
 		if remain <= 0 {
-			return true
+			return bootHealthy
 		}
 		step := bootVerifyPollStep
 		if remain < step {
@@ -1281,6 +1309,26 @@ func verifyServerBootPolling(before int64, exited <-chan error, settle time.Dura
 		}
 		time.Sleep(step)
 	}
+}
+
+// coldStartBootFailureReason 冷启动校验失败的原因文案：命中启动日志特征才是「加载错误」，
+// 否则是进程异常退出。此前一律写「加载错误」，把主动停服/异常退出都误标成插件不兼容
+// （2026-09-25 现场：同步应用主动停服被报成「启动日志存在加载错误（版本/插件不兼容）」）。
+func coldStartBootFailureReason(before int64) string {
+	if serverLogHasBootErrors(before) {
+		return "启动日志存在加载错误（版本/插件不兼容）"
+	}
+	return "服务进程异常退出"
+}
+
+// serverExitIsSuperseded 被观察进程的退出是否属于「托盘主动停止 / 已被新进程取代」，
+// 而非崩溃。genAtStart 是校验开始时捕获的服务代次：
+//   - 停服标记置位 = 有人调用 killServer 换版本/装插件（代次可能还没变）；
+//   - 代次已变 = kill→装包→重启 快到一个轮询步长内完成，标记已被 startServer 清零。
+//
+// 两者都说明服务生命周期已被更外层的操作接管，本次校验作废而不是失败。
+func serverExitIsSuperseded(genAtStart int64) bool {
+	return serverStopByTray.Load() || serverStartGen.Load() != genAtStart
 }
 
 // startLateBootWatch 提前判定健康后的后台兜底：继续观察到原窗口结束。迟到的加载错误（本机实证

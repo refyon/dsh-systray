@@ -823,6 +823,10 @@ func bootstrapService() {
 
 	splash := maybeStartSplash(T("正在准备运行环境…"))
 
+	// 悬空 LKG 标记清理（须在冷启动健康校验之前）：标记在、备份全无（用户手工删过 harness /
+	// .dsh 目录）时 LKG 已无法回退，留着只会让本次冷启动走「加长窗口且不做提前通过」白等 60s。
+	clearDanglingLkgMarker()
+
 	// 0.5) 解压工具：环境检查加入 7-Zip（优先下载使用，Windows/macOS 均可）；失败不阻塞启动（zip 有 Go 兜底）。
 	splash.Update(T("正在检查解压工具…"), 0.07)
 	ensureArchiveTool(func(t string, pct float64) { splash.Update(t, 0.07+0.01*pct) })
@@ -924,9 +928,17 @@ func bootstrapService() {
 		// 且错误常迟于就绪数秒刷出——必须用覆盖窗口的 verifyServerBoot，否则会把异常当成功并误清 LKG）
 		bootError := ""
 		if ready && startedByUs {
-			if !verifyServerBootOnColdStart(serverLogBefore, serverExitCh) {
+			switch verifyServerBootOnColdStart(serverLogBefore, serverExitCh) {
+			case bootSuperseded:
+				// 校验期间服务被其它操作主动停止并接管（同步应用 / 插件批处理 / 更新 / 重置 / 导入）：
+				// 既不算失败（不报错、不回退），也不提升 LKG——服务生命周期已由该操作自己的启动校验
+				// 负责，冷启动这一遍必须让位（2026-09-25 现场：同步应用停服装插件被误报启动失败）。
+				log.Printf("boot verify superseded: server stopped by another operation, skip rollback")
+				signalShotReady()
+				return
+			case bootFailed:
 				ready = false
-				bootError = "启动日志存在加载错误（版本/插件不兼容）"
+				bootError = coldStartBootFailureReason(serverLogBefore)
 			}
 		}
 		if ready {

@@ -101,7 +101,7 @@ func TestVerifyServerBootNoFastExitWhenDisallowed(t *testing.T) {
 	appendServerLine(t, dir, "dsh web: http://127.0.0.1:3080/?token=abc")
 	settle := bootVerifyFastExitMin + bootVerifyQuietPeriod + time.Second
 	start := time.Now()
-	if !verifyServerBootPolling(0, nil, settle, false) {
+	if verifyServerBootPolling(0, nil, settle, false) != bootHealthy {
 		t.Fatal("无错误应判健康")
 	}
 	if el := time.Since(start); el < settle {

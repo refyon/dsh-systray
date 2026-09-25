@@ -100,8 +100,8 @@ func hasLkgInDir(dir string) bool {
 	return false
 }
 
-// hasAnyLkg 是否存在任何 LKG 状态（harness / 各 profile / 标记文件）。
-func hasAnyLkg() bool {
+// hasAnyLkgBackup 磁盘上是否留有任一份 LKG 备份（不含标记文件）。
+func hasAnyLkgBackup() bool {
 	if hasLkgInDir(harnessDir) {
 		return true
 	}
@@ -110,10 +110,32 @@ func hasAnyLkg() bool {
 			return true
 		}
 	}
-	if _, ok := readLkgMarker(); ok {
+	return false
+}
+
+// hasAnyLkg 是否存在任何 LKG 状态（harness / 各 profile / 标记文件）。
+func hasAnyLkg() bool {
+	if hasAnyLkgBackup() {
 		return true
 	}
-	return false
+	_, ok := readLkgMarker()
+	return ok
+}
+
+// clearDanglingLkgMarker 清理悬空 LKG 标记：标记在、备份全无（用户手工删过 harness / .dsh 目录）
+// 时 LKG 已经无法回退，留着只有坏处——冷启动会因此走「加长窗口且不做提前通过」白等 60s，
+// 失败路径还会做一次注定 nothing-to-restore 的回退并弹「启动失败…仍未能启动」
+// （2026-09-25 全新首启实证）。返回是否清理了标记。
+func clearDanglingLkgMarker() bool {
+	if _, ok := readLkgMarker(); !ok {
+		return false
+	}
+	if hasAnyLkgBackup() {
+		return false
+	}
+	clearLkgMarker()
+	log.Printf("lkg: cleared dangling marker (no backups on disk)")
+	return true
 }
 
 // promoteDirToLkg 把更新流程留下的 .dshbak 快照提升为 LKG（新 LKG 覆盖旧 LKG）。
