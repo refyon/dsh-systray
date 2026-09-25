@@ -184,45 +184,6 @@ func TestIsRCVersion(t *testing.T) {
 	}
 }
 
-// TestPrereleaseChannelActive 生效的预发布通道：开关已开恒为真；开关关闭时看本机在跑的版本——
-// 预发布（rc/alpha）视为生效，稳定版或读不到版本不生效。
-func TestPrereleaseChannelActive(t *testing.T) {
-	oldDir, oldPre := harnessDir, harnessPrereleaseOverride
-	t.Cleanup(func() { harnessDir, harnessPrereleaseOverride = oldDir, oldPre })
-
-	// writeInstalled 把「已装 harness」伪造成指定版本（installedHarnessVersion 读 npm 包头一个命中）
-	writeInstalled := func(v string) {
-		harnessDir = t.TempDir()
-		dir := filepath.Join(harnessDir, "node_modules", "@deepseek-ai", "dsh")
-		if err := os.MkdirAll(dir, 0o755); err != nil {
-			t.Fatal(err)
-		}
-		if err := os.WriteFile(filepath.Join(dir, "package.json"), []byte(`{"version":"`+v+`"}`), 0o644); err != nil {
-			t.Fatal(err)
-		}
-	}
-
-	harnessPrereleaseOverride = true
-	writeInstalled("0.1.7") // 开关已开：即便装的是稳定版也生效
-	if !prereleaseChannelActive() {
-		t.Error("switch on: prereleaseChannelActive()=false, want true")
-	}
-
-	harnessPrereleaseOverride = false
-	writeInstalled("0.1.7-rc.2")
-	if !prereleaseChannelActive() {
-		t.Error("installed rc + switch off: want true（本机在跑预发布，通道视为生效）")
-	}
-	writeInstalled("0.1.7")
-	if prereleaseChannelActive() {
-		t.Error("installed stable + switch off: want false")
-	}
-	harnessDir = filepath.Join(t.TempDir(), "absent") // 未安装/版本读不到
-	if prereleaseChannelActive() {
-		t.Error("unknown installed version: want false")
-	}
-}
-
 // TestResolveHarnessLatest 预发布通道关闭时的“无法获取”修复：仓库只有预发布时，
 // 应返回说明文案而非空错误；通道开启或存在稳定版时无说明。
 func TestResolveHarnessLatest(t *testing.T) {

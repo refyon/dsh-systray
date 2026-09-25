@@ -866,14 +866,9 @@ func bootstrapService() {
 		}
 	case "missing":
 		ver := freshHarnessInstallVersion()
-		// 首装目标为预发布（npm 至今无稳定版，实际总是 rc）→ 同步打开「预发布通道」开关并落盘：
-		// 开关状态与本机真正在跑的版本一致，否则装完就因通道关闭而看不到任何更新目标
-		// （npm 无稳定版 → 检查更新永远“暂无可用更新”）。npm 将来出了稳定版则不再自动开启。
-		if !isStableVersion(ver) && !harnessPrereleaseOverride {
-			harnessPrereleaseOverride = true
-			saveCurrentConfig()
-			log.Printf("first-run: prerelease channel enabled (installed %s is a prerelease)", ver)
-		}
+		// 注意：这里**不**因首装为预发布而自动打开「预发布通道」——通道保持用户/默认状态
+		// （config.json 缺省关闭）。首装只负责把版本落到最新稳定版/rc；之后 npm 出了稳定版，
+		// 通道关闭状态下照样能收到该稳定版的更新提示（见 queryHarnessUpdate）。
 		splash.Update(fmt.Sprintf(T("正在安装 DeepSeek Harness %s（首次约 2-5 分钟）…"), withV(ver)), 0.35)
 		if err := ensureNpmHarnessVersion(ver); err != nil {
 			splash.Close()
