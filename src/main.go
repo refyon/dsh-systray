@@ -417,6 +417,9 @@ func main() {
 	if bindingsRun {
 		log.SetOutput(io.Discard)
 	}
+	// 装配「迟到的启动错误」自愈动作：健康校验提前通过后由后台兜底监视调用（见 updater.go
+	// lateBootSelfHeal 说明——这里装配而非直接调用，避免初始化依赖环）。
+	lateBootSelfHeal = runLateBootSelfHeal
 
 	cfg := loadConfig()
 	updateMirrorOverride = cfg.UpdateMirror

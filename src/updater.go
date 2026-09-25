@@ -1144,7 +1144,11 @@ func unifiedLogSize() int64 {
 // 判断本次服务启动是否出现加载报错——只扫 server 行避免把 pnpm 输出（ERR_PNPM_* 等）
 // 误判为服务启动失败。
 func serverLogHasBootErrors(offset int64) bool {
-	s := serverLogLines(offset)
+	return hasBootErrorMarkers(serverLogLines(offset))
+}
+
+// hasBootErrorMarkers 文本中是否含服务启动失败特征（判据集中一处，供增量扫描复用）。
+func hasBootErrorMarkers(s string) bool {
 	for _, m := range harnessBootErrorMarkers {
 		if strings.Contains(s, m) {
 			return true
@@ -1160,7 +1164,23 @@ func serverLogHasBootErrors(offset int64) bool {
 const (
 	bootVerifySettle                   = 10 * time.Second
 	bootVerifySettleAfterHarnessChange = 60 * time.Second
+
+	// 提前通过条件（2026-09-25 提速）：窗口退化为**上限**，不再一律等满——
+	// 本机实证（15:08 重置）：就绪标志 15:08:22 出现后，直到 15:09:49 都没有任何 [server]
+	// 输出，却仍要干等满 60s。改为「命中就绪标志 + 静默期」即通过，迟到的加载错误交给
+	// startLateBootWatch 后台兜底（观察能力不缩水，只是不再阻塞用户）。
+	bootVerifyQuietPeriod = 3 * time.Second
+	bootVerifyFastExitMin = 5 * time.Second
+	bootVerifyPollStep    = 1 * time.Second
 )
+
+// serverReadyMarkerRe 服务就绪标志：dsh web 打印访问链接时插件已全部注册完成——本次启动的
+// 插件加载日志（plugin loaded / registered tool / 各插件自报）全部早于该行。措辞若变化，
+// 只是失去提前通过、退回等满窗口（安全降级）。
+var serverReadyMarkerRe = regexp.MustCompile(`dsh web: https?://`)
+
+// lateBootWatchActive 后台兜底监视是否在跑（同一时刻只允许一个）。
+var lateBootWatchActive atomic.Bool
 
 // verifyServerBoot 就绪后的健康校验：周期扫描 server.log 从 before 起的追加段，并监听进程退出。
 // 覆盖“HTTP 已就绪但插件/依赖加载错误更晚刷出”的漏判（错误常迟于就绪数秒出现，曾导致
@@ -1176,19 +1196,35 @@ func verifyServerBootAfterChange(before int64, exited <-chan error) bool {
 
 // verifyServerBootOnColdStart 冷启动（双击拉起）健康校验：仅当存在 LKG（= 上次改版尚未经
 // 冷启动验证通过）时用加长窗口，常规启动仍走短窗口——不为此让每次启动多等一分钟。
+// 注意：存在 LKG 时**不做提前通过**——该路径通过后立即清 LKG，等满窗口才能确保「迟到的加载
+// 错误」仍处于可回退状态（这正是加长窗口存在的意义）。
 func verifyServerBootOnColdStart(before int64, exited <-chan error) bool {
 	if hasAnyLkg() {
-		return verifyServerBootWithin(before, exited, bootVerifySettleAfterHarnessChange)
+		return verifyServerBootPolling(before, exited, bootVerifySettleAfterHarnessChange, false)
 	}
 	return verifyServerBootWithin(before, exited, bootVerifySettle)
 }
 
-// verifyServerBootWithin 健康校验实现：窗口内轮询「追加段加载错误 / 进程退出」，任一命中即失败。
+// verifyServerBootWithin 健康校验实现：轮询「追加段加载错误 / 进程退出」，任一命中即失败；
+// 命中就绪标志且静默期已过则提前返回成功，剩余窗口交给 startLateBootWatch 后台兜底。
 func verifyServerBootWithin(before int64, exited <-chan error, settle time.Duration) bool {
-	deadline := time.Now().Add(settle)
+	return verifyServerBootPolling(before, exited, settle, true)
+}
+
+// verifyServerBootPolling allowFastExit=true 时启用「就绪标志 + 静默期」提前通过。
+func verifyServerBootPolling(before int64, exited <-chan error, settle time.Duration, allowFastExit bool) bool {
+	start := time.Now()
+	deadline := start.Add(settle)
+	last := ""
+	lastChange := start
 	for {
-		if serverLogHasBootErrors(before) {
-			return false
+		lines := serverLogLines(before)
+		if lines != last {
+			last = lines
+			lastChange = time.Now()
+		}
+		if hasBootErrorMarkers(lines) {
+			return false // 加载错误出现即失败（无论窗口剩余多少）
 		}
 		if exited != nil {
 			select {
@@ -1197,15 +1233,77 @@ func verifyServerBootWithin(before int64, exited <-chan error, settle time.Durat
 			default:
 			}
 		}
+		if allowFastExit && time.Since(start) >= bootVerifyFastExitMin &&
+			time.Since(lastChange) >= bootVerifyQuietPeriod &&
+			serverReadyMarkerRe.MatchString(lines) {
+			startLateBootWatch(before, deadline)
+			return true
+		}
 		remain := time.Until(deadline)
 		if remain <= 0 {
 			return true
 		}
-		step := 5 * time.Second
+		step := bootVerifyPollStep
 		if remain < step {
 			step = remain
 		}
 		time.Sleep(step)
+	}
+}
+
+// startLateBootWatch 提前判定健康后的后台兜底：继续观察到原窗口结束。迟到的加载错误（本机实证
+// 出现过就绪后 45s 才刷出的 plugin tree failed to load）交由既有自愈链路处理，用户不必为这段
+// 观察期干等。同一时刻只允许一个兜底在跑。
+func startLateBootWatch(before int64, deadline time.Time) {
+	if !lateBootWatchActive.CompareAndSwap(false, true) {
+		return
+	}
+	go func() {
+		defer lateBootWatchActive.Store(false)
+		for time.Now().Before(deadline) {
+			if serverLogHasBootErrors(before) {
+				handleLateBootError()
+				return
+			}
+			time.Sleep(2 * time.Second)
+		}
+	}()
+}
+
+// lateBootSelfHeal 迟到启动错误的收尾动作，在 main 装配为 runLateBootSelfHeal（测试可替换）。
+// 为何不直接调用：收尾要走的 tryBootRollback 会引用 pluginEnableVerify，而后者（plugin_disable.go
+// 的可测试缝）又依赖 restartAndVerifyServer → … → 本文件——直接调用会构成 Go 的初始化依赖环
+// （initialization cycle）。空变量没有初始化依赖，环即断开。
+var lateBootSelfHeal func(why string)
+
+// handleLateBootError 迟到的启动加载错误：走既有自愈（先禁用肇事插件、必要时回退 LKG）并提示。
+// 有其它 harness 操作在跑时让位——避免与更新/重置/插件批处理并发地 kill/重启服务互相踩踏。
+func handleLateBootError() {
+	const why = "服务启动后出现加载错误"
+	if lateBootSelfHeal == nil {
+		log.Printf("late boot error detected, but self-heal is not wired; skip")
+		return
+	}
+	if harnessOpBusy.Load() || updateFlowBusy() {
+		log.Printf("late boot error detected, but another harness operation is running; skip self-heal")
+		return
+	}
+	log.Printf("late boot error detected after early verify pass, running self-heal")
+	harnessOpBusy.Store(true)
+	defer harnessOpBusy.Store(false)
+	lateBootSelfHeal(why)
+}
+
+// runLateBootSelfHeal 迟到启动错误的实际自愈实现（装配到 lateBootSelfHeal）。
+func runLateBootSelfHeal(why string) {
+	kept, rolled, prev, disabledNames := tryBootRollback(why)
+	switch {
+	case kept:
+		reportBootKept(disabledNames, why)
+	case rolled:
+		reportBootRollback(true, prev, why)
+	default:
+		reportBootRollback(false, prev, why)
 	}
 }
 

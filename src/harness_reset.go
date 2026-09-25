@@ -365,7 +365,8 @@ func runHarnessResetFlow(clearSessions, clearPlugins bool, reqTarget string, pop
 			return failResetFlow(splash, "重置未能完成：已尝试自动禁用不兼容插件，服务仍无法启动（核心故障），已还原重置前的版本。\n\n日志："+unifiedLogPath()+cleanupNotes, popup)
 		}
 		// 自愈成功：保留新版本（禁用清单可于「关于页 → 已安装插件」检查更新/重新启用）
-		_ = os.RemoveAll(bakDir)
+		// 备份目录（整棵 node_modules）异步删除：本机实证同步删要 27s，而它只是收尾清理
+		removeAllAsync(bakDir)
 		clearAllLkg()
 		splash.Close()
 		names := make([]string, 0, len(disabled))
@@ -391,8 +392,9 @@ func runHarnessResetFlow(clearSessions, clearPlugins bool, reqTarget string, pop
 		}
 		return resetResult{OK: true, Note: detail + cleanupNotes}
 	}
-	// 校验通过：备份不再需要，回退后的状态即新的良好基线，旧 LKG 不应再用于回退
-	_ = os.RemoveAll(bakDir)
+	// 校验通过：备份不再需要，回退后的状态即新的良好基线，旧 LKG 不应再用于回退。
+	// 同自愈分支：备份异步删（同步删要几十秒），下次重置开头也会清理残留。
+	removeAllAsync(bakDir)
 	clearAllLkg()
 	splash.Close()
 	detail := T("DeepSeek Harness 已重置：\n")

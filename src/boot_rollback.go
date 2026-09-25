@@ -21,6 +21,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -116,7 +117,11 @@ func hasAnyLkg() bool {
 }
 
 // promoteDirToLkg 把更新流程留下的 .dshbak 快照提升为 LKG（新 LKG 覆盖旧 LKG）。
+// 持 lkgFsMu：可能与 clearAllLkg 的后台异步清理并发（见 lkgFsMu 说明）。
+// 先删旧 LKG 是必要的（同盘 rename 不能覆盖已存在目录），删除耗时随备份大小而定。
 func promoteDirToLkg(dir string) {
+	lkgFsMu.Lock()
+	defer lkgFsMu.Unlock()
 	for _, name := range []string{"package.json", "pnpm-lock.yaml"} {
 		src := filepath.Join(dir, name+".dshbak")
 		if _, err := os.Stat(src); err != nil {
@@ -150,6 +155,13 @@ func promoteProfileLkg(dir string) {
 // restoreLkgInDir 恢复该目录的 LKG（package.json/lock 回写；node_modules 移回；
 // 无 nm 备份但有锁文件还原时按还原后的锁文件重装）。返回是否确实恢复了内容。
 func restoreLkgInDir(dir string) bool {
+	// 与异步清理串行：备份目录可能正被 clearAllLkg 的后台删除触碰
+	lkgFsMu.Lock()
+	nm := filepath.Join(dir, "node_modules")
+	hasNMBak := false
+	if _, err := os.Stat(nm + lkgSuffix); err == nil {
+		hasNMBak = true
+	}
 	restored := false
 	for _, name := range []string{"package.json", "pnpm-lock.yaml"} {
 		bak := filepath.Join(dir, name+lkgSuffix)
@@ -161,16 +173,17 @@ func restoreLkgInDir(dir string) bool {
 			restored = true
 		}
 	}
-	nm := filepath.Join(dir, "node_modules")
-	if _, err := os.Stat(nm + lkgSuffix); err == nil {
+	if hasNMBak {
 		_ = os.RemoveAll(nm)
 		if os.Rename(nm+lkgSuffix, nm) == nil {
 			restored = true
 		} else {
 			log.Printf("lkg: restore node_modules rename failed (%s)", dir)
 		}
-	} else if restored {
-		// 锁文件已还原但无 nm 备份：重装还原依赖（需网络）
+	}
+	lkgFsMu.Unlock()
+	if !hasNMBak && restored {
+		// 锁文件已还原但无 nm 备份：重装还原依赖（需网络；运行 pnpm，不能持锁）
 		if err := runProfileCmd(dir, pnpmCmd(), "install", "--frozen-lockfile"); err != nil {
 			log.Printf("lkg: frozen reinstall failed (%s): %v", dir, err)
 		}
@@ -180,19 +193,62 @@ func restoreLkgInDir(dir string) bool {
 
 // clearLkgInDir 清理该目录的 LKG 备份。
 func clearLkgInDir(dir string) {
+	lkgFsMu.Lock()
+	defer lkgFsMu.Unlock()
+	removeLkgInDir(dir)
+}
+
+// removeLkgInDir 实际删除（调用方须持有 lkgFsMu）。
+func removeLkgInDir(dir string) {
 	for _, p := range lkgBakPaths(dir) {
 		_ = os.RemoveAll(p)
 	}
 }
 
+// lkgFsMu 串行化 LKG 备份目录的文件操作：异步清理（clearAllLkg）与提升/恢复
+// （promoteDirToLkg / restoreLkgInDir）可能并发——同名 node_modules.lkg 一边被删一边被
+// 重命名成新备份，会出现「备份丢了却以为有」的窗口。
+var lkgFsMu sync.Mutex
+
+// removeAllAsync 后台删除目录/文件：整棵 node_modules 备份的删除在 Windows 上要几十秒
+// （本机实证 27s，几万个文件），而这些删除都处在前台流程收尾（重置/更新完成提示）上——
+// 让用户为它干等没有意义。删除失败只记日志；调用方（如重置开头）本就会先清理残留。
+func removeAllAsync(paths ...string) {
+	if len(paths) == 0 {
+		return
+	}
+	go func() {
+		for _, p := range paths {
+			lkgFsMu.Lock()
+			err := os.RemoveAll(p)
+			lkgFsMu.Unlock()
+			if err != nil {
+				log.Printf("async remove %s failed: %v", p, err)
+			}
+		}
+	}()
+}
+
 // clearAllLkg 冷启动验证通过 / 重置成功后：当前状态即新的良好态，清理全部 LKG。
+// 标记文件同步清除（它决定下次冷启动用不用加长校验窗口，必须立即生效）；体积大的
+// node_modules 备份交后台异步删除（见 removeAllAsync），不再让收尾流程等几十秒。
 func clearAllLkg() {
-	clearLkgInDir(harnessDir)
+	dirs := []string{harnessDir}
 	for _, pf := range enumeratePluginProfiles() {
-		clearLkgInDir(pf.dir)
+		dirs = append(dirs, pf.dir)
 	}
 	clearLkgMarker()
 	log.Printf("lkg: cleared (current state verified good)")
+	removeAllAsync(pathsToLkgBackups(dirs)...)
+}
+
+// pathsToLkgBackups 展开各目录的 LKG 备份路径（供异步删除）。
+func pathsToLkgBackups(dirs []string) []string {
+	var out []string
+	for _, d := range dirs {
+		out = append(out, lkgBakPaths(d)...)
+	}
+	return out
 }
 
 // tryBootRollback 启动失败时优先自愈「保留当前版本 + 禁用肇事插件」，其次回退 LKG。
