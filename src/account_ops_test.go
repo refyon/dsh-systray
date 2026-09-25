@@ -104,6 +104,43 @@ func TestFlushAckClampsCursorBeforePending(t *testing.T) {
 	}
 }
 
+// TestFlushAckRecordsReportedValues 上报确认后记下「本机最近一次上报成功的值」，并在该 key 的
+// 服务器记录被确认/应用（appliedVals 追上）后清除。漂移重判据此排除「本机改动就是自己刚上报
+// 的新值」——否则会把被自己新记录取代的旧记录重新入队（见 accountReenqueueDriftedApplied）。
+func TestFlushAckRecordsReportedValues(t *testing.T) {
+	setupAccountTest(t)
+	setAccountState(loggedInState())
+
+	if err := accountEnqueueOp(opKeyHarnessVersion, "1.2.3"); err != nil {
+		t.Fatalf("登记失败: %v", err)
+	}
+	client, _ := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"accepted":1,"duplicates":0,"cursor":9}`))
+	})
+	if n, err := accountFlushOps(context.Background(), client); err != nil || n != 1 {
+		t.Fatalf("上报失败: n=%d err=%v", n, err)
+	}
+
+	accountMu.Lock()
+	got, ok := accountCur.ReportedVals[opKeyHarnessVersion]
+	accountMu.Unlock()
+	if !ok || string(got) != `"1.2.3"` {
+		t.Fatalf("上报确认后应记下自报值，实际 ok=%v value=%s", ok, got)
+	}
+	if loaded := loadAccountState(); string(loaded.ReportedVals[opKeyHarnessVersion]) != `"1.2.3"` {
+		t.Fatalf("自报值应随 account.json 持久化（跨托盘重启仍能豁免伪漂移）：%+v", loaded.ReportedVals)
+	}
+
+	// 该 key 的服务器记录被确认/应用后，appliedVals 已与账号一致，自报值不再需要。
+	accountMarkApplied(opKeyHarnessVersion, json.RawMessage(`"1.2.3"`), 9, 1700000000)
+	accountMu.Lock()
+	_, still := accountCur.ReportedVals[opKeyHarnessVersion]
+	accountMu.Unlock()
+	if still {
+		t.Fatal("该 key 的服务器记录已应用：应清除自报值，避免长期保留失效值")
+	}
+}
+
 func TestAccountEnqueueReplacesSameKeyAndPersists(t *testing.T) {
 	setupAccountTest(t)
 	setAccountState(loggedInState())

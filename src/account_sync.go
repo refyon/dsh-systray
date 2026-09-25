@@ -943,6 +943,8 @@ func accountRememberAppliedLocked(key string, value json.RawMessage, seq, update
 		accountCur.AppliedVals = map[string]appliedRecord{}
 	}
 	accountCur.AppliedVals[key] = appliedRecord{Seq: seq, Value: append(json.RawMessage(nil), value...), UpdatedAt: updatedAt}
+	// 该 key 的服务器记录已确认/应用：AppliedVals 已与账号一致，自报值不再需要（见 ReportedVals）。
+	delete(accountCur.ReportedVals, key)
 }
 
 // accountClampCursorLocked 把游标钳回最早一条未生效记录之前（调用方须持有 accountMu）。
@@ -1010,6 +1012,10 @@ func accountMigrateCursorInvariant() {
 // 于是「已应用序号 + 本机现状」的漂移检查根本没机会执行，表现为重启托盘后显示「已同步」、
 // 插件却一个都没有，点「立即同步」也没有任何变化（2026-09-22 现场问题①）。
 //
+// 豁免两类「本机最新意图」：该 key 的改动还在上报队列里（未送达），或本机现状仍等于本机最近
+// 一次上报成功的值。二者都不是「漂离账号的意外状态」，用账号上的旧记录覆盖它反而会把用户刚
+// 做的改动改回去（2026-09-25 现场：更新 harness 后提示「待生效 1 项 = 旧版本」）。
+//
 // 本函数只读本机状态（离线可用），并把游标回拨到最早一条漂移记录之前：这样后续拉取会重新
 // 取到这些记录，与「游标只推进到待生效记录之前」的不变量保持一致，也不会被下一轮
 // accountSetPendingApply 的整体替换冲掉。返回本次重新入队的项数。
@@ -1023,6 +1029,10 @@ func accountReenqueueDriftedApplied() int {
 	for _, op := range accountCur.PendingRemote {
 		inPending[op.Key] = true
 	}
+	unreported := make(map[string]bool, len(accountCur.PendingOps))
+	for _, op := range accountCur.PendingOps {
+		unreported[op.Key] = true
+	}
 	added, minSeq := 0, int64(0)
 	for key, rec := range accountCur.AppliedVals {
 		if inPending[key] || rec.Seq <= 0 || len(rec.Value) == 0 {
@@ -1030,6 +1040,12 @@ func accountReenqueueDriftedApplied() int {
 		}
 		if accountKeyTargetSatisfiedAt(key, rec.Value, rec.UpdatedAt) {
 			continue
+		}
+		if unreported[key] {
+			continue // 改动还在上报队列里：等它送达即可，不能用账号记录覆盖
+		}
+		if reported := accountCur.ReportedVals[key]; len(reported) > 0 && accountKeyTargetSatisfiedAt(key, reported, 0) {
+			continue // 本机现状就是自己刚上报的新值（上报确认已把游标推过它）
 		}
 		accountCur.PendingRemote = append(accountCur.PendingRemote, accountPendingOp{
 			OpID:      fmt.Sprintf("pending-%s-%d", key, rec.Seq),

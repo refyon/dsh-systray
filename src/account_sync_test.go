@@ -625,6 +625,113 @@ func TestSyncNowReenqueuesDriftedApplied(t *testing.T) {
 	}
 }
 
+// TestSyncNowNoPhantomPendingAfterSelfReport 本机自己刚上报成功的改动，不得在紧随其后的同步
+// 检查里变成「待生效」：上报确认会把游标推到那条记录之后，拉取再也看不到它，只按陈旧的
+// appliedVals 重判漂移就会把**已被自己这条新记录取代**的旧记录重新入队。
+//
+// 2026-09-25 现场：托盘内把 harness 从 0.1.7-rc.1 更新到 0.1.7-rc.2（op 已上报成功，服务端记录
+// 与时间戳都是新的），随后手点「立即同步」却提示「1 项改动等待重启生效」，且那一项是旧版本
+// 0.1.7-rc.1——点「重启生效」反而会把刚更新的 harness 降回去。
+func TestSyncNowNoPhantomPendingAfterSelfReport(t *testing.T) {
+	useTempHarnessDir(t)
+	writeInstalledHarnessVersion(t, "0.1.7-rc.2")
+	setupAccountTest(t)
+	stubLocalPlugins(t) // 插件对账不依赖真实 dshHome
+	oldLocal := accountLocalPluginValueFn
+	t.Cleanup(func() { accountLocalPluginValueFn = oldLocal })
+	accountLocalPluginValueFn = func(profile, name string) (pluginOpValue, bool) {
+		if name == "pkg-a" {
+			return pluginOpValue{Action: "update", Spec: "^1.0.0", Source: "npm", Version: "1.0.3"}, true
+		}
+		return pluginOpValue{}, false
+	}
+
+	pluginKey := accountPluginKey("pkg-a")
+	st := loggedInState()
+	st.BaselineDone = true
+	st.Cursor = 5
+	st.LastReportedHarnessVersion = "0.1.7-rc.2" // 更新流程收尾已对账：版本对账不再补报
+	st.AppliedSeqs = map[string]int64{opKeyHarnessVersion: 5, pluginKey: 6}
+	st.AppliedVals = map[string]appliedRecord{
+		opKeyHarnessVersion: {Seq: 5, Value: json.RawMessage(`"0.1.7-rc.1"`), UpdatedAt: 1},
+		pluginKey: {Seq: 6, UpdatedAt: 1,
+			Value: json.RawMessage(`{"action":"update","spec":"^1.0.0","source":"npm","version":"1.0.2"}`)},
+	}
+	setAccountState(st)
+
+	// 托盘内完成两处改动（harness 升级 + 插件升级）并上报成功：服务端游标随之推进到 39。
+	if err := accountEnqueueOp(opKeyHarnessVersion, "0.1.7-rc.2"); err != nil {
+		t.Fatalf("登记失败: %v", err)
+	}
+	if err := accountEnqueueOp(pluginKey, pluginOpValue{Action: "update", Spec: "^1.0.0", Source: "npm", Version: "1.0.3"}); err != nil {
+		t.Fatalf("登记失败: %v", err)
+	}
+	client := fakeOpsServer(t, nil, 39)
+	if n, err := accountFlushOps(context.Background(), client); err != nil || n != 2 {
+		t.Fatalf("上报失败: n=%d err=%v", n, err)
+	}
+
+	res, err := accountSyncNow(context.Background(), client)
+	if err != nil {
+		t.Fatalf("同步失败: %v", err)
+	}
+	if res.Reenqueued != 0 {
+		t.Fatalf("本机自报的改动不是漂移：不应重新入队，实际 %d 项", res.Reenqueued)
+	}
+	if keys := accountPendingKeys(); len(keys) != 0 {
+		t.Fatalf("不应产生伪待生效项（点「重启生效」会把版本降回去）：%v", keys)
+	}
+	if s := accountSnapshot(); s.PendingApply || s.PendingOps != 0 {
+		t.Fatalf("同步后应回到「已同步」：%+v", s)
+	}
+	accountMu.Lock()
+	cursor := accountCur.Cursor
+	accountMu.Unlock()
+	if cursor != 39 {
+		t.Fatalf("自报记录已确认，游标不应被无谓回拨（会反复重拉历史记录）：%d", cursor)
+	}
+}
+
+// TestReenqueueDriftedStillCatchesRealDrift 自报值只在「本机现状仍等于它」时豁免漂移判定：
+// 本机随后又被人为改动（手工删 .dsh / harness 目录、外部降级）时仍必须重入队账号上的记录，
+// 否则会永久静默、再也提示不出恢复入口。
+func TestReenqueueDriftedStillCatchesRealDrift(t *testing.T) {
+	useTempHarnessDir(t)
+	writeInstalledHarnessVersion(t, "0.1.5") // 本机现状已不等于自报的 0.1.7-rc.2
+	setupAccountTest(t)
+	st := loggedInState()
+	st.AppliedVals = map[string]appliedRecord{
+		opKeyHarnessVersion: {Seq: 5, Value: json.RawMessage(`"0.1.7-rc.2"`), UpdatedAt: 1},
+	}
+	st.ReportedVals = map[string]json.RawMessage{opKeyHarnessVersion: json.RawMessage(`"0.1.7-rc.2"`)}
+	setAccountState(st)
+
+	if n := accountReenqueueDriftedApplied(); n != 1 {
+		t.Fatalf("本机现状已偏离自报值：应仍按漂移重入队账号记录，实际 %d 项", n)
+	}
+}
+
+// TestReenqueueDriftedSkipsKeyWithUnreportedChange 该 key 的改动还在上报队列里（尚未送达服务器）
+// 时同样不算漂移：本地未上报的改动代表用户最新意图，等它上报即可（与 mergeOps「本地未上报优先」
+// 同口径），不能用账号上的旧记录覆盖它。
+func TestReenqueueDriftedSkipsKeyWithUnreportedChange(t *testing.T) {
+	useTempHarnessDir(t)
+	writeInstalledHarnessVersion(t, "0.1.7-rc.2")
+	setupAccountTest(t)
+	st := loggedInState()
+	st.AppliedVals = map[string]appliedRecord{
+		opKeyHarnessVersion: {Seq: 5, Value: json.RawMessage(`"0.1.7-rc.1"`), UpdatedAt: 1},
+	}
+	setAccountState(st)
+	if err := accountEnqueueOp(opKeyHarnessVersion, "0.1.7-rc.2"); err != nil {
+		t.Fatalf("登记失败: %v", err)
+	}
+
+	if n := accountReenqueueDriftedApplied(); n != 0 {
+		t.Fatalf("上报队列里已有该 key 的新值：不应把旧记录重新入队，实际 %d 项", n)
+	}
+}
+
 // TestAppliedValsPersistAcrossReload 已应用目标值与序号一起落盘并在下次读取时还原
 // （跨托盘重启后仍能重判漂移）。
 func TestAppliedValsPersistAcrossReload(t *testing.T) {

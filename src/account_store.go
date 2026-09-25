@@ -110,6 +110,14 @@ type accountState struct {
 	// 供两种情况补报：①首次基线时版本尚未可知（harness 仍在安装/识别失败）；
 	// ②版本在 dsh-systray 之外被**升高**（源码 checkout 切换、外部 npm 安装）。
 	LastReportedHarnessVersion string `json:"lastReportedHarnessVersion,omitempty"`
+	// ReportedVals 本机最近一次**上报成功**（服务端已确认）的目标值（key → 值）。
+	//
+	// 用途：已应用记录的漂移重判必须先排除「本机改动就是自己刚上报的新值」。上报确认会把游标
+	// 推到那条记录之后，拉取再也看不到它，只按陈旧的 AppliedVals 判定就会把**已被自己这条新
+	// 记录取代**的旧记录重新入队——2026-09-25 现场：托盘内把 harness 更新到 0.1.7-rc.2 后，
+	// 同步页提示「待生效 1 项 = 0.1.7-rc.1」，点「重启生效」反而把刚更新的版本降回去。
+	// 该 key 的服务器记录被确认/应用（AppliedVals 追上）后即清除，不长期保留失效值。
+	ReportedVals map[string]json.RawMessage `json:"reportedVals,omitempty"`
 }
 
 // accountPendingOp 待上报的操作记录（本地队列项，见 account_ops.go）。

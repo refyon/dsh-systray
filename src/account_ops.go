@@ -152,6 +152,17 @@ func accountFlushAck(acked []accountPendingOp, cursor int64) {
 			}
 		}
 		accountCur.PendingOps = rest
+		// 记下「本机最近一次上报成功的值」：该 key 的漂移重判据此排除自报改动
+		// （见 accountReenqueueDriftedApplied；同 key 只留最新一条）。
+		for _, op := range acked {
+			if len(op.Value) == 0 {
+				continue
+			}
+			if accountCur.ReportedVals == nil {
+				accountCur.ReportedVals = map[string]json.RawMessage{}
+			}
+			accountCur.ReportedVals[op.Key] = append(json.RawMessage(nil), op.Value...)
+		}
 	}
 	if cursor > accountCur.Cursor {
 		accountCur.Cursor = cursor
