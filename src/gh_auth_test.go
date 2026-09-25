@@ -4,6 +4,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -156,7 +157,8 @@ func TestGHDeviceLoginRetryPolicy(t *testing.T) {
 // TestUpsertNpmrcTokenHelper 只动 codeload 那一行：用户 npmrc 里的其它配置、换行风格、
 // 历史重复行都要正确处理（写坏用户的 ~/.npmrc 是这条链路最贵的失败）。
 func TestUpsertNpmrcTokenHelper(t *testing.T) {
-	line := codeloadTokenHelperKey + `C:\tools\gh.exe auth token --hostname github.com`
+	// 新格式：值是包装器脚本的**裸路径**（不带参数），pnpm 10 与 11 都接受
+	line := codeloadTokenHelperKey + `C:\tools\gh-token.cmd`
 	cases := []struct {
 		desc, in, want string
 		changed        bool
@@ -164,7 +166,7 @@ func TestUpsertNpmrcTokenHelper(t *testing.T) {
 		{"空文件", "", line + "\n", true},
 		{"保留其它配置", "registry=https://registry.npmjs.org/\n", "registry=https://registry.npmjs.org/\n" + line + "\n", true},
 		{"已一致则不改", line + "\n", line + "\n", false},
-		{"更新旧命令", codeloadTokenHelperKey + "old-gh auth token\n", line + "\n", true},
+		{"迁移旧格式（带参数）", codeloadTokenHelperKey + "old-gh auth token\n", line + "\n", true},
 		{"合并重复行", line + "\n" + line + "\n", line + "\n", true},
 		{"保留 CRLF", "registry=x\r\n", "registry=x\r\n" + line + "\r\n", true},
 		{"无末尾换行则补上", "registry=x", "registry=x\n" + line + "\n", true},
@@ -184,13 +186,13 @@ func TestNpmrcTokenHelperPathSafe(t *testing.T) {
 		bin  string
 		want bool
 	}{
-		{`C:\Users\work\AppData\Roaming\dsh-systray\tools\gh\bin\gh.exe`, true},
-		{`/usr/local/bin/gh`, true},
-		{`C:\Program Files\gh.exe`, false},
-		{`C:\Users\a b\gh.exe`, false},
-		{`C:\gh$%.exe`, false},
+		{`C:\Users\work\AppData\Roaming\dsh-systray\tools\gh\bin\gh-token.cmd`, true},
+		{`/usr/local/bin/gh-token.sh`, true},
+		{`C:\Program Files\gh-token.cmd`, false},
+		{`C:\Users\a b\gh-token.cmd`, false},
+		{`C:\gh$%.cmd`, false},
 		{"", false},
-		{" gh.exe", false},
+		{" gh-token.cmd", false},
 	}
 	for _, c := range cases {
 		if got := npmrcTokenHelperPathSafe(c.bin); got != c.want {
@@ -199,21 +201,42 @@ func TestNpmrcTokenHelperPathSafe(t *testing.T) {
 	}
 }
 
-// TestWriteCodeloadTokenHelper 落盘路径：写入用户级 npmrc、内容一致时不改写文件、
-// 保留既有配置行；含空格的 gh 路径会被拒绝且不动文件。
+// TestWriteCodeloadTokenHelper 落盘路径：生成包装器脚本 + 在用户级 npmrc 写入**裸路径**值、
+// 内容一致时不改写文件、保留既有配置行；路径含空格（无法表达）时整条链路拒绝且不动文件。
+// 值必须不带参数：pnpm 10.34.5 会把「路径 + 参数」判为 BAD_TOKEN_HELPER_PATH 并让该版本下
+// 所有 pnpm 命令失败（2026-09-25 源码级实证）。
 func TestWriteCodeloadTokenHelper(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("USERPROFILE", home) // Windows 的 os.UserHomeDir
 	t.Setenv("HOME", home)        // macOS
 
-	bin := `C:\tools\gh.exe`
-	want := codeloadTokenHelperKey + bin + " auth token --hostname github.com\n"
+	bin := filepath.Join(t.TempDir(), ghBinName())
+	helper := ghTokenHelperPath(bin)
+	want := codeloadTokenHelperKey + helper + "\n"
 	if err := writeCodeloadTokenHelper(bin); err != nil {
 		t.Fatalf("writeCodeloadTokenHelper = %v", err)
 	}
 	p := filepath.Join(home, ".npmrc")
 	if b, err := os.ReadFile(p); err != nil || string(b) != want {
 		t.Fatalf("npmrc = (%q, %v), want %q", string(b), err, want)
+	}
+	if strings.ContainsAny(strings.TrimPrefix(want, codeloadTokenHelperKey), " \t") {
+		t.Fatalf("tokenHelper 值必须是裸路径（不含空白）：%q", want)
+	}
+	// 包装器脚本：存在、内含 gh 路径与取 token 的参数
+	sb, err := os.ReadFile(helper)
+	if err != nil {
+		t.Fatalf("包装器未生成：%v", err)
+	}
+	for _, must := range []string{bin, "auth token --hostname github.com"} {
+		if !strings.Contains(string(sb), must) {
+			t.Errorf("包装器内容缺少 %q：%q", must, string(sb))
+		}
+	}
+	if runtime.GOOS != "windows" {
+		if st, err := os.Stat(helper); err != nil || st.Mode().Perm()&0o100 == 0 {
+			t.Errorf("非 Windows 平台包装器需可执行位：%v %v", st.Mode(), err)
+		}
 	}
 
 	// 内容已一致：不得改写文件（mtime 是这里唯一可观测的「没写」证据）
@@ -241,13 +264,85 @@ func TestWriteCodeloadTokenHelper(t *testing.T) {
 		t.Errorf("既有配置被破坏：%q", string(b))
 	}
 
-	// 含空格的 gh 路径：拒绝且不动文件
+	// 含空格的 gh 路径 → 包装器路径同样含空格：拒绝且不动文件、不留半成品
 	before, _ := os.ReadFile(p)
-	if err := writeCodeloadTokenHelper(`C:\Program Files\gh.exe`); err == nil {
+	badBin := filepath.Join(t.TempDir(), "Program Files", ghBinName())
+	if err := writeCodeloadTokenHelper(badBin); err == nil {
 		t.Error("含空格的路径应被拒绝")
 	}
 	if after, _ := os.ReadFile(p); string(after) != string(before) {
 		t.Error("拒绝路径时不应改动 npmrc")
+	}
+	if _, err := os.Stat(ghTokenHelperPath(badBin)); !os.IsNotExist(err) {
+		t.Error("拒绝路径时不应留下包装器脚本")
+	}
+}
+
+// TestDropLegacyTokenHelperLine 旧格式（值含空白 = 带参数）行删除：它是 pnpm 10.34.5 下
+// 所有 pnpm 命令失败的根因；其它 host 的 tokenHelper 与其它配置必须原样保留。
+func TestDropLegacyTokenHelperLine(t *testing.T) {
+	legacy := codeloadTokenHelperKey + `C:\tools\gh.exe auth token --hostname github.com`
+	bare := codeloadTokenHelperKey + `C:\tools\gh-token.cmd`
+	cases := []struct {
+		desc, in, want string
+		changed        bool
+	}{
+		{"仅旧行→清空", legacy + "\n", "", true},
+		{"保留其它配置", "registry=x\n" + legacy + "\n", "registry=x\n", true},
+		{"新格式不动", bare + "\n", bare + "\n", false},
+		{"其它 host 不动", "//npm.pkg.github.com/:tokenHelper=/opt/h.sh\n" + legacy + "\n",
+			"//npm.pkg.github.com/:tokenHelper=/opt/h.sh\n", true},
+		{"CRLF 保留", "registry=x\r\n" + legacy + "\r\n", "registry=x\r\n", true},
+		{"无该行不动", "registry=x\n", "registry=x\n", false},
+	}
+	for _, c := range cases {
+		got, changed := dropLegacyTokenHelperLine(c.in)
+		if got != c.want || changed != c.changed {
+			t.Errorf("%s: got (%q, %v), want (%q, %v)", c.desc, got, changed, c.want, c.changed)
+		}
+	}
+}
+
+// TestRemoveLegacyCodeloadTokenHelper 无 gh 时的兜底：只删旧行、不动别的；已是新格式则不改文件。
+func TestRemoveLegacyCodeloadTokenHelper(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("USERPROFILE", home)
+	t.Setenv("HOME", home)
+	p := filepath.Join(home, ".npmrc")
+
+	legacy := codeloadTokenHelperKey + `C:\tools\gh.exe auth token --hostname github.com`
+	if err := os.WriteFile(p, []byte("registry=x\n"+legacy+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := removeLegacyCodeloadTokenHelper(); err != nil {
+		t.Fatalf("removeLegacyCodeloadTokenHelper = %v", err)
+	}
+	if b, _ := os.ReadFile(p); string(b) != "registry=x\n" {
+		t.Fatalf("旧行未清理干净：%q", string(b))
+	}
+
+	// 已是新格式（裸路径）：不改动文件
+	bare := codeloadTokenHelperKey + `C:\tools\gh-token.cmd` + "\n"
+	if err := os.WriteFile(p, []byte(bare), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	old := time.Unix(1000000, 0)
+	if err := os.Chtimes(p, old, old); err != nil {
+		t.Fatal(err)
+	}
+	if err := removeLegacyCodeloadTokenHelper(); err != nil {
+		t.Fatal(err)
+	}
+	if st, err := os.Stat(p); err != nil || !st.ModTime().Equal(old) {
+		t.Errorf("新格式不应被改写（mtime=%v, err=%v）", st.ModTime(), err)
+	}
+
+	// npmrc 不存在：静默成功
+	if err := os.Remove(p); err != nil {
+		t.Fatal(err)
+	}
+	if err := removeLegacyCodeloadTokenHelper(); err != nil {
+		t.Errorf("npmrc 不存在时应静默成功：%v", err)
 	}
 }
 

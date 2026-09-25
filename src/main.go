@@ -874,6 +874,10 @@ func bootstrapService() {
 	for _, pf := range enumeratePluginProfiles() {
 		recoverInterruptedPluginSnapshot(pf.dir)
 	}
+	// 2.7) codeload 凭据自愈：历史的「带参数」tokenHelper 会让 pnpm 10.34.5（托盘自带运行时）
+	// 下**所有** pnpm 命令失败（启动即解析全部 tokenHelper），而那条配置只在下过私有仓插件的
+	// 机器上存在、没有任何路径会自动触发修复——启动时重写为新格式（或清理旧行）兜住。
+	go repairCodeloadTokenHelper()
 
 	// 3) 启动服务
 	splash.Update(T("正在启动服务…"), 0.9)

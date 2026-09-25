@@ -255,14 +255,37 @@ func invalidateGHToken() {
 //  1. git：pnpm 解析 github: spec 的引用时跑 `git ls-remote`（本机实证：未认证时
 //     could not read Username），用 gh 写进 git 配置的凭据助手取 token；
 //  2. codeload：pnpm 把 hosted-git spec 解析成 codeload tarball 下载（本机实证：
-//     未认证 404），用用户级 npmrc 里的 tokenHelper 取 token（pnpm 执行该命令、
-//     把 stdout 当 token）。
+//     未认证 404），用用户级 npmrc 里的 tokenHelper 取 token（pnpm 执行它、把 stdout 当 token）。
 // 两处配置都只写「命令」、不写 token（token 由 gh 从系统凭据库读出），与 gh.go 顶部
 // 「令牌只经内存」的约定一致。
+//
+// tokenHelper 的值必须是**一个存在的绝对路径、不带参数**（2026-09-25 源码级实证）：
+//   - pnpm 10.34.5（托盘自带便携运行时的版本）：`loadToken` 先做
+//     `path.isAbsolute(值) && existsSync(值)`，再把整个值交给 `spawnSync(值, {shell:true})`
+//     —— 所以「路径 + 参数」的写法会被判为 BAD_TOKEN_HELPER_PATH 并**让该版本下所有 pnpm
+//     命令直接失败**（连装公共包都跑不动，因为启动时会解析并加载全部 tokenHelper）；
+//   - pnpm 11.7.0：`parseTokenHelper` 按空白切分成「命令 + 参数」再执行，因此旧的带参写法
+//     在它上面恰好能用 —— 这正是该缺陷长期未被发现的原因（开发机走系统 pnpm 11）。
+// 故统一改为：写一个**包装器脚本的裸路径**，脚本内部再带参数调 gh。两个版本都接受
+// （10.34.5 shell:true 能跑 .cmd；11.7.0 对 .cmd/.bat 显式设 shell:true）。
 
 // codeloadTokenHelperKey 用户级 .npmrc 的 codeload 凭据键。必须用户级：pnpm 明确拒绝
 // 项目级 .npmrc 里的 tokenHelper（TOKEN_HELPER_IN_PROJECT_CONFIG）。
 const codeloadTokenHelperKey = "//codeload.github.com/:tokenHelper="
+
+// ghTokenHelperScriptName 包装器脚本文件名（Windows .cmd / 其它平台 .sh）。
+func ghTokenHelperScriptName() string {
+	if runtime.GOOS == "windows" {
+		return "gh-token.cmd"
+	}
+	return "gh-token.sh"
+}
+
+// ghTokenHelperPath 与 gh 同目录的 tokenHelper 包装器路径。与 gh 同目录保证：它是绝对路径、
+// 通常不含空白，且随 gh 一起在便携工具目录里（不额外引入新的目录约定）。
+func ghTokenHelperPath(bin string) string {
+	return filepath.Join(filepath.Dir(bin), ghTokenHelperScriptName())
+}
 
 var (
 	ghCredsMu   sync.Mutex
@@ -298,6 +321,24 @@ func ensureGitHubPrivateRepoCreds() bool {
 	return ok
 }
 
+// repairCodeloadTokenHelper 启动期的凭据自愈（幂等，可重复调用）：
+//   - 有 gh：重写 tokenHelper（把历史的「路径 + 参数」旧格式迁移为包装器裸路径）；
+//   - 无 gh：只清理旧格式行——它会让 pnpm 10.34.5 下所有 pnpm 操作失败，留着一定是坏事。
+//
+// 为什么要主动做：旧格式只在下过私有仓插件、且当时 gh 已就位的机器上被写入；那些机器若用
+// 托盘自带的 pnpm 10.34.5，此后连公共包都装不动，却没有任何路径会自动触发修复。
+func repairCodeloadTokenHelper() {
+	if bin := findGHBinary(); bin != "" {
+		if err := writeCodeloadTokenHelper(bin); err != nil {
+			logWarn("app", "codeload tokenHelper repair failed: %v", err)
+		}
+		return
+	}
+	if err := removeLegacyCodeloadTokenHelper(); err != nil {
+		logWarn("app", "legacy codeload tokenHelper cleanup failed: %v", err)
+	}
+}
+
 // ghSetupGitCredentials 让 git 也用 gh 的凭据（pnpm 解析 github: spec 走 git ls-remote，
 // 不经过 npmrc）。gh 只把「凭据助手命令」写进 git 配置，token 仍在系统凭据库。
 // 需要已登录：未登录时 gh 直接报错退出，不会写入任何配置（本机实证）。
@@ -312,12 +353,109 @@ func ghSetupGitCredentials(bin string) error {
 	return nil
 }
 
-// writeCodeloadTokenHelper 在用户级 ~/.npmrc 写入/更新 codeload 的 tokenHelper。
+// writeGHTokenHelperScript 写 tokenHelper 包装器脚本（内容不含 token：脚本内部调 gh 取）。
+// 返回可用于 npmrc 的脚本路径。原子写（同目录临时文件 + 改名），内容一致时不重写。
+func writeGHTokenHelperScript(bin string) (string, error) {
+	p := ghTokenHelperPath(bin)
+	var body string
+	if runtime.GOOS == "windows" {
+		// 只回显 gh 的 stdout（token 本身），并把 gh 的退出码作为脚本退出码——
+		// pnpm 判 status!=0 即报 TOKEN_HELPER_ERROR_STATUS，不能吞掉失败。
+		body = "@echo off\r\n\"" + bin + "\" auth token --hostname github.com\r\n"
+	} else {
+		body = "#!/bin/sh\nexec \"" + bin + "\" auth token --hostname github.com\n"
+	}
+	if cur, err := os.ReadFile(p); err == nil && string(cur) == body {
+		return p, nil
+	}
+	tmp := p + ".tmp"
+	if err := os.WriteFile(tmp, []byte(body), 0o755); err != nil {
+		return "", err
+	}
+	if err := os.Rename(tmp, p); err != nil {
+		_ = os.Remove(tmp)
+		return "", err
+	}
+	if runtime.GOOS != "windows" {
+		if err := os.Chmod(p, 0o755); err != nil { // 非 Windows 需可执行位（pnpm 直接 exec）
+			return "", err
+		}
+	}
+	return p, nil
+}
+
+// writeCodeloadTokenHelper 生成包装器脚本，并在用户级 ~/.npmrc 写入/更新 codeload 的
+// tokenHelper（值为**裸路径**，见文件顶部的版本差异说明）。
 // 幂等：内容已一致时不碰文件；只动这一行，保留用户其它配置。
 func writeCodeloadTokenHelper(bin string) error {
-	if !npmrcTokenHelperPathSafe(bin) {
-		return fmt.Errorf("gh 路径含空白或 pnpm 保留字符，无法用 tokenHelper 表达：%s", bin)
+	// 先判可表达性再落盘：路径不可表达时不留下任何半成品（包装器脚本）
+	helper := ghTokenHelperPath(bin)
+	if !npmrcTokenHelperPathSafe(helper) {
+		return fmt.Errorf("包装器路径含空白或 pnpm 保留字符，无法用 tokenHelper 表达：%s", helper)
 	}
+	path, err := writeGHTokenHelperScript(bin)
+	if err != nil {
+		return err
+	}
+	return upsertUserNpmrcLine(codeloadTokenHelperKey + path)
+}
+
+// removeLegacyCodeloadTokenHelper 删除旧格式（值含空白 = 带参数）的 codeload tokenHelper 行。
+// 无 gh 时用它兜底：旧格式会让 pnpm 10.34.5 下所有 pnpm 命令失败，必须清掉。
+// 已是新格式（裸路径）或本来就没有该行时不改动文件。
+func removeLegacyCodeloadTokenHelper() error {
+	p, err := userNpmrcPath()
+	if err != nil {
+		return err
+	}
+	cur, rerr := os.ReadFile(p)
+	if rerr != nil {
+		if os.IsNotExist(rerr) {
+			return nil
+		}
+		return rerr
+	}
+	next, changed := dropLegacyTokenHelperLine(string(cur))
+	if !changed {
+		return nil
+	}
+	return writeFileAtomic(p, next)
+}
+
+// dropLegacyTokenHelperLine 去掉值里含空白（带参数）的 tokenHelper 行，返回新内容与是否变更。
+func dropLegacyTokenHelperLine(content string) (string, bool) {
+	nl := "\n"
+	if strings.Contains(content, "\r\n") {
+		nl = "\r\n"
+	}
+	var lines []string
+	if body := strings.TrimSuffix(content, "\n"); body != "" {
+		lines = strings.Split(body, "\n")
+	}
+	out := make([]string, 0, len(lines))
+	changed := false
+	for _, ln := range lines {
+		trimmed := strings.TrimSpace(strings.TrimSuffix(ln, "\r"))
+		if strings.HasPrefix(trimmed, codeloadTokenHelperKey) {
+			value := strings.TrimSpace(strings.TrimPrefix(trimmed, codeloadTokenHelperKey))
+			if strings.ContainsAny(value, " \t") {
+				changed = true
+				continue // 旧格式：删
+			}
+		}
+		out = append(out, strings.TrimSuffix(ln, "\r"))
+	}
+	if !changed {
+		return content, false
+	}
+	if len(out) == 0 {
+		return "", true
+	}
+	return strings.Join(out, nl) + nl, true
+}
+
+// upsertUserNpmrcLine 把单行配置写入/更新到用户级 npmrc（幂等 + 原子写，保留其它配置）。
+func upsertUserNpmrcLine(line string) error {
 	p, err := userNpmrcPath()
 	if err != nil {
 		return err
@@ -328,13 +466,17 @@ func writeCodeloadTokenHelper(bin string) error {
 	} else if !os.IsNotExist(rerr) {
 		return rerr
 	}
-	next, changed := upsertNpmrcTokenHelper(cur, codeloadTokenHelperKey+bin+" auth token --hostname github.com")
+	next, changed := upsertNpmrcTokenHelper(cur, line)
 	if !changed {
 		return nil
 	}
-	// 先写同目录临时文件再改名：避免写一半留下残缺的 npmrc（用户可能还有别的配置）。
+	return writeFileAtomic(p, next)
+}
+
+// writeFileAtomic 先写同目录临时文件再改名，避免写一半留下残缺文件。
+func writeFileAtomic(p, content string) error {
 	tmp := p + ".dsh-tmp"
-	if err := os.WriteFile(tmp, []byte(next), 0o644); err != nil {
+	if err := os.WriteFile(tmp, []byte(content), 0o644); err != nil {
 		return err
 	}
 	if err := os.Rename(tmp, p); err != nil {
@@ -353,9 +495,9 @@ func userNpmrcPath() (string, error) {
 	return filepath.Join(home, ".npmrc"), nil
 }
 
-// npmrcTokenHelperPathSafe gh 可执行文件路径能否直接用于 tokenHelper：pnpm 按空白切分
-// 该配置，并禁止 $ % ` " ' 这些字符（parseCreds.js 的 RESERVED_CHARACTERS），因此路径里
-// 带空格/特殊字符的 gh 无法表达，只能让用户改用不含特殊字符的 gh。
+// npmrcTokenHelperPathSafe tokenHelper 的值（此处为包装器路径）能否被 pnpm 表达：
+// pnpm 按空白切分该配置，并禁止 $ % ` " ' 这些字符（parseCreds.js 的 RESERVED_CHARACTERS），
+// 因此路径带空格/特殊字符时无法配置，只能让用户改用不含特殊字符的目录。
 func npmrcTokenHelperPathSafe(bin string) bool {
 	if bin == "" || strings.TrimSpace(bin) != bin {
 		return false
