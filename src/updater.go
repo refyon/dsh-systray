@@ -204,10 +204,16 @@ const notoSansSCFamily = "Noto Sans SC"
 
 // notoSansSCURLs Noto Sans SC 可变字体（含全部字重）的多个 CDN 候选源，依次尝试直至成功。
 // 下载时每个候选还会走 downloadFileWithProgress 的多镜像回退。
+//
+// 路径注意（2026-09-25 复核）：上游已把该字体从 `Sans/Variable/TTF/NotoSansSC[wght].ttf` 改为
+// `Sans/Variable/TTF/Subset/NotoSansSC-VF.ttf`（SC 子集，16.9MB）。旧路径现在 404，而下载失败
+// 只是静默回退系统字体——用户看不出异常，故这里锁住路径并由单测守门。
+// family 名已核对：该文件的 name 表为 "Noto Sans SC"，与 notoSansSCFamily 一致（UTF-16BE 搜索验证）；
+// 同目录的 NotoSansCJKsc-VF.ttf 是 "Noto Sans CJK SC"，family 不匹配、不能用。
 var notoSansSCURLs = []string{
-	"https://github.com/googlefonts/noto-cjk/raw/main/Sans/Variable/TTF/NotoSansSC%5Bwght%5D.ttf",
-	"https://raw.githubusercontent.com/googlefonts/noto-cjk/main/Sans/Variable/TTF/NotoSansSC%5Bwght%5D.ttf",
-	"https://cdn.jsdelivr.net/gh/googlefonts/noto-cjk@main/Sans/Variable/TTF/NotoSansSC%5Bwght%5D.ttf",
+	"https://cdn.jsdelivr.net/gh/googlefonts/noto-cjk@main/Sans/Variable/TTF/Subset/NotoSansSC-VF.ttf",
+	"https://raw.githubusercontent.com/googlefonts/noto-cjk/main/Sans/Variable/TTF/Subset/NotoSansSC-VF.ttf",
+	"https://github.com/googlefonts/noto-cjk/raw/main/Sans/Variable/TTF/Subset/NotoSansSC-VF.ttf",
 }
 
 // notoSansSCFontDir 存放已下载字体的目录（用户配置目录下，避免写入系统、无需管理员）。

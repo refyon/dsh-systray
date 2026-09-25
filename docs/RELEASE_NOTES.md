@@ -4,6 +4,23 @@
 > `## vX.Y.Z` 区块（最新在上）。CI 推送 `v*` tag 后会自动把该区块作为 GitHub Release 正文；
 > 找不到对应区块时回退为 GitHub 自动生成（提交列表）。
 
+## v0.10.9
+
+自 v0.10.8 起（修复内置中文字体的下载地址：此前一直静默回退系统字体）：
+
+### 修复
+
+- **Noto Sans SC 字体下载地址已失效**：上游把该字体从 `Sans/Variable/TTF/NotoSansSC[wght].ttf` 移到 `Sans/Variable/TTF/Subset/NotoSansSC-VF.ttf`（SC 子集，16.9MB），原三个候选源（GitHub raw / raw.githubusercontent / jsdelivr）全部 404。由于「下载失败即回退系统字体」，表现完全静默——用户只会觉得界面中文字体不是预期的那套。
+  - 现在三个候选源都指向新路径；配了 `mirrorBase` 时优先经自建中转下载（本机实测 **19.1s / 7.4 Mbps**，jsdelivr 直连 **284s / 0.5 Mbps**，约 15× 差距）。
+  - 已核对文件内部 family 名：`name` 表为 **"Noto Sans SC"**，与代码常量 `notoSansSCFamily` 一致（按 UTF-16BE 搜索验证）。同目录的 `NotoSansCJKsc-VF.ttf` family 是 "Noto Sans CJK SC"，名字不匹配、不能替代——故未采用体积相近的 CJK 版本。
+- 新增单测守住该路径与候选源主机集合（三个 CDN 缺一即失败），避免上游路径变更后再次静默回退。
+
+### 测试
+
+- 新增 1 例（字体路径/候选源回归）；
+- 真实下载核对：三个候选的可用性 + family 名（脚本 `scripts/为dsh-systray依赖更新提速/verify-noto-font.mjs`）；
+- 全量 `go test -count=1 ./...` 绿。
+
 ## v0.10.8
 
 自 v0.10.7 起（新增「自建 GitHub 中转 Worker」支持：私有仓插件更新也走 Cloudflare 边缘）：
