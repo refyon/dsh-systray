@@ -508,7 +508,7 @@ func fetchHarnessLatestTags() ([]string, error) {
 		}
 	}
 
-	client := &http.Client{Timeout: updateAPITimeout}
+	client := newHTTPClient(updateAPITimeout)
 	var lastErr error
 	for _, u := range candidates {
 		req, err := http.NewRequest("GET", u, nil)
@@ -1705,7 +1705,7 @@ func fetchLatestRelease() (*latestRelease, error) {
 		}
 	}
 
-	client := &http.Client{Timeout: updateAPITimeout}
+	client := newHTTPClient(updateAPITimeout)
 	var lastErr error
 	for _, u := range candidates {
 		req, err := http.NewRequest("GET", u, nil)
@@ -1967,10 +1967,12 @@ const (
 // 两处都要设：NextProtos 覆盖克隆自 DefaultTransport 的 ALPN 列表（否则服务端仍选 h2，而
 // TLSNextProto 已置空，会直接报 malformed HTTP response），TLSNextProto 非 nil 空表则关闭
 // Go 的自动 h2 装配（见 net/http 文档）。
+//
+// 代理解析随 Clone 一并继承（netproxy.go 在 init 时给 DefaultTransport 装上 Proxy 判定）。
 var downloadClient = &http.Client{
 	Timeout: updateDLTimeout,
 	Transport: func() *http.Transport {
-		tr := http.DefaultTransport.(*http.Transport).Clone()
+		tr := outboundTransport().Clone()
 		if tr.TLSClientConfig == nil {
 			tr.TLSClientConfig = &tls.Config{}
 		} else {

@@ -180,7 +180,7 @@ func copyZipEntryToDir(f *zip.File, destDir, outName string) error {
 
 // downloadWithProgress 下载文件（进度 0-1）。25 分钟超时。
 func downloadWithProgress(url, dest string, onProgress func(pct float64)) error {
-	client := &http.Client{Timeout: 25 * time.Minute}
+	client := newHTTPClient(25 * time.Minute)
 	resp, err := client.Get(url)
 	if err != nil {
 		return err

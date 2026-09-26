@@ -4,6 +4,75 @@
 > `## vX.Y.Z` 区块（最新在上）。CI 推送 `v*` tag 后会自动把该区块作为 GitHub Release 正文；
 > 找不到对应区块时回退为 GitHub 自动生成（提交列表）。
 
+## v1.0.0
+
+自 v0.10.10 起（出网请求支持系统代理：修复「账号同步/登录一律报网络异常」；升为 1.0.0 表示配置项与行为契约稳定）：
+
+### 新增
+
+- **出网代理支持（`proxy` 配置项 + 系统代理自动探测）**。此前所有出网请求只走 Go 标准库的
+  `http.ProxyFromEnvironment`，而它**只读 `HTTP_PROXY`/`HTTPS_PROXY`/`NO_PROXY` 环境变量、
+  不读 Windows 的「系统代理」设置**——于是浏览器（走系统代理）一切正常、托盘（Go 程序）全部直连。
+  在直连被阻断的网络里，这表现为账号令牌校验、后台同步、登录验证码、GitHub 更新检查与下载**全部失败**。
+  现在优先级为：
+
+  | 优先级 | 来源 | 说明 |
+  | --- | --- | --- |
+  | 1 | `DSH_SYSTRAY_PROXY` 环境变量 | 最高，便于临时覆盖与排障 |
+  | 2 | `config.json` 的 `proxy` | `auto`（默认）/ `direct` / 代理地址 |
+  | 3 | `HTTP_PROXY` / `HTTPS_PROXY` / `NO_PROXY` | 标准环境变量（自行解析，非标准库缓存版） |
+  | 4 | Windows「系统代理」 | 注册表 `Internet Settings`：`ProxyEnable` / `ProxyServer` / `ProxyOverride` |
+
+  - `proxy` 取 **`auto`（默认）**：环境变量与系统代理都没有就直连，行为与升级前一致；
+  - 取 **`direct`**：强制直连，忽略环境变量与系统代理（调试「到底是不是代理引起的」用）；
+  - 取 **代理地址**：如 `http://127.0.0.1:10808`、`socks5://127.0.0.1:10808`（省略 scheme 按 `http://`），
+    对全部外部地址生效、不再套用绕过清单；
+  - **本机回环与私网地址恒不走代理**（`127.*`、`localhost`、`::1`、`10.*`、`172.16-31.*`、`192.168.*`、`169.254.*`）。
+    这是硬约束：托盘自己托管 `127.0.0.1:<port>` 的 Web 服务，健康探测与访问令牌校验若被代理转发
+    会把「服务正常」误判成「服务不可用」。
+  - Windows 上除 `Internet Settings` 根键外，另解析 LAN 连接设置（`Connections\DefaultConnectionSettings`
+    二进制：flags 位 + 代理串 + 绕过串），覆盖组策略下发等只写子键的场景。
+  - 启动时在日志打印一行判定结论，便于现场排障，例如：
+
+    ```
+    [proxy] 出网代理模式=auto → 自动：检测到系统代理 http="127.0.0.1:10808" https="127.0.0.1:10808" 绕过=[localhost 127.* 10.* …]
+    ```
+
+- **`App.SetProxy` 绑定**：程序化设置代理模式（与 `proxy` 配置项同义，空值 = 恢复 `auto`），
+  供前端或脚本调用；`GetConfig()` 的返回新增 `proxy` 字段。
+- **`netproxy.go` 统一代理解析层**，接管全部出网客户端：账号同步（`accountClient`）、
+  更新检查与下载（`updater.go`，含分段下载 `downloadClient`）、插件检查/更新（`plugin_update.go`）、
+  镜像下载（`mirrors.go`）、运行时与字体下载（`ziptool.go`、`platform_*.go`）、
+  `http.DefaultClient` 与默认 Transport。新增出网代码只需用 `newHTTPClient(timeout)` 即自动获得代理支持。
+
+### 修复
+
+- **账号同步/登录恒报「网络连接失败」**（2026-09-26 现场）：`api.instantserv.ccwu.cc` 直连被网络层重置
+  （TCP 可连、随后 `wsarecv: An existing connection was forcibly closed by the remote host`），
+  而托盘不读系统代理。现按上表自动走系统代理；同一台机器上浏览器正常、托盘失败的不一致现象消失。
+- **保存配置会静默丢字段**：`bootstrapService` 的两处保存（回退默认 harness 目录 / 自动探测到既有目录）
+  各自手写 `appConfig` 字面量，会丢掉 `accountApiBase`、`trustedHosts` 与**待应用的插件变更**
+  （后者直接表现为重启托盘后待应用变更消失）。现统一由 `currentConfig()` 汇总，新增字段不再遗漏。
+- **环境变量代理读取改为自行解析**：标准库 `ProxyFromEnvironment` 会把环境快照缓存在 `sync.Once` 里，
+  进程内后续变更（含 `setx` 之后、重启之前）一律不生效，且其全局行为会盖过本程序的显式配置。
+
+### 测试
+
+- 新增 `src/netproxy_test.go`（13 个用例 / 31 处断言 / 7 个子用例，全部不触网）：模式归一化与地址解析（含非法输入）、
+  系统代理两种取值形态（单一地址 / 按协议分列 / socks 兜底 / 带引号）、绕过清单匹配（`*`、`*.`、`.`
+  前缀、带端口、点边界）、本机与私网地址恒直连、显式配置优先于系统代理、`direct` 生效、
+  `auto` 依次回退环境变量与系统代理、`newHTTPClient` 确实装配了代理判定；
+- 真实注册表核验（`go test -run TestManualRealSystemProxy -v`）：本机 `ProxyEnable=1` /
+  `ProxyServer=127.0.0.1:10808` 被正确读出，`api.instantserv.ccwu.cc` 与 `api.github.com` 判定走代理、
+  `127.0.0.1:3080` 判定直连；
+- `gofmt` 干净 + `go vet` 干净 + 全量 `go test ./...` 绿（68.5s）；`GOOS=windows/amd64` 构建通过。
+
+### 说明
+
+- 代理只影响**后续**请求：已建立的连接池不会重建，改配置后建议重启托盘整体生效。
+- `git ls-remote` / `pnpm` 等**子进程**出网走的是 https_proxy 环境变量（pnpm 另读 npm 配置），
+  不受本项配置影响。
+
 ## v0.10.10
 
 自 v0.10.9 起（全新机器首装版本修正 + 修复「同步应用被误报成服务启动失败」）：

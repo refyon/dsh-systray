@@ -112,6 +112,7 @@ type ConfigInfo struct {
 	AutostartLaunch   bool   `json:"autostartLaunch"`
 	Language          string `json:"language"` // 语言偏好：auto | zh | en
 	CurLang           string `json:"curLang"`  // 解析后的生效语言：zh | en
+	Proxy             string `json:"proxy"`    // 出网代理配置原值：auto | direct | 代理地址（见 netproxy.go）
 }
 
 func (a *App) GetConfig() ConfigInfo {
@@ -130,6 +131,7 @@ func (a *App) GetConfig() ConfigInfo {
 		AutostartLaunch:   autostartLaunch,
 		Language:          langPref,
 		CurLang:           curLang,
+		Proxy:             proxyConfigValueOf(),
 	}
 }
 
@@ -158,19 +160,11 @@ func (a *App) SetLanguage(l string) {
 var saveCfgMu sync.Mutex
 
 // saveCurrentConfig 把当前全局配置写回 config.json（含待应用插件变更：跨托盘重启保留）。
+// 字段集合统一由 currentConfig() 汇总，避免各保存点漏字段（见其注释）。
 func saveCurrentConfig() {
 	saveCfgMu.Lock()
 	defer saveCfgMu.Unlock()
-	saveConfig(appConfig{
-		Port:              port,
-		HarnessDir:        harnessDir,
-		StartupTimeoutSec: int(startupTimeout / time.Second),
-		UpdateMirror:      updateMirrorOverride,
-		MirrorBase:        mirrorBase,
-		HarnessPrerelease: harnessPrereleaseOverride,
-		Language:          langPref,
-		PendingPluginOps:  pluginPendingOps(),
-	})
+	saveConfig(currentConfig())
 }
 
 func (a *App) SetAutostart(on bool) {
@@ -201,6 +195,21 @@ func (a *App) SetUpdateMirror(m string) {
 	m = strings.TrimSpace(m)
 	logUI("设置更新镜像", m)
 	updateMirrorOverride = m
+	saveCurrentConfig()
+}
+
+// SetProxy 设置出网代理模式（auto | direct | 代理地址，见 netproxy.go）。
+//
+// 只影响后续请求：已建立的连接池不会重建（托盘重启后整体生效）。空值 = 恢复 auto。
+func (a *App) SetProxy(v string) {
+	v = strings.TrimSpace(v)
+	if v == "" {
+		v = proxyModeAuto
+	}
+	logUI("设置出网代理", v)
+	setProxyConfigValue(v)
+	setOutboundProxy(v)
+	logProxyResolution()
 	saveCurrentConfig()
 }
 
@@ -1268,10 +1277,11 @@ const (
 )
 
 // tokenURLCheckClient 校验用 HTTP 客户端：不跟随重定向（令牌匹配时服务端返回 303 跳回 /）。
-var tokenURLCheckClient = &http.Client{
-	Timeout:       4 * time.Second,
-	CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
-}
+var tokenURLCheckClient = func() *http.Client {
+	c := newHTTPClient(4 * time.Second)
+	c.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
+	return c
+}()
 
 // verifyTokenURL 用一次不带 cookie 的根请求校验带令牌链接：303/200 视为有效，401/403 视为
 // 已失效，其余（连接失败/超时/5xx）无法判定——只有明确失效才清除缓存，避免服务尚未就绪时误删。

@@ -547,7 +547,7 @@ func (e *githubNotVisibleError) Error() string { return fmt.Sprintf("HTTP %d", e
 func getWithMirrors(candidates []string, deadline time.Duration) ([]byte, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), deadline)
 	defer cancel()
-	client := &http.Client{}
+	client := newHTTPClient(0) // 超时由上方 ctx（deadline）控制；代理见 netproxy.go
 	var lastErr error
 	for i, u := range candidates {
 		candCtx, candCancel := context.WithTimeout(ctx, pluginCheckCandidateTimeout)

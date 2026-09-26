@@ -92,7 +92,7 @@ func downloadSingle(url, dest string, timeout time.Duration, onPct func(pct floa
 	if err != nil {
 		return err
 	}
-	client := &http.Client{}
+	client := newHTTPClient(0) // 超时由上方 ctx 控制；代理见 netproxy.go
 	resp, err := client.Do(req)
 	if err != nil {
 		return err

@@ -158,7 +158,9 @@ func newAccountClient(base string) *accountClient {
 	}
 	return &accountClient{
 		base: strings.TrimRight(base, "/"),
-		http: &http.Client{Timeout: accountRequestTimeout},
+		// newHTTPClient 带统一代理解析（环境变量 / Windows 系统代理 / config.json 显式配置），
+		// 直连被阻断的环境（见 netproxy.go 头部说明）据此自动走系统代理。
+		http: newHTTPClient(accountRequestTimeout),
 		backoff: func(attempt int) time.Duration {
 			return 300 * time.Millisecond * time.Duration(1<<uint(attempt))
 		},

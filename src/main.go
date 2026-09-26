@@ -9,7 +9,6 @@ import (
 	"fmt"
 	"io"
 	"log"
-	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -124,6 +123,12 @@ type appConfig struct {
 	TrustedHosts []string `json:"trustedHosts,omitempty"`
 	// AccountAPIBase dsh-connect 服务地址；空 = 内置正式域名（见 account.go 的 defaultAccountAPIBase）。
 	AccountAPIBase string `json:"accountApiBase,omitempty"`
+	// Proxy 出网代理（见 netproxy.go）：
+	//   auto（默认）  自动：显式地址 > HTTP_PROXY/HTTPS_PROXY 环境变量 > Windows 系统代理 > 直连
+	//   direct        强制直连，忽略环境变量与系统代理
+	//   代理地址      如 http://127.0.0.1:10808 / socks5://127.0.0.1:10808（对全部外部地址生效）
+	// 本机回环与私网地址恒不走代理（托盘自身服务探测）。环境变量 DSH_SYSTRAY_PROXY 优先级更高。
+	Proxy string `json:"proxy,omitempty"`
 	// PendingPluginOps 待应用的插件变更（更新/删除/启用）：点击后只登记，等用户在关闭设置窗口时
 	// 确认、或在关于页点「立即应用」才执行（整批一次重启）。跨托盘重启保留，见 plugin_batch.go。
 	PendingPluginOps []pendingPluginOp `json:"pendingPluginOps,omitempty"`
@@ -206,6 +211,10 @@ func applyConfigFile(cfg *appConfig, path string) {
 	if v := strings.TrimSpace(f.AccountAPIBase); v != "" {
 		cfg.AccountAPIBase = v
 	}
+	// proxy 支持显式 "direct"/"auto"（不能被「空串即忽略」的写法吞掉，故不加非空判断）。
+	if v := strings.TrimSpace(f.Proxy); v != "" {
+		cfg.Proxy = v
+	}
 	if len(f.PendingPluginOps) > 0 {
 		cfg.PendingPluginOps = f.PendingPluginOps
 	}
@@ -262,6 +271,31 @@ func saveConfig(cfg appConfig) {
 		} else {
 			log.Printf("wrote config.json: %s", p)
 		}
+	}
+}
+
+// accountAPIBaseGlobal 运行时生效的 dsh-connect 服务地址（空 = 内置正式域名，见 account.go）。
+// 保存配置时回写用——store 里的覆盖值由 setAccountAPIBase 写入，需与文件内容保持一致。
+var accountAPIBaseGlobal string
+
+// currentConfig 从当前运行时状态汇总 appConfig，供 saveConfig 落盘。
+//
+// 统一入口的理由：此前三个保存点各自手写结构体字面量，字段集合不一致——bootstrapService
+// 的两处保存（回退默认 harness 目录 / 自动探测到既有目录）会静默丢掉 accountApiBase、
+// trustedHosts 与待应用插件变更。集中一处后新增字段不会再漏（proxy 即借此接入）。
+func currentConfig() appConfig {
+	return appConfig{
+		Port:              port,
+		HarnessDir:        harnessDir,
+		StartupTimeoutSec: int(startupTimeout / time.Second),
+		UpdateMirror:      updateMirrorOverride,
+		MirrorBase:        mirrorBase,
+		HarnessPrerelease: harnessPrereleaseOverride,
+		Language:          langPref,
+		TrustedHosts:      trustedHosts,
+		AccountAPIBase:    accountAPIBaseGlobal,
+		Proxy:             proxyConfigValueOf(),
+		PendingPluginOps:  pluginPendingOps(),
 	}
 }
 
@@ -434,6 +468,9 @@ func main() {
 	mirrorBase = strings.TrimRight(cfg.MirrorBase, "/")
 	harnessPrereleaseOverride = cfg.HarnessPrerelease
 	setAccountAPIBase(strings.TrimSpace(cfg.AccountAPIBase))
+	accountAPIBaseGlobal = strings.TrimSpace(cfg.AccountAPIBase)
+	// 出网代理：须早于任何网络请求生效（显式地址 / 环境变量 / Windows 系统代理）。
+	applyProxyConfig(cfg.Proxy)
 	port = cfg.Port
 	trustedHosts = cfg.TrustedHosts // 供 startServer 透传给 dsh web（见 trustedHostFlags）
 	webURL = fmt.Sprintf("http://127.0.0.1:%d/", port)
@@ -809,14 +846,14 @@ func bootstrapService() {
 		log.Printf("configured harness dir %s not found, falling back to default %s", harnessDir, defaultHarnessDir())
 		harnessDir = defaultHarnessDir()
 		harnessDirExplicit = false
-		saveConfig(appConfig{Port: port, HarnessDir: harnessDir, StartupTimeoutSec: int(startupTimeout / time.Second), UpdateMirror: updateMirrorOverride, MirrorBase: mirrorBase, HarnessPrerelease: harnessPrereleaseOverride, Language: langPref})
+		saveConfig(currentConfig())
 	}
 
 	// 未显式配置时：自动探测已存在的 harness 源码 checkout（如各盘符根目录下的 deepseek-harness）
 	if !harnessDirExplicit {
 		if found := findExistingHarnessDir(); found != "" {
 			harnessDir = found
-			saveConfig(appConfig{Port: port, HarnessDir: harnessDir, StartupTimeoutSec: int(startupTimeout / time.Second), UpdateMirror: updateMirrorOverride, MirrorBase: mirrorBase, HarnessPrerelease: harnessPrereleaseOverride, Language: langPref})
+			saveConfig(currentConfig())
 			log.Printf("detected existing harness at %s", found)
 		}
 	}
@@ -1513,7 +1550,7 @@ func runNpmHarnessAdd(ver string) (string, error) {
 // ready=false 时 why 为 "exited"（服务进程已退出，快速失败）或 "timeout"（超时但进程仍在运行）。
 func waitForServerReady(url string, serverExited <-chan error, timeout time.Duration) (bool, string) {
 	deadline := time.Now().Add(timeout)
-	client := &http.Client{Timeout: 3 * time.Second}
+	client := newHTTPClient(3 * time.Second)
 	ticker := time.NewTicker(1 * time.Second)
 	defer ticker.Stop()
 	for {
@@ -1536,7 +1573,7 @@ func waitForServerReady(url string, serverExited <-chan error, timeout time.Dura
 
 // serverResponding 快速探测服务是否已在运行（端口是否已被占用）。
 func serverResponding(url string) bool {
-	client := &http.Client{Timeout: 2 * time.Second}
+	client := newHTTPClient(2 * time.Second)
 	resp, err := client.Get(url)
 	if err != nil {
 		return false
