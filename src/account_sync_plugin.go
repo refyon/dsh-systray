@@ -1,24 +1,46 @@
-// account_sync_plugin.go：把同步来的插件变更落到本机（只作用于 web profile）。
+// account_sync_plugin.go：把同步来的插件变更落到本机（按 key 里的 profile 落到对应环境）。
 //
 // 复用既有插件链路的安全语义：停服 → 快照（package.json / pnpm-lock.yaml 复制 + node_modules 改名）
 // → pnpm 操作 → 重启校验 → 失败回退；成功则提升 LKG 并清理快照。
 // 与用户手动操作的区别：不经过「待应用」队列（用户点「重启生效」本就是一次显式确认）。
+//
+// 两个例外（见 profileNeedsServiceVerify）：
+//   - desktop profile：其加载由官方桌面端自己负责，托盘无法驱动桌面端重启 → 只做文件变更；
+//   - desktop 启动方式：托盘自带的 Web 服务本就不该在跑 → 同样不重启、不做启动校验。
 package main
 
 import (
 	"errors"
 	"fmt"
+	"log"
 	"strings"
 )
 
-// webProfileDir 定位 web profile 目录（同步只作用于 web profile，见冻结决策）。
+// webProfileDir 定位 web profile 目录。
 func webProfileDir() (string, bool) {
+	return pluginProfileDir(accountPluginProfile)
+}
+
+// pluginProfileDir 定位某个命名 profile 的目录（不存在返回 false）。
+func pluginProfileDir(profile string) (string, bool) {
 	for _, pf := range enumeratePluginProfiles() {
-		if pf.label == accountPluginProfile {
+		if pf.label == profile {
 			return pf.dir, true
 		}
 	}
 	return "", false
+}
+
+// profileNeedsServiceVerify 该 profile 的插件变更是否需要「重启后台服务并做启动校验」。
+//
+//   - desktop 启动方式：托盘自带的 Web 服务不在运行（其引擎属于官方桌面端），无从校验；
+//   - desktop profile：插件由官方桌面端加载，托盘无法重启它，变更在桌面端重启后生效；
+//   - 其余（web profile + web 启动方式）：保持原有的停服/重启/校验/自愈语义。
+func profileNeedsServiceVerify(profile string) bool {
+	if launchTargetIsDesktop() {
+		return false
+	}
+	return profile == accountPluginProfile
 }
 
 // pluginDepArg 构造 pnpm 依赖参数：
@@ -48,14 +70,14 @@ func pluginDepArg(name, spec string) string {
 	return name + "@" + s
 }
 
-// applyPluginOp 应用一条插件变更（install/update → 安装到 spec；remove → 卸载）。
-func applyPluginOp(name string, v pluginOpValue) error {
-	dir, ok := webProfileDir()
+// applyPluginOp 应用一条插件变更到 key 指定的 profile（install/update → 安装到 spec；remove → 卸载）。
+func applyPluginOp(profile, name string, v pluginOpValue) error {
+	dir, ok := pluginProfileDir(profile)
 	if !ok {
-		return fmt.Errorf("未找到 %s profile 目录，无法同步插件 %s", accountPluginProfile, name)
+		return fmt.Errorf("未找到 %s profile 目录，无法同步插件 %s", profile, name)
 	}
 	if v.Action == "remove" {
-		return removePluginFromProfile(dir, name)
+		return removePluginFromProfile(dir, profile, name)
 	}
 	spec := strings.TrimSpace(v.Spec)
 	if spec == "" {
@@ -70,7 +92,7 @@ func applyPluginOp(name string, v pluginOpValue) error {
 	if source, _, _ := classifyPluginSpec(spec); source == "github" && ghAuthToken() != "" {
 		ensureGitHubPrivateRepoCreds()
 	}
-	return installPluginIntoProfile(dir, name, pluginDepArg(name, spec))
+	return installPluginIntoProfile(dir, profile, name, pluginDepArg(name, spec))
 }
 
 // installPluginIntoProfile 安装依赖到 profile：快照 → pnpm add → 登记激活清单 → 入口预检 →
@@ -79,12 +101,18 @@ func applyPluginOp(name string, v pluginOpValue) error {
 // 必须同时登记 dsh.profile.bundles：harness 只加载激活清单里的插件，而 pnpm add 只写
 // dependencies——只装不登记就会出现「关于页插件齐全、harness 会话设置→插件里找不到」
 // （2026-09-21 现场问题；用户靠手动导入备份才恢复，导入路径正是会合并 bundles 的那条）。
-func installPluginIntoProfile(dir, name, dep string) error {
-	killServer() // 运行中的 node 占用文件，快照改名会失败
+//
+// verify=false（desktop profile / desktop 启动方式）时不重启服务、不做启动校验，也不提升 LKG
+// ——没有校验过就不能把当前状态当成新基线（见 profileNeedsServiceVerify）。
+func installPluginIntoProfile(dir, profile, name, dep string) error {
+	killServer() // 运行中的 node 占用文件，快照改名会失败（服务未运行时为 no-op）
+	verify := profileNeedsServiceVerify(profile)
 	hadNM := snapshotPluginProfile(dir)
 	rollback := func(reason string) error {
 		restorePluginProfileSnapshot(dir, hadNM)
-		restartAndVerifyServer()
+		if verify {
+			restartAndVerifyServer()
+		}
 		return errors.New(reason)
 	}
 	if err := runProfileCmd(dir, pnpmCmd(), "add", dep); err != nil {
@@ -92,6 +120,11 @@ func installPluginIntoProfile(dir, name, dep string) error {
 	}
 	if err := activateSyncedPlugin(dir, name); err != nil {
 		return rollback(fmt.Sprintf("%s %v，已回退", name, err))
+	}
+	if !verify {
+		log.Printf("[sync] %s：跳过重启校验（该环境的加载由用户侧客户端负责），改动重启后生效", profile)
+		cleanupPluginProfileSnapshot(dir)
+		return nil
 	}
 	if !restartAndVerifyServer() {
 		return rollback(fmt.Sprintf("%s 与当前服务不兼容，已回退", dep))
@@ -135,13 +168,16 @@ func verifySyncedPluginLoadable(dir, name string) error {
 }
 
 // removePluginFromProfile 从 profile 卸载插件：快照 → pnpm remove → 摘除激活声明 →
-// 重启校验 → 失败回退。
-func removePluginFromProfile(dir, name string) error {
+// 重启校验 → 失败回退（verify=false 时只做文件变更，见 profileNeedsServiceVerify）。
+func removePluginFromProfile(dir, profile, name string) error {
 	killServer()
+	verify := profileNeedsServiceVerify(profile)
 	hadNM := snapshotPluginProfile(dir)
 	rollback := func(reason string) error {
 		restorePluginProfileSnapshot(dir, hadNM)
-		restartAndVerifyServer()
+		if verify {
+			restartAndVerifyServer()
+		}
 		return errors.New(reason)
 	}
 	if err := runProfileCmd(dir, pnpmCmd(), "remove", name); err != nil {
@@ -153,6 +189,12 @@ func removePluginFromProfile(dir, name string) error {
 		return rollback(fmt.Sprintf("摘除 %s 激活清单失败：%v", name, err))
 	}
 	_ = clearProfileDisabledRecord(dir, name)
+	if !verify {
+		log.Printf("[sync] %s：跳过卸载后的启动校验（该环境的加载由用户侧客户端负责），重启后生效", profile)
+		clearLkgInDir(dir) // 删除不会让启动变坏；旧基线与新状态不一致，直接清掉
+		cleanupPluginProfileSnapshot(dir)
+		return nil
+	}
 	if !restartAndVerifyServer() {
 		return rollback("卸载后服务启动失败，已回退")
 	}

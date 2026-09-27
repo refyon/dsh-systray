@@ -158,6 +158,7 @@ func accountReconcileHarnessVersion(ctx context.Context, client *accountClient) 
 
 // accountLocalPlugin 本机一个参与同步的在线插件（对账用快照）。
 type accountLocalPlugin struct {
+	Profile     string // 所属 profile（web / desktop）：同名插件在不同环境是两条独立记录
 	Name        string
 	Spec        string
 	Source      string
@@ -238,6 +239,7 @@ func accountLocalPluginInstallTime(dirs []string, name string) int64 {
 // accountLocalPluginInstallTimeFor 按 profile + 插件名查本机安装时间（口径与
 // accountLocalPluginsSnapshot 一致）：找不到该插件（未装 / 非在线来源）返回 0。
 // 供「删除墓碑是否已被本机更晚的安装盖过」判定使用（见 accountKeyTargetSatisfiedAt）。
+// 只统计属于该 profile 的目录：同名插件可能在 web 与 desktop 各有一份，安装时间不同。
 func accountLocalPluginInstallTimeFor(profile, name string) int64 {
 	for _, row := range buildPluginRows() {
 		if row.Name != name {
@@ -249,43 +251,63 @@ func accountLocalPluginInstallTimeFor(profile, name string) int64 {
 		if !isOnlinePluginSource(row.Source) {
 			continue
 		}
-		return accountLocalPluginInstallTime(row.Locs, row.Name)
+		locs := row.Locs
+		if profile != "" {
+			if scoped := dirsInProfile(row.Locs, profile); len(scoped) > 0 {
+				locs = scoped
+			}
+		}
+		return accountLocalPluginInstallTime(locs, row.Name)
 	}
 	return 0
 }
 
+// dirsInProfile 从插件的声明目录里筛出属于指定 profile 的那些（行可能横跨 web 与 desktop）。
+func dirsInProfile(dirs []string, profile string) []string {
+	var out []string
+	for _, d := range dirs {
+		if profileContains(profileLabelOf(d), profile) {
+			out = append(out, d)
+		}
+	}
+	return out
+}
+
 // accountLocalPluginsSnapshot 本机参与同步的在线插件快照（只含已生效、未处于待应用变更的插件）。
+// 键为完整合并键 plugin:<profile>:<name>：同名插件在 web 与 desktop 里是两条独立记录。
 func accountLocalPluginsSnapshot() map[string]accountLocalPlugin {
 	marks := pluginPendingMarks()
 	pending := map[string]bool{}
 	for _, key := range accountPendingKeys() {
-		if _, name, ok := splitPluginKey(key); ok {
-			pending[name] = true
-		}
+		pending[key] = true
 	}
 	out := map[string]accountLocalPlugin{}
 	for _, row := range buildPluginRows() {
-		if _, ok := out[row.Name]; ok {
-			continue // 同名多 spec：以首个行为准（与 accountLocalPluginValue 同口径）
-		}
-		if !isOnlinePluginSource(row.Source) || !profileContains(row.Profile, accountPluginProfile) {
+		if !isOnlinePluginSource(row.Source) {
 			continue
 		}
 		if row.Version == "" || row.Disabled || row.PendingLocal {
 			continue // 读不到版本 / 已禁用 / 待重指定：不是本机生效的插件
 		}
 		if _, ok := marks[row.Name]; ok {
-			continue // 托盘内已登记待应用变更：等它执行完再由批处理埋点上报
+			continue // 托盘内已登记待应用变更（按插件名作用于全部环境）：等它执行完再由批处理埋点上报
 		}
-		if pending[row.Name] {
-			continue // 已是待生效改动：等用户点「重启生效」，此时不反向覆盖账号
-		}
-		out[row.Name] = accountLocalPlugin{
-			Name:        row.Name,
-			Spec:        strings.TrimSpace(row.Spec),
-			Source:      row.Source,
-			Version:     row.Version,
-			InstalledAt: accountLocalPluginInstallTime(row.Locs, row.Name),
+		for _, profile := range syncedProfilesOf(row.Profile) {
+			key := accountPluginKeyFor(profile, row.Name)
+			if _, ok := out[key]; ok {
+				continue // 同名多 spec：以首个行为准（与 accountLocalPluginValue 同口径）
+			}
+			if pending[key] {
+				continue // 已是待生效改动：等用户点「重启生效」，此时不反向覆盖账号
+			}
+			out[key] = accountLocalPlugin{
+				Profile:     profile,
+				Name:        row.Name,
+				Spec:        strings.TrimSpace(row.Spec),
+				Source:      row.Source,
+				Version:     row.Version,
+				InstalledAt: accountLocalPluginInstallTimeFor(profile, row.Name),
+			}
 		}
 	}
 	return out
@@ -329,8 +351,7 @@ func accountReconcileLocalPlugins(ctx context.Context, client *accountClient) in
 	accountMu.Unlock()
 
 	reported := 0
-	for name, lp := range accountLocalPluginsSnapshotFn() {
-		key := accountPluginKey(name)
+	for key, lp := range accountLocalPluginsSnapshotFn() {
 		if pendingKeys[key] {
 			reported++ // 本次同步的上报阶段已登记（前半程刚入队）：算作本次补报，不重复登记
 			continue
@@ -355,8 +376,8 @@ func accountReconcileLocalPlugins(ctx context.Context, client *accountClient) in
 				accountReportReconciledPlugin(lp, "update", fmt.Sprintf("本机版本更高（%s > %s）", lp.Version, head.Value.Version))
 				reported++
 			case cmp < 0:
-				logInfo("account", "本机插件 %s 版本低于账号记录（%s < %s）：按意外回退处理，不覆盖账号记录",
-					name, lp.Version, head.Value.Version)
+				logInfo("account", "本机插件 %s（%s）版本低于账号记录（%s < %s）：按意外回退处理，不覆盖账号记录",
+					lp.Name, lp.Profile, lp.Version, head.Value.Version)
 			}
 		}
 	}
@@ -372,13 +393,14 @@ func formatAccountTime(ts int64) string {
 }
 
 // accountReportReconciledPlugin 登记一条对账补报（入队 + 立刻试上报；失败留队列由后台重试）。
+// 键按插件所属 profile 生成：桌面端环境的记录不会覆盖 web 环境的同名插件。
 func accountReportReconciledPlugin(lp accountLocalPlugin, action, why string) {
 	val := pluginOpValue{Action: action, Spec: lp.Spec, Source: lp.Source, Version: lp.Version}
-	if err := accountEnqueueOp(accountPluginKey(lp.Name), val); err != nil {
+	if err := accountEnqueueOp(accountPluginKeyFor(lp.Profile, lp.Name), val); err != nil {
 		logWarn("account", "插件对账补报登记失败 %s: %v", lp.Name, err)
 		return
 	}
-	logInfo("account", "插件对账补报：%s（%s，本机 v%s）", lp.Name, why, lp.Version)
+	logInfo("account", "插件对账补报：%s（%s，%s，本机 v%s）", lp.Name, why, lp.Profile, lp.Version)
 	accountSyncKick()
 }
 
@@ -439,10 +461,19 @@ func reportPluginBatchChanges(tasks []*pluginOpTask) {
 				val.Version = t.target
 			}
 		}
-		if err := accountEnqueueOp(accountPluginKey(t.name), val); err != nil {
-			continue
+		// 按插件所在环境逐个上报：同一插件可能同时装在 web 与 desktop（行级 locs 横跨两者）。
+		// 声明里不含任何同步 profile（旧布局 profiles 根）时沿用默认 profile 的键，
+		// 与扩展前的上报行为保持一致。
+		profiles := syncedProfilesOf(t.row.Profile)
+		if len(profiles) == 0 {
+			profiles = []string{accountPluginProfile}
 		}
-		changed += 1
+		for _, profile := range profiles {
+			if err := accountEnqueueOp(accountPluginKeyFor(profile, t.name), val); err != nil {
+				continue
+			}
+			changed += 1
+		}
 	}
 	if changed > 0 {
 		accountSyncKick()

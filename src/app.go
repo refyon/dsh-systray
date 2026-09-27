@@ -113,6 +113,17 @@ type ConfigInfo struct {
 	Language          string `json:"language"` // 语言偏好：auto | zh | en
 	CurLang           string `json:"curLang"`  // 解析后的生效语言：zh | en
 	Proxy             string `json:"proxy"`    // 出网代理配置原值：auto | direct | 代理地址（见 netproxy.go）
+
+	// 启动方式与官方桌面端状态（见 desktop_app.go）。设置页据此把「打开」按钮、版本/更新/
+	// 重置等条目自动切换到当前生效的启动方式；桌面端缺失时 desktop 选项禁用。
+	LaunchTarget     string `json:"launchTarget"`     // 用户偏好：auto | web | desktop
+	LaunchResolved   string `json:"launchResolved"`   // 当前生效：web | desktop（auto 或桌面端缺失时自动回退）
+	DesktopInstalled bool   `json:"desktopInstalled"` // 是否检测到官方桌面端
+	DesktopVersion   string `json:"desktopVersion"`   // 官方桌面端版本（= 其内置 harness 版本）
+	DesktopPath      string `json:"desktopPath"`      // 官方桌面端安装位置
+	DesktopRunning   bool   `json:"desktopRunning"`   // 官方桌面端是否正在运行
+	DesktopChannel   string `json:"desktopChannel"`   // 官方桌面端更新通道（固定 Nightly）
+	DesktopFeedURL   string `json:"desktopFeedURL"`   // 官方桌面端更新源地址
 }
 
 func (a *App) GetConfig() ConfigInfo {
@@ -120,6 +131,7 @@ func (a *App) GetConfig() ConfigInfo {
 	if shotMode {
 		hd = sanitizeShotHarnessDir() // 截图模式：不暴露真实目录
 	}
+	desktop := desktopApp()
 	return ConfigInfo{
 		Port:              port,
 		HarnessDir:        hd,
@@ -132,7 +144,75 @@ func (a *App) GetConfig() ConfigInfo {
 		Language:          langPref,
 		CurLang:           curLang,
 		Proxy:             proxyConfigValueOf(),
+
+		LaunchTarget:     launchTargetPref,
+		LaunchResolved:   resolvedLaunchTarget(),
+		DesktopInstalled: desktop.Installed,
+		DesktopVersion:   desktop.Version,
+		DesktopPath:      sanitizeShotPath(desktop.DisplayPath),
+		DesktopRunning:   desktop.Installed && desktopAppProcessRunning(desktop),
+		DesktopChannel:   desktop.Channel,
+		DesktopFeedURL:   desktop.FeedURL,
 	}
+}
+
+// SetLaunchTarget 设置托盘「打开」的默认启动方式（auto | web | desktop）；实现见 setLaunchTarget。
+func (a *App) SetLaunchTarget(v string) {
+	setLaunchTarget(v)
+}
+
+// setLaunchTarget 设置启动方式的实现（Wails 绑定与启动时的「不符询问」共用，无需 appCtx），
+// 并同步后台服务的生命周期：解析结果为 desktop → 停止后台服务；解析结果为 web → 按需启动
+// （首次走完整引导）。
+//
+// 立即持久化并刷新托盘文案（「打开 Web UI」/「打开 Desktop UI」）；设置页各项的显隐/禁用
+// 由前端据 GetConfig 的解析结果重绘。desktop 在未装桌面端时被接受但解析回退 web
+// （用户先装桌面端后无需再改一次设置）。
+//
+// 停服/启动都在切换生效之后：前端已就「停服会中断进行中的网页端会话」「首次启动可能需要下载
+// 运行环境」弹过确认（见 main.js 的 sel-launch 处理）。
+func setLaunchTarget(v string) {
+	target := normalizeLaunchTarget(v)
+	logUI("设置启动方式", map[string]string{
+		launchTargetAuto:    "自动检测",
+		launchTargetWeb:     "Web UI",
+		launchTargetDesktop: "Desktop UI",
+	}[target])
+	launchTargetPref = target
+	launchMismatchAck = "" // 显式设置：之前「保持现状」的确认不再适用（下次不符时重新询问）
+	saveCurrentConfig()
+	refreshTrayTexts() // 托盘「打开」文案与可见性随启动方式即时切换
+	if launchTargetIsDesktop() {
+		stopServiceForDesktopTarget()
+		return
+	}
+	// 服务已在运行：无需重新引导（否则会闪一下进度窗口并把状态打回「启动中」）
+	if running, _, _ := resolveRunningService(); running {
+		return
+	}
+	startServiceBootstrap(true) // 切回 Web UI：幂等启动（服务已在跑则为 no-op）
+}
+
+// stopServiceForDesktopTarget 切到 desktop 启动方式：停止后台服务。
+//
+// 判据是「本进程拉起的服务进程」或「端口上确有服务在响应」——desktop 形态下两者都不该继续
+// 存在（桌面端自带引擎，端口上的 dsh web 只会白占资源）。killServer 会连非本进程启动的同端口
+// 监听者一并终止（见其实现），这正是切换语义所需。返回是否确实停掉了服务。
+func stopServiceForDesktopTarget() bool {
+	if serverCmd == nil {
+		if running, _, _ := resolveRunningService(); !running {
+			serverReady.Store(true) // 未运行且非失败：状态显示「已停止」而不是「启动中」
+			serviceFailed.Store(false)
+			refreshServiceMenu()
+			return false
+		}
+	}
+	logUI("切换到 Desktop UI", "正在停止后台服务")
+	killServer()
+	serverReady.Store(true)
+	serviceFailed.Store(false)
+	refreshServiceMenu()
+	return true
 }
 
 // SetLanguage 设置界面语言偏好（auto 跟随系统 / zh / en）：立即解析生效语言，
@@ -435,9 +515,21 @@ func (a *App) ClearLog(name string) {
 type Versions struct {
 	App     string `json:"app"`
 	Harness string `json:"harness"`
+	// Engine 该 harness 版本来自哪个引擎：web（托盘自带的 dsh web）| desktop（官方桌面端内置）。
+	// 设置页据此切换版本行的副标题与可用操作（见 main.js 的 applyLaunchMode）。
+	Engine string `json:"engine"`
 }
 
 func (a *App) GetVersions() Versions {
+	// desktop 启动方式：harness 随桌面端内置、版本与桌面壳一致（官方发布规则），因此取桌面端版本；
+	// 检测不到（刚卸载等）时不编造版本号，前端显示「—」。
+	if launchTargetIsDesktop() {
+		return Versions{
+			App:     sanitizeShotVersion(withV(appVersion)),
+			Harness: sanitizeShotLine(desktopVersionForDisplay()),
+			Engine:  launchTargetDesktop,
+		}
+	}
 	hv := installedHarnessVersion()
 	if shotMode && hv == "" {
 		hv = "0.1.1" // 截图模式且本机无 harness 目录时给出中性演示版本
@@ -445,6 +537,7 @@ func (a *App) GetVersions() Versions {
 	return Versions{
 		App:     sanitizeShotVersion(withV(appVersion)),
 		Harness: sanitizeShotLine(hv),
+		Engine:  launchTargetWeb,
 	}
 }
 
@@ -479,7 +572,15 @@ func (a *App) CheckSystrayUpdate() ModuleUpdate {
 
 // CheckHarnessUpdate 检查 DeepSeek Harness 是否有新版本（GitHub Release，按「预发布通道」开关联动）。
 // 仅网络等真实失败才返回 Error；仓库只有预发布而通道关闭时返回 Note 说明（不再误报“无法获取”）。
+//
+// 启动方式为 desktop 时改查官方桌面端的更新源：harness 随桌面端内置、与桌面壳同版本，
+// 更新也必须作为整体进行（见 desktop_app.go 的 checkDesktopUpdate）。
 func (a *App) CheckHarnessUpdate() ModuleUpdate {
+	if launchTargetIsDesktop() {
+		info := checkDesktopUpdate()
+		logUI("检查桌面端更新", fmt.Sprintf("当前 %s | %s", orDash(info.Current), moduleUpdateLogText(&info)))
+		return info
+	}
 	latest, cur, newer, note := queryHarnessUpdate()
 	info := ModuleUpdate{Current: cur, Latest: latest, HasUpdate: newer, Note: note}
 	if latest == "" && note == "" {
@@ -511,7 +612,13 @@ func orDash(s string) string {
 }
 
 // StartHarnessUpdate 按最新版更新 DeepSeek Harness（快照/回滚/重启校验，进度走 splash）。
+// 启动方式为 desktop 时转交桌面端更新（下载官方安装包 + 启动安装向导），
+// 不把 npm 版 harness 装进桌面端内置的运行时。
 func (a *App) StartHarnessUpdate() {
+	if launchTargetIsDesktop() {
+		a.StartDesktopUpdate()
+		return
+	}
 	if pluginBatchRunning() {
 		showMessageBox("正在批量处理插件（更新/删除），请等待完成后再更新 DeepSeek Harness。", appName)
 		return
@@ -769,6 +876,12 @@ func (a *App) GetResetStats() ResetStats {
 // clearSessions / clearPlugins 按勾选物理删除对应数据（会话记录 / 已安装插件）。
 // 异步执行：进度走 splash 事件，完成/失败以弹窗提示。
 func (a *App) ResetHarness(clearSessions, clearPlugins bool, targetVersion string) {
+	if launchTargetIsDesktop() {
+		// 防御性拦截：桌面端形态下重置入口在设置页已隐藏，后端同样拒绝，
+		// 避免旧前端 / 直接调用把 npm 版 harness 装进 harnessDir 而与桌面端状态错位。
+		showMessageBox("当前启动方式为官方桌面端，重置只对「Web UI」启动方式的 harness 生效。\n如需重置桌面端数据，请在桌面端内操作。", appName)
+		return
+	}
 	if pluginBatchRunning() {
 		showMessageBox("正在批量处理插件（更新/删除），请等待完成后再重置 DeepSeek Harness。", appName)
 		return
@@ -786,6 +899,12 @@ func (a *App) ResetHarness(clearSessions, clearPlugins bool, targetVersion strin
 // 无候选时 Default 仍给出具体降级目标（官方最新稳定版语义），保证执行期不再触网查版本。
 // 源码形态不支持重置；查询失败（网络/registry）时 Options 为空、Note 携带原因，前端据此禁用确认。
 func (a *App) GetResetVersions() ResetVersionInfo {
+	if launchTargetIsDesktop() {
+		// desktop 启动方式：桌面端不支持由本程序清空重装（其 harness 与数据目录由桌面端自己
+		// 管理），前端也会隐藏整张重置卡片；这里返回空候选 + 说明，作为旧前端的兜底。
+		return ResetVersionInfo{Form: "desktop",
+			Note: "官方桌面端不支持由本程序重置：其内置 harness 与数据目录由桌面端自己管理。"}
+	}
 	if isSourceHarnessDir() {
 		return ResetVersionInfo{Form: "source",
 			Note: "当前为源码 checkout 形态，暂不支持自动清空目录重装；请先在 Web UI 切换到 npm 预构建形态。"}

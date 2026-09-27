@@ -1483,7 +1483,16 @@ func pauseServiceForRestore() bool {
 
 // resumeServiceAfterRestore 恢复完成后重新拉起后台服务并等待就绪；
 // 成功后刷新服务状态与托盘菜单（serverReady/menuStatus）。
+// desktop 启动方式下不拉起：托盘自带的 Web 服务不该运行（引擎属于官方桌面端），
+// 恢复的数据文件在桌面端重新启动后生效。
 func resumeServiceAfterRestore() {
+	if launchTargetIsDesktop() {
+		log.Printf("restore: desktop launch target — background service stays stopped")
+		serverReady.Store(true)
+		serviceFailed.Store(false)
+		refreshServiceMenu()
+		return
+	}
 	if serverResponding(webURL) {
 		return
 	}
@@ -1754,6 +1763,10 @@ func reconcilePendingAfterImport(masterZipPath string) string {
 // 本阶段为不可中断的启动自愈（CancelRestore 忽略请求）：取消只对之前的解压/对齐有效。
 // 返回 (note, error)：note 为成功路径的附加说明（如被自动禁用的插件），error 失败时
 // 为面向用户的说明文案（含可疑插件与回退结果）。
+//
+// desktop 启动方式下没有可校验的后台服务（其加载由官方桌面端负责）：只保留文件级事务与
+// 确定性预检，不重启、不校验、不触发不兼容自愈、不提升 LKG（未验证状态不能当基线），
+// 改动在桌面端重新启动后生效——见下方分支。
 func finishPluginImport(dirs []string, hadNM []bool) (string, error) {
 	// 确定性预检（对齐之后、拉起服务之前）：逐个 import 插件入口，把「启动必然失败」提前成
 	// 「精确点名 + 自动禁用」。不依赖启动日志时序——2026-09-10 实证：导入 16:54:20 报
@@ -1763,6 +1776,15 @@ func finishPluginImport(dirs []string, hadNM []bool) (string, error) {
 	pfNote := strings.Join(pfNotes, "；")
 	if len(pfDisabled) > 0 {
 		log.Printf("import: preflight disabled incompatible plugins: %s", strings.Join(pfDisabled, "、"))
+	}
+	// desktop 启动方式：托盘自带的 Web 服务不在运行（也由启动闸门保证不启动），无从校验；
+	// 保留确定性预检（它只读 profile 树、写禁用记录，与桌面端共用同一套 profile 语义），
+	// 清理事务快照后按成功收尾——不提升 LKG：没有校验过的状态不能当回退基线。
+	if launchTargetIsDesktop() {
+		cleanupImportProfiles(dirs)
+		log.Printf("import: desktop launch target — skip service verify (effective after Desktop app restart)")
+		note := appendNote(pfNote, "已跳过服务启动校验（Desktop UI：托盘自带服务不在运行），改动在官方桌面端重新启动后生效")
+		return appendNote(note, reconcilePendingAfterImport(importZipPath)), nil
 	}
 	healthy, suspects := restartAndVerifyHealing(dirs)
 	if healthy {

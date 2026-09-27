@@ -385,7 +385,8 @@ func runImportTask(t *importTask) {
 		return
 	}
 
-	// 对齐完成：不在此校验——注册为批末共享启动校验成员（导入内容必须拉起服务验证一次）
+	// 对齐完成：不在此校验——注册为批末共享收尾成员（web 启动方式下必须拉起服务验证一次；
+	// desktop 启动方式下只做确定性预检，见 finishPluginImport 的 desktop 分支）
 	t.settle = true
 	importQMu.Lock()
 	healDirs = append(healDirs, t.dirs...)
@@ -407,14 +408,20 @@ func finishImportBatch(processed []*importTask) {
 	healRan := false
 	var healNote string
 	var healErr error
+	desktopMode := launchTargetIsDesktop()
 	if len(dirs) > 0 {
 		// 共享自愈：不可中断（CancelRestore 忽略）
 		setImportRestoreHealing(true)
 		_ = writeImportJournal(importJournal{Stage: "healing", Kind: "plugins", Dirs: dirs, HadNM: hadNM})
 		if appCtx != nil {
+			text := "正在启动服务并校验插件兼容性…（启动校验过程不可取消，请稍候）"
+			if desktopMode {
+				// desktop 启动方式：不拉起后台服务，只做确定性预检（见 finishPluginImport）
+				text = "正在校验导入的插件兼容性…（Desktop UI 不启动后台服务，改动在桌面端重启后生效）"
+			}
 			wruntime.EventsEmit(appCtx, "import:progress", map[string]interface{}{
 				"kind": "plugins", "healing": true,
-				"text": "正在启动服务并校验插件兼容性…（启动校验过程不可取消，请稍候）", "pct": 0.9})
+				"text": text, "pct": 0.9})
 		}
 		stopHB := make(chan struct{})
 		hbDone := make(chan struct{})
@@ -427,10 +434,14 @@ func finishImportBatch(processed []*importTask) {
 				select {
 				case <-tk.C:
 					n++
+					hbText := fmt.Sprintf("服务启动校验中…请勿中断（等待步骤 %d）", n)
+					if desktopMode {
+						hbText = fmt.Sprintf("插件兼容性校验中…请稍候（等待步骤 %d）", n)
+					}
 					if appCtx != nil {
 						wruntime.EventsEmit(appCtx, "import:progress", map[string]interface{}{
 							"kind": "plugins", "healing": true,
-							"text": fmt.Sprintf("服务启动校验中…请勿中断（等待步骤 %d）", n), "pct": 0.93})
+							"text": hbText, "pct": 0.93})
 					}
 				case <-stopHB:
 					return
@@ -444,6 +455,7 @@ func finishImportBatch(processed []*importTask) {
 		healRan = true
 	}
 	// 恢复服务：自愈已自行重启服务则不重复恢复；否则批内暂停过恢复一次
+	// （desktop 启动方式下 resumeServiceAfterRestore 自身不拉起服务，见其实现）
 	if !healRan && importPaused {
 		resumeServiceAfterRestore()
 	}

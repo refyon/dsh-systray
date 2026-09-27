@@ -70,6 +70,14 @@ dsh-systray 是一个 Windows / macOS 系统托盘应用，围绕三个核心特
 - **配置即数据**：全部配置保存在用户目录（`config.json`），数据在 `~/.dsh`，随导出包完整迁移
 - **跨平台一致**：Windows / macOS 同一套界面与数据格式（设计令牌见 [DESIGN.md](DESIGN.md)）
 
+### 官方桌面端 —— 装了就用它，没装照旧
+
+- **自动识别**：Windows 读卸载登记、macOS 探测 `/Applications` 下的 `DeepSeek Harness.app`；检测到后托盘「打开 Web UI」自动变为「**打开 Desktop UI**」，点击即拉起桌面端（已在运行则唤到前台）
+- **默认启动方式可选**：「常规 → 默认启动方式」可选 `自动检测（优先桌面端）` / `Web UI（托盘自带服务）` / `Desktop UI（官方桌面端）`；桌面端被卸载时自动回退 Web UI
+- **版本与更新随启动方式走**：Web UI 方式下管的是托盘装的 `@deepseek-ai/dsh`（npm 源 / GitHub），Desktop UI 方式下读桌面端安装版本并比对**桌面端自带更新源**（`download.deepseek.com`，固定 Nightly），「更新」= 下载官方安装包（校验 sha512）并启动安装向导
+- **重置只在 Web UI 方式下成立**：桌面端的内置 harness 与数据目录由桌面端自己管理，该入口在 Desktop UI 方式下隐藏（后端同样拒绝）
+- **设置页自动适配**：Desktop UI 方式下，只影响托盘自带 Web 服务的条目（服务端口、Harness 目录）置灰并说明，重置卡片与预发布通道隐藏；桌面端卡片提供版本、运行状态、更新通道、安装位置与一键打开
+
 ## 配置
 
 `config.json` 位于用户配置目录（可选，缺失时用默认值）：
@@ -81,7 +89,8 @@ dsh-systray 是一个 Windows / macOS 系统托盘应用，围绕三个核心特
   "startupTimeoutSec": 300,
   "updateMirror": "",
   "harnessPrerelease": false,
-  "accountApiBase": ""
+  "accountApiBase": "",
+  "launchTarget": "auto"
 }
 ```
 
@@ -91,6 +100,7 @@ dsh-systray 是一个 Windows / macOS 系统托盘应用，围绕三个核心特
 - `updateMirror`：可选，GitHub 更新下载镜像前缀（国内网络友好，如 `https://ghproxy.net/`）
 - `harnessPrerelease`：是否把 alpha/beta/rc 视为 harness 可更新版本（默认关闭，仅更新稳定版）
 - `accountApiBase`：可选，账号同步服务（[dsh-connect](https://github.com/refyon/dsh-connect)）地址，默认官方正式域名。登录态与同步游标单独存放在同目录的 `account.json`（权限 0600，只含令牌与游标，不含密码）；在「设置 → 数据同步」退出登录即清除
+- `launchTarget`：托盘「打开」的默认启动方式，`auto`（默认，装了官方桌面端就用桌面端）| `web` | `desktop`；同时决定设置页「版本 / 检查更新 / 更新 / 重置」作用于哪个 harness 引擎（可被 `DSH_SYSTRAY_LAUNCH_TARGET` 覆盖）。详见「官方桌面端」一节
 
 ## 架构
 
@@ -122,8 +132,8 @@ dsh-systray 是一个 Windows / macOS 系统托盘应用，围绕三个核心特
 
 | 平台 | 构建命令（在 `src/` 下执行） |
 | --- | --- |
-| Windows | `wails build -s -clean -platform windows/amd64 -ldflags "-X main.appVersion=v1.0.0"` |
-| macOS | `wails build -s -clean -platform darwin/universal -ldflags "-X main.appVersion=v1.0.0"` |
+| Windows | `wails build -s -clean -platform windows/amd64 -ldflags "-X main.appVersion=v1.1.0"` |
+| macOS | `wails build -s -clean -platform darwin/universal -ldflags "-X main.appVersion=v1.1.0"` |
 
 > - 产物：`src/build/bin/dsh-systray.exe`（Windows）/ `src/build/bin/dsh-systray.app`（macOS），仓库根不再输出编译产物
 > - `-s`：跳过前端构建（直接内嵌 `src/frontend/dist`）；改动前端后无需其他步骤，直接重新 `wails build`

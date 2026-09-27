@@ -51,7 +51,8 @@ type accountSyncTarget struct {
 	UpdatedAt int64
 }
 
-// accountSyncKeySupported 是否属于同步范围（只同步 web profile 的在线插件 + 三个设置项）。
+// accountSyncKeySupported 是否属于同步范围（设置项 + 各同步 profile 的在线插件，
+// 插件键形态 plugin:<profile>:<name> 见 accountPluginKeyFor）。
 func accountSyncKeySupported(key string) bool {
 	switch key {
 	case opKeyAutostart, opKeyHarnessPrerelease, opKeyHarnessVersion:
@@ -431,7 +432,7 @@ var (
 		}
 		return nil
 	}
-	// applyPluginOpFn 应用一条插件变更（安装/更新/卸载）。
+	// applyPluginOpFn 应用一条插件变更（安装/更新/卸载）：按 key 里的 profile 落到对应环境。
 	applyPluginOpFn = applyPluginOp
 )
 
@@ -457,7 +458,7 @@ func applyKeyTarget(key string, value json.RawMessage) error {
 		}
 		return applyHarnessVersionFn(normalizeVersionText(ver))
 	case strings.HasPrefix(key, "plugin:"):
-		_, name, ok := splitPluginKey(key)
+		profile, name, ok := splitPluginKey(key)
 		if !ok {
 			return fmt.Errorf("插件 key 不合法：%s", key)
 		}
@@ -465,7 +466,7 @@ func applyKeyTarget(key string, value json.RawMessage) error {
 		if err := json.Unmarshal(value, &v); err != nil {
 			return err
 		}
-		return applyPluginOpFn(name, v)
+		return applyPluginOpFn(profile, name, v)
 	}
 	return nil
 }
@@ -707,14 +708,17 @@ func collectBaselineOps() []accountOp {
 		appendOp(opKeyHarnessVersion, ver)
 	}
 	for _, row := range buildPluginRows() {
-		if !isOnlinePluginSource(row.Source) || !profileContains(row.Profile, accountPluginProfile) {
+		if !isOnlinePluginSource(row.Source) {
 			continue
 		}
 		action := "update"
 		if row.Version == "" {
 			action = "install"
 		}
-		appendOp(accountPluginKey(row.Name), pluginOpValue{Action: action, Spec: row.Spec, Source: row.Source, Version: row.Version})
+		val := pluginOpValue{Action: action, Spec: row.Spec, Source: row.Source, Version: row.Version}
+		for _, profile := range syncedProfilesOf(row.Profile) {
+			appendOp(accountPluginKeyFor(profile, row.Name), val) // 每个环境一条记录（键含 profile）
+		}
 	}
 	return ops
 }
@@ -856,8 +860,12 @@ func accountApplyLabel(key string) string {
 	case opKeyHarnessVersion:
 		return T("Harness 版本")
 	}
-	if _, name, ok := splitPluginKey(key); ok {
-		return T("插件") + " " + name
+	if profile, name, ok := splitPluginKey(key); ok {
+		if profile == accountPluginProfile {
+			return T("插件") + " " + name
+		}
+		// 非默认 profile（如桌面端环境）：标注环境，避免同一次应用里同名插件分不清装到哪
+		return T("插件") + " " + name + "（" + profile + "）"
 	}
 	return key
 }

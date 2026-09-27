@@ -668,10 +668,15 @@ func showReadyPrompt(url string) {
 	if shotMode || os.Getenv("DSH_SYSTRAY_SHOW_WINDOW") == "1" {
 		return
 	}
-	script := fmt.Sprintf(`display dialog "%s" with title "%s" buttons {"打开", "取消"} default button "打开"`, escapeAppleScript(T("DeepSeek Harness 服务已就绪。是否立即打开 Web UI？")), appName)
+	// 询问文案随启动方式切换：desktop 下「打开」指向官方桌面端（见 desktop_app.go）。
+	msg := T("DeepSeek Harness 服务已就绪。是否立即打开 Web UI？")
+	if launchTargetIsDesktop() {
+		msg = T("DeepSeek Harness 服务已就绪。是否立即打开 Desktop UI？")
+	}
+	script := fmt.Sprintf(`display dialog "%s" with title "%s" buttons {"打开", "取消"} default button "打开"`, escapeAppleScript(msg), appName)
 	out, err := runAppleScript(script)
 	if err == nil && strings.Contains(out, "打开") {
-		openBrowser(url)
+		openDefaultUI()
 	}
 }
 
@@ -848,4 +853,190 @@ func setClipboardText(text string) error {
 		return fmt.Errorf("pbcopy 失败：%w", err)
 	}
 	return nil
+}
+
+// ==================== 官方桌面端（macOS） ====================
+
+// desktopAppBundleName 官方桌面端的应用包名（与 /Applications 下的 .app 同名）。
+const desktopAppBundleName = desktopProductName + ".app"
+
+// desktopCandidateBundles 官方桌面端的候选安装位置：系统应用目录与当前用户应用目录。
+func desktopCandidateBundles() []string {
+	out := []string{filepath.Join("/Applications", desktopAppBundleName)}
+	if home, err := os.UserHomeDir(); err == nil && home != "" {
+		out = append(out, filepath.Join(home, "Applications", desktopAppBundleName))
+	}
+	return out
+}
+
+// detectDesktopApp 识别官方桌面端是否安装：按候选 .app 路径探测，版本取 Info.plist 的
+// CFBundleShortVersionString（文本 plist 直接解析；二进制 plist 回退 plutil）。
+func detectDesktopApp() desktopAppInfo {
+	for _, bundle := range desktopCandidateBundles() {
+		info, ok := desktopAppFromBundle(bundle)
+		if ok {
+			return info
+		}
+	}
+	return desktopAppInfo{}
+}
+
+// desktopAppFromBundle 读取 .app 包的安装事实。
+func desktopAppFromBundle(bundle string) (desktopAppInfo, bool) {
+	contents := filepath.Join(bundle, "Contents")
+	plistPath := filepath.Join(contents, "Info.plist")
+	if !fileExists(plistPath) {
+		return desktopAppInfo{}, false
+	}
+	execName := ""
+	version := ""
+	if data, err := os.ReadFile(plistPath); err == nil {
+		text := string(data)
+		if v := parsePlistStringValue(text, "CFBundleShortVersionString"); v != "" {
+			version = v
+		}
+		if e := parsePlistStringValue(text, "CFBundleExecutable"); e != "" {
+			execName = e
+		}
+	}
+	if version == "" {
+		version = plutilStringValue(plistPath, "CFBundleShortVersionString")
+	}
+	if execName == "" {
+		execName = plutilStringValue(plistPath, "CFBundleExecutable")
+	}
+	if execName == "" {
+		execName = desktopProductName // 兜底：与官方 .app 内可执行文件名一致
+	}
+	exe := filepath.Join(contents, "MacOS", execName)
+	if !fileExists(exe) {
+		return desktopAppInfo{}, false
+	}
+	return desktopAppInfo{
+		Installed:    true,
+		Version:      version,
+		Exe:          exe,
+		DisplayPath:  bundle,
+		ResourcesDir: filepath.Join(contents, "Resources"),
+	}, true
+}
+
+// plutilStringValue 用 plutil 读 plist 字段（二进制 plist 的兜底路径）；失败返回空。
+func plutilStringValue(plistPath, key string) string {
+	out, err := exec.Command("plutil", "-extract", key, "raw", "-o", "-", plistPath).Output()
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(out))
+}
+
+// desktopAppProcessRunning 官方桌面端是否在运行：按 .app 内可执行文件路径匹配进程
+// （pgrep -f 命中即视为在运行；Electron 会有多个同路径子进程，命中任意一个即可）。
+func desktopAppProcessRunning(info desktopAppInfo) bool {
+	exe := strings.TrimSpace(info.Exe)
+	if exe == "" {
+		return false
+	}
+	return exec.Command("pgrep", "-f", exe).Run() == nil
+}
+
+// launchDesktopApp 打开官方桌面端：未运行则启动；已运行则激活既有实例
+// （open 对已运行应用即"激活"，不会产生第二个实例）。
+//
+// 不登记为派生子进程：托盘退出时不应连带结束桌面端（用户的任务要继续跑）。
+func launchDesktopApp(info desktopAppInfo) error {
+	target := strings.TrimSpace(info.DisplayPath)
+	if target == "" {
+		target = strings.TrimSpace(info.Exe)
+	}
+	if target == "" || !fileExists(target) {
+		return errors.New("未找到桌面端应用")
+	}
+	cmd := exec.Command("open", target)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("open 失败：%v（%s）", err, strings.TrimSpace(string(out)))
+	}
+	return nil
+}
+
+// launchInstallerFile 用系统默认方式打开安装包（macOS 下即挂载 DMG 供用户拖入应用目录）。
+func launchInstallerFile(path string) error {
+	p := strings.TrimSpace(path)
+	if p == "" || !fileExists(p) {
+		return errors.New("安装包不存在")
+	}
+	cmd := exec.Command("open", p)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("open 失败：%v（%s）", err, strings.TrimSpace(string(out)))
+	}
+	return nil
+}
+
+// askLaunchDesktopInstaller 桌面端正在运行时的确认：替换 .app 前需要先退出桌面端。
+// 本程序不代为强制结束（可能中断用户正在跑的任务），只把后果说清楚再交给用户决定。
+func askLaunchDesktopInstaller(running bool) bool {
+	if !running {
+		return true
+	}
+	msg := T("官方桌面端正在运行。\n\n安装前请先退出桌面端（菜单栏图标 → 退出），否则替换应用可能失败。\n是否现在打开安装包？")
+	launch := T("打开安装包")
+	script := fmt.Sprintf(`display dialog "%s" with title "%s" buttons {%q, %q} default button %q`,
+		escapeAppleScript(msg), appName, T("稍后"), launch, launch)
+	out, err := runAppleScript(script)
+	if err != nil {
+		return false
+	}
+	return strings.Contains(out, launch)
+}
+
+// askStartService 官方桌面端不可用、启动方式回退 Web UI 时的询问：是否现在启动后台服务。
+// 不静默拉起：desktop 形态下用户并没有在用网页端，服务要不要起由用户决定。
+func askStartService() bool {
+	msg := T("官方桌面端已不可用，启动方式已回退为 Web UI。\n\n是否现在启动后台服务？")
+	start := T("启动服务")
+	script := fmt.Sprintf(`display dialog "%s" with title "%s" buttons {%q, %q} default button %q`,
+		escapeAppleScript(msg), appName, T("暂不启动"), start, start)
+	out, err := runAppleScript(script)
+	if err != nil {
+		return false
+	}
+	return strings.Contains(out, start)
+}
+
+// askLaunchTargetDesktopMissing 配置为 Desktop UI 但未检测到官方桌面端时的询问。
+// 返回 "install"（安装桌面端）/ "web"（改用 Web UI）/ "keep"（保持现状）。
+func askLaunchTargetDesktopMissing() string {
+	msg := T("启动方式设置为 Desktop UI，但本机未检测到官方桌面端。\n\n可以现在安装官方桌面端，或改用托盘自带的 Web UI。")
+	install, useWeb, keep := T("安装桌面端"), T("改用 Web UI"), T("保持现状")
+	script := fmt.Sprintf(`display dialog "%s" with title "%s" buttons {%q, %q, %q} default button %q`,
+		escapeAppleScript(msg), appName, keep, useWeb, install, install)
+	out, err := runAppleScript(script)
+	if err != nil {
+		return "keep"
+	}
+	switch {
+	case strings.Contains(out, install):
+		return "install"
+	case strings.Contains(out, useWeb):
+		return "web"
+	default:
+		return "keep"
+	}
+}
+
+// askLaunchTargetDesktopInstalled 配置为 Web UI 但检测到已安装官方桌面端时的询问。
+// 返回 "desktop"（改用 Desktop UI）/ "keep"（保持现状）。
+func askLaunchTargetDesktopInstalled() string {
+	msg := T("启动方式设置为 Web UI，但本机已安装官方桌面端。\n\n是否改用 Desktop UI（官方桌面端）？")
+	useDesktop, keep := T("改用 Desktop UI"), T("保持现状")
+	script := fmt.Sprintf(`display dialog "%s" with title "%s" buttons {%q, %q} default button %q`,
+		escapeAppleScript(msg), appName, keep, useDesktop, keep)
+	out, err := runAppleScript(script)
+	if err != nil {
+		return "keep"
+	}
+	if strings.Contains(out, useDesktop) {
+		return "desktop"
+	}
+	return "keep"
 }

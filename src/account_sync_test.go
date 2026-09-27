@@ -55,6 +55,26 @@ func TestMergeOpsLocalPendingWins(t *testing.T) {
 
 // ---------- 目标值是否已满足（差量判定） ----------
 
+// TestApplyKeyTargetPassesProfileToPluginOp key 里的 profile 必须传给插件应用函数——
+// 否则 desktop 环境的改动会被装到 web 环境（或反之）。
+func TestApplyKeyTargetPassesProfileToPluginOp(t *testing.T) {
+	old := applyPluginOpFn
+	t.Cleanup(func() { applyPluginOpFn = old })
+	var gotProfile, gotName string
+	applyPluginOpFn = func(profile, name string, v pluginOpValue) error {
+		gotProfile, gotName = profile, name
+		return nil
+	}
+	key := accountPluginKeyFor("desktop", "pkg-x")
+	val := json.RawMessage(`{"action":"install","spec":"^1.0.0","source":"npm","version":"1.0.0"}`)
+	if err := applyKeyTarget(key, val); err != nil {
+		t.Fatalf("applyKeyTarget 失败: %v", err)
+	}
+	if gotProfile != "desktop" || gotName != "pkg-x" {
+		t.Fatalf("profile/name 传递错误：%q/%q", gotProfile, gotName)
+	}
+}
+
 func TestKeyTargetSatisfiedSettings(t *testing.T) {
 	b := func(v bool) json.RawMessage { return json.RawMessage(strconv.FormatBool(v)) }
 	s := func(v string) json.RawMessage { b, _ := json.Marshal(v); return b }
@@ -232,7 +252,7 @@ func TestApplyPendingAppliesInOrderAndClears(t *testing.T) {
 	applyAutostartFn = func(on bool) error { calls = append(calls, fmt.Sprintf("autostart=%v", on)); return nil }
 	applyPrereleaseFn = func(on bool) error { calls = append(calls, fmt.Sprintf("prerelease=%v", on)); return nil }
 	applyHarnessVersionFn = func(v string) error { calls = append(calls, "version="+v); return nil }
-	applyPluginOpFn = func(name string, v pluginOpValue) error {
+	applyPluginOpFn = func(profile, name string, v pluginOpValue) error {
 		calls = append(calls, "plugin="+name+":"+v.Action)
 		return nil
 	}
@@ -293,7 +313,7 @@ func TestApplyPendingFailureKeepsOthersGoing(t *testing.T) {
 	applyAutostartFn = func(bool) error { applied++; return nil }
 	applyPrereleaseFn = func(bool) error { return fmt.Errorf("权限不足，无法写入自启动项") }
 	applyHarnessVersionFn = func(string) error { applied++; return nil }
-	applyPluginOpFn = func(string, pluginOpValue) error { applied++; return nil }
+	applyPluginOpFn = func(string, string, pluginOpValue) error { applied++; return nil }
 
 	client := syncTestServer(t, opsJSON)
 	if _, err := accountSyncNow(context.Background(), client); err != nil {
@@ -929,7 +949,7 @@ func TestApplyFailureKeepsRestartButtonAcrossSyncs(t *testing.T) {
 	}
 	oldPlg := applyPluginOpFn
 	t.Cleanup(func() { applyPluginOpFn = oldPlg })
-	applyPluginOpFn = func(string, pluginOpValue) error { return fmt.Errorf("安装失败：模拟故障") }
+	applyPluginOpFn = func(string, string, pluginOpValue) error { return fmt.Errorf("安装失败：模拟故障") }
 
 	key := accountPluginKey("pkg-fail")
 	client := fakeOpsServer(t, []testOp{

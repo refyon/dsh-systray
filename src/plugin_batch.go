@@ -465,7 +465,7 @@ func pluginBatchDrain() (tasks []*pluginOpTask, splash *SplashState, paused bool
 			runPluginRecordOnly(t)
 			continue
 		}
-		if !paused {
+		if !paused && serviceStopNeededForPluginOps() {
 			killServer()
 			time.Sleep(1 * time.Second)
 			paused = true
@@ -477,6 +477,19 @@ func pluginBatchDrain() (tasks []*pluginOpTask, splash *SplashState, paused bool
 		runPluginPackagePhase(t, splash, len(tasks))
 	}
 	return tasks, splash, paused
+}
+
+// serviceStopNeededForPluginOps 执行包操作前是否需要停后台服务：
+//   - web 启动方式：总是停（服务由本程序管理，包操作后要重启并做启动校验）；
+//   - desktop 启动方式：只有服务确实在跑时才停——node 进程占用 node_modules 会让快照改名失败
+//     （见 plugin_update.go 的快照实现）。这样停下的服务在批末不会重新拉起
+//     （见 finishPluginBatch 的 desktop 分支）。
+func serviceStopNeededForPluginOps() bool {
+	if !launchTargetIsDesktop() {
+		return true
+	}
+	running, _, _ := resolveRunningService()
+	return running
 }
 
 // syncPluginTaskRow 执行前用当前插件状态刷新任务字段（待应用期间插件可能被重新导入、换版本或
@@ -772,6 +785,9 @@ func finishPluginBatch(tasks []*pluginOpTask, splash *SplashState, paused bool) 
 		}
 	}
 	scopeNote := ""
+	// desktop 启动方式：插件的加载由官方桌面端自己负责——托盘不停服、不重启、也不做启动校验
+	// （需求：删除/更新交由桌面端处理，用户在桌面端重启后生效）。
+	desktopMode := launchTargetIsDesktop()
 	switch {
 	case len(active) > 0:
 		// 此前被禁用的插件已随本次更新成功：先解除禁用，让批末这一次启动校验一并判定
@@ -782,6 +798,10 @@ func finishPluginBatch(tasks []*pluginOpTask, splash *SplashState, paused bool) 
 					_ = enablePluginInProfile(dir, t.row.Name)
 				}
 			}
+		}
+		if desktopMode {
+			scopeNote = "\n\n当前启动方式为 Desktop UI：已跳过后台服务的启动校验，改动在桌面端重新启动后生效。"
+			break
 		}
 		splash.Update(TF("正在重启服务并校验（%d 项变更）…", len(active)), 0.85)
 		if !restartAndVerifyServer() {
@@ -801,7 +821,7 @@ func finishPluginBatch(tasks []*pluginOpTask, splash *SplashState, paused bool) 
 				rollbackPluginBatch(active, splash)
 			}
 		}
-	case paused:
+	case paused && !desktopMode:
 		// 批内没有成功项（全部失败已逐项回退）：服务仍停着，必须拉回来
 		splash.Update(T("正在重启服务…"), 0.85)
 		if !restartAndVerifyServer() {
@@ -820,7 +840,9 @@ func finishPluginBatch(tasks []*pluginOpTask, splash *SplashState, paused bool) 
 			case "update", "enable":
 				// 声明变更（更新 / 启用）成功即提升 LKG：否则下次冷启动失败回退时会拼出
 				// 旧 LKG 与当前禁用态不一致的组合（启用成功但回退后又被禁用）。
-				if t.ok {
+				// desktop 启动方式下没有启动校验（见上），不能把未验证的状态当成新基线：
+				// 保留上一次验证过的 LKG 作为回退点。
+				if t.ok && !desktopMode {
 					promoteProfileLkg(dir)
 				}
 			case "remove":
@@ -960,6 +982,11 @@ func emitPluginBatchResults(tasks []*pluginOpTask, scopeNote string) {
 	if failures > 0 {
 		title = fmt.Sprintf("插件批量操作完成（%d 项，%d 项失败已回退）", len(tasks), failures)
 	}
-	msg := title + "：\n" + strings.Join(lines, "\n") + "\n\n服务已重启。" + scopeNote
+	// desktop 启动方式下没有重启后台服务（见 finishPluginBatch）：不能报告「服务已重启」
+	footer := "\n\n服务已重启。"
+	if launchTargetIsDesktop() {
+		footer = "\n\n已跳过后台服务的启动校验（桌面端重新启动后生效）。"
+	}
+	msg := title + "：\n" + strings.Join(lines, "\n") + footer + scopeNote
 	showMessageBox(msg, appName)
 }

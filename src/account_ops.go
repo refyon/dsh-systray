@@ -24,13 +24,39 @@ const (
 	opKeyAutostart         = "setting:autostart"
 	opKeyHarnessPrerelease = "setting:harness_prerelease"
 	opKeyHarnessVersion    = "setting:harness_version"
-	// accountPluginProfile 当前只同步 web profile（用户决策）。
+	// accountPluginProfile 默认插件同步 profile（托盘自带的 Web 服务环境）。插件同步现覆盖
+	// accountPluginProfiles 里的全部 profile（web + desktop），该常量保留：合并键兼容、
+	// 以及「无 profile 声明」的历史行按它归属。
 	accountPluginProfile = "web"
 )
 
-// accountPluginKey 在线插件的合并键：plugin:<profile>:<name>。
+// accountPluginProfiles 参与账号同步的 profile（顺序即处理优先级）：
+//   - web：托盘自带的 dsh web 服务环境（历史同步范围）；
+//   - desktop：官方桌面端环境——其插件由桌面端自己安装进 profiles/desktop，用户确认也纳入同步
+//     （2026-09-25）。
+var accountPluginProfiles = []string{accountPluginProfile, "desktop"}
+
+// accountPluginKey 在线插件的合并键（兼容入口：web profile 的键）。
 func accountPluginKey(name string) string {
-	return "plugin:" + accountPluginProfile + ":" + strings.TrimSpace(name)
+	return accountPluginKeyFor(accountPluginProfile, name)
+}
+
+// accountPluginKeyFor 指定 profile 的插件合并键：plugin:<profile>:<name>（与 dsh-connect 约定一致）。
+func accountPluginKeyFor(profile, name string) string {
+	return "plugin:" + strings.TrimSpace(profile) + ":" + strings.TrimSpace(name)
+}
+
+// syncedProfilesOf 插件行的 profile 声明里参与同步的 profile（顺序同 accountPluginProfiles）。
+// 声明为空（旧布局 profiles 根）或不含任何同步 profile 时返回空——这类行不进同步范围，
+// 与扩展前的过滤口径一致（旧口径即「profile 声明必须含 web」）。
+func syncedProfilesOf(declared string) []string {
+	var out []string
+	for _, p := range accountPluginProfiles {
+		if profileContains(declared, p) {
+			out = append(out, p)
+		}
+	}
+	return out
 }
 
 // newOpID 生成 UUID v4 形态的幂等键（服务端 opId 格式：≤64 个 [A-Za-z0-9._-]）。

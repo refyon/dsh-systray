@@ -20,6 +20,7 @@ import (
 	"unsafe"
 
 	"golang.org/x/sys/windows"
+	"golang.org/x/sys/windows/registry"
 
 	"dsh-systray/internal/systray"
 )
@@ -923,9 +924,14 @@ func showReadyPrompt(url string) {
 	if shotMode || os.Getenv("DSH_SYSTRAY_SHOW_WINDOW") == "1" {
 		return
 	}
-	ret := runModernDialog(appName, T("DeepSeek Harness 服务已就绪。\n是否立即打开 Web UI？"), []string{T("打开"), T("取消")}, 0)
+	// 询问文案随启动方式切换：desktop 下「打开」指向官方桌面端（见 desktop_app.go）。
+	msg := T("DeepSeek Harness 服务已就绪。\n是否立即打开 Web UI？")
+	if launchTargetIsDesktop() {
+		msg = T("DeepSeek Harness 服务已就绪。\n是否立即打开 Desktop UI？")
+	}
+	ret := runModernDialog(appName, msg, []string{T("打开"), T("取消")}, 0)
 	if ret == 0 {
-		openBrowser(url)
+		openDefaultUI()
 	}
 }
 
@@ -1192,4 +1198,208 @@ func setClipboardText(text string) error {
 		return errors.New("写入系统剪贴板失败")
 	}
 	return nil
+}
+
+// ==================== 官方桌面端（Windows） ====================
+
+// desktopUninstallKeyPaths Windows 卸载登记位置（安装器按当前用户安装写 HKCU；
+// 机器级安装写 HKLM，另有 32 位视图兼容项）。
+var desktopUninstallKeyPaths = []string{
+	`Software\Microsoft\Windows\CurrentVersion\Uninstall`,
+	`Software\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall`,
+}
+
+// detectDesktopApp 识别官方桌面端是否安装：优先读卸载登记（安装器写入 DisplayName /
+// DisplayVersion / InstallLocation / DisplayIcon），登记项存在但程序已被删除时视为未安装，
+// 避免托盘「打开」指向空路径；注册表整体缺失（异常卸载残留 / 绿色部署）时按常见安装目录兜底。
+func detectDesktopApp() desktopAppInfo {
+	for _, root := range []registry.Key{registry.CURRENT_USER, registry.LOCAL_MACHINE} {
+		for _, base := range desktopUninstallKeyPaths {
+			if info, ok := desktopAppFromUninstallRoot(root, base); ok {
+				return info
+			}
+		}
+	}
+	for _, dir := range desktopCandidateDirs() {
+		exe := filepath.Join(dir, desktopExeName)
+		if fileExists(exe) {
+			return desktopAppInfo{
+				Installed:    true,
+				Exe:          exe,
+				DisplayPath:  filepath.Dir(exe),
+				ResourcesDir: filepath.Join(filepath.Dir(exe), "resources"),
+			}
+		}
+	}
+	return desktopAppInfo{}
+}
+
+// desktopAppFromUninstallRoot 在给定卸载登记根下找官方桌面端条目。
+func desktopAppFromUninstallRoot(root registry.Key, base string) (desktopAppInfo, bool) {
+	k, err := registry.OpenKey(root, base, registry.READ)
+	if err != nil {
+		return desktopAppInfo{}, false
+	}
+	defer k.Close()
+	names, err := k.ReadSubKeyNames(-1)
+	if err != nil {
+		return desktopAppInfo{}, false
+	}
+	for _, name := range names {
+		sub, err := registry.OpenKey(root, base+`\`+name, registry.READ)
+		if err != nil {
+			continue
+		}
+		display, _, _ := sub.GetStringValue("DisplayName")
+		if !isDesktopDisplayName(display) {
+			sub.Close()
+			continue
+		}
+		ver, _, _ := sub.GetStringValue("DisplayVersion")
+		loc, _, _ := sub.GetStringValue("InstallLocation")
+		icon, _, _ := sub.GetStringValue("DisplayIcon")
+		sub.Close()
+		if ver == "" {
+			ver = versionFromDesktopDisplayName(display)
+		}
+		exe := desktopExeFromIcon(icon)
+		if exe == "" && strings.TrimSpace(loc) != "" {
+			exe = filepath.Join(strings.TrimSpace(loc), desktopExeName)
+		}
+		if exe == "" || !fileExists(exe) {
+			continue
+		}
+		dir := filepath.Dir(exe)
+		return desktopAppInfo{
+			Installed:    true,
+			Version:      ver,
+			Exe:          exe,
+			DisplayPath:  dir,
+			ResourcesDir: filepath.Join(dir, "resources"),
+		}, true
+	}
+	return desktopAppInfo{}, false
+}
+
+// desktopExeFromIcon 见 desktop_app.go（纯解析，放在公共文件里以便跨平台单测）。
+
+// desktopCandidateDirs 注册表缺失时的兜底安装目录（官方安装器的默认位置；安装器允许
+// 自定义目录，那种情况只有注册表能找到）。
+func desktopCandidateDirs() []string {
+	var out []string
+	add := func(base, sub string) {
+		if strings.TrimSpace(base) != "" {
+			out = append(out, filepath.Join(base, sub))
+		}
+	}
+	if la := os.Getenv("LOCALAPPDATA"); la != "" {
+		add(filepath.Join(la, "Programs"), "deepseek-harness")
+	}
+	add(os.Getenv("ProgramFiles"), "deepseek-harness")
+	add(os.Getenv("ProgramFiles(x86)"), "deepseek-harness")
+	return out
+}
+
+// desktopAppProcessRunning 官方桌面端主进程是否在运行：遍历进程快照按可执行文件名匹配
+// （比 tasklist 子进程更快，也不受控制台窗口影响；Electron 会派生多个同名子进程，
+// 命中任意一个即视为在运行）。
+func desktopAppProcessRunning(info desktopAppInfo) bool {
+	want := strings.TrimSpace(info.Exe)
+	if want == "" {
+		want = desktopExeName
+	}
+	want = filepath.Base(want)
+	snap, err := windows.CreateToolhelp32Snapshot(windows.TH32CS_SNAPPROCESS, 0)
+	if err != nil {
+		return false
+	}
+	defer windows.CloseHandle(snap)
+	var entry windows.ProcessEntry32
+	entry.Size = uint32(unsafe.Sizeof(entry))
+	for err := windows.Process32First(snap, &entry); err == nil; err = windows.Process32Next(snap, &entry) {
+		if strings.EqualFold(windows.UTF16ToString(entry.ExeFile[:]), want) {
+			return true
+		}
+	}
+	return false
+}
+
+// launchDesktopApp 启动官方桌面端：未运行则拉起；已运行则重复启动即可把既有窗口唤到前台
+// （桌面端为单实例应用，第二个实例会触发 second-instance → 显示窗口后自行退出）。
+//
+// 不登记为派生子进程：托盘退出时不应连带结束桌面端（用户的任务要继续跑）。
+func launchDesktopApp(info desktopAppInfo) error {
+	exe := strings.TrimSpace(info.Exe)
+	if exe == "" || !fileExists(exe) {
+		return errors.New("未找到桌面端可执行文件")
+	}
+	cmd := exec.Command(exe)
+	cmd.Dir = filepath.Dir(exe)
+	if err := cmd.Start(); err != nil {
+		return err
+	}
+	go func() { _ = cmd.Wait() }() // 桌面端长期运行：异步回收，不阻塞调用方
+	return nil
+}
+
+// launchInstallerFile 用系统默认方式打开安装包（Windows 下即运行 NSIS 安装程序）。
+func launchInstallerFile(path string) error {
+	p := strings.TrimSpace(path)
+	if p == "" || !fileExists(p) {
+		return errors.New("安装包不存在")
+	}
+	modShell32 := syscall.NewLazyDLL("shell32.dll")
+	pShellExecuteW := modShell32.NewProc("ShellExecuteW")
+	op, _ := syscall.UTF16PtrFromString("open")
+	f, _ := syscall.UTF16PtrFromString(p)
+	// ShellExecuteW 返回值 > 32 表示成功
+	r, _, callErr := pShellExecuteW.Call(0, uintptr(unsafe.Pointer(op)), uintptr(unsafe.Pointer(f)), 0, 0, 1 /* SW_SHOWNORMAL */)
+	if r <= 32 {
+		if callErr != nil && callErr.Error() != "The operation completed successfully." {
+			return fmt.Errorf("ShellExecuteW 失败：%w", callErr)
+		}
+		return fmt.Errorf("ShellExecuteW 返回码 %d", r)
+	}
+	return nil
+}
+
+// askLaunchDesktopInstaller 桌面端正在运行时的确认：安装程序会要求先退出桌面端。
+// 本程序不代为强制结束（可能中断用户正在跑的任务），只把后果说清楚再交给用户决定。
+func askLaunchDesktopInstaller(running bool) bool {
+	if !running {
+		return true
+	}
+	msg := T("官方桌面端正在运行。\n\n安装程序会要求先退出桌面端（托盘图标右键 → 退出），否则无法完成安装。\n是否现在启动安装程序？")
+	return runModernDialog(appName, msg, []string{T("启动安装程序"), T("稍后")}, 0) == 0
+}
+
+// askStartService 官方桌面端不可用、启动方式回退 Web UI 时的询问：是否现在启动后台服务。
+// 不静默拉起：desktop 形态下用户并没有在用网页端，服务要不要起由用户决定。
+func askStartService() bool {
+	msg := T("官方桌面端已不可用，启动方式已回退为 Web UI。\n\n是否现在启动后台服务？")
+	return runModernDialog(appName, msg, []string{T("启动服务"), T("暂不启动")}, 0) == 0
+}
+
+// askLaunchTargetDesktopMissing 配置为 Desktop UI 但未检测到官方桌面端时的询问。
+// 返回 "install"（安装桌面端）/ "web"（改用 Web UI）/ "keep"（保持现状）。
+func askLaunchTargetDesktopMissing() string {
+	msg := T("启动方式设置为 Desktop UI，但本机未检测到官方桌面端。\n\n可以现在安装官方桌面端，或改用托盘自带的 Web UI。")
+	switch runModernDialog(appName, msg, []string{T("安装桌面端"), T("改用 Web UI"), T("保持现状")}, 0) {
+	case 0:
+		return "install"
+	case 1:
+		return "web"
+	default:
+		return "keep"
+	}
+}
+
+// askLaunchTargetDesktopInstalled 配置为 Web UI 但检测到已安装官方桌面端时的询问。
+// 返回 "desktop"（改用 Desktop UI）/ "keep"（保持现状）。
+func askLaunchTargetDesktopInstalled() string {
+	msg := T("启动方式设置为 Web UI，但本机已安装官方桌面端。\n\n是否改用 Desktop UI（官方桌面端）？")
+	if runModernDialog(appName, msg, []string{T("改用 Desktop UI"), T("保持现状")}, 1) == 0 {
+		return "desktop"
+	}
+	return "keep"
 }

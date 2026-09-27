@@ -15,6 +15,7 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -132,6 +133,15 @@ type appConfig struct {
 	// PendingPluginOps 待应用的插件变更（更新/删除/启用）：点击后只登记，等用户在关闭设置窗口时
 	// 确认、或在关于页点「立即应用」才执行（整批一次重启）。跨托盘重启保留，见 plugin_batch.go。
 	PendingPluginOps []pendingPluginOp `json:"pendingPluginOps,omitempty"`
+	// LaunchTarget 托盘「打开」的默认启动方式：auto（跟随检测，默认）| web | desktop。
+	// auto 时「装了官方桌面端就用桌面端」，web/desktop 为用户的显式选择（桌面端缺失时
+	// desktop 自动回退 web）。同时决定设置页「版本 / 检查更新 / 更新 / 重置」作用于哪个
+	// harness 引擎：web = 本程序装在 harnessDir 的 dsh web；desktop = 官方桌面端内置引擎。
+	// 见 desktop_app.go。
+	LaunchTarget string `json:"launchTarget,omitempty"`
+	// LaunchMismatchAck 用户就「启动方式偏好与实机不符」选择「保持现状」时记下的偏好值：
+	// 同一偏好不再重复询问（用户显式改动启动方式时清除）。见 launchTargetMismatch。
+	LaunchMismatchAck string `json:"launchMismatchAck,omitempty"`
 }
 
 // pendingPluginOp 一条待应用插件变更的持久化形态（config.json）。
@@ -221,6 +231,12 @@ func applyConfigFile(cfg *appConfig, path string) {
 	if len(f.TrustedHosts) > 0 {
 		cfg.TrustedHosts = f.TrustedHosts
 	}
+	if v := strings.TrimSpace(f.LaunchTarget); v != "" {
+		cfg.LaunchTarget = v
+	}
+	if v := strings.TrimSpace(f.LaunchMismatchAck); v != "" {
+		cfg.LaunchMismatchAck = v
+	}
 }
 
 func loadConfig() appConfig {
@@ -250,6 +266,11 @@ func loadConfig() appConfig {
 		if n, err := strconv.Atoi(t); err == nil && n > 0 {
 			cfg.StartupTimeoutSec = n
 		}
+	}
+	// 启动方式：环境变量优先（调试与截图脚本可用它固定 web / desktop 形态，
+	// 与 DSH_SYSTRAY_LANG 同类的临时覆盖，不写回 config.json）。
+	if v := strings.TrimSpace(os.Getenv("DSH_SYSTRAY_LAUNCH_TARGET")); v != "" {
+		cfg.LaunchTarget = v
 	}
 	return cfg
 }
@@ -296,6 +317,8 @@ func currentConfig() appConfig {
 		AccountAPIBase:    accountAPIBaseGlobal,
 		Proxy:             proxyConfigValueOf(),
 		PendingPluginOps:  pluginPendingOps(),
+		LaunchTarget:      launchTargetPref,
+		LaunchMismatchAck: launchMismatchAck,
 	}
 }
 
@@ -312,7 +335,13 @@ var autostartLaunch = func() bool {
 
 // maybeStartSplash 启动阶段显示进度；开机自启动场景下返回空实现（不开窗、完全静默）。
 func maybeStartSplash(text string) *SplashState {
-	if autostartLaunch {
+	return splashForFlow(text, false)
+}
+
+// splashForFlow 显示进度视图。interactive = 由用户操作触发（切回 Web UI、按需启动服务）：
+// 即使当前进程是开机自启启动的，也必须让用户看到进度与结果，不能走静默空实现。
+func splashForFlow(text string, interactive bool) *SplashState {
+	if autostartLaunch && !interactive {
 		return &SplashState{Update: func(string, float64) {}, Close: func() {}}
 	}
 	return startSplash(text)
@@ -358,16 +387,49 @@ func serviceStatusText() string {
 	return T("服务启动中…")
 }
 
+// trayOpenTitle / trayOpenTooltip 托盘「打开」菜单项文案：随启动方式切换
+// （desktop → 「打开 Desktop UI」并拉起官方桌面端）。见 desktop_app.go。
+func trayOpenTitle() string {
+	if launchTargetIsDesktop() {
+		return T("打开 Desktop UI")
+	}
+	return T("打开 Web UI")
+}
+
+func trayOpenTooltip() string {
+	if launchTargetIsDesktop() {
+		return T("打开官方桌面端")
+	}
+	return T("打开网页端界面")
+}
+
 // refreshServiceMenu 按服务实际运行状态刷新托盘菜单（可跨线程、可周期调用）。
 // 就绪判定基于实际运行端口（配置端口或本进程最后启动端口），避免修改端口后、
 // 重启前「打开 Web UI」被错误禁用/指向不可达地址。
+//
+// desktop 启动方式下「打开 Desktop UI」与后台 Web 服务状态无关（桌面端自带 Host），
+// 只要装了桌面端就常显可点；服务状态不再占用菜单行，避免「服务没起来 → 桌面端入口消失」。
 func refreshServiceMenu() {
 	if menuOpen == nil || menuStatus == nil {
 		return
 	}
 	ready, _, _ := resolveRunningService()
+	desktopTarget := launchTargetIsDesktop()
 	systray.RunOnLoop(func() {
 		if menuOpen == nil || menuStatus == nil {
+			return
+		}
+		if desktopTarget {
+			// desktop 启动方式：「打开 Desktop UI」常显可点（与后台服务状态解耦）。
+			// 但服务失败时不静默——失败原因仍占一行，否则「Web UI 打不开」在托盘里无从排查。
+			menuOpen.Show()
+			menuOpen.Enable()
+			if serviceFailed.Load() {
+				menuStatus.Show()
+				menuStatus.SetTitle(serviceStatusText())
+				return
+			}
+			menuStatus.Hide()
 			return
 		}
 		if ready {
@@ -396,8 +458,8 @@ func refreshTrayTexts() {
 			menuStatus.SetTooltip(T("后台服务状态"))
 		}
 		if menuOpen != nil {
-			menuOpen.SetTitle(T("打开 Web UI"))
-			menuOpen.SetTooltip(T("打开网页端界面"))
+			menuOpen.SetTitle(trayOpenTitle())
+			menuOpen.SetTooltip(trayOpenTooltip())
 		}
 		if mSettings != nil {
 			mSettings.SetTitle(T("设置"))
@@ -412,6 +474,7 @@ func refreshTrayTexts() {
 }
 
 // pollServiceMenu 周期性探测服务状态并刷新菜单，保证每次打开托盘菜单都反映实时状态。
+// 顺带做启动方式漂移检查（desktop → web，见 checkLaunchTargetDrift）。
 func pollServiceMenu() {
 	ticker := time.NewTicker(2 * time.Second)
 	defer ticker.Stop()
@@ -421,9 +484,50 @@ func pollServiceMenu() {
 			if quitting.Load() {
 				return
 			}
+			checkLaunchTargetDrift()
 			refreshServiceMenu()
 		}
 	}
+}
+
+// ==================== 启动方式漂移（desktop → web） ====================
+//
+// desktop 启动方式下后台服务从未启动：若官方桌面端随后被卸载（或检测失效），解析结果会回退
+// Web UI——此时托盘「打开」没有任何可用目标（服务没在跑）。发现这一次漂移后询问用户是否现在
+// 启动后台服务；不静默拉起（desktop 形态下用户并没有在用网页端）。
+
+// lastResolvedLaunch 上一次解析出的启动方式；launchDriftAsked 本次漂移是否已询问过
+// （用户选择「暂不启动」后不再重复打扰，直到启动方式再次变化）。
+var (
+	lastResolvedLaunch atomic.Value // string
+	launchDriftAsked   atomic.Bool
+)
+
+// checkLaunchTargetDrift 检测 desktop → web 的启动方式漂移，并按用户选择按需启动后台服务。
+// 只由 pollServiceMenu 的周期 goroutine 调用（状态无并发写）。
+func checkLaunchTargetDrift() {
+	cur := resolvedLaunchTarget()
+	prev, _ := lastResolvedLaunch.Load().(string)
+	if prev == cur {
+		return
+	}
+	lastResolvedLaunch.Store(cur)
+	launchDriftAsked.Store(false) // 进入新的启动方式：允许下一次漂移重新询问
+	if prev != launchTargetDesktop || cur != launchTargetWeb {
+		return
+	}
+	if !launchDriftAsked.CompareAndSwap(false, true) {
+		return
+	}
+	if running, _, _ := resolveRunningService(); running {
+		return
+	}
+	log.Printf("[launch] desktop target unavailable, fell back to web ui: asking user to start service")
+	go func() {
+		if askStartService() {
+			startServiceBootstrap(true)
+		}
+	}()
 }
 
 // ==================== 托盘单击/双击 ====================
@@ -476,6 +580,9 @@ func main() {
 	webURL = fmt.Sprintf("http://127.0.0.1:%d/", port)
 	harnessDir = cfg.HarnessDir
 	startupTimeout = time.Duration(cfg.StartupTimeoutSec) * time.Second
+	// 启动方式：auto（默认，按是否装了官方桌面端解析）/ web / desktop；见 desktop_app.go。
+	launchTargetPref = normalizeLaunchTarget(cfg.LaunchTarget)
+	launchMismatchAck = strings.TrimSpace(cfg.LaunchMismatchAck)
 	// 语言：config 未写 language（旧版本升级 / 全新安装）默认简体中文，避免旧用户升级后
 	// 因「跟随系统」检测到英文系统语言而整体变英文（0.8.0 升级反馈）；显式 auto/zh/en 按选择生效。
 	langPref = "zh"
@@ -601,7 +708,9 @@ func main() {
 		// onBeforeClose——两者由此可区分（此前无此开关时二者都汇入同一回调，
 		// onBeforeClose 返回 true 会连 Dock 退出也吞掉，只能强制退出）。
 		HideWindowOnClose: runtime.GOOS == "darwin",
-		StartHidden:       autostartLaunch || (!shotMode && startupEnvReady()),
+		// desktop 启动方式下没有启动进度要展示（不跑引导流程），与自启动一样直接隐藏窗口；
+		// 截图/预览模式必须显示窗口（脚本依赖它截设置页）。
+		StartHidden: autostartLaunch || (!shotMode && (launchTargetIsDesktop() || startupEnvReady())),
 		Windows: &windows.Options{
 			WebviewIsTransparent: false,
 			WindowIsTranslucent:  false,
@@ -641,7 +750,108 @@ func onStartup(ctx context.Context) {
 		start, _ := systray.RunWithExternalLoop(onReady, onExit)
 		start()
 	}
-	go bootstrapService()
+	// 启动方式与实机不符（配置为 Desktop UI 但未装桌面端 / 配置为 Web UI 但装了桌面端）：
+	// 先让用户决定，再按最终配置决定是否启动后台服务（见 promptLaunchTargetMismatch）。
+	if kind, ok := launchTargetMismatch(); ok {
+		go promptLaunchTargetMismatch(kind)
+		return
+	}
+	// 后台服务：desktop 启动方式下不自动启动——其 harness 引擎由官方桌面端自带，托盘自带的
+	// Web 服务只服务 Web UI 形态。用户把启动方式切回 Web UI 时才按需拉起（见 SetLaunchTarget）。
+	if launchTargetIsDesktop() {
+		serverReady.Store(true) // 未启动且非失败：设置页显示「后台服务：已停止」而不是一直「启动中」
+		notifySplashDone()      // 本形态没有启动引导：前端不要停在 splash 视图（未就绪机器上窗口会显示）
+		signalShotReady()
+		log.Printf("[startup] launch target=desktop: background service not started")
+		refreshServiceMenu()
+		// profile 级事务自愈与服务无关，desktop 形态必须照样执行（见 recoverProfileTransactions）
+		go recoverProfileTransactions(nil)
+		return
+	}
+	startServiceBootstrap(false)
+}
+
+// ==================== 启动方式偏好与实机不符时的询问 ====================
+//
+// 配置里明确写了启动方式、但实机情况与之矛盾时静默按回落结果运行会让用户困惑：配置 Desktop UI
+// 却没装桌面端（什么都打不开），或配置 Web UI 但装了桌面端（用不上桌面端）。启动时询问一次，
+// 用户做出决定或选择「保持现状」后不再重复询问（launchMismatchAck）。
+
+// launchTargetMismatch 启动方式偏好与实机是否不符（需要询问用户）。
+// kind：desktop-missing（配置 desktop 但未装桌面端）/ desktop-installed（配置 web 但装了桌面端）。
+// auto 偏好不存在「不符」；截图模式不弹窗；已就同一偏好确认过（launchMismatchAck）也不再询问。
+func launchTargetMismatch() (string, bool) {
+	if shotMode {
+		return "", false
+	}
+	pref := normalizeLaunchTarget(launchTargetPref)
+	if pref == launchTargetAuto {
+		return "", false
+	}
+	if launchMismatchAck == pref {
+		return "", false
+	}
+	installed := desktopApp().Installed
+	switch {
+	case pref == launchTargetDesktop && !installed:
+		return "desktop-missing", true
+	case pref == launchTargetWeb && installed:
+		if autostartLaunch {
+			// 开机自启下不打扰：Web 形态完全可用，这里只是「你也可以用桌面端」的提示
+			log.Printf("[launch] desktop app installed while launch target=web: prompt skipped on autostart")
+			return "", false
+		}
+		return "desktop-installed", true
+	}
+	return "", false
+}
+
+// promptLaunchTargetMismatch 询问用户如何处理启动方式与实机不符，并按选择收尾：确认服务生命周期
+// （只有最终按 Web UI 运行且服务未启动时才拉起）与安装流程。
+// 在后台 goroutine 中执行（原生弹窗阻塞），先等界面就绪再问。
+func promptLaunchTargetMismatch(kind string) {
+	// profile 级事务自愈先跑（「安装桌面端」「改用 Desktop UI」等分支不会走 bootstrapService）
+	recoverProfileTransactions(nil)
+	// 询问期间什么都不在启动：状态先落到「已停止」（选择「改用 Web UI / 保持现状」后会启动服务）
+	serverReady.Store(true)
+	serviceFailed.Store(false)
+	refreshServiceMenu()
+	time.Sleep(700 * time.Millisecond) // 等托盘图标与设置窗口就绪，避免弹窗盖在启动画面上
+	switch kind {
+	case "desktop-missing":
+		switch askLaunchTargetDesktopMissing() {
+		case "install":
+			logUI("启动方式与实机不符", "选择安装官方桌面端")
+			startDesktopInstallFlow() // 异步下载 + 启动安装向导（进度走 splash）
+			serverReady.Store(true)
+			serviceFailed.Store(false)
+			refreshServiceMenu()
+		case "web":
+			logUI("启动方式与实机不符", "选择改用 Web UI")
+			setLaunchTarget(launchTargetWeb) // 内含：启动后台服务
+		default:
+			logUI("启动方式与实机不符", "保持现状（配置仍为 Desktop UI，先按 Web UI 运行）")
+			rememberLaunchMismatchAck()
+			startServiceBootstrap(true)
+		}
+	case "desktop-installed":
+		switch askLaunchTargetDesktopInstalled() {
+		case "desktop":
+			logUI("启动方式与实机不符", "选择改用 Desktop UI")
+			setLaunchTarget(launchTargetDesktop) // 内含：停止后台服务
+		default:
+			logUI("启动方式与实机不符", "保持现状（继续使用 Web UI）")
+			rememberLaunchMismatchAck()
+			startServiceBootstrap(true)
+		}
+	}
+}
+
+// rememberLaunchMismatchAck 记下用户对当前偏好「与实机不符」的选择：同一偏好不再重复询问
+// （偏好被显式改动时清除，见 setLaunchTarget）。
+func rememberLaunchMismatchAck() {
+	launchMismatchAck = normalizeLaunchTarget(launchTargetPref)
+	saveCurrentConfig()
 }
 
 // pendingPluginOpsFromConfig 启动时从 config.json 读到的待应用插件变更（onStartup 逐条校验载入）。
@@ -694,11 +904,25 @@ func onDomReady(ctx context.Context) {
 	}
 }
 
+// askStopServerForQuit 退出前的「是否保留后台服务」询问（托盘「退出」与 macOS 真实退出共用）。
+//
+// desktop 启动方式下后台服务本就不该在运行（启动闸门不拉起、切换启动方式时已停止），询问没有
+// 意义：直接按「停止并退出」处理（若仍有残留服务进程，退出清理会顺带收掉）。
+// 返回 0=停止并退出 / 1=保留服务 / -1=取消退出。
+func askStopServerForQuit() int {
+	if launchTargetIsDesktop() {
+		log.Printf("[quit] launch target=desktop: skip keep-server prompt")
+		return 0
+	}
+	return askStopServer()
+}
+
 // onBeforeClose 窗口关闭回调（Wails 的 Quit 也经此拦截）：
 //   - 托盘「退出」流程（quitRequested 已置位）：放行（返回 false），允许应用退出；
 //   - Windows：窗口 X 仅隐藏窗口并阻止关闭（托盘常驻）；更新进行中先询问是否取消更新；
 //   - macOS：红点关闭已由 HideWindowOnClose 直接隐藏（不到这里），到达此处即为真实退出
-//     （Dock/⌘Q/托盘退出）→ 询问是否停止后台服务：确定/保留服务均放行退出，取消则留在前台。
+//     （Dock/⌘Q/托盘退出）→ 询问是否停止后台服务：确定/保留服务均放行退出，取消则留在前台
+//     （desktop 启动方式下没有可保留的服务，见 askStopServerForQuit）。
 func onBeforeClose(ctx context.Context) bool {
 	if quitRequested.Load() {
 		return false // 托盘退出：允许关闭并退出应用
@@ -719,7 +943,7 @@ func onBeforeClose(ctx context.Context) bool {
 			return false
 		}
 		// 真实退出请求：与托盘「退出」一致地询问停服策略（0=停止并退出 1=保留服务 -1=取消）
-		choice := askStopServer()
+		choice := askStopServerForQuit()
 		if choice < 0 {
 			return true // 用户取消退出：留在前台，不关闭
 		}
@@ -836,9 +1060,57 @@ func recoverInterruptedImport() int {
 	return len(dirs)
 }
 
+// recoverProfileTransactions 启动时的 profile 级事务自愈（与「是否启动后台服务」无关）：
+//  1. 上次插件导入恢复被中断（进程退出/窗口被杀）→ 按事务日志回退或续跑收尾；
+//  2. 上次插件操作（更新/删除/同步应用）在快照后被强杀 → 残骸还原到操作前状态。
+//
+// 这两步只动 profile 文件，**desktop 启动方式下也必须执行**：否则 node_modules 会停在
+// 被改名的快照状态，官方桌面端加载直接失败（desktop 形态不走 bootstrapService，故在此显式调用）。
+// profileRecoveryMu 串行化 profile 级事务自愈：多条启动路径（bootstrap / desktop 分支 /
+// 启动方式询问）都可能调用，而快照还原是「删活体 + 改名回填」的非幂等操作——并发跑第二次
+// 会把刚还原好的 node_modules 删掉。
+var profileRecoveryMu sync.Mutex
+
+// progress 可为 nil（无进度视图时只记日志）。
+func recoverProfileTransactions(progress func(text string)) {
+	profileRecoveryMu.Lock()
+	defer profileRecoveryMu.Unlock()
+	if n := recoverInterruptedImport(); n > 0 && progress != nil {
+		progress(fmt.Sprintf("已检测到上次未完成的导入恢复，自动回退 %d 个环境…", n))
+	}
+	for _, pf := range enumeratePluginProfiles() {
+		recoverInterruptedPluginSnapshot(pf.dir)
+	}
+}
+
+// 后台服务编排的并发闸门：冷启动的自动引导与用户切回 Web UI 的按需引导可能先后/并发到来，
+// 同一时刻只允许一次（否则会拉起两个服务进程互相抢端口）。
+var serviceBootstrapRunning atomic.Bool
+
+// startServiceBootstrap 按需启动后台服务编排（幂等，返回是否受理）。
+func startServiceBootstrap(interactive bool) bool {
+	if !serviceBootstrapRunning.CompareAndSwap(false, true) {
+		log.Printf("[service] bootstrap already running, skip duplicate request (interactive=%v)", interactive)
+		return false
+	}
+	// 进入启动流程：状态回到「启动中」（desktop 形态下可能被置为「已停止」；上次失败的标记也要清），
+	// 就绪/失败由 bootstrap 自身收尾置位。
+	serverReady.Store(false)
+	serviceFailed.Store(false)
+	go func() {
+		defer serviceBootstrapRunning.Store(false)
+		bootstrapService(interactive)
+	}()
+	return true
+}
+
 // bootstrapService 后台服务编排（原 main 中的启动流程，改为事件驱动进度）：
 // 运行环境 → harness 安装/构建 → 启动服务 → 就绪提示。
-func bootstrapService() {
+// interactive = 用户操作触发（切回 Web UI / 漂移确认后启动），进度窗口必须可见。
+//
+// 幂等：各步骤自带前置检查（运行环境已就绪 / harness 已安装或已构建 / 服务已在响应），
+// 因此 desktop 启动方式下跳过、之后用户切回 Web UI 再执行，与冷启动路径等价。
+func bootstrapService(interactive bool) {
 	// 未部署（无 package.json）时不询问用户指定目录：显式配置的目录失效时回退到
 	// 官方默认目录（~ 下 deepseek-harness，与官方 npx/源码部署及 macOS 语义一致），
 	// 交由下方自动探测/部署流程静默处理。
@@ -858,7 +1130,7 @@ func bootstrapService() {
 		}
 	}
 
-	splash := maybeStartSplash(T("正在准备运行环境…"))
+	splash := splashForFlow(T("正在准备运行环境…"), interactive)
 
 	// 悬空 LKG 标记清理（须在冷启动健康校验之前）：标记在、备份全无（用户手工删过 harness /
 	// .dsh 目录）时 LKG 已无法回退，留着只会让本次冷启动走「加长窗口且不做提前通过」白等 60s。
@@ -918,16 +1190,8 @@ func bootstrapService() {
 		}
 	}
 
-	// 2.5) 上次导入恢复被意外中断（进程退出/窗口关闭）自愈：残留 .importbak 事务快照 →
-	// 回退到导入前状态（服务随后按正常流程拉起并健康校验）
-	if n := recoverInterruptedImport(); n > 0 {
-		splash.Update(fmt.Sprintf("已检测到上次未完成的导入恢复，自动回退 %d 个环境…", n), 0.87)
-	}
-	// 2.6) 上次插件操作（同步应用/更新/删除）在快照后被强杀：残骸按「操作前状态」还原，
-	// 避免半装的依赖树被服务加载（被撤销的那一项仍是待生效，下次同步会重新给出）
-	for _, pf := range enumeratePluginProfiles() {
-		recoverInterruptedPluginSnapshot(pf.dir)
-	}
+	// 2.5/2.6) profile 级事务自愈：上次导入恢复中断 → 回退/续跑；插件快照残骸 → 还原到操作前状态
+	recoverProfileTransactions(func(text string) { splash.Update(text, 0.87) })
 	// 2.7) codeload 凭据自愈：历史的「带参数」tokenHelper 会让 pnpm 10.34.5（托盘自带运行时）
 	// 下**所有** pnpm 命令失败（启动即解析全部 tokenHelper），而那条配置只在下过私有仓插件的
 	// 机器上存在、没有任何路径会自动触发修复——启动时重写为新格式（或清理旧行）兜住。
@@ -1130,7 +1394,7 @@ func onReady() {
 	// 状态说明行：禁用样式（置灰、不可点击），仅作状态提示；「打开 Web UI」未就绪时隐藏、就绪时显示可点
 	menuStatus = systray.AddMenuItem(T("服务启动中…"), T("后台服务状态"))
 	menuStatus.Disable()
-	menuOpen = systray.AddMenuItem(T("打开 Web UI"), T("打开网页端界面"))
+	menuOpen = systray.AddMenuItem(trayOpenTitle(), trayOpenTooltip())
 	refreshServiceMenu()
 	// 周期刷新，保证每次打开托盘菜单都反映服务实时状态
 	go pollServiceMenu()
@@ -1143,14 +1407,15 @@ func onReady() {
 	mQuit = systray.AddMenuItem(T("退出"), T("退出并关闭后台服务器"))
 
 	menuOpen.Click(func() {
-		if running, _, _ := resolveRunningService(); running {
-			openBrowser(webTokenURL()) // 带最新 token，避免重启后旧 token 失效
-		}
+		// 按当前启动方式打开：desktop → 官方桌面端；web → 带最新 token 的 Web UI
+		// （见 desktop_app.go 的 openDefaultUI，已含桌面端缺失时回退 Web UI）。
+		openDefaultUI()
 	})
 	mSettings.Click(showMainWindow)
 	mQuit.Click(func() {
 		// 退出前询问是否停止后台 Web 服务：0=停止并退出 1=保留服务 -1=取消退出
-		choice := askStopServer()
+		// （desktop 启动方式下不询问——服务不在运行，见 askStopServerForQuit）
+		choice := askStopServerForQuit()
 		if choice < 0 {
 			return // 取消退出：托盘保持可用
 		}

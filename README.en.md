@@ -70,6 +70,14 @@ Designed around three core traits: **Lightweight, Reliable, Portable**.
 - **Config is data**: all configuration lives under the user directory (`config.json`), data under `~/.dsh`, and both migrate fully with the export bundle
 - **Cross-platform consistency**: same UI and same data format on Windows and macOS (design tokens in [DESIGN.md](DESIGN.md))
 
+### Official Desktop app — use it when present, unchanged when absent
+
+- **Automatic detection**: the Windows uninstall registry and (on macOS) the `DeepSeek Harness.app` bundle under `/Applications`. Once detected, the tray's "Open Web UI" becomes "**Open Desktop UI**" and launches the Desktop app (or brings the running instance to the front)
+- **Selectable default launch method**: "General → Default launch method" offers `Auto-detect (prefer Desktop)` / `Web UI (tray-managed service)` / `Desktop UI (official Desktop app)`; if the Desktop app is uninstalled the tray falls back to Web UI
+- **Version and updates follow the launch method**: under Web UI the tray-installed `@deepseek-ai/dsh` is managed (npm registry / GitHub), while under Desktop UI the installed Desktop version is read and compared against the **Desktop app's own update feed** (`download.deepseek.com`, fixed Nightly channel). "Update" downloads the official installer (sha512-verified) and starts its installer wizard
+- **Reset only exists under Web UI**: the Desktop app owns its bundled harness and data directory, so that entry is hidden under Desktop UI (and rejected by the backend)
+- **The settings page adapts itself**: under Desktop UI, entries that only affect the tray-managed Web service (service port, harness directory) are greyed out with an explanation, the reset card and prerelease channel are hidden, and a Desktop card shows version, running state, update channel, install location and a one-click launch
+
 ## Configuration
 
 `config.json` lives in the user config directory (optional; defaults are used when missing):
@@ -81,7 +89,8 @@ Designed around three core traits: **Lightweight, Reliable, Portable**.
   "startupTimeoutSec": 300,
   "updateMirror": "",
   "harnessPrerelease": false,
-  "accountApiBase": ""
+  "accountApiBase": "",
+  "launchTarget": "auto"
 }
 ```
 
@@ -91,6 +100,7 @@ Designed around three core traits: **Lightweight, Reliable, Portable**.
 - `updateMirror`: optional GitHub update download mirror prefix (handy behind mainland-China networks, e.g. `https://ghproxy.net/`)
 - `harnessPrerelease`: whether alpha/beta/rc builds count as updateable harness versions (off by default — only stable versions)
 - `accountApiBase`: optional base URL of the account-sync service ([dsh-connect](https://github.com/refyon/dsh-connect)); defaults to the official domain. The sign-in state and sync cursor live in a separate `account.json` in the same directory (mode 0600; it holds only the token and cursor, never a password) and are removed when you sign out on the "Data sync" page
+- `launchTarget`: default launch method for the tray's open action — `auto` (default; use the official Desktop app when installed) | `web` | `desktop`. It also decides which harness engine the version / check-update / update / reset actions apply to (overridable via `DSH_SYSTRAY_LAUNCH_TARGET`); see the "Official Desktop app" section
 
 ## Architecture
 

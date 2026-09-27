@@ -61,6 +61,15 @@
 - **进度条**：8px 轨道胶囊 + `--primary` 填充，`width` 过渡 180ms。
 - **日志视图**：等宽 12px、`user-select: text`、行内级别着色（INFO=primary / WARN=warn / ERROR=danger）。
 - **对话框**（Windows 原生自绘）：白色圆角窗口 + 胶囊按钮，主按钮 `--primary`。
+- **启动方式联动**（`常规 → 默认启动方式`）：同一套界面要同时服务 Web UI 与官方桌面端两个启动方式，
+  差异用**声明式标记**表达，不在 JS 里逐个写 id —— 仅 web 路径成立的条目加 `data-only-web`
+  （取值 `hide` 整块隐藏 / `disable` 置灰并给 tooltip），仅 desktop 路径成立的说明加 `data-only-desktop`；
+  由 `main.js` 的 `applyLaunchMode` 统一应用。文案改写用 `tr()`，并登记进 `I18N_DYN`
+  （`scripts/check-frontend-i18n.mjs` 会告警未登记的动态文案）。新增设置项时必须先判断它在
+  两个启动方式下是否同义：不同义就加标记，而不是让用户改了设置却影响不到他正在用的界面。
+  desktop 路径下 Web 专有**板块**（后台服务状态 / 服务端口 / Harness 目录 / 重置）整块 `hide`
+  ——置灰只该留给「值仍有意义、但现在改不了」的控件。控制项会带来实际后果时（切换启动方式会
+  启停后台服务、可能中断进行中的网页端会话）必须先弹 `confirmDialog`，确认后才写入配置生效。
 
 ## 6. Do's & Don'ts
 

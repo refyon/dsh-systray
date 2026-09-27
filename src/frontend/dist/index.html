@@ -32,6 +32,8 @@
         <button class="nav-item has-status" data-page="sync">
           <span data-i18n="navSync">数据同步</span>
           <span class="nav-status" id="sync-nav-status"></span>
+        <!-- 帮助页两个启动方式都可见，但内容按启动方式分开：desktop = 桌面端异常时改用 Web UI 的指引，
+             web = 访问令牌 / 重新鉴权（见下方 help-card 的 data-only-* 标记） -->
         <button class="nav-item" data-page="help" data-i18n="navHelp">帮助</button>
       </nav>
     </aside>
@@ -41,11 +43,16 @@
 
       <!-- 常规 -->
       <section id="page-general" class="page">
+        <!-- 顺序（用户需求）：开机自启动 → 界面语言 → 默认启动方式 → 按启动方式显示 Desktop / Web 板块。
+             标记约定（main.js 的 applyLaunchMode 按 GetConfig().launchResolved 联动）：
+               data-only-web="hide"  仅 Web UI 启动方式成立的条目 → Desktop UI 模式下整块隐藏
+               data-only-desktop     仅 Desktop UI 启动方式适用的板块 → 其它模式隐藏
+             启动方式切换会启停后台服务：切换前弹确认（见 main.js 的 sel-launch 处理）。 -->
         <div class="card">
           <div class="card-row">
             <div class="row-text">
               <div class="row-title" data-i18n="stAutoTitle">开机自启动</div>
-              <div class="row-sub" data-i18n="stAutoSub">登录后自动启动后台服务并常驻托盘</div>
+              <div class="row-sub" id="autostart-sub" data-i18n="stAutoSub">登录后自动启动后台服务并常驻托盘</div>
             </div>
             <button id="sw-autostart" class="switch" role="switch" aria-checked="false" aria-label="开机自启动"></button>
           </div>
@@ -63,7 +70,46 @@
             </select>
           </div>
         </div>
+        <!-- 默认启动方式：托盘「打开」指向哪个界面，同时决定下方显示 Desktop 板块还是 Web 板块，
+             以及托盘自带后台服务的启停 -->
         <div class="card">
+          <div class="card-row">
+            <div class="row-text">
+              <div class="row-title" data-i18n="stLaunchTitle">默认启动方式</div>
+              <div class="row-sub" data-i18n="stLaunchSub">托盘「打开」默认指向哪个界面；同时决定下方版本、更新与重置操作作用于哪个 Harness 引擎</div>
+            </div>
+            <div class="btn-group">
+              <select id="sel-launch" class="input-select" aria-label="默认启动方式">
+                <option value="auto" data-i18n="launchAuto">自动检测（优先桌面端）</option>
+                <option value="web" data-i18n="launchWeb">Web UI（托盘自带服务）</option>
+                <option value="desktop" data-i18n="launchDesktop">Desktop UI（官方桌面端）</option>
+              </select>
+              <!-- 未检测到桌面端时的安装入口（下载官方安装包 + 启动安装向导；检测到后隐藏） -->
+              <button id="btn-install-desktop" class="btn btn-outline hidden" data-i18n="btnInstallDesktop">安装桌面端</button>
+            </div>
+          </div>
+          <div id="launch-hint" class="row-note launch-hint"></div>
+        </div>
+        <!-- Desktop 板块：官方桌面端（仅在 Desktop UI 启动方式且检测到安装时显示；版本号即其内置 harness 版本） -->
+        <div id="card-desktop" class="card hidden" data-only-desktop>
+          <div class="card-row">
+            <div class="row-text">
+              <div class="row-title" data-i18n="dtTitle">官方桌面端</div>
+              <div class="row-sub" id="dt-sub">—</div>
+            </div>
+            <div class="btn-group">
+              <button id="btn-open-desktop" class="btn btn-primary" data-i18n="btnOpenDesktop">打开 Desktop UI</button>
+            </div>
+          </div>
+          <div class="card-row">
+            <div class="row-text">
+              <div class="row-title" data-i18n="dtPathTitle">安装位置</div>
+              <div class="row-sub row-sub-path" id="dt-path">—</div>
+            </div>
+          </div>
+        </div>
+        <!-- Web 板块：后台服务状态（Desktop UI 模式下不启动后台服务，整块隐藏） -->
+        <div class="card" data-only-web="hide">
           <div class="card-row">
             <div class="row-text">
               <div class="row-title">
@@ -78,7 +124,8 @@
             </div>
           </div>
         </div>
-        <div class="card">
+        <!-- Web 板块：服务端口与 Harness 目录（只影响托盘自带的 Web 服务） -->
+        <div class="card" data-only-web="hide">
           <div class="card-row">
             <div class="row-text">
               <div class="row-title" data-i18n="stPortTitle">服务端口</div>
@@ -95,7 +142,7 @@
             <button id="btn-pick-harness" class="btn btn-ghost" data-i18n="btnChoose">选择…</button>
           </div>
         </div>
-        <div class="card">
+        <div class="card" data-only-web="hide">
           <div class="card-row">
             <div class="row-text">
               <div class="row-title" data-i18n="stResetTitle">重置 DeepSeek Harness</div>
@@ -127,11 +174,12 @@
           <div class="card-row">
             <div class="row-text">
               <div class="row-title" data-i18n="abHarnessVerTitle">DeepSeek Harness 版本号</div>
-              <div class="row-sub" data-i18n="abHarnessVerSub">后台服务引擎</div>
+              <div class="row-sub" id="harness-ver-sub" data-i18n="abHarnessVerSub">后台服务引擎</div>
             </div>
             <strong class="ver-lg" id="ver-harness">—</strong>
           </div>
-          <div class="card-row">
+          <!-- 预发布通道只对 npm 版 harness（Web UI 启动方式）成立：官方桌面端通道固定 Nightly -->
+          <div class="card-row" data-only-web="hide">
             <div class="row-text">
               <div class="row-title" data-i18n="abPreTitle">开启预发布通道</div>
               <div class="row-sub" data-i18n="abPreSub">alpha / beta / rc 预发布版</div>
@@ -203,6 +251,10 @@
           <div class="imp-intro-main">
             <div class="row-title" data-i18n="impTitle">导入 dsh-systray 导出包</div>
             <div class="row-sub" data-i18n="impSub">选择 dsh-systray-export-*.zip 压缩包，可恢复历史会话、已安装插件或文件目录。</div>
+            <!-- 桌面端启动方式：托盘不启动后台服务，插件恢复不做启动校验，改动在桌面端重启后生效 -->
+            <div class="row-sub" data-only-desktop data-i18n="impDesktopNote">
+              当前默认启动方式为官方桌面端：恢复只写文件、不启动后台服务做启动校验，插件改动在桌面端重新启动后生效。
+            </div>
             <div id="imp-path" class="row-sub row-sub-path imp-path hidden"></div>
           </div>
           <button id="btn-import-pick" class="btn btn-primary btn-sm" data-i18n="btnAddZip">添加压缩包…</button>
@@ -279,8 +331,13 @@
             <div class="row-text">
               <div class="row-title" data-i18n="syncScopeTitle">同步内容</div>
               <div class="row-sub" data-i18n="syncScopeSub">
-                开机自启动开关、最后选用的 Harness 版本（含预发布通道）、所有在线插件的安装信息；
+                开机自启动开关、最后选用的 Harness 版本（含预发布通道）、所有在线插件的安装信息
+                （Web 与 Desktop 两个环境各自一条记录，互不覆盖）；
                 不含本机目录与服务端口，本地插件不同步。
+              </div>
+              <!-- 桌面端启动方式下：Harness 版本与预发布通道不属于桌面端（其通道固定 Nightly） -->
+              <div class="row-sub" data-only-desktop data-i18n="syncScopeDesktopNote">
+                当前默认启动方式为官方桌面端：同步的 Harness 版本与预发布通道只作用于托盘自带的 Web 服务，不影响桌面端（其更新通道固定 Nightly）。
               </div>
             </div>
           </div>
@@ -310,7 +367,25 @@
 
       <!-- 帮助 -->
       <section id="page-help" class="page hidden">
-        <div class="card help-card">
+        <!-- 仅 Desktop UI 启动方式适用：桌面端异常（打不开/无法进行 AI 会话）时改用 Web UI 的应急指引 -->
+        <div class="card help-card" data-only-desktop>
+          <div class="row-title" data-i18n="helpFallbackTitle">Desktop UI 无法正常使用时</div>
+          <div class="row-sub" data-i18n="helpFallbackSymp">
+            官方桌面端打不开或无法正常进行 AI 会话时（引擎异常、插件不兼容、界面卡住等），
+            可以改用托盘自带的 Web UI 继续工作——两者是同一台机器上的两个界面，已保存的会话与设置不会因为切换而丢失。
+          </div>
+          <ol class="help-steps">
+            <li data-i18n="helpFallbackStep1">点下方「切换到 Web UI」：托盘会启动后台服务并把托盘「打开」指向网页端（首次启动可能需要下载运行环境，耗时数分钟）。</li>
+            <li data-i18n="helpFallbackStep2">服务就绪后，点托盘菜单「打开 Web UI」，或回到本页点「打开 Web UI」（切换到 Web UI 后本页会显示该按钮）。</li>
+            <li data-i18n="helpFallbackStep3">桌面端问题排查完、想改回桌面端时，到「常规」页把「默认启动方式」切回 Desktop UI 即可（后台服务会随之停止）。</li>
+          </ol>
+          <div class="help-actions">
+            <button id="btn-help-switch-web" class="btn btn-primary" data-i18n="btnSwitchToWeb">切换到 Web UI</button>
+          </div>
+          <div id="help-switch-busy" class="row-sub help-note hidden"></div>
+        </div>
+        <!-- 仅 Web UI 启动方式适用：讲的是托盘自带 dsh web 的访问令牌与重新鉴权 -->
+        <div class="card help-card" data-only-web="hide">
           <div class="row-title" data-i18n="helpWebAuthTitle">Web UI 提示“需要重新鉴权”</div>
           <div class="row-sub" data-i18n="helpWebAuthSymp">打开 harness 网页端时浏览器显示：dsh web authentication required; reopen the URL printed by dsh web.</div>
           <div id="help-state" class="row-sub help-note hidden" data-i18n="helpStopped">后台服务未运行：启动服务后即可打开 Web UI 或复制访问链接。</div>

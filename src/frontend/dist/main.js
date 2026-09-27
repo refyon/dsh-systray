@@ -59,13 +59,14 @@ const I18N_EN = {
   btnSyncSend: "Send code",
   btnSyncLogin: "Sign in",
   syncScopeTitle: "What gets synced",
-  syncScopeSub: "Start-at-login, the selected Harness version (including the prerelease channel) and every online plugin. Directories, ports and local plugins are not synced.",
+  syncScopeSub: "Start-at-login, the selected Harness version (including the prerelease channel) and every online plugin (one record per environment — Web and Desktop are kept separately). Directories, ports and local plugins are not synced.",
   btnSyncNow: "Sync now",
   btnSyncLogout: "Sign out",
   syncRestartTitle: "Synced changes are waiting to take effect",
   syncRestartSub: "To avoid interrupting your work the changes are saved but not applied yet. Click the button to merge and apply them.",
   btnSyncApply: "Restart to apply",
   stAutoTitle: "Start at login", stAutoSub: "Start the background service and keep it in the tray after login",
+  stAutoSubDesktop: "Start the tray at login and keep it running; the Desktop UI does not start the background service",
   stLangTitle: "Interface language", stLangSub: "Tray menu and native dialogs switch with it; “Follow system” picks the OS language",
   langAuto: "Follow system (auto)",
   svcText: "Background service: starting…",
@@ -91,6 +92,7 @@ const I18N_EN = {
   btnOpenDir: "Open export folder",
   impTitle: "Import dsh-systray export bundle",
   impSub: "Pick a dsh-systray-export-*.zip to restore sessions, installed plugins or file folders.",
+  impDesktopNote: "The default launch method is the official Desktop app: restoring only writes files (no background service is started for boot verification), so plugin changes take effect after the Desktop app restarts.",
   btnAddZip: "Add archive…",
   btnCancelRestore: "Cancel restore",
   impBusyHint: "Restoring an import item — you can't add another archive until it finishes or is canceled.",
@@ -104,6 +106,13 @@ const I18N_EN = {
   rstSessionsSub: "Will clear 0 sessions", rstPluginsSub: "Will clear 0 plugins",
   btnStartReset: "Start reset",
   helpWebAuthTitle: "Web UI asks for authentication",
+  // 帮助页 · desktop 模式专用：桌面端异常时改用 Web UI
+  helpFallbackTitle: "When the Desktop UI doesn't work",
+  helpFallbackSymp: "If the official Desktop app won't open or can't run an AI session (engine errors, incompatible plugins, a frozen window…), you can switch to the tray-managed Web UI and keep working — both are interfaces on the same machine, and saved sessions and settings are not lost by switching.",
+  helpFallbackStep1: "Click “Switch to Web UI” below: the tray starts the background service and points the tray's “Open” at the web interface (the first start may download the runtime and take several minutes).",
+  helpFallbackStep2: "Once the service is ready, click “Open Web UI” in the tray menu, or come back to this page and click it here (this page shows that button after switching).",
+  helpFallbackStep3: "To go back to the Desktop app later, switch “Default launch method” back to Desktop UI on the General page (the background service stops again).",
+  btnSwitchToWeb: "Switch to Web UI",
   helpWebAuthSymp: "Opening the harness Web UI in the browser shows: dsh web authentication required; reopen the URL printed by dsh web.",
   helpWebAuthWhy: "Why: the background service issues a new access token each time it starts (by design), so addresses kept in bookmarks or history stop working; and the browser has no valid credential yet (first visit, cleared cookies, or older than 30 days).",
   helpWebAuthStep1: "Click “Open Web UI” below — it always uses the latest access link.",
@@ -114,6 +123,17 @@ const I18N_EN = {
   helpStopped: "The background service isn't running: start it to open the Web UI or copy the access link.",
   helpNoToken: "No access link with a token was found: the service wasn't started by this app (it was kept running after the last exit, or survived a reboot), and log rotation can drop that line. If this browser signed in before, just click “Open Web UI”; for another browser or a private window, click “Restart service” first to generate a new link.",
   helpRestarting: "Restarting the background service… “Copy access link” becomes available once it's ready (the current Web UI session drops briefly).",
+  // ---- 启动方式（Web UI / Desktop UI）----
+  stLaunchTitle: "Default launch method",
+  stLaunchSub: "Which interface the tray opens by default; it also decides which Harness engine the version, update and reset actions below apply to",
+  launchAuto: "Auto-detect (prefer Desktop)",
+  launchWeb: "Web UI (tray-managed service)",
+  launchDesktop: "Desktop UI (official Desktop app)",
+  dtTitle: "Official Desktop app",
+  dtPathTitle: "Install location",
+  btnOpenDesktop: "Open Desktop UI",
+  btnInstallDesktop: "Install Desktop app",
+  syncScopeDesktopNote: "The default launch method is the official Desktop app: the synced Harness version and prerelease channel only affect the tray-managed Web service, not the Desktop app (whose update channel is fixed to Nightly).",
 };
 const PAGE_I18N_KEY = { general: "navGeneral", sync: "navSync", about: "navAbout", logs: "navLogs", export: "navExport", import: "navImport", help: "navHelp" };
 
@@ -159,7 +179,7 @@ const I18N_DYN = {
   "正在查询可用版本…": "Querying available versions…",
   "正在更新插件…": "Updating plugin…",
   "已加入批量队列，等待执行…": "Queued — waiting for the batch to run…",
-  "已登记为待应用变更（重启服务后生效）": "Registered as a pending change (takes effect after the service restarts)",
+  "已登记为待应用变更（{0}）": "Registered as a pending change ({0})",
   "撤销": "Undo",
   "登记变更": "Register change",
   "登记插件更新？": "Register plugin update?",
@@ -187,10 +207,10 @@ const I18N_DYN = {
   "已修复 {0} 个会话（{1} 条记录），删除后不再影响历史会话":
     "Fixed {0} session(s) ({1} record(s)) — removal no longer affects past sessions",
   "{0} 项启用": "{0} enable(s)",
-  "已登记：更新到 {0}（重启服务后生效）": "Registered: update to {0} (takes effect after the service restarts)",
-  "已登记：删除该插件（重启服务后生效）": "Registered: remove this plugin (takes effect after the service restarts)",
+  "已登记：更新到 {0}（{1}）": "Registered: update to {0} ({1})",
+  "已登记：删除该插件（{0}）": "Registered: remove this plugin ({0})",
   "已登记：移除「待重指定」记录": "Registered: drop the pending-respec record",
-  "已登记：启用该插件（重启服务后生效）": "Registered: enable this plugin (takes effect after the service restarts)",
+  "已登记：启用该插件（{0}）": "Registered: enable this plugin ({0})",
   "（更新）": " (update)",
   "（删除）": " (remove)",
   "（启用）": " (enable)",
@@ -198,9 +218,10 @@ const I18N_DYN = {
   "更新到最新版本": "update to the latest version",
   "启用该插件": "enable this plugin",
   "重启服务后生效": "— takes effect after the service restarts",
+  "桌面端重启后生效": "— takes effect after the Desktop app restarts",
   "有 {0} 项变更尚未生效：{1}{2}": "{0} change(s) not applied yet: {1}{2}",
   "等 {0} 项": " and {0} in total",
-  "待应用：{0}（重启服务后生效）": "Pending: {0} (takes effect after the service restarts)",
+  "待应用：{0}（{1}）": "Pending: {0} ({1})",
   "正在删除插件…": "Removing plugin…",
   "无法更新：{0}": "Update failed: {0}",
   "更新失败：{0}": "Update failed: {0}",
@@ -270,6 +291,8 @@ const I18N_DYN = {
   "将下载并安装新版本并自动重启。确认开始更新吗？": "A new version will be downloaded, installed and the app restarted. Start now?",
   "更新 DeepSeek Harness？": "Update DeepSeek Harness?",
   "更新期间服务会短暂重启，失败会自动回退。确认开始更新吗？": "The service restarts briefly and failures auto-rollback. Start now?",
+  "更新官方桌面端？": "Update the official Desktop app?",
+  "将下载官方安装包（校验后）并启动安装向导；桌面端正在运行时需先退出它。确认开始吗？": "The official installer is downloaded (and verified) and its wizard is started; the Desktop app must be closed first if it is running. Continue?",
   "尝试启用": "Try enabling",
 
   // 数据同步（dsh-connect 账号）
@@ -309,6 +332,36 @@ const I18N_DYN = {
   "已退出登录": "Signed out",
   "{0} 秒后可重发": "Resend in {0}s",
   "同步功能尚未就绪": "Sync is not available in this build yet",
+  // ---- 启动方式（Web UI / Desktop UI）联动文案，见 applyLaunchMode ----
+  "打开 Web UI": "Open Web UI",
+  "打开 Desktop UI": "Open Desktop UI",
+  "更新 Harness": "Update Harness",
+  "更新桌面端": "Update Desktop app",
+  "官方桌面端内置引擎": "Bundled with the official Desktop app",
+  "运行中": "Running",
+  "未运行": "Not running",
+  "更新通道 {0}": "Update channel {0}",
+  "未检测到官方桌面端，Desktop UI 选项不可用。": "Official Desktop app not detected — the Desktop UI option is unavailable.",
+  "当前生效：Desktop UI。后台服务已停止；与 Web 服务相关的设置已隐藏，切回 Web UI 会重新启动服务。": "Currently in effect: Desktop UI. The background service is stopped and Web-service settings are hidden — switching back to Web UI starts it again.",
+  "当前生效：Web UI。": "Currently in effect: Web UI.",
+  "登录后自动启动托盘并常驻；Desktop UI 不启动后台服务": "Start the tray at login and keep it running; the Desktop UI does not start the background service",
+  "登录后自动启动后台服务并常驻托盘": "Start the background service and keep it in the tray after login",
+  "仅影响托盘自带的 Web 服务；当前默认启动方式为 Desktop UI。": "Only affects the tray-managed Web service; the default launch method is Desktop UI.",
+  // 启动方式切换确认（切换会启停后台服务）
+  "切换启动方式": "Switch launch method",
+  "确认切换": "Switch",
+  "切换到 Desktop UI 会停止后台服务，正在进行的网页端会话会中断。确认切换？": "Switching to Desktop UI stops the background service; any running Web UI session will be interrupted. Switch anyway?",
+  "切换到 Desktop UI 后，托盘「打开」将指向官方桌面端，后台服务保持停止。确认切换？": "After switching to Desktop UI the tray opens the official Desktop app and the background service stays stopped. Switch?",
+  "切换到 Web UI 后，托盘「打开」将指向网页端界面；后台服务已在运行。确认切换？": "After switching to Web UI the tray opens the Web interface; the background service is already running. Switch?",
+  "切换到 Web UI 会启动后台服务（首次可能需要下载运行环境，耗时数分钟）。确认切换？": "Switching to Web UI starts the background service (the first run may download the runtime and take several minutes). Switch?",
+  // 帮助页 · desktop 模式专用：桌面端异常时一键切换到 Web UI
+  "切换到 Web UI？": "Switch to Web UI?",
+  "将启动托盘自带的 Web 服务（首次启动可能需要下载运行环境，耗时数分钟），并把托盘「打开」改为指向 Web UI。确认切换？": "This starts the tray-managed Web service (the first start may download the runtime and take several minutes) and points the tray's “Open” at the Web UI. Switch?",
+  "切换": "Switch",
+  "正在切换到 Web UI 并启动后台服务…": "Switching to Web UI and starting the background service…",
+  // 补登此前遗漏的动态文案（英文界面原本会回退中文，check-frontend-i18n 一直告警）
+  "已取消恢复": "Restore cancelled",
+  "将撤销 {0} 项尚未生效的变更（更新/删除），已安装的插件不受影响。确认撤销吗？": "This will undo {0} pending change(s) (update/remove); installed plugins are unaffected. Continue?",
 };
 function tr(s) { return (curLangCode() === "en" && I18N_DYN[s]) || s; }
 function fmt(s) {
@@ -360,7 +413,10 @@ function applyStaticI18n() {
 
 // 动态区块统一重渲染（EN 生效后调用；各函数内部以 curLangCode() 决定语言）
 function rerenderDynamicText() {
-  [refreshService, renderPlugins, renderExportRows, renderImportRows, refreshSync].forEach((fn) => {
+  // applyLaunchMode 排在其后：它写入的是动态文案（「打开 Desktop UI」「更新桌面端」等），
+  // 必须在静态层用 ZH_SNAP/I18N_EN 覆盖过 DOM 之后再按当前启动方式重刷一次。
+  [refreshService, renderPlugins, renderExportRows, renderImportRows, refreshSync,
+    () => applyLaunchMode(state.cfg)].forEach((fn) => {
     if (typeof fn === "function") { try { fn(); } catch (e) { console.error("rerenderDynamicText", fn && fn.name, e); } }
   });
 }
@@ -450,6 +506,7 @@ async function refreshConfig() {
     applyStaticI18n(); // 语言生效后重刷静态文案（en 时覆盖默认中文 DOM）
     refreshPageTitle(); // 页标题不在 data-i18n 静态层里，需在此按已生效的语言重刷
     updatePortHint();
+    applyLaunchMode(state.cfg); // 启动方式联动（「打开」按钮、web 专有项显隐/禁用、桌面端卡片文案）
   } catch (e) { console.error("GetConfig", e); }
 }
 
@@ -468,6 +525,143 @@ function updatePortHint() {
   }
 }
 
+// ==================== 启动方式（Web UI / Desktop UI）联动 ====================
+//
+// 「启动方式」决定托盘「打开」默认指向哪个界面，也决定设置页显示哪个板块（Desktop 板块 /
+// Web 板块）以及托盘自带后台服务的启停：web = 本程序拉起的 dsh web；desktop = 官方桌面端
+// 内置引擎（后台服务不启动；切换为 desktop 时后端会停止服务）。
+// 后端见 desktop_app.go；解析结果在 GetConfig().launchResolved（auto 或桌面端缺失时已回退 web）。
+//
+// 声明式约定（index.html）：
+//   data-only-web="hide"    仅 Web UI 启动方式成立的条目 → desktop 模式下整块隐藏
+//   data-only-web="disable" 仅影响托盘自带 Web 服务的控件 → desktop 模式下禁用（保留可见值 + tooltip）
+//   data-only-desktop       仅在 desktop 启动方式下适用的板块 → 其它模式隐藏
+// 新增条目时优先用这套属性声明，而不是在 JS 里逐个写 id。
+
+/** resolveTargetFor 与后端 resolveLaunchTargetPref 同口径：auto 装了桌面端即 desktop，桌面端缺失回退 web。 */
+function resolveTargetFor(pref, installed) {
+  if (pref === "web") return "web";
+  if (pref === "desktop") return installed ? "desktop" : "web";
+  return installed ? "desktop" : "web";
+}
+
+/** pendingEffectText 待应用插件变更的生效时机：desktop 启动方式下托盘不重启后台服务，
+ *  改动在官方桌面端重新启动后生效（web 模式仍是重启后台服务）。 */
+function pendingEffectText() {
+  return (state.cfg && state.cfg.launchResolved === "desktop") ? tr("桌面端重启后生效") : tr("重启服务后生效");
+}
+
+/** applyLaunchMode 按解析出的启动方式调整设置页：板块显隐/禁用、按钮文案与动作、桌面端卡片。 */
+function applyLaunchMode(cfg) {
+  if (!cfg) return;
+  const desktop = cfg.launchResolved === "desktop";
+  document.querySelectorAll("[data-only-web]").forEach((el) => {
+    if (el.getAttribute("data-only-web") === "hide") {
+      el.classList.toggle("hidden", desktop);
+      return;
+    }
+    el.classList.toggle("row-disabled", desktop);
+    el.querySelectorAll("input, select, button, textarea").forEach((c) => {
+      c.disabled = desktop;
+      if (desktop) c.setAttribute("title", tr("仅影响托盘自带的 Web 服务；当前默认启动方式为 Desktop UI。"));
+      else c.removeAttribute("title");
+    });
+  });
+  document.querySelectorAll("[data-only-desktop]").forEach((el) => {
+    el.classList.toggle("hidden", !desktop);
+  });
+  // 当前页在本启动方式下已隐藏（如 desktop 模式的帮助页）：切回「常规」，不要停在空白页。
+  // showPage 与 data-only-* 的显隐互斥，因此页面 <section> 不加标记、只隐藏导航项（见 index.html）。
+  const activeNav = document.querySelector('.nav-item[data-page="' + (state.page || "general") + '"]');
+  if (activeNav && activeNav.classList.contains("hidden")) showPage("general");
+  // 「打开」按钮：desktop 下文案与动作都切到官方桌面端（动作分派在后端 OpenDefaultUI）
+  const owb = $("btn-open-webui");
+  if (owb) {
+    owb.textContent = desktop ? tr("打开 Desktop UI") : tr("打开 Web UI");
+    if (desktop) owb.disabled = !cfg.desktopInstalled;
+  }
+  // Harness 更新按钮：desktop 下更新的是官方桌面端（下载官方安装包 + 启动安装向导）
+  const hup = $("btn-harness-update");
+  if (hup) hup.textContent = desktop ? tr("更新桌面端") : tr("更新 Harness");
+  // 版本行副标题：desktop 下说明版本来自桌面端内置引擎（其它情况由静态层自动还原）
+  const hsub = $("harness-ver-sub");
+  if (hsub && desktop) hsub.textContent = tr("官方桌面端内置引擎");
+  // 开机自启动说明：desktop 形态下不启动后台服务，文案随之调整
+  const asub = $("autostart-sub");
+  if (asub) asub.textContent = desktop ? tr("登录后自动启动托盘并常驻；Desktop UI 不启动后台服务") : tr("登录后自动启动后台服务并常驻托盘");
+  // 「安装桌面端」入口：只在未检测到官方桌面端时显示（安装后由 refreshDesktopCard 收起）
+  const installBtn = $("btn-install-desktop");
+  if (installBtn) installBtn.classList.toggle("hidden", !!cfg.desktopInstalled);
+  syncLaunchSelect(cfg);
+  syncLaunchHint(cfg);
+}
+
+/** 启动方式下拉：显示用户偏好（auto 恒显示 auto），未安装桌面端时禁用 desktop 选项。 */
+function syncLaunchSelect(cfg) {
+  const sel = $("sel-launch");
+  if (!sel) return;
+  const opt = sel.querySelector('option[value="desktop"]');
+  if (opt) opt.disabled = !cfg.desktopInstalled;
+  sel.value = cfg.launchTarget || "auto";
+}
+
+/** 启动方式说明行：讲清「当前生效哪个」与服务启停；未检测到桌面端时给警示色。 */
+function syncLaunchHint(cfg) {
+  const el = $("launch-hint");
+  if (!el) return;
+  if (!cfg.desktopInstalled) {
+    el.textContent = tr("未检测到官方桌面端，Desktop UI 选项不可用。");
+    el.classList.add("warn");
+    return;
+  }
+  el.classList.remove("warn");
+  el.textContent = cfg.launchResolved === "desktop"
+    ? tr("当前生效：Desktop UI。后台服务已停止；与 Web 服务相关的设置已隐藏，切回 Web UI 会重新启动服务。")
+    : tr("当前生效：Web UI。");
+}
+
+/** 官方桌面端卡片：安装位置、版本、运行状态与「打开 Desktop UI」；未安装时整卡隐藏。 */
+async function refreshDesktopCard() {
+  const a = bindings();
+  if (!a || typeof a.GetDesktopApp !== "function") return;
+  const card = $("card-desktop");
+  if (!card) return;
+  try {
+    const d = await a.GetDesktopApp();
+    // 回填配置快照：说明行与下拉可用性都依赖安装状态（刚装/刚卸载时不必等下一次 GetConfig）
+    state.cfg = Object.assign({}, state.cfg, {
+      desktopInstalled: !!d.installed,
+      desktopVersion: d.version || "",
+      desktopPath: d.path || "",
+      desktopRunning: !!d.running,
+      desktopChannel: d.channel || "",
+      desktopFeedURL: d.feedURL || "",
+    });
+    card.classList.toggle("hidden", !state.cfg.desktopInstalled || state.cfg.launchResolved !== "desktop");
+    // 「安装桌面端」入口与安装状态互斥（刚装完/刚卸载即时反映，不必等下一次 GetConfig）
+    const installBtn = $("btn-install-desktop");
+    if (installBtn) installBtn.classList.toggle("hidden", !!state.cfg.desktopInstalled);
+    if (!state.cfg.desktopInstalled) {
+      syncLaunchHint(state.cfg);
+      syncLaunchSelect(state.cfg);
+      return;
+    }
+    const parts = [vtag(state.cfg.desktopVersion) || "—", state.cfg.desktopRunning ? tr("运行中") : tr("未运行")];
+    if (state.cfg.desktopChannel) parts.push(fmt("更新通道 {0}", state.cfg.desktopChannel));
+    $("dt-sub").textContent = parts.join(" · ");
+    $("dt-path").textContent = state.cfg.desktopPath || "—";
+    const open = $("btn-open-desktop");
+    if (open) open.disabled = false;
+    // desktop 启动方式下服务卡片里的「打开」按钮由桌面端安装状态决定可点性（与后台服务无关）
+    if (state.cfg.launchResolved === "desktop") {
+      const owb = $("btn-open-webui");
+      if (owb) owb.disabled = false;
+    }
+    syncLaunchHint(state.cfg);
+    syncLaunchSelect(state.cfg);
+  } catch (e) { console.error("GetDesktopApp", e); }
+}
+
 async function refreshService() {
   const a = bindings();
   if (!a) return;
@@ -484,10 +678,14 @@ async function refreshService() {
     $("svc-text").textContent = tr(labels[state.svc.state] || state.svc.state);
     // 服务状态由标题行（圆点 + 文案）表达；副标题只承载失败原因等必要反馈，不再堆说明文字
     $("svc-sub").textContent = state.svc.state === "failed" ? (state.svc.reason || tr("请查看日志")) : "";
-    // 「打开 Web UI」仅在服务运行时可点（运行端口以实际状态为准）
+    // 「打开」按钮：web 启动方式下要求服务运行；desktop 启动方式下与后台服务无关（由 applyLaunchMode
+    // 在桌面端卡片上单独控制可点性），故只在 web 路径下按服务状态禁用。
     const owb = $("btn-open-webui");
-    if (owb) owb.disabled = state.svc.state !== "running";
+    if (owb && (state.cfg && state.cfg.launchResolved) !== "desktop") {
+      owb.disabled = state.svc.state !== "running";
+    }
     updatePortHint();
+    refreshDesktopCard(); // 桌面端安装/运行状态（3 秒轮询随服务状态一起刷新，运行状态才跟手）
     refreshHelpState();
     // 兜底（仅截图模式）：若 splash:done 在页面就绪前已发出（快速就绪 + 慢 WebView），
     // 周期轮询发现服务 running 且 splash 未收起时自动切回设置页。
@@ -552,6 +750,37 @@ function wireGeneral() {
       refreshConfig(); // 读回生效偏好（auto 时下拉仍显示 auto）
     });
   }
+  // 默认启动方式：切换会启停后台服务（切 web 启动服务 / 切 desktop 停止服务），先弹确认，
+  // 确认后才写入并生效；取消则把下拉回退到当前偏好。
+  const selLaunch = $("sel-launch");
+  if (selLaunch) {
+    selLaunch.addEventListener("change", async (e) => {
+      const want = e.target.value;
+      const cfg = state.cfg || {};
+      const willDesktop = resolveTargetFor(want, !!cfg.desktopInstalled) === "desktop";
+      const svcRunning = !!(state.svc && state.svc.state === "running");
+      let msg;
+      if (willDesktop) {
+        msg = svcRunning
+          ? tr("切换到 Desktop UI 会停止后台服务，正在进行的网页端会话会中断。确认切换？")
+          : tr("切换到 Desktop UI 后，托盘「打开」将指向官方桌面端，后台服务保持停止。确认切换？");
+      } else {
+        msg = svcRunning
+          ? tr("切换到 Web UI 后，托盘「打开」将指向网页端界面；后台服务已在运行。确认切换？")
+          : tr("切换到 Web UI 会启动后台服务（首次可能需要下载运行环境，耗时数分钟）。确认切换？");
+      }
+      const ok = await confirmDialog(tr("切换启动方式"), msg, tr("确认切换"));
+      if (!ok) {
+        syncLaunchSelect(cfg); // 取消：下拉显示回当前偏好
+        return;
+      }
+      try {
+        await bindings().SetLaunchTarget(want);
+      } catch (err) { console.error("SetLaunchTarget", err); }
+      refreshConfig();
+      refreshService();
+    });
+  }
   $("sw-autostart").addEventListener("click", async () => {
     const on = $("sw-autostart").getAttribute("aria-checked") !== "true";
     await bindings().SetAutostart(on);
@@ -586,8 +815,37 @@ function wireGeneral() {
     if (!ok) $("svc-sub").textContent = tr("重启失败，请查看日志");
     setTimeout(() => { $("btn-restart").disabled = false; refreshService(); }, 2000);
   });
-  // 打开 Web UI：基于服务实际运行端口（修改端口未重启的窗口期也指向真实地址）
-  $("btn-open-webui").addEventListener("click", () => bindings().OpenWebUI());
+  // 「安装桌面端」：下载官方安装包并启动安装向导（进度走 splash，可取消）
+  const btnInstallDesktop = $("btn-install-desktop");
+  if (btnInstallDesktop) {
+    btnInstallDesktop.addEventListener("click", async () => {
+      btnInstallDesktop.disabled = true;
+      try {
+        await bindings().InstallDesktopApp();
+      } catch (e) {
+        console.error("InstallDesktopApp", e);
+      } finally {
+        setTimeout(() => { btnInstallDesktop.disabled = false; refreshDesktopCard(); }, 1500);
+      }
+    });
+  }
+  // 「打开」按钮：按当前启动方式打开（desktop → 官方桌面端；web → 带最新 token 的 Web UI）。
+  // 由后端 OpenDefaultUI 统一分派，前端只负责文案（见 applyLaunchMode）。
+  $("btn-open-webui").addEventListener("click", () => bindings().OpenDefaultUI());
+  // 桌面端卡片：打开 / 拉起官方桌面端
+  const btnOpenDesktop = $("btn-open-desktop");
+  if (btnOpenDesktop) {
+    btnOpenDesktop.addEventListener("click", async () => {
+      btnOpenDesktop.disabled = true;
+      try {
+        await bindings().LaunchDesktopApp();
+      } catch (e) {
+        console.error("LaunchDesktopApp", e);
+      } finally {
+        setTimeout(() => { btnOpenDesktop.disabled = false; refreshDesktopCard(); }, 1200);
+      }
+    });
+  }
   // 重置：打开勾选弹层（harness 必选；会话/插件按需勾选，展示将清除的数量；
   // 目标版本下拉异步填充——仅早于当前运行版本的官方版本）
   $("btn-reset-harness").addEventListener("click", async () => {
@@ -813,11 +1071,15 @@ function wireAbout() {
     bindings().StartUpdate();
     showSplash("update", tr("正在准备更新…"));
   });
-  // Harness 更新：确认后执行（进度走 splash，失败自动回退）
+  // Harness 更新：确认后执行（进度走 splash，失败自动回退）。
+  // desktop 启动方式下更新的是官方桌面端（下载官方安装包 + 启动安装向导），措辞与后果都不同。
   $("btn-harness-update").addEventListener("click", async () => {
+    const desktop = !!(state.cfg && state.cfg.launchResolved === "desktop");
     const ok = await confirmDialog(
-      "更新 DeepSeek Harness？",
-      "更新期间服务会短暂重启，失败会自动回退。确认开始更新吗？",
+      desktop ? "更新官方桌面端？" : "更新 DeepSeek Harness？",
+      desktop
+        ? "将下载官方安装包（校验后）并启动安装向导；桌面端正在运行时需先退出它。确认开始吗？"
+        : "更新期间服务会短暂重启，失败会自动回退。确认开始更新吗？",
       "开始更新"
     );
     if (!ok) return;
@@ -928,7 +1190,7 @@ function renderPendingBanner() {
   if (updates) parts.push(fmt("{0} 项更新", updates));
   if (removes) parts.push(fmt("{0} 项删除", removes));
   if (enables) parts.push(fmt("{0} 项启用", enables));
-  let line = fmt("有 {0} 项变更尚未生效（{1}）", items.length, parts.join(" · ")) + " " + tr("重启服务后生效");
+  let line = fmt("有 {0} 项变更尚未生效（{1}）", items.length, parts.join(" · ")) + " " + pendingEffectText();
   // 删除类变更若检测到会话数据风险，横幅只报数量（逐条警示与「修复会话」在下方插件行内）
   const risky = items.filter((p) => p.op === "remove" && p.risk && p.risk.sessions > 0).length;
   if (risky) line += " " + fmt("（{0} 项删除会导致历史会话无法打开，可在行内先「修复会话」）", risky);
@@ -1094,9 +1356,9 @@ function renderPluginRow(p, idx) {
       setNote(item, fmt("删除后 {0} 个历史会话将无法打开（该插件写入了 {1} 条自定义记录），可点「修复会话」后删除",
         risk.sessions, risk.events), "warn");
     } else {
-      setNote(item, fmt("待应用：{0}（重启服务后生效）",
+      setNote(item, fmt("待应用：{0}（{1}）",
         p.pendingOp === "remove" ? tr("删除该插件")
-          : (p.pendingOp === "enable" ? tr("启用该插件") : tr("更新到最新版本"))), "muted");
+          : (p.pendingOp === "enable" ? tr("启用该插件") : tr("更新到最新版本")), pendingEffectText()), "muted");
     }
   } else if (p.disabled && !(st && st.note)) {
     // 禁用行默认原因行（无动态检查状态时显示）
@@ -1169,7 +1431,7 @@ function doPluginUpdate(p, item, upBtn) {
   const ver = (state.plugState[p.name] || {}).upLatest || "";
   // 只登记、不执行：变更进入待应用区（多项合并为一次服务重启），由关闭设置窗口时确认或
   // 关于页「立即应用」统一执行。行状态由 Go 端 plugins:changed 重渲染（含「撤销」按钮）。
-  setNote(item, ver ? fmt("已登记：更新到 {0}（重启服务后生效）", vtag(ver)) : tr("已登记为待应用变更（重启服务后生效）"), "muted");
+  setNote(item, ver ? fmt("已登记：更新到 {0}（{1}）", vtag(ver), pendingEffectText()) : fmt("已登记为待应用变更（{0}）", pendingEffectText()), "muted");
   bindings().StartPluginUpdate(p.name);
 }
 
@@ -1179,7 +1441,7 @@ function doPluginUpdate(p, item, upBtn) {
  */
 function doPluginEnable(p, item, enBtn) {
   item.querySelectorAll("button").forEach((b) => { b.disabled = true; });
-  setNote(item, tr("已登记：启用该插件（重启服务后生效）"), "muted");
+  setNote(item, fmt("已登记：启用该插件（{0}）", pendingEffectText()), "muted");
   bindings().EnablePlugin(p.id); // 结果由 Go 端 plugin:op:done / plugins:changed 刷新行状态
 }
 
@@ -1226,7 +1488,7 @@ async function doLocalPluginUpdate(p, item, upBtn) {
  */
 function doPluginRemove(p, item, delBtn) {
   item.querySelectorAll("button").forEach((b) => { b.disabled = true; });
-  const label = p.pendingLocal ? tr("已登记：移除「待重指定」记录") : tr("已登记：删除该插件（重启服务后生效）");
+  const label = p.pendingLocal ? tr("已登记：移除「待重指定」记录") : fmt("已登记：删除该插件（{0}）", pendingEffectText());
   setNote(item, label, "muted");
   bindings().RemovePlugin(p.id); // 结果由 Go 端 plugins:changed / plugin:op:done 刷新行状态
 }
@@ -1876,6 +2138,32 @@ function wireHelp() {
       delete copyBtn.dataset.orig;
     }, 1600);
   });
+  // 帮助页（desktop 模式专有）：一键切换到 Web UI——与「常规」页下拉同一条路径（写入偏好 +
+  // 启动后台服务 + 托盘「打开」改为指向网页端），先确认再执行；切换成功后本卡片随启动方式
+  // 变为 web 而隐藏，页面自动显示 Web 侧帮助。
+  const switchWebBtn = $("btn-help-switch-web");
+  if (switchWebBtn) {
+    switchWebBtn.addEventListener("click", async () => {
+      if (switchWebBtn.disabled) return;
+      const ok = await confirmDialog(tr("切换到 Web UI？"),
+        tr("将启动托盘自带的 Web 服务（首次启动可能需要下载运行环境，耗时数分钟），并把托盘「打开」改为指向 Web UI。确认切换？"),
+        tr("切换"));
+      if (!ok) return;
+      switchWebBtn.disabled = true;
+      const busy = $("help-switch-busy");
+      if (busy) {
+        busy.textContent = tr("正在切换到 Web UI 并启动后台服务…");
+        busy.classList.remove("hidden");
+      }
+      try { await bindings().SetLaunchTarget("web"); } catch (e) { console.error("SetLaunchTarget", e); }
+      refreshConfig();
+      refreshService();
+      setTimeout(() => {
+        switchWebBtn.disabled = false;
+        if (busy) { busy.textContent = ""; busy.classList.add("hidden"); }
+      }, 3000);
+    });
+  }
   // 重启后台服务：服务由本程序重新拉起后会被定点捕获新令牌（300ms 轮询），
   // 故完成后补几次状态刷新，让「复制访问链接」尽快恢复可用。
   const restartBtn = $("btn-help-restart");

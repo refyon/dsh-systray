@@ -956,6 +956,26 @@ input { font-family: inherit; }
   border-left: 3px solid var(--warn);
 }
 
+/* ---------- 启动方式（Web UI / Desktop UI，见 main.js applyLaunchMode） ---------- */
+/* 说明行：默认中性色（仅陈述当前生效路径），未检测到桌面端时加 .warn 变警示色 */
+.row-note {
+  font-size: var(--fs-xs);
+  line-height: 1.5;
+  color: var(--muted);
+  margin-top: var(--sp-2);
+}
+.launch-hint.warn {
+  color: var(--warn);
+  background: rgba(245, 158, 11, 0.08);
+  border: 1px solid rgba(245, 158, 11, 0.35);
+  border-radius: var(--radius-sm);
+  padding: var(--sp-2) var(--sp-3);
+}
+.launch-hint.hidden { display: none; }
+/* desktop 启动方式下「仅影响托盘自带 Web 服务」的条目：保留可见（值仍有意义）但不可编辑 */
+.card-row.row-disabled { opacity: 0.55; }
+.card-row.row-disabled .row-title { font-weight: 500; }
+
 /* ---------- Reduced motion ---------- */
 @media (prefers-reduced-motion: reduce) {
   * { transition: none !important; animation: none !important; }

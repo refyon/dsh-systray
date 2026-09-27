@@ -171,7 +171,7 @@ func accountSnapshot() AccountStatusInfo {
 
 func accountStatusLocked() AccountStatusInfo {
 	now := time.Now()
-	return AccountStatusInfo{
+	st := AccountStatusInfo{
 		LoggedIn:     accountCur.loggedIn(now),
 		Email:        accountCur.Email,
 		DeviceID:     accountCur.DeviceID,
@@ -193,7 +193,27 @@ func accountStatusLocked() AccountStatusInfo {
 		StartupChecked: accountStartupChecked,
 		APIBase:        accountAPIBase(),
 	}
+	// 截图/演示模式脱敏：本机处于登录态时设置页会原样显示真实邮箱与同步活动时间
+	// （见 docs/index.html 的截图轮播），这里统一换成演示值——与 sanitizeShotPath 等同一思路。
+	if shotMode {
+		st.DeviceID = "" // 设备标识不对外展示，截图里也不带出去
+		st.SyncError = ""
+		st.ApplyError = ""
+		if st.LoggedIn {
+			st.Email = shotAccountEmail
+			st.LastSyncedAt = shotAccountSyncedAt
+		} else {
+			st.Email = ""
+		}
+	}
+	return st
 }
+
+// shotAccountEmail 截图/演示模式下展示的演示账号（真实邮箱绝不进截图物料）。
+const shotAccountEmail = "demo@example.com"
+
+// shotAccountSyncedAt 截图/演示模式的「最后同步」时间：固定值，不暴露真实活动时间。
+var shotAccountSyncedAt = time.Date(2026, 1, 1, 9, 30, 0, 0, time.Local).Unix()
 
 // accountMarkStartupChecked 标记「本会话已做过启动同步检查」（手动同步成功同样算已检查）。
 func accountMarkStartupChecked() {

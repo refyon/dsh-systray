@@ -170,3 +170,120 @@ func TestExportSkipsMissingPlugins(t *testing.T) {
 		t.Fatalf("should report nothing-to-export, got: %v", err)
 	}
 }
+
+// TestAskStopServerForQuitSkipsPromptInDesktopMode desktop 启动方式下退出托盘不询问「是否保留
+// 后台服务」：直接按「停止并退出」处理（服务不在运行，问了也没有可保留的对象）。
+func TestAskStopServerForQuitSkipsPromptInDesktopMode(t *testing.T) {
+	stubDesktopPref(t, launchTargetDesktop)
+	if got := askStopServerForQuit(); got != 0 {
+		t.Fatalf("desktop 模式退出不应询问：应得 0（停止并退出），实际 %d", got)
+	}
+}
+
+// stubDesktopPref 固定启动方式解析 + 指向未监听的端口（不触碰真实桌面端检测与真实服务）。
+func stubDesktopPref(t *testing.T, pref string) {
+	t.Helper()
+	stubDesktopInstalled(t, true)
+	oldPref, oldPort, oldURL, oldStarted := launchTargetPref, port, webURL, serverStartedPort
+	oldReady := serverReady.Load()
+	launchTargetPref = pref
+	port, webURL, serverStartedPort = 9, "http://127.0.0.1:9/", 0
+	t.Cleanup(func() {
+		launchTargetPref, port, webURL, serverStartedPort = oldPref, oldPort, oldURL, oldStarted
+		serverReady.Store(oldReady)
+	})
+}
+
+// TestFinishPluginImportDesktopSkipsServiceVerify desktop 启动方式下导入收尾只清事务快照、
+// 不拉起后台服务（其加载由官方桌面端负责），并如实说明「改动在桌面端重启后生效」。
+func TestFinishPluginImportDesktopSkipsServiceVerify(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("DSH_HOME", home)
+	stubDesktopPref(t, launchTargetDesktop)
+
+	dir := filepath.Join(home, "profiles", "web")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "package.json"), []byte(`{"dependencies":{}}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// 事务快照残骸：收尾必须清理（否则下次启动仍被当作未完成事务）
+	if err := os.WriteFile(filepath.Join(dir, "package.json"+importBakSuffix), []byte(`{}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	note, err := finishPluginImport([]string{dir}, []bool{false})
+	if err != nil {
+		t.Fatalf("desktop 模式导入收尾不应失败: %v", err)
+	}
+	if !strings.Contains(note, "Desktop UI") {
+		t.Fatalf("成功说明应点明跳过启动校验，实际 %q", note)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "package.json"+importBakSuffix)); !os.IsNotExist(err) {
+		t.Fatal("导入事务快照应已清理")
+	}
+	if serverCmd != nil {
+		t.Fatal("desktop 模式不应拉起后台服务进程")
+	}
+}
+
+// TestResumeServiceAfterRestoreStaysStoppedInDesktopMode 恢复完成后 desktop 模式不拉起后台服务：
+// 状态落到「已停止」（serverReady=true）而不是被拉起的服务覆盖。
+func TestResumeServiceAfterRestoreStaysStoppedInDesktopMode(t *testing.T) {
+	stubDesktopPref(t, launchTargetDesktop)
+	serverReady.Store(false)
+
+	resumeServiceAfterRestore()
+
+	if serverCmd != nil {
+		t.Fatal("desktop 模式不应拉起后台服务")
+	}
+	if !serverReady.Load() {
+		t.Fatal("恢复完成后服务应显示「已停止」")
+	}
+}
+
+// TestRecoverProfileTransactionsIdempotent 事务自愈重复执行不会把刚还原的 node_modules 删掉：
+// 快照还原是「删活体 + 改名回填」的非幂等操作，而多条启动路径都会调用它（见 profileRecoveryMu）。
+func TestRecoverProfileTransactionsIdempotent(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("DSH_HOME", home)
+	dir := filepath.Join(home, "profiles", "web")
+	if err := os.MkdirAll(filepath.Join(dir, "node_modules", "pkg-live"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "node_modules", "pkg-live", "index.js"), []byte("live"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// 快照 = 操作前状态：node_modules 改名暂存 + 声明文件备份
+	if err := os.Rename(filepath.Join(dir, "node_modules"), filepath.Join(dir, "node_modules"+pluginSnapSuffix)); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "package.json"), []byte(`{"half":true}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "package.json"+pluginSnapSuffix), []byte(`{"snapshot":true}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(dir, "node_modules", "pkg-half"), 0o755); err != nil {
+		t.Fatal(err) // 快照之后又改过的半装活体树
+	}
+
+	recoverProfileTransactions(nil)
+	recoverProfileTransactions(nil) // 重复执行：第二条启动路径也会调用
+
+	if _, err := os.Stat(filepath.Join(dir, "node_modules", "pkg-half")); !os.IsNotExist(err) {
+		t.Fatal("半装活体树应被快照还原替换掉")
+	}
+	if _, err := os.Stat(filepath.Join(dir, "node_modules", "pkg-live", "index.js")); err != nil {
+		t.Fatalf("快照内容应已还原：%v", err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "node_modules"+pluginSnapSuffix)); !os.IsNotExist(err) {
+		t.Fatal("快照残骸应已清理")
+	}
+	data, err := os.ReadFile(filepath.Join(dir, "package.json"))
+	if err != nil || !strings.Contains(string(data), "snapshot") {
+		t.Fatalf("声明文件应还原为快照内容：%v (%s)", err, data)
+	}
+}

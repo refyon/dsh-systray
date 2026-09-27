@@ -291,3 +291,41 @@ func TestAccountAPIBasePrecedence(t *testing.T) {
 		t.Fatalf("客户端未采用覆盖地址: %s", c.base)
 	}
 }
+
+// TestAccountStatusShotModeDesensitized 截图/演示模式下不暴露真实账号：邮箱换成演示地址、
+// 同步时间固定、设备标识与错误信息清空（截图物料会进 docs/index.html 的界面轮播）。
+func TestAccountStatusShotModeDesensitized(t *testing.T) {
+	setupAccountTest(t)
+	oldShot := shotMode
+	t.Cleanup(func() { shotMode = oldShot })
+
+	st := loggedInState()
+	st.LastSyncedAt = 1750000100
+	setAccountState(st)
+
+	shotMode = false
+	if got := accountSnapshot().Email; got != "user@example.com" {
+		t.Fatalf("非截图模式应原样返回邮箱: %q", got)
+	}
+
+	shotMode = true
+	got := accountSnapshot()
+	if got.Email != shotAccountEmail {
+		t.Fatalf("截图模式邮箱应脱敏为演示地址: %q", got.Email)
+	}
+	if got.DeviceID != "" {
+		t.Fatalf("截图模式不应带设备标识: %q", got.DeviceID)
+	}
+	if got.LastSyncedAt != shotAccountSyncedAt {
+		t.Fatalf("截图模式同步时间应固定: %d", got.LastSyncedAt)
+	}
+	if !got.LoggedIn {
+		t.Fatal("截图模式仍应展示已登录状态（用演示账号）")
+	}
+
+	// 未登录（登出后）不放演示邮箱：截图应回到登录表单
+	setAccountState(accountState{})
+	if got := accountSnapshot().Email; got != "" {
+		t.Fatalf("未登录时不应显示演示邮箱: %q", got)
+	}
+}

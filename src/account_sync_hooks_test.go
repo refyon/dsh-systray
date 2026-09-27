@@ -138,6 +138,75 @@ func TestReportPluginUpdateFallsBackToTargetVersion(t *testing.T) {
 	}
 }
 
+// TestReportPluginBatchChangesUsesProfileKeys 批处理上报按插件所在环境逐个登记：
+// 同名插件在 web 与 desktop 各有一条独立记录，跨环境插件两条都登记。
+func TestReportPluginBatchChangesUsesProfileKeys(t *testing.T) {
+	setupAccountTest(t)
+	setAccountAPIBase("http://127.0.0.1:1") // 上报触发点指向死地址：只验证登记，不触网
+	setAccountState(loggedInState())
+
+	reportPluginBatchChanges([]*pluginOpTask{
+		{op: "remove", name: "pkg-web", ok: true, row: PluginRow{Name: "pkg-web", Spec: "^1.0.0", Source: "npm", Profile: "web"}},
+		{op: "remove", name: "pkg-desk", ok: true, row: PluginRow{Name: "pkg-desk", Spec: "^1.0.0", Source: "npm", Profile: "desktop"}},
+		{op: "update", name: "pkg-both", ok: true, row: PluginRow{Name: "pkg-both", Spec: "^2.0.0", Source: "npm", Profile: "web、desktop"}, newVer: "2.0.1"},
+	})
+
+	if n := accountPendingCount(); n != 4 {
+		t.Fatalf("应登记 4 条（web 1 + desktop 1 + 跨环境 2），实际 %d：%+v", n, accountCur.PendingOps)
+	}
+	for _, key := range []string{
+		accountPluginKeyFor("web", "pkg-web"),
+		accountPluginKeyFor("desktop", "pkg-desk"),
+		accountPluginKeyFor("web", "pkg-both"),
+		accountPluginKeyFor("desktop", "pkg-both"),
+	} {
+		if _, ok := pendingByKey(t, key); !ok {
+			t.Fatalf("缺少记录 %s（实际 %+v）", key, accountCur.PendingOps)
+		}
+	}
+}
+
+// TestReconcileLocalPluginsReportsDesktopProfile 桌面端环境（profiles/desktop）的插件同样补报，
+// 键为 plugin:desktop:<name>，不会覆盖 web 环境的同名插件。
+func TestReconcileLocalPluginsReportsDesktopProfile(t *testing.T) {
+	n := runPluginReconcile(t, nil,
+		accountLocalPlugin{Profile: "web", Name: "pkg-a", Spec: "^1.0.0", Source: "npm", Version: "1.0.0"},
+		accountLocalPlugin{Profile: "desktop", Name: "pkg-a", Spec: "^1.0.0", Source: "npm", Version: "1.0.0"},
+	)
+	if n != 2 {
+		t.Fatalf("两个环境各应补报 1 条，实际 %d", n)
+	}
+	if _, ok := pendingByKey(t, accountPluginKeyFor("desktop", "pkg-a")); !ok {
+		t.Fatalf("缺少 desktop 环境的补报（实际 %+v）", accountCur.PendingOps)
+	}
+	if _, ok := pendingByKey(t, accountPluginKeyFor("web", "pkg-a")); !ok {
+		t.Fatalf("缺少 web 环境的补报（实际 %+v）", accountCur.PendingOps)
+	}
+}
+
+// TestCollectBaselineOpsPerProfile 首次同步的基线按环境展开：同一插件装在两个环境时两条记录，
+// 只装在一个环境时只报该环境的键。
+func TestCollectBaselineOpsPerProfile(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("DSH_HOME", home)
+	writeTestProfile(t, home, "web", map[string]string{"pkg-a": "^1.0.0"}, map[string]string{"pkg-a": "1.0.0"})
+	writeTestProfile(t, home, "desktop", map[string]string{"pkg-a": "^1.0.0", "pkg-b": "^2.0.0"},
+		map[string]string{"pkg-a": "1.0.0", "pkg-b": "2.0.0"})
+
+	keys := map[string]bool{}
+	for _, op := range collectBaselineOps() {
+		keys[op.Key] = true
+	}
+	for _, want := range []string{"plugin:web:pkg-a", "plugin:desktop:pkg-a", "plugin:desktop:pkg-b"} {
+		if !keys[want] {
+			t.Fatalf("基线缺少键 %s（实际 %v）", want, keys)
+		}
+	}
+	if keys["plugin:web:pkg-b"] {
+		t.Fatalf("pkg-b 只装在 desktop 环境，不应出现 web 键（实际 %v）", keys)
+	}
+}
+
 // ---------- Harness 版本埋点 ----------
 
 func TestReportHarnessVersionIfChanged(t *testing.T) {
@@ -261,12 +330,16 @@ func TestReportSettingHooks(t *testing.T) {
 // ---------- 本地插件对账补报 ----------
 
 // stubLocalPlugins 替换本机插件快照（不触碰真实 dshHome），测试结束还原。
+// 未指定 Profile 的用例按默认（web）profile 归属，键与 accountLocalPluginsSnapshot 一致。
 func stubLocalPlugins(t *testing.T, plugins ...accountLocalPlugin) {
 	t.Helper()
 	old := accountLocalPluginsSnapshotFn
 	m := map[string]accountLocalPlugin{}
 	for _, p := range plugins {
-		m[p.Name] = p
+		if p.Profile == "" {
+			p.Profile = accountPluginProfile
+		}
+		m[accountPluginKeyFor(p.Profile, p.Name)] = p
 	}
 	accountLocalPluginsSnapshotFn = func() map[string]accountLocalPlugin { return m }
 	t.Cleanup(func() { accountLocalPluginsSnapshotFn = old })
