@@ -23,6 +23,10 @@ Thumbs.db
 # 图标/网站预览物料（不提交）
 docs/preview*.png
 
+# 截图渲染中间产物（可随时重生成：node scripts/render_shots.mjs）
+docs/.shots-tmp/
+docs/.shots-parts/
+
 # Wails 构建产物（src/build/bin）与自动生成的绑定（src/frontend/wailsjs）
 src/build/bin/
 src/frontend/wailsjs/

@@ -412,7 +412,8 @@ footer .sep{margin:0 8px;color:var(--border)}
 
   // ==================== 界面截图轮播 ====================
   // 图片按需加载；EN 页优先使用 docs/shots-en/（英文 UI 截图），文件缺失时回退中文截图。
-  // 末尾两张为「GitHub 授权确认」弹窗（私有仓库插件），由 scripts/capture_github_dialog.ps1 生成。
+  // 末尾一张为「GitHub 授权确认」弹窗（私有仓库插件）——与其余截图一样由
+  // scripts/render_shots.mjs 按固定视口渲染（弹窗内容与 App 内一致，仓库名/插件名均为演示值）。
   var shots = [
     { en: 'shots-en/general.webp',     zh: 'shots/general.webp' },
     { en: 'shots-en/about-top.webp',   zh: 'shots/about-top.webp' },

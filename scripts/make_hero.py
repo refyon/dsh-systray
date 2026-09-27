@@ -1,25 +1,39 @@
 #!/usr/bin/env python3
-"""合成 README 主图（docs/screenshot-hero.png）：
-- 背景：设置页「常规」真实截图（docs/shots/general.webp）
-- 前景：正在更新 DeepSeek Harness 依赖的下载中窗口（合成绘制）
+"""合成 README 主图（docs/screenshot-hero.png，再由 convert_webp.py 转 webp）：
+- 背景：设置页「常规」真实渲染截图（docs/shots/general.webp）
+- 前景：真实渲染的启动进度卡片（docs/.shots-parts/splash-card.png，由 render_shots.mjs 产出）
 - 两个窗口四边带柔和阴影
-用法: python scripts/make_hero.py
-"""
-import os
 
-from PIL import Image, ImageDraw, ImageFilter, ImageFont
+前景卡片来自渲染器而不是这里手绘：文案、字号、进度条尺寸都跟 App 里一模一样，
+以后界面改了只重跑渲染即可，不必在这里同步改绘制代码。
+
+用法:
+  node scripts/render_shots.mjs          # 先出 shots + .shots-parts/splash-card.png
+  python scripts/make_hero.py            # 再合成主图
+  python scripts/convert_webp.py         # 最后转 webp
+"""
+import argparse
+import os
+import sys
+
+from PIL import Image, ImageDraw, ImageFilter
 
 root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 docs = os.path.join(root, "docs")
-general = os.path.join(docs, "shots", "general.webp")
-out = os.path.join(docs, "screenshot-hero.png")
 
-FONT = r"C:\Windows\Fonts\msyh.ttc"
-FONT_BOLD = r"C:\Windows\Fonts\msyhbd.ttc"
+W = 780          # 底图窗口宽度
+RADIUS = 14      # 与 style.css 的 --radius 一致（卡片圆角）
+CARD_RADIUS = 14 # 启动卡圆角同上
 
+ap = argparse.ArgumentParser(description="合成 README 主图")
+ap.add_argument("--lang", choices=["zh", "en"], default="zh", help="主图语言（决定进度卡文案）")
+a = ap.parse_args()
 
-def font(path, size):
-    return ImageFont.truetype(path, size)
+shots_dir = os.path.join(docs, "shots-en" if a.lang == "en" else "shots")
+general = os.path.join(shots_dir, "general.webp")
+general_png = os.path.join(shots_dir, "general.png")
+splash = os.path.join(docs, ".shots-parts", "splash-card-en.png" if a.lang == "en" else "splash-card.png")
+out = os.path.join(docs, "screenshot-hero-en.png" if a.lang == "en" else "screenshot-hero.png")
 
 
 def window_shadow(img, blur, alpha):
@@ -46,53 +60,49 @@ def rounded(img, radius):
     return out
 
 
+def load_splash_card():
+    """前景卡片：渲染器出的是不透明 PNG（浏览器截图不留 alpha），这里补回圆角。"""
+    if not os.path.isfile(splash):
+        sys.exit(f"缺少 {splash}——请先运行 node scripts/render_shots.mjs")
+    card = Image.open(splash).convert("RGBA")
+    return rounded(card, CARD_RADIUS)
+
+
 def main():
+    src = general if os.path.isfile(general) else general_png
+    if not os.path.isfile(src):
+        sys.exit(f"缺少 {src}——请先运行 node scripts/render_shots.mjs + python scripts/convert_webp.py")
+
     # ---------- 底图：常规页真实截图 ----------
-    base = Image.open(general).convert("RGBA")
-    # 缩放到目标宽度
-    W = 780
+    base = Image.open(src).convert("RGBA")
     H = round(base.height * W / base.width)
     base = base.resize((W, H), Image.LANCZOS)
-    base = rounded(base, 18)  # 常规页窗口圆角
+    base = rounded(base, RADIUS)
+
+    # ---------- 前景：真实启动进度卡片 ----------
+    fg = load_splash_card()
 
     # ---------- 画布 ----------
     pad = 70
-    canvas_w = W + pad * 2 + 60  # 右侧为前景窗口留空间
+    canvas_w = W + pad * 2 + 60              # 右侧为前景窗口留空间
     canvas_h = H + pad * 2 + 30
     canvas = Image.new("RGBA", (canvas_w, canvas_h), (238, 242, 248, 255))
 
-    # ---------- 背景窗口：常规页（四边浅阴影，圆角对齐） ----------
+    # 背景窗口（四边浅阴影）
     bg_shadow, spad = window_shadow(base, 12, 20)
     canvas.alpha_composite(bg_shadow, (pad - spad, pad - spad))
     canvas.alpha_composite(base, (pad, pad))
 
-    # ---------- 前景窗口：与真实 APP「安装/更新 harness」splash 视图一致的进度特写 ----------
-    # 真实结构：白卡 + 标题「DeepSeek Harness」+ 状态「正在安装 DeepSeek Harness 依赖…」+ 进度条
-    fw, fh = 400, 124
-    fx, fy = canvas_w - fw - pad + 10, pad + H - fh + 60
-    fg = Image.new("RGBA", (fw, fh), (0, 0, 0, 0))
-    fd = ImageDraw.Draw(fg)
-    fd.rounded_rectangle([0, 0, fw - 1, fh - 1], radius=14, fill=(255, 255, 255, 255))
-    fd.rounded_rectangle([0, 0, fw - 1, fh - 1], radius=14, outline=(226, 232, 240, 255), width=1)
+    # 前景卡片：压在右下角，与底图窗口有重叠，暗示「启动进度窗口浮在设置页之上」
+    fx = canvas_w - fg.width - pad + 30
+    fy = pad + H - fg.height + 48
     fg_shadow, fspad = window_shadow(fg, 10, 26)
     canvas.alpha_composite(fg_shadow, (fx - fspad, fy - fspad))
-
-    # 标题（居中，同 splash-card：bold）
-    fd.text((fw // 2, 30), "DeepSeek Harness", font=font(FONT_BOLD, 14), fill=(15, 23, 42, 255), anchor="mm")
-    # 状态文本（同真实安装文案，居中、灰）
-    fd.text((fw // 2, 58), "正在安装 DeepSeek Harness 依赖…",
-            font=font(FONT, 13), fill=(100, 116, 139, 255), anchor="mm")
-    # 进度条（轨道 + 品牌蓝填充，居中）
-    track_x, track_y, track_w, track_h = (fw - 260) // 2, 88, 260, 7
-    fd.rounded_rectangle([track_x, track_y, track_x + track_w, track_y + track_h], radius=4, fill=(241, 245, 249, 255))
-    fill_w = int(track_w * 0.68)
-    fd.rounded_rectangle([track_x, track_y, track_x + fill_w, track_y + track_h], radius=4, fill=(37, 99, 235, 255))
-
     canvas.alpha_composite(fg, (fx, fy))
 
     # ---------- 输出 ----------
     canvas.convert("RGB").save(out, "PNG")
-    print(f"saved {out} ({canvas.width}x{canvas.height})")
+    print(f"saved {out} ({canvas.width}x{canvas.height}) fg={fg.width}x{fg.height} at ({fx},{fy})")
 
 
 if __name__ == "__main__":

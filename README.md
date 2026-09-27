@@ -150,6 +150,21 @@ wails dev   # 热重载开发模式（需 Node 可选；静态前端下等同于
 
 本地调试时可用环境变量：`DSH_SYSTRAY_PORT`、`DSH_SYSTRAY_HARNESS_DIR`、`DSH_SYSTRAY_STARTUP_TIMEOUT`。
 
+### 截图 / 网站物料
+
+`docs/shots`、`docs/shots-en`、`docs/screenshot-hero*.webp` 全部由无头 Chromium 渲染真实前端生成（DPI 无关、不需要托盘或桌面会话）：
+
+```bash
+node scripts/render_shots.mjs --lang zh,en --keep-png   # 渲染 PNG + 主图前景件 + 画面文字
+python scripts/convert_webp.py --only shots             # 轮播图转 webp
+python scripts/make_hero.py --lang zh                   # 主图（中/英各一张）
+python scripts/make_hero.py --lang en
+python scripts/convert_webp.py --only hero
+python scripts/verify_shots.py --from-render docs/.shots-tmp   # 尺寸/裁切/一致性/脱敏验收
+```
+
+Windows 上可直接双击 `scripts\recapture.cmd` 跑完整条流水线。渲染器按固定 CSS 视口（840×560，即设置窗口逻辑尺寸）出图，并把界面上的可见文字导出成文本供验收脚本核对；界面里的每个值都来自渲染器内的演示常量（演示邮箱、`C:\Users\demo` 路径、虚构插件名、演示日志），不读取本机配置与日志。
+
 ## 平台差异
 
 | 能力 | Windows | macOS |

@@ -225,6 +225,18 @@ input { font-family: inherit; }
   margin-top: var(--sp-3);
 }
 
+/* 标题 + 说明的文字块：占满控件之外的剩余宽度。
+   flex-basis 必须是 0（而非 auto）：控件是 flex-shrink:0，若文字块以「内容宽度」为基准参与
+   收缩，按比例分锅后文字只能分到几十像素，说明被迫逐词换行、卡片被撑高。
+   min-width:0 抑制 flex 的最小内容宽度下限。 */
+.row-text { flex: 1 1 0; min-width: 0; }
+
+/* 一行里有两个以上控件、文字又长的（常规页「默认启动方式」：下拉 + 安装按钮）：
+   文字独占一行、控件另起一行靠右。挤在一行时文字只剩百余像素，说明会碎成
+   逐词换行（英文界面最明显），换行后两边都读得清、卡片也不会虚高。 */
+.card-row:has(select + button) { flex-wrap: wrap; row-gap: var(--sp-3); }
+.card-row:has(select + button) .row-text { flex: 1 1 100%; }
+
 .row-title { font-size: var(--fs-base); font-weight: 600; display: flex; align-items: center; gap: var(--sp-2); }
 .row-sub { color: var(--muted); font-size: var(--fs-xs); margin-top: var(--sp-1); line-height: 1.5; }
 /* 路径类副标题：完整显示全路径（换行而非省略号截断，与日志页路径一致）——优先在分隔符/连字符处断行，超长无空格段按任意字符断行 */
@@ -861,9 +873,9 @@ input { font-family: inherit; }
 #reset-target option.opt-pre { color: var(--warn); } /* 展开列表内预发布候选着色（闭合态以文本“（预发布）”兜底） */
 #reset-target-note { margin: var(--sp-2) 0 0; display: block; }
 
-/* 常规页下拉（语言选择等通用窄下拉） */
+/* 常规页下拉（语言选择 / 默认启动方式；只在常规页用，宽度收着点以免挤压同行文字） */
 .input-select {
-  min-width: 208px;
+  min-width: 176px;
   max-width: 240px;
   min-height: 36px;
   padding: 0 var(--sp-3);

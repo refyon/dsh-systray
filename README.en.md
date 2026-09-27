@@ -26,7 +26,7 @@
   <a href="https://github.com/refyon/dsh-systray/actions/workflows/release.yml"><img alt="Release build" src="https://github.com/refyon/dsh-systray/actions/workflows/release.yml/badge.svg" /></a>
 </p>
 
-<img src="docs/screenshot-hero.webp" alt="dsh-systray settings window and automatic deployment / Harness dependency install" />
+<img src="docs/screenshot-hero-en.webp" alt="dsh-systray settings window and automatic deployment / Harness dependency install" />
 
 dsh-systray is a Windows / macOS system-tray application built around three core traits: **Lightweight** (single-file, no install, no admin rights, low-footprint tray residency), **Reliable** (environment self-check & self-healing, auto-rollback on startup failure, auto-rollback on update failure), and **Portable** (one-click export/import of sessions, plugins and folders; seamless restore on another machine). A double-click starts the DeepSeek Harness Web local service in the background — no ports to remember. The UI is rebuilt on [Wails v2](https://wails.io) (Go backend + WebView2 / WKWebView frontend). The settings window organizes seven pages: autostart & the background service, versions & updates (dsh-systray / Harness / plugins checked independently per module), data sync, and live logs; the color scheme follows the system light/dark mode and auto-update is built in.
 
@@ -149,6 +149,21 @@ wails dev   # hot-reload dev mode (Node optional; with a static frontend this eq
 ```
 
 Useful environment variables for local debugging: `DSH_SYSTRAY_PORT`, `DSH_SYSTRAY_HARNESS_DIR`, `DSH_SYSTRAY_STARTUP_TIMEOUT`.
+
+### Screenshots / website assets
+
+Everything under `docs/shots`, `docs/shots-en` and `docs/screenshot-hero*.webp` is rendered from the real frontend by headless Chromium — DPI-independent, no tray and no desktop session required:
+
+```bash
+node scripts/render_shots.mjs --lang zh,en --keep-png   # render PNGs + hero foreground + on-screen text
+python scripts/convert_webp.py --only shots             # carousel images to webp
+python scripts/make_hero.py --lang zh                   # hero image (one per language)
+python scripts/make_hero.py --lang en
+python scripts/convert_webp.py --only hero
+python scripts/verify_shots.py --from-render docs/.shots-tmp   # size / cropping / consistency / redaction
+```
+
+On Windows just double-click `scripts\recapture.cmd` to run the whole pipeline. The renderer uses a fixed CSS viewport (840×560 — the settings window's logical size) and also dumps the on-screen text so the verifier can check it; every value shown comes from demo constants inside the renderer (demo mailbox, `C:\Users\demo` paths, fictional plugin names, sample logs) — no local config or logs are read.
 
 ## Platform differences
 

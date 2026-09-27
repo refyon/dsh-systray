@@ -590,7 +590,7 @@ func main() {
 		langPref = normalizeLang(cfg.Language)
 	}
 	// 截图/预览模式可用 DSH_SYSTRAY_LANG 覆盖界面语言：生成英文截图时不必改动用户配置
-	// （scripts/capture_shots.ps1 / capture_github_dialog.ps1 依赖它）。
+	// （脚本 scripts/render_shots.mjs 依赖它，见该文件头部说明）。
 	if v := strings.TrimSpace(os.Getenv("DSH_SYSTRAY_LANG")); v != "" {
 		if l := normalizeLang(v); l != "auto" {
 			langPref = l
