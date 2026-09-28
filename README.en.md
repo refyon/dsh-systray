@@ -150,21 +150,6 @@ wails dev   # hot-reload dev mode (Node optional; with a static frontend this eq
 
 Useful environment variables for local debugging: `DSH_SYSTRAY_PORT`, `DSH_SYSTRAY_HARNESS_DIR`, `DSH_SYSTRAY_STARTUP_TIMEOUT`.
 
-### Screenshots / website assets
-
-Everything under `docs/shots`, `docs/shots-en` and `docs/screenshot-hero*.webp` is rendered from the real frontend by headless Chromium — DPI-independent, no tray and no desktop session required:
-
-```bash
-node scripts/render_shots.mjs --lang zh,en --keep-png   # render PNGs + hero foreground + on-screen text
-python scripts/convert_webp.py --only shots             # carousel images to webp
-python scripts/make_hero.py --lang zh                   # hero image (one per language)
-python scripts/make_hero.py --lang en
-python scripts/convert_webp.py --only hero
-python scripts/verify_shots.py --from-render docs/.shots-tmp   # size / cropping / consistency / redaction
-```
-
-On Windows just double-click `scripts\recapture.cmd` to run the whole pipeline. The renderer uses a fixed CSS viewport (840×560 — the settings window's logical size) and also dumps the on-screen text so the verifier can check it; every value shown comes from demo constants inside the renderer (demo mailbox, `C:\Users\demo` paths, fictional plugin names, sample logs) — no local config or logs are read.
-
 ## Platform differences
 
 | Capability | Windows | macOS |
