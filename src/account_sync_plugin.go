@@ -143,6 +143,9 @@ func verifyInstalledTargetVersion(dir, name, target string) error {
 func installPluginIntoProfile(dir, profile, name, dep string) error {
 	killServer() // 运行中的 node 占用文件，快照改名会失败（服务未运行时为 no-op）
 	verify := profileNeedsServiceVerify(profile)
+	// 台账判据：安装前该包是否已在——只有「从无到有」才算新的安装事件（版本更新不刷新安装
+	// 时刻，与删除墓碑判定依赖的「重新安装」语义一致，见 plugin_install_times.go）。
+	wasInstalled := installedPluginVersion(dir, name) != ""
 	hadNM := snapshotPluginProfile(dir)
 	rollback := func(reason string) error {
 		restorePluginProfileSnapshot(dir, hadNM)
@@ -160,6 +163,7 @@ func installPluginIntoProfile(dir, profile, name, dep string) error {
 	if !verify {
 		log.Printf("[sync] %s：跳过重启校验（该环境的加载由用户侧客户端负责），改动重启后生效", profile)
 		cleanupPluginProfileSnapshot(dir)
+		notePluginInstalled(profile, name, wasInstalled)
 		return nil
 	}
 	if !restartAndVerifyServer() {
@@ -167,7 +171,17 @@ func installPluginIntoProfile(dir, profile, name, dep string) error {
 	}
 	promoteProfileLkg(dir)
 	cleanupPluginProfileSnapshot(dir)
+	notePluginInstalled(profile, name, wasInstalled)
 	return nil
+}
+
+// notePluginInstalled 安装成功后的台账登记：只有「包此前不在」才算新的安装事件
+// （版本更新不刷新已有记录——删除墓碑的「本机是否装得更晚」判定依赖这条语义）。
+func notePluginInstalled(profile, name string, wasInstalled bool) {
+	if wasInstalled {
+		return
+	}
+	pluginInstallTimeNoteInstalled(profile, name, pluginInstallTimeNow())
 }
 
 // activateSyncedPlugin 安装成功后的落地登记：写进 dsh.profile.bundles（harness 只加载激活
@@ -229,6 +243,7 @@ func removePluginFromProfile(dir, profile, name string) error {
 		log.Printf("[sync] %s：跳过卸载后的启动校验（该环境的加载由用户侧客户端负责），重启后生效", profile)
 		clearLkgInDir(dir) // 删除不会让启动变坏；旧基线与新状态不一致，直接清掉
 		cleanupPluginProfileSnapshot(dir)
+		pluginInstallTimeForget(profile, name)
 		return nil
 	}
 	if !restartAndVerifyServer() {
@@ -236,5 +251,6 @@ func removePluginFromProfile(dir, profile, name string) error {
 	}
 	clearLkgInDir(dir)
 	cleanupPluginProfileSnapshot(dir)
+	pluginInstallTimeForget(profile, name)
 	return nil
 }

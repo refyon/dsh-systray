@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"path/filepath"
 	"regexp"
 	"testing"
 	"time"
@@ -13,7 +14,13 @@ import (
 func setupAccountTest(t *testing.T) {
 	t.Helper()
 	oldDir, oldBase := accountStateDirValue(), accountAPIBaseValue()
-	setAccountStateDir(t.TempDir())
+	accountDir := t.TempDir()
+	setAccountStateDir(accountDir)
+	// 安装时刻台账（plugin-installs.json）与 account.json 同目录：一起隔离并复位，否则用例之间
+	// 会通过这份「本机安装时刻」互相影响——残留记录会让插件被误判成已满足而跳过应用。
+	oldTimesPath := pluginInstallTimesFileOverrideValue()
+	setPluginInstallTimesFileOverride(filepath.Join(accountDir, pluginInstallTimesFile))
+	resetPluginInstallTimes()
 	// 死地址而非空值：空值等于**生产域名**，而 accountSyncKick 的异步上报会用当前基址，
 	// 埋点（登记操作记录）触发的后台上报就会拿测试令牌打生产、换回真实的 401。
 	// 需要异步上报走到假服务器的用例自行 setAccountAPIBase(client.base)。
@@ -23,6 +30,8 @@ func setupAccountTest(t *testing.T) {
 		waitAccountSync() // 等在跑的上报结束，避免与下面的复位竞态（-race 曾暴露）
 		setAccountStateDir(oldDir)
 		setAccountAPIBase(oldBase)
+		setPluginInstallTimesFileOverride(oldTimesPath)
+		resetPluginInstallTimes()
 		clearAccountRuntime()
 	})
 }

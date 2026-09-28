@@ -240,7 +240,24 @@ func accountLocalPluginInstallTime(dirs []string, name string) int64 {
 // accountLocalPluginsSnapshot 一致）：找不到该插件（未装 / 非在线来源）返回 0。
 // 供「删除墓碑是否已被本机更晚的安装盖过」判定使用（见 accountKeyTargetSatisfiedAt）。
 // 只统计属于该 profile 的目录：同名插件可能在 web 与 desktop 各有一份，安装时间不同。
+//
+// 时间优先取本机安装台账（plugin_install_times.go：只有真的执行过安装才有记录）；台账没有时
+// （功能引入前就装着、或在外部 pnpm/npm 安装）退回文件系统时间并固化一次——否则 pnpm 每次
+// add 重建 node_modules 都会把这些「安装时间」刷成当前时刻，服务端已删除的插件会被判成本机更新。
 func accountLocalPluginInstallTimeFor(profile, name string) int64 {
+	if at := pluginInstallTimeLookup(profile, name); at > 0 {
+		return at
+	}
+	at := accountFilesystemPluginInstallTimeFor(profile, name)
+	if at > 0 {
+		pluginInstallTimeNoteInstalled(profile, name, at)
+	}
+	return at
+}
+
+// accountFilesystemPluginInstallTimeFor 文件系统兜底（台账缺失时的一次性近似）：按 profile
+// 过滤该插件的声明目录，再取包目录的安装时刻（语义与限制见上面的 accountLocalPluginInstallTime）。
+func accountFilesystemPluginInstallTimeFor(profile, name string) int64 {
 	for _, row := range buildPluginRows() {
 		if row.Name != name {
 			continue
@@ -471,6 +488,12 @@ func reportPluginBatchChanges(tasks []*pluginOpTask) {
 		for _, profile := range profiles {
 			if err := accountEnqueueOp(accountPluginKeyFor(profile, t.name), val); err != nil {
 				continue
+			}
+			// 安装时刻台账：托盘内的安装/卸载与同步应用同口径（见 plugin_install_times.go）。
+			if t.op == "remove" {
+				pluginInstallTimeForget(profile, t.name)
+			} else {
+				pluginInstallTimeNoteInstalled(profile, t.name, pluginInstallTimeNow())
 			}
 			changed += 1
 		}
