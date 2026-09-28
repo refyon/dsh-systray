@@ -377,6 +377,18 @@ func restartBackgroundService(onState func(stage string)) bool {
 	}
 	time.Sleep(1 * time.Second)
 
+	// 端口预检（见 portcheck.go）：被系统保留（Windows 排除端口段）/ 被其它程序占用时不再
+	// spawn——必然失败，且会让下面的插件依赖自愈与「疑似插件」提示全部指向错误方向。
+	// 交互场景（本函数只由设置页触发）可直接改用推荐端口继续本次重启。
+	if !ensureServicePortUsable(true) {
+		reason := failServiceOnPort(port)
+		if onState != nil {
+			onState("重启失败")
+		}
+		showMessageBox("重启失败："+reason+"\n\n可到「常规 → 服务端口」改用其它端口后重试。\n日志："+unifiedLogPath(), appName)
+		return false
+	}
+
 	// 第一轮：拉起 → 就绪 → 健康窗口
 	splash.Update(T("正在启动后台服务…"), 0.55)
 	if onState != nil {

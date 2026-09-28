@@ -1040,3 +1040,27 @@ func askLaunchTargetDesktopInstalled() string {
 	}
 	return "keep"
 }
+
+// askPortBlocked 后台服务端口不可用（被系统保留 / 被其它程序占用）时的询问。
+// msg 由调用方（main.go 的 promptPortChange）拼好——文案与按钮都带端口号。
+// 返回 "switch"（改用推荐端口并继续本次启动）/ "retry"（用户已自行处理，重新探测）/
+// "logs"（打开日志目录）/ "keep"（暂不启动）。AppleScript 弹窗没有关闭按钮，
+// 出错（Esc 等）按「暂不启动」处理。
+func askPortBlocked(suggest int, msg string) string {
+	switchBtn, retryBtn, logsBtn := TF("改用端口 %d", suggest), T("重试"), T("打开日志")
+	script := fmt.Sprintf(`display dialog "%s" with title "%s" buttons {%q, %q, %q} default button %q`,
+		escapeAppleScript(msg), appName, logsBtn, retryBtn, switchBtn, switchBtn)
+	out, err := runAppleScript(script)
+	if err != nil {
+		return "keep"
+	}
+	switch {
+	case strings.Contains(out, switchBtn):
+		return "switch"
+	case strings.Contains(out, retryBtn):
+		return "retry"
+	case strings.Contains(out, logsBtn):
+		return "logs"
+	}
+	return "keep"
+}

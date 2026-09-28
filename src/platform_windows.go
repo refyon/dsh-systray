@@ -1403,3 +1403,21 @@ func askLaunchTargetDesktopInstalled() string {
 	}
 	return "keep"
 }
+
+// askPortBlocked 后台服务端口不可用（被系统保留 / 被其它程序占用）时的询问。
+// msg 由调用方（main.go 的 promptPortChange）拼好——文案与按钮都带端口号。
+// 返回 "switch"（改用推荐端口并继续本次启动）/ "retry"（用户已自行处理，重新探测）/
+// "logs"（打开日志目录）/ "keep"（暂不启动，含直接关掉弹窗）。
+func askPortBlocked(suggest int, msg string) string {
+	switch runModernDialog(appName, msg,
+		[]string{TF("改用端口 %d", suggest), T("重试"), T("打开日志")}, 0) {
+	case 0:
+		return "switch"
+	case 1:
+		return "retry"
+	case 2:
+		return "logs"
+	default:
+		return "keep"
+	}
+}

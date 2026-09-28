@@ -352,6 +352,7 @@ var (
 	serverReady       atomic.Bool
 	serviceFailed     atomic.Bool
 	serviceFailReason atomic.Value      // string
+	serviceFailKind   atomic.Value      // string：失败分类 ""|port-blocked|port-in-use（见 portcheck.go）
 	menuOpen          *systray.MenuItem // “打开 Web UI”
 	menuStatus        *systray.MenuItem // 状态说明行
 	mSettings         *systray.MenuItem // “设置”
@@ -496,23 +497,50 @@ func pollServiceMenu() {
 // Web UI——此时托盘「打开」没有任何可用目标（服务没在跑）。发现这一次漂移后询问用户是否现在
 // 启动后台服务；不静默拉起（desktop 形态下用户并没有在用网页端）。
 
-// lastResolvedLaunch 上一次解析出的启动方式；launchDriftAsked 本次漂移是否已询问过
-// （用户选择「暂不启动」后不再重复打扰，直到启动方式再次变化）。
+// lastResolvedLaunch 上一次解析出的启动方式，lastResolvedPref 是当时的偏好——两者合起来构成
+// 漂移检测基线：只有「偏好没变、解析结果却变了」才是实机漂移（桌面端被卸载/检测失效）；
+// 用户显式改偏好走 setLaunchTarget 自己的启停流程，不在这里重复询问。
+// launchDriftAsked 本次漂移是否已询问过（用户选择「暂不启动」后不再重复打扰）。
 var (
 	lastResolvedLaunch atomic.Value // string
+	lastResolvedPref   atomic.Value // string
 	launchDriftAsked   atomic.Bool
 )
+
+// askStartServiceFn 询问「是否现在启动后台服务」的实现（测试可替换，避免真实弹窗）。
+var askStartServiceFn = askStartService
+
+// rememberLaunchTargetBaseline 把「当前偏好 + 当前解析结果」记为漂移检测基线。
+// 显式切换启动方式（setLaunchTarget）与轮询发现变化（checkLaunchTargetDrift）都会调用，
+// 使「用户改了偏好」与「实机漂移」可区分（见 checkLaunchTargetDrift 的 prevPref 判据）。
+func rememberLaunchTargetBaseline() {
+	lastResolvedPref.Store(normalizeLaunchTarget(launchTargetPref))
+	lastResolvedLaunch.Store(resolvedLaunchTarget())
+	launchDriftAsked.Store(false)
+}
 
 // checkLaunchTargetDrift 检测 desktop → web 的启动方式漂移，并按用户选择按需启动后台服务。
 // 只由 pollServiceMenu 的周期 goroutine 调用（状态无并发写）。
 func checkLaunchTargetDrift() {
+	pref := normalizeLaunchTarget(launchTargetPref)
 	cur := resolvedLaunchTarget()
+	// 判定期间用户可能刚在设置页改了偏好（setLaunchTarget 在 UI 线程写 launchTargetPref）：
+	// 偏好已变即本次判定作废，交由 setLaunchTarget 的启停流程收尾。
+	if normalizeLaunchTarget(launchTargetPref) != pref {
+		return
+	}
 	prev, _ := lastResolvedLaunch.Load().(string)
-	if prev == cur {
+	prevPref, _ := lastResolvedPref.Load().(string)
+	if prev == cur && prevPref == pref {
 		return
 	}
 	lastResolvedLaunch.Store(cur)
+	lastResolvedPref.Store(pref)
 	launchDriftAsked.Store(false) // 进入新的启动方式：允许下一次漂移重新询问
+	// 偏好被显式改动（用户自己选了 Web UI / Desktop UI / 自动检测）：不是实机漂移，不询问。
+	if prevPref != pref {
+		return
+	}
 	if prev != launchTargetDesktop || cur != launchTargetWeb {
 		return
 	}
@@ -524,7 +552,7 @@ func checkLaunchTargetDrift() {
 	}
 	log.Printf("[launch] desktop target unavailable, fell back to web ui: asking user to start service")
 	go func() {
-		if askStartService() {
+		if askStartServiceFn() {
 			startServiceBootstrap(true)
 		}
 	}()
@@ -1083,6 +1111,120 @@ func recoverProfileTransactions(progress func(text string)) {
 	}
 }
 
+// setServiceFailed 统一写入失败状态（分类 + 原因 + 托盘菜单）。kind 取 portcheck.go 的
+// failKind* 常量，普通失败传 ""。分类只在 serviceFailed 为真时透出（见 GetServiceState），
+// 因此成功路径无需清理它。
+func setServiceFailed(kind, reason string) {
+	serviceFailed.Store(true)
+	serviceFailKind.Store(kind)
+	serviceFailReason.Store(reason)
+	refreshServiceMenu()
+}
+
+// portFailureKindAndReason 端口不可用时的失败分类与原因（状态行 / 设置页 / 弹窗共用）：
+// 以当前端口实测为准，避免沿用已经不成立的旧结论。
+func portFailureKindAndReason(p int) (string, string) {
+	kind := failKindPortBlocked
+	if k, _ := probePort(p); k == portInUse {
+		kind = failKindPortInUse
+	}
+	return kind, portFailReason(kind, p)
+}
+
+// failServiceOnPort 端口不可用导致无法启动的收尾：置失败状态与分类（前端据此显示
+// 「改用推荐端口」入口），返回用户可读原因供调用方展示。
+func failServiceOnPort(p int) string {
+	kind, reason := portFailureKindAndReason(p)
+	setServiceFailed(kind, reason)
+	logError("app", "后台服务端口不可用：%s", reason)
+	return reason
+}
+
+// promptPortChange 端口不可用时询问用户处置，返回用户选择：
+//
+//	"switch" 已改用推荐端口（port/webURL 与 config.json 同步更新，调用方可直接继续启动）；
+//	"retry"  用户已自行排除占用/保留，要求重新探测；
+//	"logs"   已为用户打开日志目录，调用方应回到询问再让用户选一次；
+//	"keep"   暂不启动（含直接关掉弹窗）。
+//
+// 文案与按钮标签都带端口号，故在这里拼好整条消息交给平台层弹窗（见 askPortBlocked）。
+func promptPortChange(p int, kind string) string {
+	suggest := pickFreePort(0)
+	if suggest <= 0 {
+		suggest = freePortBase
+	}
+	cause := T("被系统保留（Windows 排除端口段）")
+	if kind == failKindPortInUse {
+		cause = T("已被其它程序占用")
+	}
+	msg := TF("后台服务需要监听 127.0.0.1:%d，但该端口%s，服务无法启动。\n\n"+
+		"改用端口 %d 可立即恢复；若手机等设备按旧端口访问过，请同步更新地址。", p, cause, suggest)
+	switch askPortBlocked(suggest, msg) {
+	case "switch":
+		applyServerPort(suggest)
+		logUI("改用服务端口", strconv.Itoa(suggest))
+		return "switch"
+	case "retry":
+		logUI("重试启动后台服务", fmt.Sprintf("端口 %d", p))
+		return "retry"
+	case "logs":
+		openLogDir()
+		return "logs"
+	}
+	return "keep"
+}
+
+// ensureServicePortUsable 启动前的端口预检与用户处置（冷启动、切回 Web UI、设置页重启共用）：
+//  1. 可绑定 → true；
+//  2. 被其它程序占用 → 先按既有语义停掉占用者再探一次（killServer 连非本进程启动的同端口
+//     监听者一并终止，见其实现）；仍不可用进入第 3 步；
+//  3. 被系统保留（Windows 排除端口段）/ 仍被占用 → 交互场景弹窗询问（改用推荐端口 / 暂不启动）；
+//     静默场景（开机自启）不打扰，直接 false。
+//
+// 返回 true 表示端口已可用（可能已被换成推荐端口），调用方可继续 spawn。
+// 必须先于 startServer：端口不可用时 spawn 必然失败，且失败现场会被误判成插件问题（见 portcheck.go）。
+func ensureServicePortUsable(interactive bool) bool {
+	kind, err := probePort(port)
+	if kind == portOK {
+		return true
+	}
+	if kind == portInUse {
+		log.Printf("[service] port %d preflight: in use, stopping the listener before spawn", port)
+		logUI("后台服务端口被占用", fmt.Sprintf("端口 %d，正在停止占用进程", port))
+		killServer()
+		time.Sleep(500 * time.Millisecond)
+		if k2, _ := probePort(port); k2 == portOK {
+			return true
+		}
+	} else {
+		log.Printf("[service] port %d preflight: %s (%v)", port, kind, err)
+	}
+	if !interactive {
+		log.Printf("[service] port %d unavailable, silent launch: skip prompt", port)
+		return false
+	}
+	// 交互处置：最多问两轮——用户选「打开日志」看完现场后还能回来再选一次（否则只能从头再来
+	// 一遍切换）。轮数有界，避免任何形式的弹窗死循环。
+	for ask := 0; ask < 2; ask++ {
+		kind, _ = probePort(port)
+		switch promptPortChange(port, failKindFor(kind)) {
+		case "switch":
+			return true // 新端口已由 pickFreePort 验证可绑定
+		case "retry":
+			if k, _ := probePort(port); k == portOK {
+				log.Printf("[service] port %d available after user retry", port)
+				return true
+			}
+			log.Printf("[service] port %d still unavailable after user retry", port)
+		case "logs":
+			continue // 已打开日志目录：回到询问
+		default:
+			return false // 暂不启动 / 关掉弹窗
+		}
+	}
+	return false
+}
+
 // 后台服务编排的并发闸门：冷启动的自动引导与用户切回 Web UI 的按需引导可能先后/并发到来，
 // 同一时刻只允许一次（否则会拉起两个服务进程互相抢端口）。
 var serviceBootstrapRunning atomic.Bool
@@ -1198,6 +1340,14 @@ func bootstrapService(interactive bool) {
 	go repairCodeloadTokenHelper()
 
 	// 3) 启动服务
+	// 先做端口预检：端口被系统保留（Windows 排除端口段）或被占用时 spawn 必然失败，且失败现场
+	// 会被后续收尾误判成插件不兼容（见 portcheck.go 文件头）。交互场景里用户能直接改用推荐
+	// 端口，改完继续本次启动；静默场景（开机自启）只置失败状态与原因。
+	if !serverResponding(webURL) && !ensureServicePortUsable(interactive) {
+		splash.Close()
+		failServiceOnPort(port)
+		return
+	}
 	splash.Update(T("正在启动服务…"), 0.9)
 	started := false
 	startedByUs := false
@@ -1256,6 +1406,15 @@ func bootstrapService(interactive bool) {
 			} else {
 				log.Printf("autostart: service ready, staying silent")
 			}
+			return
+		}
+		// 端口不可用（被系统保留 / 被其它程序占用）与插件加载失败必须分开：前者的证据是 node 的
+		// listen EACCES/EADDRINUSE，此时禁用插件与 LKG 回退都无意义，还会动用户的插件树
+		//（2026-09-28 现场：3080 落在 Windows 排除端口段，三次启动把全部用户插件禁用又恢复）。
+		if kind := portFailKindFromLog(serverLogBefore); kind != "" {
+			reason := portFailReason(kind, port)
+			setServiceFailed(kind, reason)
+			logError("app", "启动失败：%s（已跳过插件自愈与版本回退）", reason)
 			return
 		}
 		// 启动失败：特征指向环境本身时（进程异常退出 / 加载错误）自动尝试回退到上次正常状态

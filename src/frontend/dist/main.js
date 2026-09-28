@@ -164,6 +164,12 @@ const I18N_DYN = {
   "重启失败，请查看日志": "Restart failed — see logs",
   "正在重启后台服务…": "Restarting the background service…",
   "端口已修改为 {0}，当前服务仍运行于 {1}——重启后台服务后生效。": "Port changed to {0}, but the service still runs on {1} — effective after restarting the service.",
+  "服务端口 {0} 被系统保留（Windows 排除端口段），后台服务无法启动。": "Service port {0} is reserved by Windows (excluded port range), so the background service cannot start.",
+  "服务端口 {0} 已被其它程序占用，后台服务无法启动。": "Service port {0} is already used by another program, so the background service cannot start.",
+  "改用端口 {0} 并启动": "Use port {0} and start",
+  "请手动指定其它端口后重启服务": "Pick another port below, then restart the service",
+  "正在改用新端口并启动后台服务…": "Switching port and starting the background service…",
+  "请到「常规 → 服务端口」改用其它端口后重启服务。": "Go to General → Service port, switch ports, then restart the service.",
   "注意：所选为预发布版本，可能与已安装插件不兼容；若重置后服务无法启动，请查看日志。": "Note: the selected build is a prerelease and may be incompatible with installed plugins; if the service fails to start after reset, check the logs.",
   "已关闭预发布通道，检查更新将仅显示稳定版本": "Prerelease channel off — update checks now only show stable releases",
   "已开启预发布通道，可重新检查更新（含预发布版）": "Prerelease channel on — re-check for updates to see prereleases",
@@ -678,6 +684,7 @@ async function refreshService() {
     $("svc-text").textContent = tr(labels[state.svc.state] || state.svc.state);
     // 服务状态由标题行（圆点 + 文案）表达；副标题只承载失败原因等必要反馈，不再堆说明文字
     $("svc-sub").textContent = state.svc.state === "failed" ? (state.svc.reason || tr("请查看日志")) : "";
+    updatePortBlockedHint(state.svc);
     // 「打开」按钮：web 启动方式下要求服务运行；desktop 启动方式下与后台服务无关（由 applyLaunchMode
     // 在桌面端卡片上单独控制可点性），故只在 web 路径下按服务状态禁用。
     const owb = $("btn-open-webui");
@@ -703,6 +710,36 @@ async function refreshService() {
 // 并把「重启后台服务」（重新生成链接）摆出来。helpRestarting 期间锁住全部操作，由收尾统一刷新。
 let helpRestarting = false;
 
+// portFailReasonText 端口不可用的原因文案（常规页卡片与帮助页共用，与后端 ServiceState.Reason
+// 同一口径；后端已按 failKind 分类透出，见 portcheck.go）。
+function portFailReasonText(kind, port) {
+  if (kind === "port-in-use") return fmt("服务端口 {0} 已被其它程序占用，后台服务无法启动。", port);
+  return fmt("服务端口 {0} 被系统保留（Windows 排除端口段），后台服务无法启动。", port);
+}
+
+function isPortFailKind(kind) {
+  return kind === "port-blocked" || kind === "port-in-use";
+}
+
+// 端口不可用时的常规页提示 + 「改用端口 N 并启动」一键恢复。这类失败与插件/版本无关
+// （后端已据 failKind 跳过插件自愈与版本回退），所以必须给出一条明确出路：只把原因说出来
+// 会让用户以为要自己排查端口（2026-09-28 现场：3080 落在 Windows 排除端口段 3004-3103）。
+function updatePortBlockedHint(svc) {
+  const box = $("svc-port-warn");
+  if (!box) return;
+  const kind = svc && svc.failKind;
+  const show = !!svc && svc.state === "failed" && isPortFailKind(kind);
+  box.classList.toggle("hidden", !show);
+  if (!show) return;
+  const p = (state.cfg && state.cfg.port) || 0;
+  $("svc-port-warn-text").textContent = portFailReasonText(kind, p);
+  const btn = $("btn-svc-use-port");
+  if (!btn) return;
+  const suggest = svc.suggestedPort || 0;
+  btn.disabled = !suggest;
+  btn.textContent = suggest ? fmt("改用端口 {0} 并启动", suggest) : tr("请手动指定其它端口后重启服务");
+}
+
 function refreshHelpState() {
   const open = $("btn-help-open");
   const copy = $("btn-help-copy");
@@ -715,6 +752,16 @@ function refreshHelpState() {
   $("help-state").classList.toggle("hidden", running);
   // 「重启后台服务」嵌在警告框内：警告框显隐即按钮显隐
   $("help-warn").classList.toggle("hidden", !warn);
+  // 端口不可用（含 desktop→web 切换失败）时的帮助页说明：换端口入口在常规页，这里只指路
+  const portHint = $("help-port");
+  if (portHint) {
+    const portFailed = !running && svc.state === "failed" && isPortFailKind(svc.failKind);
+    portHint.classList.toggle("hidden", !portFailed);
+    if (portFailed) {
+      portHint.textContent = portFailReasonText(svc.failKind, (state.cfg && state.cfg.port) || 0) +
+        " " + tr("请到「常规 → 服务端口」改用其它端口后重启服务。");
+    }
+  }
   if (helpRestarting) {
     open.disabled = true;
     copy.disabled = true;
@@ -796,6 +843,26 @@ function wireGeneral() {
     if (v > 0 && v <= 65535) await bindings().SetPort(v);
     refreshConfig();
   });
+  // 端口不可用（被系统保留 / 被占用）时的一键恢复：改用推荐端口 → 走既有 RestartService
+  // （内含端口预检、进度与失败提示），成功后就地刷新状态。
+  const usePortBtn = $("btn-svc-use-port");
+  if (usePortBtn) {
+    usePortBtn.addEventListener("click", async () => {
+      const suggest = (state.svc && state.svc.suggestedPort) || 0;
+      if (!suggest || usePortBtn.disabled) return;
+      usePortBtn.disabled = true;
+      try { await bindings().SetPort(suggest); } catch (e) { console.error("SetPort", e); }
+      const portInput = $("inp-port");
+      if (portInput) portInput.value = suggest;
+      refreshConfig();
+      $("svc-sub").textContent = tr("正在改用新端口并启动后台服务…");
+      let ok = false;
+      try { ok = await bindings().RestartService(); } catch (e) { console.error("RestartService", e); }
+      if (!ok) $("svc-sub").textContent = tr("重启失败，请查看日志");
+      refreshService();
+      usePortBtn.disabled = false;
+    });
+  }
   $("btn-pick-harness").addEventListener("click", async () => {
     // 防重复弹窗：对话框打开期间禁用按钮，避免连点开出多个目录选择窗口
     const btn = $("btn-pick-harness");

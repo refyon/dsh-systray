@@ -123,6 +123,13 @@
               <button id="btn-open-webui" class="btn btn-ghost" disabled data-i18n="btnOpenWeb">打开 Web UI</button>
             </div>
           </div>
+          <!-- 端口不可用（被系统保留 / 被占用）：与插件无关，后端已跳过插件自愈，这里给一键换端口入口 -->
+          <div id="svc-port-warn" class="row-warn hidden">
+            <div id="svc-port-warn-text"></div>
+            <div class="help-warn-actions">
+              <button id="btn-svc-use-port" class="btn btn-outline btn-xs"></button>
+            </div>
+          </div>
         </div>
         <!-- Web 板块：服务端口与 Harness 目录（只影响托盘自带的 Web 服务） -->
         <div class="card" data-only-web="hide">
@@ -389,6 +396,7 @@
           <div class="row-title" data-i18n="helpWebAuthTitle">Web UI 提示“需要重新鉴权”</div>
           <div class="row-sub" data-i18n="helpWebAuthSymp">打开 harness 网页端时浏览器显示：dsh web authentication required; reopen the URL printed by dsh web.</div>
           <div id="help-state" class="row-sub help-note hidden" data-i18n="helpStopped">后台服务未运行：启动服务后即可打开 Web UI 或复制访问链接。</div>
+          <div id="help-port" class="row-warn help-note hidden"></div>
           <div id="help-warn" class="row-warn help-note hidden">
             <div data-i18n="helpNoToken">没有找到带访问令牌的链接：服务不是由本程序拉起的（例如上次退出时保留了服务，或电脑重启后服务仍在运行），日志轮转也可能丢失该行。浏览器此前已正常登录过 → 直接点「打开 Web UI」；换浏览器或不带记录的窗口 → 先点下方「重启后台服务」生成新链接。</div>
             <div class="help-warn-actions">

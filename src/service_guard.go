@@ -230,6 +230,44 @@ func trimHintLine(s string) string {
 	return s
 }
 
+// ==================== 端口类启动失败的识别 ====================
+// 端口不可用（Windows 排除端口段 / 被其它程序占用）与插件加载失败必须分开：前者的证据是 node
+// 的 listen EACCES/EADDRINUSE，此时做 disable-all / LKG 回退既无用又会动用户的插件树。
+// 现场（2026-09-28）见 portcheck.go 文件头；启动失败收尾据此提前让位。
+
+// portBlockedLineRe 服务启动日志里端口不可用的证据行（node bind 失败原文）：
+//
+//	listen EACCES: permission denied 127.0.0.1:3080          ← Windows 排除端口段（WSAEACCES）
+//	listen EADDRINUSE: address already in use 127.0.0.1:3080  ← 端口被占用
+var portBlockedLineRe = regexp.MustCompile(`(?i)listen\s+(EACCES|EADDRINUSE|EPERM)\b`)
+
+// portInUseLineRe 「端口被占用」证据（与「被系统保留」区分：文案与处置建议不同）。
+var portInUseLineRe = regexp.MustCompile(`(?i)listen\s+EADDRINUSE\b`)
+
+// portBlockedInText 文本中是否存在端口不可用的证据。抽成纯函数便于用现场日志原文做单测
+// （勿绕过它另写判据）。
+func portBlockedInText(s string) bool { return portBlockedLineRe.MatchString(s) }
+
+// portInUseInText 文本中的端口证据是否专指「被占用」。
+func portInUseInText(s string) bool { return portInUseLineRe.MatchString(s) }
+
+// portFailKindFromText 端口失败分类的纯函数形态（供单测直接喂现场日志文本）。
+func portFailKindFromText(s string) string {
+	if !portBlockedInText(s) {
+		return ""
+	}
+	if portInUseInText(s) {
+		return failKindPortInUse
+	}
+	return failKindPortBlocked
+}
+
+// portFailKindFromLog 本次启动窗口的端口失败分类：""（不是端口问题）| failKindPortBlocked |
+// failKindPortInUse。返回值即 ServiceState.FailKind，也是「跳过插件自愈与版本回退」的判据。
+func portFailKindFromLog(offset int64) string {
+	return portFailKindFromText(serverLogLines(bootWindowOffset(offset)))
+}
+
 // reconcileProfileDeps 在 profile 目录执行 pnpm install，把恢复/变更后的依赖树与
 // package.json / 锁文件对齐（重建 .modules.yaml、junction 与虚拟商店引用——即用户手动
 // `pnpm dsh plugin remove/add` 时 pnpm 完成的 reconcile）。网络失败时返回错误，
@@ -601,6 +639,12 @@ func restartAndVerifyHealing(dirs []string) (bool, []string) {
 func startAndVerifyOnce() (bool, string) {
 	if serverResponding(webURL) {
 		return true, ""
+	}
+	// 端口预检（兜底）：调用方在更早处已做过询问，这里只保证端口在预检与 spawn 之间被抢走时
+	// 也不会把端口问题伪装成插件/版本问题（见 portcheck.go 文件头）。
+	if kind, err := probePort(port); kind != portOK {
+		log.Printf("[service] start preflight: port %d %s (%v)", port, kind, err)
+		return false, portFailReason(failKindFor(kind), port) + "。"
 	}
 	before := rotateServerLog()
 	started, exitCh := startServer()

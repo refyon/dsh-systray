@@ -217,6 +217,14 @@ var i18nEnMap = map[string]string{
 	"目标版本为空":     "Target version is empty",
 	"本机 Harness 为源码 checkout 形态，暂不支持自动同步版本（可在常规页手动处理）": "This machine runs Harness from a source checkout — automatic version sync is not supported (use the General page instead)",
 	"安装 %s 未生效（当前仍为 %s）": "Installing %s did not take effect (still %s)",
+
+	// 后台服务端口不可用（Windows 排除端口段 / 被其它程序占用，见 portcheck.go 与 askPortBlocked）
+	"被系统保留（Windows 排除端口段）": "is reserved by Windows (excluded port range)",
+	"已被其它程序占用":             "is already used by another program",
+	"改用端口 %d":              "Use port %d",
+	"重试":                   "Retry",
+	"打开日志":                 "Show logs",
+	"后台服务需要监听 127.0.0.1:%d，但该端口%s，服务无法启动。\n\n改用端口 %d 可立即恢复；若手机等设备按旧端口访问过，请同步更新地址。": "The background service needs to listen on 127.0.0.1:%d, but that port %s, so the service cannot start.\n\nSwitching to port %d restores it right away; if a phone or another device used the old port, update its address too.",
 }
 
 // ghAuthPromptMsg 私有仓库插件的 GitHub 授权询问文案（gh.go 与测试共用）。

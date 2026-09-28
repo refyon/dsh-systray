@@ -180,6 +180,10 @@ func setLaunchTarget(v string) {
 	}[target])
 	launchTargetPref = target
 	launchMismatchAck = "" // 显式设置：之前「保持现状」的确认不再适用（下次不符时重新询问）
+	// 显式切换即当前生效方式：同步漂移检测基线，避免 2 秒轮询的 checkLaunchTargetDrift 把这次
+	// 主动切换误判成「桌面端被卸载后的回退」，再叠一次「是否现在启动后台服务」询问
+	//（2026-09-28 现场：下拉切回 Web UI 时该询问与端口询问叠成多窗口）。
+	rememberLaunchTargetBaseline()
 	saveCurrentConfig()
 	refreshTrayTexts() // 托盘「打开」文案与可见性随启动方式即时切换
 	if launchTargetIsDesktop() {
@@ -190,7 +194,13 @@ func setLaunchTarget(v string) {
 	if running, _, _ := resolveRunningService(); running {
 		return
 	}
-	startServiceBootstrap(true) // 切回 Web UI：幂等启动（服务已在跑则为 no-op）
+	// 切回 Web UI：按需启动。已有引导在跑时 startServiceBootstrap 会拒绝（并发闸门）——此时
+	// 不能静默吞掉：用户点的是「切回 Web UI」，至少要让他知道在等既有流程，否则表现为
+	//「点了没反应」（服务未就绪的超时分支会在后台等最长 15 分钟）。
+	if !startServiceBootstrap(true) {
+		logUI("切换到 Web UI", "已有启动流程在进行，将在其收尾后反映服务状态")
+		log.Printf("[startup] switch to web ignored: service bootstrap already running")
+	}
 }
 
 // stopServiceForDesktopTarget 切到 desktop 启动方式：停止后台服务。
@@ -294,10 +304,16 @@ func (a *App) SetProxy(v string) {
 }
 
 func (a *App) SetPort(p int) {
+	logUI("修改服务端口", fmt.Sprintf("%d", p))
+	applyServerPort(p)
+}
+
+// applyServerPort 设置后台服务端口并持久化（Wails 绑定 SetPort 与启动流程里「改用端口」
+// 的自动切换共用）。非法值忽略。
+func applyServerPort(p int) {
 	if p <= 0 || p > 65535 {
 		return
 	}
-	logUI("修改服务端口", fmt.Sprintf("%d", p))
 	port = p
 	webURL = fmt.Sprintf("http://127.0.0.1:%d/", p)
 	saveCurrentConfig()
@@ -322,6 +338,11 @@ type ServiceState struct {
 	Reason      string `json:"reason"`
 	WebURL      string `json:"webURL"`
 	RunningPort int    `json:"runningPort"`
+	// FailKind 失败分类（"" | port-blocked | port-in-use）：端口不可用与插件/版本失败必须
+	// 分开渲染——前者给「改用推荐端口」一键恢复入口，不做插件自愈。见 portcheck.go。
+	FailKind string `json:"failKind"`
+	// SuggestedPort FailKind=port-* 时推荐的可用端口（0=无）。前端据此显示「改用端口 N 并启动」。
+	SuggestedPort int `json:"suggestedPort"`
 	// TokenFound 是否已持有带令牌的访问链接（帮助页「Web UI 需要重新鉴权」条目据此选择
 	// 正常说明或警告：服务由终端手动启动、日志轮转丢失令牌行时为 false）。
 	TokenFound bool `json:"tokenFound"`
@@ -336,7 +357,18 @@ func (a *App) GetServiceState() ServiceState {
 	last := serverStartedPort
 	if serviceFailed.Load() {
 		s, _ := serviceFailReason.Load().(string)
-		return ServiceState{State: "failed", Reason: s, WebURL: webURL, RunningPort: last}
+		kind, _ := serviceFailKind.Load().(string)
+		suggest := 0
+		if kind == failKindPortBlocked || kind == failKindPortInUse {
+			// 端口确实还不可用才推荐新端口（避免端口已恢复/换过端口后仍报旧结论）
+			if k, _ := probePort(port); k != portOK {
+				suggest = pickFreePort(0)
+			}
+		}
+		return ServiceState{
+			State: "failed", Reason: s, FailKind: kind, SuggestedPort: suggest,
+			WebURL: webURL, RunningPort: last,
+		}
 	}
 	if serverReady.Load() {
 		return ServiceState{State: "stopped", WebURL: webURL, RunningPort: last}
@@ -1590,6 +1622,11 @@ func (a *App) PickHarnessDir() string {
 
 // OpenLogDir 打开日志目录（资源管理器/Finder）。
 func (a *App) OpenLogDir() {
+	openLogDir()
+}
+
+// openLogDir 打开统一日志目录（设置页「日志」入口与「端口不可用」弹窗的「打开日志」按钮共用）。
+func openLogDir() {
 	if logDir == "" {
 		return
 	}
