@@ -148,6 +148,9 @@ type appConfig struct {
 type pendingPluginOp struct {
 	ID string `json:"id"` // 插件行稳定标识（PluginRow.ID）
 	Op string `json:"op"` // update | remove
+	// Profile 登记该变更时的插件环境（web | desktop）：应用时据此只改那个环境。
+	// 旧配置无此字段（空）= 按当前启动方式的环境处理。
+	Profile string `json:"profile,omitempty"`
 	// Risk 删除登记时检测到的会话数据风险（该插件写入的自定义事件）：跨重启保留警示与「修复」入口。
 	Risk *pluginSessionRisk `json:"risk,omitempty"`
 }

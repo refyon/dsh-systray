@@ -116,39 +116,22 @@ func pluginsSourceDir() string {
 	return filepath.Join(dir, "node_modules")
 }
 
-// profilePlugins 定位 profile 目录（含 package.json）并读取其 dependencies ——
-// 即通过 `dsh add` / `dsh plugin add` 安装的插件清单（harness 自带依赖不在其中）。
+// profilePlugins 定位**当前启动方式对应环境**的 profile 目录（含 package.json）并读取其
+// dependencies —— 即通过 `dsh add` / `dsh plugin add` 安装的插件清单（harness 自带依赖不在其中）。
+// 导出与恢复同口径：Web 启动只处理 profiles/web，Desktop 启动只处理 profiles/desktop，
+// 另一环境的插件既不导出也不被覆盖（见 plugin_env.go）。
 func profilePlugins() (profileDir string, deps []string, err error) {
-	home := dshHomeDir()
-	if home == "" {
+	if dshHomeDir() == "" {
 		return "", nil, fmt.Errorf("无法确定 harness 数据目录（DSH_HOME）")
 	}
-	profilesRoot := filepath.Join(home, "profiles")
-	dir := ""
-	if ents, e := os.ReadDir(profilesRoot); e == nil {
-		for _, ent := range ents {
-			if !ent.IsDir() {
-				continue
-			}
-			p := filepath.Join(profilesRoot, ent.Name(), "package.json")
-			if st, e2 := os.Stat(p); e2 == nil && !st.IsDir() {
-				dir = filepath.Join(profilesRoot, ent.Name())
-				break
-			}
-		}
-	}
+	dir, _ := activeProfileDir()
 	if dir == "" {
-		// 兼容旧布局：~/.dsh/profiles/package.json
-		if st, e := os.Stat(filepath.Join(profilesRoot, "package.json")); e == nil && !st.IsDir() {
-			dir = profilesRoot
-		}
-	}
-	if dir == "" {
-		return "", nil, fmt.Errorf("未找到 profile 清单，无法识别通过 dsh add 安装的插件")
+		return "", nil, fmt.Errorf("无法确定 harness 数据目录（DSH_HOME）")
 	}
 	data, e := os.ReadFile(filepath.Join(dir, "package.json"))
 	if e != nil {
-		return "", nil, fmt.Errorf("读取 profile 清单失败：%w", e)
+		return "", nil, fmt.Errorf("当前启动方式的环境（%s）还没有 profile 清单，无法识别通过 dsh add 安装的插件",
+			activePluginProfile())
 	}
 	var m struct {
 		Dependencies map[string]string `json:"dependencies"`
@@ -558,7 +541,8 @@ func parseExportZip(zipPath string) ([]importItem, error) {
 }
 
 // registerRestoredPlugins 读取总 zip 的 manifest，将导出的插件配置（dependencies + dsh.profile.bundles）
-// 合并写入目标 profile 的 package.json，使恢复后的插件被 harness 识别为已安装。
+// 合并写入**当前启动方式对应环境**的 package.json，使恢复后的插件被该环境的 harness 识别为已安装。
+// 只写当前环境（另一环境的清单/文件都不动）；环境目录尚未建立时按需创建。
 // 无 manifest（旧包）或未勾选插件时静默跳过。返回错误只对真正失败的情形。
 func registerRestoredPlugins(masterZipPath string) error {
 	data, err := zipReadFile(masterZipPath, "manifest.json")
@@ -569,26 +553,11 @@ func registerRestoredPlugins(masterZipPath string) error {
 	if err := json.Unmarshal(data, &m); err != nil || m.Plugins.Dependencies == nil {
 		return nil
 	}
-	home := dshHomeDir()
-	if home == "" {
+	dir, _ := activeProfileDir()
+	if dir == "" {
 		return fmt.Errorf("无法确定 harness 数据目录（DSH_HOME）")
 	}
-	// 目标 profile 目录集合：恢复到的 profile（源名，插件文件所在）+ harness 当前激活 profile。
-	dirs := map[string]bool{}
-	if m.Plugins.Profile != "" {
-		dirs[filepath.Join(home, "profiles", m.Plugins.Profile)] = true
-	} else {
-		dirs[filepath.Join(home, "profiles")] = true
-	}
-	if dir, _, err := profilePlugins(); err == nil {
-		dirs[dir] = true
-	}
-	for dir := range dirs {
-		if err := mergePluginConfigIntoProfile(dir, m.Plugins); err != nil {
-			return err
-		}
-	}
-	return nil
+	return mergePluginConfigIntoProfile(dir, m.Plugins)
 }
 
 // mergePluginConfigIntoProfile 把插件依赖与 bundles 合并进指定 profile 的 package.json（不存在则创建）。
@@ -1264,6 +1233,51 @@ func innerZipContentPrefix(kind, zipPath string) string {
 	return ""
 }
 
+// restoreTargetPrefix 子包内容在目标机上的落点前缀（相对 DSH_HOME）：
+// plugins 恒为**当前启动方式对应环境**的 node_modules——插件恢复只对当前环境生效，包内记录的
+// 源 profile 名（另一环境导出时即另一套环境）在这里被改写为本机当前环境；sessions 即其自身前缀。
+func restoreTargetPrefix(kind, zipPath string) string {
+	if kind == "plugins" {
+		return pluginsRestorePrefix()
+	}
+	return innerZipContentPrefix(kind, zipPath)
+}
+
+// pluginsRestorePrefix 插件子包在当前机器上的落点前缀（形如 "profiles/web/node_modules/"）。
+// 当前环境尚未建立时给出按需创建的命名 profile 前缀。
+func pluginsRestorePrefix() string {
+	home := dshHomeDir()
+	if home == "" {
+		return ""
+	}
+	dir, _ := activeProfileDir()
+	if dir == "" {
+		return ""
+	}
+	rel, err := filepath.Rel(home, dir)
+	if err != nil || rel == "." || strings.HasPrefix(rel, "..") {
+		return ""
+	}
+	return filepath.ToSlash(rel) + "/node_modules/"
+}
+
+// pluginZipRemap 跨环境导入时的条目路径改写：把包内源前缀（profiles/<源>/node_modules/）改写为
+// 当前环境的 node_modules 前缀，使插件文件落到当前环境而不是导出机记录的另一环境。
+// 同环境导入（前缀相同）或前缀推导不出时返回 nil——此时走 7z 快速解压、不做改写。
+func pluginZipRemap(zipPath string) func(string) string {
+	src := innerZipContentPrefix("plugins", zipPath)
+	dst := pluginsRestorePrefix()
+	if src == "" || dst == "" || src == dst {
+		return nil
+	}
+	return func(name string) string {
+		if !strings.HasPrefix(name, src) {
+			return "" // 非插件负载条目：跳过，不落到源环境
+		}
+		return dst + name[len(src):]
+	}
+}
+
 // conflictTops 子包顶层条目名（sessions 的 scope 目录 / plugins 的包目录），
 // 前缀以 zip 内容推导为准；files 类目（无公共前缀）返回空。
 func conflictTops(kind, zipPath string) ([]string, error) {
@@ -1304,7 +1318,7 @@ func countRestoreConflicts(kind, zipPath string) (int, error) {
 	if err != nil {
 		return 0, err
 	}
-	prefix := innerZipContentPrefix(kind, zipPath)
+	prefix := restoreTargetPrefix(kind, zipPath)
 	if prefix == "" {
 		return 0, nil
 	}
@@ -1372,7 +1386,11 @@ func restoreItem(kind, zipPath, filesDest string, overwrite bool, onStatus func(
 
 	dest := filesDest
 	backups := map[string]string{} // 原路径 → 备份路径
-	prefix := innerZipContentPrefix(kind, zipPath)
+	prefix := restoreTargetPrefix(kind, zipPath)
+	var remap func(string) string
+	if kind == "plugins" {
+		remap = pluginZipRemap(zipPath)
+	}
 	if kind != "files" {
 		home := dshHomeDir()
 		if home == "" {
@@ -1410,7 +1428,7 @@ func restoreItem(kind, zipPath, filesDest string, overwrite bool, onStatus func(
 		return "", errRestoreCanceled
 	}
 
-	err := zipExtractStop(zipPath, dest, overwrite, stopFn)
+	err := zipExtractRemap(zipPath, dest, overwrite, stopFn, remap)
 	if err != nil {
 		for o, b := range backups {
 			_ = os.Rename(b, o) // 回滚备份
@@ -1592,9 +1610,9 @@ func clearImportJournal() {
 	}
 }
 
-// restoredPluginProfileDirs 插件导入将影响的 profile 目录集合（manifest 源 profile +
-// 当前激活 profile 的并集，去重排序）——与 registerRestoredPlugins 的写入目标一致，
-// 供快照 / 回退使用。manifest 缺失或未含插件配置时返回空。
+// restoredPluginProfileDirs 插件导入将影响的 profile 目录：只有**当前启动方式对应环境**一个
+// （导入只对当前环境生效，manifest 里记录的源 profile 名不再决定落点），与 registerRestoredPlugins
+// 的写入目标一致，供快照 / 回退使用。manifest 缺失或未含插件配置时返回空。
 func restoredPluginProfileDirs(masterZipPath string) []string {
 	data, err := zipReadFile(masterZipPath, "manifest.json")
 	if err != nil {
@@ -1604,25 +1622,11 @@ func restoredPluginProfileDirs(masterZipPath string) []string {
 	if err := json.Unmarshal(data, &m); err != nil || m.Plugins.Dependencies == nil {
 		return nil
 	}
-	home := dshHomeDir()
-	if home == "" {
+	dir, _ := activeProfileDir()
+	if dir == "" {
 		return nil
 	}
-	set := map[string]bool{}
-	if m.Plugins.Profile != "" {
-		set[filepath.Join(home, "profiles", m.Plugins.Profile)] = true
-	} else {
-		set[filepath.Join(home, "profiles")] = true
-	}
-	if dir, _, err := profilePlugins(); err == nil {
-		set[dir] = true
-	}
-	out := make([]string, 0, len(set))
-	for d := range set {
-		out = append(out, d)
-	}
-	sort.Strings(out)
-	return out
+	return []string{dir}
 }
 
 // snapshotImportProfiles 导入插件前快照各 profile：备份 package.json / pnpm-lock.yaml，

@@ -145,7 +145,8 @@ func TestRestoredPluginProfileDirsNilOnNoManifest(t *testing.T) {
 }
 
 func TestRestoredPluginProfileDirsDedupSort(t *testing.T) {
-	// 用临时 DSH_HOME + manifest 验证：目录并集去重排序
+	// 用临时 DSH_HOME + manifest 验证：插件导入只影响当前启动方式的环境（Web UI → profiles/web）
+	stubWebEnv(t)
 	prevHome := os.Getenv("DSH_HOME")
 	home := t.TempDir()
 	t.Setenv("DSH_HOME", home)

@@ -8,6 +8,7 @@ import (
 )
 
 func TestExportImportPipeline(t *testing.T) {
+	stubWebEnv(t)
 	root := t.TempDir()
 	homeA := filepath.Join(root, "homeA")
 	// 源环境：sessions（两个 scope 各一个会话）+ 命名 profile（web）的 plugins + 一个用户目录
@@ -178,6 +179,16 @@ func TestAskStopServerForQuitSkipsPromptInDesktopMode(t *testing.T) {
 	if got := askStopServerForQuit(); got != 0 {
 		t.Fatalf("desktop 模式退出不应询问：应得 0（停止并退出），实际 %d", got)
 	}
+}
+
+// stubWebEnv 把启动方式固定为 Web UI（桌面端按未安装处理、偏好 web），使导出/导入按
+// profiles/web 取插件环境——不依赖测试机是否装了官方桌面端（装了会让 auto 解析成 desktop）。
+func stubWebEnv(t *testing.T) {
+	t.Helper()
+	stubDesktopInstalled(t, false)
+	oldPref := launchTargetPref
+	launchTargetPref = launchTargetWeb
+	t.Cleanup(func() { launchTargetPref = oldPref })
 }
 
 // stubDesktopPref 固定启动方式解析 + 指向未监听的端口（不触碰真实桌面端检测与真实服务）。

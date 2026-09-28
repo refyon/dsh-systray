@@ -41,6 +41,7 @@ const state = {
   splashMode: "startup", // startup | update
   shotPage: "",         // 截图模式当前页（GetShotPage 返回；空=正常模式）
   shotScroll: "",       // 截图模式内容区滚动量（bottom/像素/空）
+  launchResolved: "",   // 当前生效的启动方式（web|desktop）：切换后插件清单要按新环境重拉
 };
 
 // ==================== 界面语言（en 字典；默认 DOM 为中文，zh↔en 就地双向切换） ====================
@@ -285,6 +286,15 @@ const I18N_DYN = {
   "未安装": "not installed",
   "当前版本 {0}": "Version {0}",
   " · 环境 {0}": " · profile {0}",
+  // 插件环境隔离（当前启动方式）：清单与导入/恢复都只针对当前环境，另一环境不显示也不改动
+  "仅显示 Web UI 环境的插件": "Showing only Web UI environment plugins",
+  "仅显示 Desktop UI 环境的插件": "Showing only Desktop UI environment plugins",
+  "Web UI 环境还没有安装插件": "No plugins installed in the Web UI environment",
+  "Desktop UI 环境还没有安装插件": "No plugins installed in the Desktop UI environment",
+  "插件只恢复到 Web UI 环境，Desktop UI 环境的插件不受影响。":
+    "Plugins are restored into the Web UI environment only — the Desktop UI environment is untouched.",
+  "插件只恢复到 Desktop UI 环境，Web UI 环境的插件不受影响。":
+    "Plugins are restored into the Desktop UI environment only — the Web UI environment is untouched.",
   "本地路径：{0}": "Local path: {0}",
   "没有匹配“{0}”的插件": "No plugins match “{0}”",
   "本地": "Local",
@@ -598,6 +608,14 @@ function applyLaunchMode(cfg) {
   // 「安装桌面端」入口：只在未检测到官方桌面端时显示（安装后由 refreshDesktopCard 收起）
   const installBtn = $("btn-install-desktop");
   if (installBtn) installBtn.classList.toggle("hidden", !!cfg.desktopInstalled);
+  // 已安装插件清单说明：清单/行内操作只针对当前启动方式对应的环境（后端按环境过滤，
+  // 见 plugin_env.go；导入/恢复同样只作用于该环境）
+  const psub = $("ab-plugins-sub");
+  if (psub) psub.textContent = desktop ? tr("仅显示 Desktop UI 环境的插件") : tr("仅显示 Web UI 环境的插件");
+  // 启动方式切换会换一整套插件环境：重新拉取清单（首次赋值不拉，进入关于页时本就会加载）
+  const prevLaunch = state.launchResolved;
+  state.launchResolved = cfg.launchResolved || "";
+  if (prevLaunch && prevLaunch !== state.launchResolved) loadPlugins();
   syncLaunchSelect(cfg);
   syncLaunchHint(cfg);
 }
@@ -1284,9 +1302,11 @@ function renderPlugins() {
   });
   const total = state.plugRows.length;
   count.textContent = total ? (shown.length + " / " + total + (curLangCode() === "en" ? "" : " 个")) : "";
+  const desktopEnv = state.cfg && state.cfg.launchResolved === "desktop";
+  const emptyEnv = desktopEnv ? "Desktop UI 环境还没有安装插件" : "Web UI 环境还没有安装插件";
   empty.textContent = total
     ? (shown.length ? "" : fmt("没有匹配“{0}”的插件", state.plugFilter))
-    : (curLangCode() === "en" ? I18N_EN.plugEmpty : "未安装任何插件");
+    : tr(emptyEnv);
   empty.classList.toggle("hidden", shown.length > 0);
   list.textContent = "";
   const frag = document.createDocumentFragment();
@@ -2009,6 +2029,16 @@ function renderImportRows() {
       "</div>";
     div.querySelector("[data-restore]").addEventListener("click", () => impRestore(it));
     div.querySelector("[data-cancel]").addEventListener("click", () => impCancel(it.kind));
+    // 插件项：小字点明恢复范围——插件只落到当前启动方式对应的环境（后端按环境改写落点，
+    // 见 exportimport.go 的 pluginZipRemap），另一环境的插件不受影响。
+    if (it.kind === "plugins") {
+      const note = document.createElement("div");
+      note.className = "row-sub imp-scope-note";
+      note.textContent = tr(state.cfg && state.cfg.launchResolved === "desktop"
+        ? "插件只恢复到 Desktop UI 环境，Web UI 环境的插件不受影响。"
+        : "插件只恢复到 Web UI 环境，Desktop UI 环境的插件不受影响。");
+      div.querySelector(".imp-head").insertAdjacentElement("afterend", note);
+    }
     wrap.appendChild(div);
     // 恢复完成/仍忙碌的行重渲染后恢复状态
     if (state.impDone[it.kind]) syncImpRow(it.kind);

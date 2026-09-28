@@ -100,6 +100,7 @@ func TestMergePluginConfigIntoProfile(t *testing.T) {
 }
 
 func TestRegisterRestoredPlugins(t *testing.T) {
+	stubWebEnv(t)
 	home := t.TempDir()
 	t.Setenv("DSH_HOME", home)
 	// 源 profile

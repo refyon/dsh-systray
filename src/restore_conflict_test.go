@@ -42,6 +42,7 @@ func buildPluginExport(t *testing.T) string {
 // 而非目标机当前布局。此前 pluginsRelPrefix 在目标机无 profile 时回退 "profiles/node_modules/"，
 // 与 zip 内 "profiles/web/node_modules/" 不匹配，导致恢复文件落位/冲突检测错位。
 func TestRestorePluginPrefixComesFromZip(t *testing.T) {
+	stubWebEnv(t)
 	master := buildPluginExport(t)
 	homeB := t.TempDir()
 	t.Setenv("DSH_HOME", homeB)
@@ -68,6 +69,7 @@ func TestRestorePluginPrefixComesFromZip(t *testing.T) {
 // TestRestorePluginConflictIgnoresTargetProfile 回归：目标机存在不同名 profile（default）且其下有同名包时，
 // 冲突检测不得按目标机布局误判——zip 内容属于源 profile web，与 default 无交集。
 func TestRestorePluginConflictIgnoresTargetProfile(t *testing.T) {
+	stubWebEnv(t)
 	master := buildPluginExport(t)
 	homeB := t.TempDir()
 	t.Setenv("DSH_HOME", homeB)

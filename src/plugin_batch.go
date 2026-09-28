@@ -55,6 +55,10 @@ type pluginOpTask struct {
 	// 仅作提示与「修复」入口，不阻断登记与执行；修复后回填复查结果（见 plugin_session_events.go）。
 	risk *pluginSessionRisk
 
+	// profile 登记该变更时的插件环境（web | desktop）：执行期据此把作用目录收窄到这个环境，
+	// 不会因为期间切换了启动方式而改到另一环境的同名插件（见 plugin_env.go）。
+	profile string
+
 	// 结果
 	ok     bool
 	reason string
@@ -90,7 +94,7 @@ func pluginPendingOps() []pendingPluginOp {
 	defer pluginQMu.Unlock()
 	out := make([]pendingPluginOp, 0, len(pluginPending))
 	for _, t := range pluginPending {
-		out = append(out, pendingPluginOp{ID: t.id, Op: t.op, Risk: t.risk})
+		out = append(out, pendingPluginOp{ID: t.id, Op: t.op, Profile: t.profile, Risk: t.risk})
 	}
 	return out
 }
@@ -140,7 +144,8 @@ func pluginPendingList() []PendingPluginChange {
 
 // loadPendingPluginOps 启动时载入持久化的待应用变更（跨托盘重启保留）。逐条按当前插件列表
 // 现场校验：插件已不存在 / 操作已不适用则丢弃，避免恢复出无法执行的条目；返回丢弃条数
-// （>0 时调用方回写配置）。
+// （>0 时调用方回写配置）。每条按登记时的插件环境定位行——期间切换过启动方式也不会把变更
+// 落到另一环境的同名插件上；旧配置没有该字段时按当前启动方式的环境处理。
 func loadPendingPluginOps(ops []pendingPluginOp) int {
 	if len(ops) == 0 {
 		return 0
@@ -149,7 +154,11 @@ func loadPendingPluginOps(ops []pendingPluginOp) int {
 	defer pluginQMu.Unlock()
 	dropped := 0
 	for _, o := range ops {
-		row, ok := findPluginRowByID(o.ID)
+		profile := strings.TrimSpace(o.Profile)
+		if profile == "" {
+			profile = activePluginProfile()
+		}
+		row, ok := findPluginRowInEnv(o.ID, profile)
 		if !ok {
 			dropped++
 			continue
@@ -159,6 +168,7 @@ func loadPendingPluginOps(ops []pendingPluginOp) int {
 			dropped++
 			continue
 		}
+		t.profile = profile
 		t.risk = o.Risk // 跨托盘重启保留上次检测到的风险与「修复」入口
 		dup := false
 		for _, q := range pluginPending {
@@ -265,7 +275,7 @@ func pluginOpStage(id, op string) (bool, string) {
 	if pluginBatchRunning() {
 		return reject("正在应用已登记的插件变更，请等待完成后再操作。")
 	}
-	row, ok := findPluginRowByID(id)
+	row, ok := findActivePluginRowByID(id)
 	if !ok {
 		return reject("未找到该插件，可能已被移除。")
 	}
@@ -273,6 +283,8 @@ func pluginOpStage(id, op string) (bool, string) {
 	if why != "" {
 		return reject(why)
 	}
+	// 记下登记时的环境：执行期据此把作用目录收窄回这个环境（见 syncPluginTaskRow）。
+	t.profile = activePluginProfile()
 	// 删除登记时先查会话数据风险（该插件往会话日志写过自定义事件吗？删掉后有多少会话会打不开）。
 	// 只登记、不阻断：有风险时行内给警示与「修复」入口，由用户决定先修复还是照删。
 	if op == "remove" {
@@ -493,9 +505,14 @@ func serviceStopNeededForPluginOps() bool {
 }
 
 // syncPluginTaskRow 执行前用当前插件状态刷新任务字段（待应用期间插件可能被重新导入、换版本或
-// 改了 spec）：返回 false 表示该插件已不在插件列表中，调用方跳过本项。
+// 改了 spec）：返回 false 表示该插件已不在任务所属环境的插件列表中，调用方跳过本项。
+// 行按任务登记时的环境收窄——待应用期间切换了启动方式也不会改到另一环境的同名插件。
 func syncPluginTaskRow(t *pluginOpTask) bool {
-	row, ok := findPluginRowByID(t.id)
+	profile := t.profile
+	if profile == "" {
+		profile = activePluginProfile() // 旧配置（无 profile 字段）按当前环境
+	}
+	row, ok := findPluginRowInEnv(t.id, profile)
 	if !ok {
 		return false
 	}

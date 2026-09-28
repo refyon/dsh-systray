@@ -710,6 +710,8 @@ input { font-family: inherit; }
 /* 逐项恢复：头部行 + 行内进度/状态（每项独立） */
 .imp-item { flex-direction: column; align-items: stretch; gap: 0; }
 .imp-head { display: flex; align-items: center; justify-content: space-between; gap: var(--sp-4); }
+/* 插件恢复范围小字：插件只落到当前启动方式对应的环境（另一环境不受影响） */
+.imp-scope-note { margin-top: var(--sp-2); }
 .imp-actions { display: flex; align-items: center; gap: var(--sp-2); flex-shrink: 0; }
 .imp-progress-row { margin-top: var(--sp-3); }
 .imp-track {

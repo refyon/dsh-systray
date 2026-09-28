@@ -402,6 +402,22 @@ func zipExtract(zipPath, destDir string, overwrite bool) error {
 	return zipExtractStop(zipPath, destDir, overwrite, nil)
 }
 
+// zipExtractRemap 解压 zip 到 destDir，remap 非空时按条目名改写目标相对路径（返回 "" 跳过该条目，
+// 用于跨环境导入把包内 profile 前缀改写为当前环境）；remap 为空时等同 zipExtractStop（走 7z）。
+// 7z 无法改写条目名，故带 remap 时固定走 Go 原生解压。
+func zipExtractRemap(zipPath, destDir string, overwrite bool, stop func() bool, remap func(string) string) error {
+	if remap == nil {
+		return zipExtractStop(zipPath, destDir, overwrite, stop)
+	}
+	if err := validateZipSafe(zipPath); err != nil {
+		return err
+	}
+	if err := os.MkdirAll(destDir, 0o755); err != nil {
+		return err
+	}
+	return goExtractZipRemapStop(zipPath, destDir, overwrite, stop, remap)
+}
+
 // zipExtractStop 解压到目录，支持取消：stop 非空时在文件循环的检查点询问，
 // 返回 true 表示调用方请求中断（返回 errRestoreCanceled，可能已解出部分文件，由调用方清理/回退）。
 // 优先使用 7z（快）：7z 为单次进程，无法中途停文件，取消通过结束其进程实现。
@@ -459,6 +475,11 @@ func goExtractZip(zipPath, destDir string, overwrite bool) error {
 // goExtractZipStop Go 原生解压（zip 格式，overwrite=false 时跳过已存在文件）；
 // stop 非空时每个文件条目处理前检查一次，返回 true 则中断并返回 errRestoreCanceled。
 func goExtractZipStop(zipPath, destDir string, overwrite bool, stop func() bool) error {
+	return goExtractZipRemapStop(zipPath, destDir, overwrite, stop, nil)
+}
+
+// goExtractZipRemapStop 同上，remap 非空时按条目名改写目标相对路径（返回 "" 跳过该条目）。
+func goExtractZipRemapStop(zipPath, destDir string, overwrite bool, stop func() bool, remap func(string) string) error {
 	zr, err := zip.OpenReader(zipPath)
 	if err != nil {
 		return err
@@ -468,7 +489,14 @@ func goExtractZipStop(zipPath, destDir string, overwrite bool, stop func() bool)
 		if stop != nil && stop() {
 			return errRestoreCanceled
 		}
-		name := filepath.Clean(filepath.FromSlash(f.Name))
+		raw := f.Name
+		if remap != nil {
+			raw = remap(raw)
+			if raw == "" {
+				continue // 改写函数判定为不相关条目（如跨环境导入时非插件负载的路径）
+			}
+		}
+		name := filepath.Clean(filepath.FromSlash(raw))
 		if name == "." || name == ".." || strings.HasPrefix(name, ".."+string(filepath.Separator)) {
 			continue // 非法条目（validateZipSafe 已拦）
 		}

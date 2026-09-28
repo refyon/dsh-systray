@@ -204,6 +204,9 @@
           <div class="card-row">
             <div class="row-text">
               <div class="row-title" data-i18n="abPluginsTitle">已安装插件</div>
+              <!-- 当前启动方式对应的插件环境（Web UI / Desktop UI）：清单、行内操作与导入/恢复
+                   都只针对该环境，另一环境不显示也不改动（文案由 main.js 的 applyLaunchMode 写入） -->
+              <div id="ab-plugins-sub" class="row-sub"></div>
             </div>
             <span id="plug-count" class="plug-count"></span>
           </div>

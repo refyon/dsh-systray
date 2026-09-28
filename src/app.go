@@ -703,12 +703,14 @@ func (a *App) CancelUpdate() {
 
 // GetInstalledPlugins 罗列用户通过 dsh add / dsh web add 安装的插件：
 // 含当前已装版本、安装来源（npm/github/file/tarball）与可否更新。
+// 只返回当前启动方式对应环境的插件（web 启动 → profiles/web，desktop 启动 → profiles/desktop），
+// 另一环境的插件不显示、行内操作也不会落到它上面（见 plugin_env.go）。
 // 截图模式返回演示清单（不暴露真实路径/来源）。
 func (a *App) GetInstalledPlugins() []PluginRow {
 	if shotMode {
 		return shotPlugins()
 	}
-	return markPendingPluginRows(buildPluginRows())
+	return markPendingPluginRows(activePluginRows())
 }
 
 // markPendingPluginRows 给已登记待应用变更的插件行打标记（前端据此显示「待应用」与「撤销」，
@@ -734,7 +736,7 @@ func (a *App) CheckPluginUpdate(id string) PluginCheckResult {
 	if shotMode {
 		return shotPluginCheck(id)
 	}
-	row, ok := findPluginRowByID(id)
+	row, ok := findActivePluginRowByID(id)
 	if !ok {
 		return PluginCheckResult{Name: id, Error: T("未找到该插件，可能已被移除。")}
 	}
@@ -774,7 +776,7 @@ func (a *App) PickLocalPluginPath(id string) PluginLocalPick {
 	if shotMode {
 		return PluginLocalPick{Canceled: true}
 	}
-	row, ok := findPluginRowByID(id)
+	row, ok := findActivePluginRowByID(id)
 	if !ok {
 		return PluginLocalPick{Error: T("未找到该插件，可能已被移除。")}
 	}
@@ -802,7 +804,7 @@ func (a *App) ApplyLocalPluginUpdate(id, dir string) {
 	if shotMode {
 		return
 	}
-	row, ok := findPluginRowByID(id)
+	row, ok := findActivePluginRowByID(id)
 	if !ok {
 		showMessageBox(T("未找到该插件，可能已被移除。"), appName)
 		return
