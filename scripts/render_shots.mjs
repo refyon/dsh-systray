@@ -54,12 +54,13 @@ const DEMO = {
   harnessVersion: "0.1.1",  // 与已发布物料一致的中性演示版本（真实版本随环境变化，不进截图）
   port: 3080,
   webURL: "http://127.0.0.1:3080/",
+  // 插件行 profile 留空：清单已按当前启动方式的环境过滤，行内不再标环境名（见 src/plugin_env.go）
   plugins: [
-    { id: "chat-billing", name: "chat-billing", version: "1.2.0", spec: "^1.2.0", source: "npm", profile: "web", canUpdate: true, reason: "", localDir: "", pendingLocal: false, ghostDisabled: false, disabled: false, disabledReason: "", pendingOp: "" },
-    { id: "session-indexer", name: "session-indexer", version: "0.4.1", spec: "^0.4.1", source: "npm", profile: "web", canUpdate: true, reason: "", localDir: "", pendingLocal: false, ghostDisabled: false, disabled: false, disabledReason: "", pendingOp: "" },
-    { id: "prompt-assistant", name: "prompt-assistant", version: "0.7.3", spec: "github:example/prompt-assistant", source: "github", profile: "web", canUpdate: true, reason: "", localDir: "", pendingLocal: false, ghostDisabled: false, disabled: false, disabledReason: "", pendingOp: "" },
-    { id: "my-dev-tool", name: "my-dev-tool", version: "0.2.0", spec: "file:…/my-dev-tool", source: "file", profile: "web", canUpdate: false, reason: "本地路径安装，无远程来源，无法更新", localDir: "", pendingLocal: false, ghostDisabled: false, disabled: false, disabledReason: "", pendingOp: "" },
-    { id: "legacy-bundle", name: "legacy-bundle", version: "1.8.0", spec: "https://example.com/packages/legacy-bundle-1.8.0.tgz", source: "tarball", profile: "web", canUpdate: false, reason: "以固定压缩包地址安装，无法判断更新", localDir: "", pendingLocal: false, ghostDisabled: false, disabled: false, disabledReason: "", pendingOp: "" },
+    { id: "chat-billing", name: "chat-billing", version: "1.2.0", spec: "^1.2.0", source: "npm", profile: "", canUpdate: true, reason: "", localDir: "", pendingLocal: false, ghostDisabled: false, disabled: false, disabledReason: "", pendingOp: "" },
+    { id: "session-indexer", name: "session-indexer", version: "0.4.1", spec: "^0.4.1", source: "npm", profile: "", canUpdate: true, reason: "", localDir: "", pendingLocal: false, ghostDisabled: false, disabled: false, disabledReason: "", pendingOp: "" },
+    { id: "prompt-assistant", name: "prompt-assistant", version: "0.7.3", spec: "github:example/prompt-assistant", source: "github", profile: "", canUpdate: true, reason: "", localDir: "", pendingLocal: false, ghostDisabled: false, disabled: false, disabledReason: "", pendingOp: "" },
+    { id: "my-dev-tool", name: "my-dev-tool", version: "0.2.0", spec: "file:…/my-dev-tool", source: "file", profile: "", canUpdate: false, reason: "本地路径安装，无远程来源，无法更新", localDir: "", pendingLocal: false, ghostDisabled: false, disabled: false, disabledReason: "", pendingOp: "" },
+    { id: "legacy-bundle", name: "legacy-bundle", version: "1.8.0", spec: "https://example.com/packages/legacy-bundle-1.8.0.tgz", source: "tarball", profile: "", canUpdate: false, reason: "以固定压缩包地址安装，无法判断更新", localDir: "", pendingLocal: false, ghostDisabled: false, disabled: false, disabledReason: "", pendingOp: "" },
   ],
   // 演示日志：与其它演示值口径一致（版本 = DEMO.appVersion，会话数 = GetResetStats.sessionCount）。
   // 行格式与统一日志一致：时间戳 [级别] [模块] 消息。
