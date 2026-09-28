@@ -286,15 +286,14 @@ const I18N_DYN = {
   "未安装": "not installed",
   "当前版本 {0}": "Version {0}",
   " · 环境 {0}": " · profile {0}",
-  // 插件环境隔离（当前启动方式）：清单与导入/恢复都只针对当前环境，另一环境不显示也不改动
+  // 插件环境隔离（当前启动方式）：清单与行内操作只针对当前环境；导出/导入按包内环境各回各家
   "仅显示 Web UI 环境的插件": "Showing only Web UI environment plugins",
   "仅显示 Desktop UI 环境的插件": "Showing only Desktop UI environment plugins",
   "Web UI 环境还没有安装插件": "No plugins installed in the Web UI environment",
   "Desktop UI 环境还没有安装插件": "No plugins installed in the Desktop UI environment",
-  "插件只恢复到 Web UI 环境，Desktop UI 环境的插件不受影响。":
-    "Plugins are restored into the Web UI environment only — the Desktop UI environment is untouched.",
-  "插件只恢复到 Desktop UI 环境，Web UI 环境的插件不受影响。":
-    "Plugins are restored into the Desktop UI environment only — the Web UI environment is untouched.",
+  "plugins.zip · 全部环境（Web UI / Desktop UI）": "plugins.zip · all environments (Web UI / Desktop UI)",
+  "插件按包内环境分别恢复到对应环境（Web UI / Desktop UI 各自独立）；包里没有的环境不受影响。":
+    "Plugins go back to the environments recorded in the bundle (Web UI and Desktop UI stay separate); environments not in the bundle are untouched.",
   "本地路径：{0}": "Local path: {0}",
   "没有匹配“{0}”的插件": "No plugins match “{0}”",
   "本地": "Local",
@@ -1811,7 +1810,7 @@ function renderExportRows() {
   wrap.innerHTML = "";
   const opts = [
     { kind: "sessions", label: "所有历史会话", sub: "sessions.zip · ~/.dsh/sessions" },
-    { kind: "plugins", label: "已安装的插件", sub: "plugins.zip" },
+    { kind: "plugins", label: "已安装的插件", sub: "plugins.zip · 全部环境（Web UI / Desktop UI）" },
     { kind: "files", label: "需要打包的文件目录", sub: "files.zip" },
   ];
   for (const o of opts) {
@@ -2029,14 +2028,12 @@ function renderImportRows() {
       "</div>";
     div.querySelector("[data-restore]").addEventListener("click", () => impRestore(it));
     div.querySelector("[data-cancel]").addEventListener("click", () => impCancel(it.kind));
-    // 插件项：小字点明恢复范围——插件只落到当前启动方式对应的环境（后端按环境改写落点，
-    // 见 exportimport.go 的 pluginZipRemap），另一环境的插件不受影响。
+    // 插件项：小字点明恢复范围——包内每个环境各自落回自己的 profile（web → profiles/web、
+    // desktop → profiles/desktop，见 exportimport.go 的 importPluginTargets）。
     if (it.kind === "plugins") {
       const note = document.createElement("div");
       note.className = "row-sub imp-scope-note";
-      note.textContent = tr(state.cfg && state.cfg.launchResolved === "desktop"
-        ? "插件只恢复到 Desktop UI 环境，Web UI 环境的插件不受影响。"
-        : "插件只恢复到 Web UI 环境，Desktop UI 环境的插件不受影响。");
+      note.textContent = tr("插件按包内环境分别恢复到对应环境（Web UI / Desktop UI 各自独立）；包里没有的环境不受影响。");
       div.querySelector(".imp-head").insertAdjacentElement("afterend", note);
     }
     wrap.appendChild(div);

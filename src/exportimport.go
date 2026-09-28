@@ -47,8 +47,8 @@ type exportManifest struct {
 	Plugins    exportPlugins    `json:"plugins,omitempty"` // 已安装插件清单（用于导入后注册回 harness profile）
 }
 
-// exportPlugins 导出时记录源 profile 的插件配置：dependencies + dsh.profile.bundles + 禁用记录，
-// 供导入后合并写入目标机器 profile 的 package.json，使恢复的插件被 harness 识别为已安装
+// exportPlugins 导出时记录各 harness 环境的插件配置：dependencies + dsh.profile.bundles + 禁用记录，
+// 供导入后合并写入目标机器对应 profile 的 package.json，使恢复的插件被 harness 识别为已安装
 // （禁用插件保持禁用——bundles 不含它，Disabled 记录其禁用原因，供恢复侧展示/维持状态）。
 type exportPlugins struct {
 	Profile      string            `json:"profile,omitempty"`      // 源 profile 名（空 = 旧布局 profiles 根）
@@ -58,6 +58,10 @@ type exportPlugins struct {
 	Versions     map[string]string `json:"versions,omitempty"`     // 插件名 → 导出时实际已装版本（node_modules 读取）：
 	// 导入侧据此做版本感知的副本裁决/刷新（本地插件重复导入后新机仍显示旧版本——
 	// 若无版本快照，目标机已有旧 local-plugins 副本时无法判断导入包是否更新）。
+	// Profiles 各环境的插件配置，键 = profile 名（旧布局根为 ""）——一次导出**全部**环境，
+	// 导入侧按名字各回各家。上面的单环境字段保留为导出机**当前启动方式**那一套：旧版托盘只读它，
+	// 恢复进自己的当前环境（与 v1.1.3 语义一致），新老包互相都能用。
+	Profiles map[string]exportPlugins `json:"profiles,omitempty"`
 }
 
 // importItem 解析出的可恢复项。
@@ -104,46 +108,64 @@ func sessionsSourceDir() string {
 	return filepath.Join(dshHomeDir(), "sessions")
 }
 
-// pluginsSourceDir 已安装插件目录（profile 的 node_modules；优先带名称的 profile，如 web）。
-func pluginsSourceDir() string {
+// collectPluginExport 收集**全部** harness 环境的用户插件（方案 B：一次导出所有 profile）：
+//   - sets：环境名（旧布局根为 ""）→ 该环境的插件配置（dependencies/bundles/disabled/versions）；
+//   - entries：zip 内路径 → 打包源目录（各环境保留自己的 profiles/<name>/node_modules/ 前缀，
+//     导入侧据此各回各家）；
+//   - total：各环境 dependencies 条数合计（仅用于导出项文案）。
+//
+// 只打包用户通过 dsh add 安装的插件及其非 harness 依赖闭包；本地 spec 插件的打包源直取 spec
+// 目标目录（当前版本），而非 node_modules 里的旧快照（见 collectPluginClosure）。
+func collectPluginExport() (sets map[string]exportPlugins, entries map[string]string, total int) {
+	sets = map[string]exportPlugins{}
+	entries = map[string]string{}
 	if dshHomeDir() == "" {
-		return ""
+		return sets, entries, 0
 	}
-	dir, _, err := profilePlugins()
-	if err != nil {
-		return ""
-	}
-	return filepath.Join(dir, "node_modules")
-}
-
-// profilePlugins 定位**当前启动方式对应环境**的 profile 目录（含 package.json）并读取其
-// dependencies —— 即通过 `dsh add` / `dsh plugin add` 安装的插件清单（harness 自带依赖不在其中）。
-// 导出与恢复同口径：Web 启动只处理 profiles/web，Desktop 启动只处理 profiles/desktop，
-// 另一环境的插件既不导出也不被覆盖（见 plugin_env.go）。
-func profilePlugins() (profileDir string, deps []string, err error) {
-	if dshHomeDir() == "" {
-		return "", nil, fmt.Errorf("无法确定 harness 数据目录（DSH_HOME）")
-	}
-	dir, _ := activeProfileDir()
-	if dir == "" {
-		return "", nil, fmt.Errorf("无法确定 harness 数据目录（DSH_HOME）")
-	}
-	data, e := os.ReadFile(filepath.Join(dir, "package.json"))
-	if e != nil {
-		return "", nil, fmt.Errorf("当前启动方式的环境（%s）还没有 profile 清单，无法识别通过 dsh add 安装的插件",
-			activePluginProfile())
-	}
-	var m struct {
-		Dependencies map[string]string `json:"dependencies"`
-	}
-	_ = json.Unmarshal(data, &m)
-	for name := range m.Dependencies {
-		if name != "" {
-			deps = append(deps, name)
+	for _, pf := range enumeratePluginProfiles() {
+		cfg := profilePluginConfig(pf.dir)
+		if len(cfg.Dependencies) == 0 && len(cfg.Bundles) == 0 {
+			continue // 该环境没有用户插件：不进包（空清单无恢复价值）
+		}
+		// 版本快照随 manifest 写入（name → node_modules 实际已装版本），供导入侧版本感知裁决
+		cfg.Versions = pluginVersionSnapshot(pf.dir, cfg.Dependencies)
+		sets[pf.label] = cfg
+		total += len(cfg.Dependencies)
+		root := filepath.Join(pf.dir, "node_modules")
+		if _, err := os.Stat(root); err != nil {
+			log.Printf("export: plugins dir missing %s: %v", root, err)
+			continue
+		}
+		prefix := nodeModulesPrefixOfDir(pf.dir)
+		if prefix == "" {
+			log.Printf("export: profile dir outside DSH_HOME, skipping files: %s", pf.dir)
+			continue
+		}
+		for name, real := range collectPluginClosure(root, pf.dir, cfg.Dependencies) {
+			entries[filepath.ToSlash(filepath.Join(filepath.FromSlash(prefix), filepath.FromSlash(name)))] = real
 		}
 	}
-	sort.Strings(deps)
-	return dir, deps, nil
+	return sets, entries, total
+}
+
+// exportCurrentEnvPlugins 顶层 plugins 段取**当前启动方式**那一套：旧版托盘只读它，恢复进自己的
+// 当前环境（与 v1.1.3 语义一致）。当前环境没有插件时按 web → desktop → 其余（排序）回退，
+// 保证旧版托盘至少能恢复一套，而不是拿到空清单。
+func exportCurrentEnvPlugins(sets map[string]exportPlugins) exportPlugins {
+	for _, name := range []string{activePluginProfile(), accountPluginProfile, launchTargetDesktop} {
+		if s, ok := sets[name]; ok {
+			return s
+		}
+	}
+	names := make([]string, 0, len(sets))
+	for n := range sets {
+		names = append(names, n)
+	}
+	sort.Strings(names)
+	if len(names) > 0 {
+		return sets[names[0]]
+	}
+	return exportPlugins{}
 }
 
 // profilePluginConfig 读取 profile 的 package.json，返回其插件配置
@@ -182,20 +204,16 @@ func profilePluginConfig(dir string) exportPlugins {
 	return cfg
 }
 
-// pluginsRelPrefix 插件在导出 zip 内的路径前缀（相对 DSH_HOME，恢复侧同源），
-// 如 "profiles/web/node_modules/"（命名 profile）或 "profiles/node_modules/"（旧布局）。
-func pluginsRelPrefix() string {
+// nodeModulesPrefixOfDir 目录的 node_modules 在导出 zip / 恢复落点里的路径前缀
+// （相对 DSH_HOME，形如 "profiles/web/node_modules/"）；目录不在 DSH_HOME 内返回 ""。
+func nodeModulesPrefixOfDir(dir string) string {
 	home := dshHomeDir()
-	if home == "" {
-		return "profiles/node_modules/"
-	}
-	dir, _, err := profilePlugins()
-	if err != nil {
-		return "profiles/node_modules/"
+	if home == "" || dir == "" {
+		return ""
 	}
 	rel, err := filepath.Rel(home, filepath.Join(dir, "node_modules"))
 	if err != nil || rel == "." || strings.HasPrefix(rel, "..") {
-		return "profiles/node_modules/"
+		return ""
 	}
 	return filepath.ToSlash(rel) + "/"
 }
@@ -375,39 +393,28 @@ func buildExportZip(includeSessions, includePlugins, includeFiles bool, dirs []s
 
 	progress(onStatus, "正在打包已安装的插件…", 0)
 	if includePlugins {
-		dir, deps, perr := profilePlugins()
+		sets, entries, total := collectPluginExport()
 		switch {
-		case perr != nil:
-			// 无插件清单（从未通过 dsh add 安装插件）：跳过，不中断其余内容的导出
-			log.Printf("export: no plugin profile found, skipping plugins: %v", perr)
-		case len(deps) == 0:
+		case total == 0:
+			// 各环境都没有通过 dsh add 安装的插件：跳过，不中断其余内容的导出
 			log.Printf("export: no plugins installed via dsh add, skipping plugins")
+		case len(entries) == 0:
+			log.Printf("export: plugin files missing in every profile, skipping plugins")
 		default:
-			manifest.Plugins = profilePluginConfig(dir)
-			// 版本快照随 manifest 写入（name → node_modules 实际已装版本），供导入侧版本感知裁决
-			manifest.Plugins.Versions = pluginVersionSnapshot(dir, manifest.Plugins.Dependencies)
-			root := filepath.Join(pluginsSourceDir())
-			if _, err := os.Stat(root); err != nil {
-				log.Printf("export: plugins dir missing %s: %v", root, err)
-			} else {
-				// 仅打包用户通过 dsh add 安装的插件及其非 harness 依赖闭包；
-				// 本地 spec 插件打包源直取 spec 目标目录（当前版本），而非 node_modules 旧快照
-				closure := collectPluginClosure(root, dir, manifest.Plugins.Dependencies)
-				prefix := pluginsRelPrefix()
-				entries := make(map[string]string, len(closure))
-				for name, real := range closure {
-					entries[filepath.ToSlash(filepath.Join(filepath.FromSlash(prefix), filepath.FromSlash(name)))] = real
-				}
-				zp := filepath.Join(tmp, exportZipPlugins)
-				if err := zipCreate(zp, entries, func(p float64) {
-					progress(onStatus, "正在打包已安装的插件…", p)
-				}); err != nil {
-					return "", fmt.Errorf("打包已安装的插件失败：%w", err)
-				}
-				if st, err := os.Stat(zp); err == nil {
-					manifest.Items = append(manifest.Items, exportItemInfo{Kind: "plugins", Label: TF("已安装的插件（%d 个）", len(deps)), Zip: exportZipPlugins, Size: st.Size()})
-					staged[exportZipPlugins] = zp
-				}
+			// 顶层 plugins 段 = 导出机当前启动方式那一套（旧版托盘只读它，恢复进自己的当前环境）；
+			// Profiles 段带全部环境，新版本托盘按名字各回各家。
+			manifest.Plugins = exportCurrentEnvPlugins(sets)
+			manifest.Plugins.Profiles = sets
+			zp := filepath.Join(tmp, exportZipPlugins)
+			if err := zipCreate(zp, entries, func(p float64) {
+				progress(onStatus, "正在打包已安装的插件…", p)
+			}); err != nil {
+				return "", fmt.Errorf("打包已安装的插件失败：%w", err)
+			}
+			if st, err := os.Stat(zp); err == nil {
+				log.Printf("export: plugins from %d profile(s), %d dep(s) total", len(sets), total)
+				manifest.Items = append(manifest.Items, exportItemInfo{Kind: "plugins", Label: TF("已安装的插件（%d 个）", total), Zip: exportZipPlugins, Size: st.Size()})
+				staged[exportZipPlugins] = zp
 			}
 		}
 	}
@@ -540,9 +547,10 @@ func parseExportZip(zipPath string) ([]importItem, error) {
 	return items, nil
 }
 
-// registerRestoredPlugins 读取总 zip 的 manifest，将导出的插件配置（dependencies + dsh.profile.bundles）
-// 合并写入**当前启动方式对应环境**的 package.json，使恢复后的插件被该环境的 harness 识别为已安装。
-// 只写当前环境（另一环境的清单/文件都不动）；环境目录尚未建立时按需创建。
+// registerRestoredPlugins 读取总 zip 的 manifest，把包内各环境的插件配置（dependencies +
+// dsh.profile.bundles）合并写入**对应环境**的 package.json，使恢复后的插件被该环境的 harness
+// 识别为已安装：包内记录 web → profiles/web、desktop → profiles/desktop（各回各家）；旧包没记
+// 环境名时退回当前启动方式对应的环境。环境目录尚未建立时按需创建。
 // 无 manifest（旧包）或未勾选插件时静默跳过。返回错误只对真正失败的情形。
 func registerRestoredPlugins(masterZipPath string) error {
 	data, err := zipReadFile(masterZipPath, "manifest.json")
@@ -550,14 +558,23 @@ func registerRestoredPlugins(masterZipPath string) error {
 		return nil
 	}
 	var m exportManifest
-	if err := json.Unmarshal(data, &m); err != nil || m.Plugins.Dependencies == nil {
+	if err := json.Unmarshal(data, &m); err != nil {
 		return nil
 	}
-	dir, _ := activeProfileDir()
-	if dir == "" {
+	sets := manifestPluginSets(m)
+	if len(sets) == 0 {
+		return nil
+	}
+	dirs, cfgByDir := importPluginTargets(sets)
+	if len(dirs) == 0 {
 		return fmt.Errorf("无法确定 harness 数据目录（DSH_HOME）")
 	}
-	return mergePluginConfigIntoProfile(dir, m.Plugins)
+	for _, dir := range dirs {
+		if err := mergePluginConfigIntoProfile(dir, cfgByDir[dir]); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // mergePluginConfigIntoProfile 把插件依赖与 bundles 合并进指定 profile 的 package.json（不存在则创建）。
@@ -1203,92 +1220,172 @@ func stripBundleEntry(root map[string]interface{}, name string) {
 	}
 }
 
-// sessions → "sessions/"；plugins → 扫描条目得出 "profiles/<profile>/node_modules/"
-// （兼容旧布局 "profiles/node_modules/"）。不依赖目标机器当前 profile 布局，避免源/目标
-// profile 名不一致时冲突检测错位（此前取目标机 pluginsRelPrefix，与 zip 内源机前缀不匹配，
-// 会导致冲突统计恒为 0、覆盖模式不备份）。
-// 无法推导（如 files 类目）返回 ""，调用方按"无冲突"处理。
-func innerZipContentPrefix(kind, zipPath string) string {
-	if kind == "sessions" {
-		return "sessions/"
+// ==================== 子包落点：按包内环境各回各家（方案 B） ====================
+// 导出包可能带**多套环境**的插件（plugins.profiles + 各自的 profiles/<name>/node_modules/ 前缀）。
+// 恢复时：包内记录的环境名 → 本机同名 profile（不存在则按需创建）；环境名缺失（旧布局根，或旧包
+// 没记 profile）→ 退回当前启动方式对应的环境。前缀不一致（旧布局 ↔ 命名 profile）时改写条目路径。
+
+// manifestPluginSets 包内插件配置按环境分组：新包读 plugins.profiles；旧包（只有单环境字段）
+// 退化为「一个环境」（profile 名可能为空 = 旧布局根）。没有插件配置时返回 nil。
+func manifestPluginSets(m exportManifest) map[string]exportPlugins {
+	out := map[string]exportPlugins{}
+	for name, s := range m.Plugins.Profiles {
+		if len(s.Dependencies) == 0 && len(s.Bundles) == 0 {
+			continue
+		}
+		if strings.TrimSpace(s.Profile) == "" {
+			s.Profile = name
+		}
+		out[name] = s
 	}
-	names, err := zipListNames(zipPath)
-	if err != nil {
+	if len(out) > 0 {
+		return out
+	}
+	if m.Plugins.Dependencies == nil && len(m.Plugins.Bundles) == 0 {
+		return nil
+	}
+	return map[string]exportPlugins{m.Plugins.Profile: m.Plugins}
+}
+
+// importPluginTargetDir 某个环境在本机的落点 profile 目录：按名字各回各家（web 环境兼容旧布局
+// 根）；名字为空时退回当前启动方式对应的环境。目录不存在时给出按需创建的路径。
+func importPluginTargetDir(profile string) string {
+	profile = strings.TrimSpace(profile)
+	if profile == "" || profile == activePluginProfile() {
+		dir, _ := activeProfileDir()
+		return dir
+	}
+	if dir, ok := profileDirForEnv(profile); ok {
+		return dir
+	}
+	home := dshHomeDir()
+	if home == "" {
 		return ""
 	}
+	return filepath.Join(home, "profiles", profile)
+}
+
+// importPluginTargets 包内各环境的插件配置 → 本机落点：返回目录列表（去重排序）与
+// 「目录 → 该目录要写入的配置」。两个环境映射到同一目录（如旧布局根与 web）时只保留第一个。
+func importPluginTargets(sets map[string]exportPlugins) (dirs []string, cfgByDir map[string]exportPlugins) {
+	cfgByDir = map[string]exportPlugins{}
+	seen := map[string]bool{}
+	names := make([]string, 0, len(sets))
+	for n := range sets {
+		names = append(names, n)
+	}
+	sort.Strings(names)
+	for _, name := range names {
+		dir := importPluginTargetDir(name)
+		if dir == "" {
+			continue
+		}
+		if seen[dir] {
+			log.Printf("import: profile %q shares target dir %s with another env, keeping the first", name, dir)
+			continue
+		}
+		seen[dir] = true
+		cfgByDir[dir] = sets[name]
+		dirs = append(dirs, dir)
+	}
+	sort.Strings(dirs)
+	return dirs, cfgByDir
+}
+
+// zipPluginPrefixes 插件子包内的全部环境前缀（形如 "profiles/web/node_modules/"，
+// 旧布局为 "profiles/node_modules/"），去重排序。
+func zipPluginPrefixes(zipPath string) []string {
+	names, err := zipListNames(zipPath)
+	if err != nil {
+		return nil
+	}
+	seen := map[string]bool{}
+	var out []string
 	for _, n := range names {
 		if !strings.HasPrefix(n, "profiles/") {
 			continue
 		}
 		parts := strings.Split(n, "/")
-		if len(parts) >= 2 && parts[1] == "node_modules" {
-			return "profiles/node_modules/" // 旧布局：profiles 即 profile 根
-		}
-		for i := 2; i < len(parts); i++ {
-			if parts[i] == "node_modules" {
-				return strings.Join(parts[:i+1], "/") + "/"
+		for i := 1; i < len(parts); i++ {
+			if parts[i] != "node_modules" {
+				continue
 			}
+			p := strings.Join(parts[:i+1], "/") + "/"
+			if !seen[p] {
+				seen[p] = true
+				out = append(out, p)
+			}
+			break
 		}
 	}
-	return ""
+	sort.Strings(out)
+	return out
 }
 
-// restoreTargetPrefix 子包内容在目标机上的落点前缀（相对 DSH_HOME）：
-// plugins 恒为**当前启动方式对应环境**的 node_modules——插件恢复只对当前环境生效，包内记录的
-// 源 profile 名（另一环境导出时即另一套环境）在这里被改写为本机当前环境；sessions 即其自身前缀。
-func restoreTargetPrefix(kind, zipPath string) string {
-	if kind == "plugins" {
-		return pluginsRestorePrefix()
-	}
-	return innerZipContentPrefix(kind, zipPath)
-}
-
-// pluginsRestorePrefix 插件子包在当前机器上的落点前缀（形如 "profiles/web/node_modules/"）。
-// 当前环境尚未建立时给出按需创建的命名 profile 前缀。
-func pluginsRestorePrefix() string {
-	home := dshHomeDir()
-	if home == "" {
+// pluginPrefixEnvName 从包内插件前缀取环境名（"profiles/web/node_modules/" → "web"；
+// 旧布局 "profiles/node_modules/" → ""）。
+func pluginPrefixEnvName(prefix string) string {
+	rest := strings.TrimSuffix(strings.TrimPrefix(prefix, "profiles/"), "/")
+	parts := strings.SplitN(rest, "/", 2)
+	if len(parts) == 0 || parts[0] == "" || parts[0] == "node_modules" {
 		return ""
 	}
-	dir, _ := activeProfileDir()
-	if dir == "" {
-		return ""
-	}
-	rel, err := filepath.Rel(home, dir)
-	if err != nil || rel == "." || strings.HasPrefix(rel, "..") {
-		return ""
-	}
-	return filepath.ToSlash(rel) + "/node_modules/"
+	return parts[0]
 }
 
-// pluginZipRemap 跨环境导入时的条目路径改写：把包内源前缀（profiles/<源>/node_modules/）改写为
-// 当前环境的 node_modules 前缀，使插件文件落到当前环境而不是导出机记录的另一环境。
-// 同环境导入（前缀相同）或前缀推导不出时返回 nil——此时走 7z 快速解压、不做改写。
-func pluginZipRemap(zipPath string) func(string) string {
-	src := innerZipContentPrefix("plugins", zipPath)
-	dst := pluginsRestorePrefix()
-	if src == "" || dst == "" || src == dst {
-		return nil
-	}
-	return func(name string) string {
-		if !strings.HasPrefix(name, src) {
-			return "" // 非插件负载条目：跳过，不落到源环境
-		}
-		return dst + name[len(src):]
-	}
+// restoreConflict 一个可能被覆盖/新增的落点条目：目标前缀（相对 DSH_HOME）+ 顶层条目名。
+// 插件包带多套环境时，同一顶层名可能出现在多个前缀下（各环境各一份）。
+type restoreConflict struct {
+	Prefix string
+	Top    string
 }
 
-// conflictTops 子包顶层条目名（sessions 的 scope 目录 / plugins 的包目录），
-// 前缀以 zip 内容推导为准；files 类目（无公共前缀）返回空。
-func conflictTops(kind, zipPath string) ([]string, error) {
+// restoreConflicts kind 子包在目标机上会落地的顶层条目。sessions 单前缀；plugins 按包内每个
+// 环境分别给出（目标前缀 = 该环境在本机的落点）；files 类目无公共前缀，返回空。
+func restoreConflicts(kind, zipPath string) ([]restoreConflict, error) {
 	names, err := zipListNames(zipPath)
 	if err != nil {
 		return nil, err
 	}
-	prefix := innerZipContentPrefix(kind, zipPath)
-	if prefix == "" {
+	type prefixPair struct{ src, dst string }
+	var pairs []prefixPair
+	switch kind {
+	case "sessions":
+		pairs = append(pairs, prefixPair{"sessions/", "sessions/"})
+	case "plugins":
+		for _, src := range zipPluginPrefixes(zipPath) {
+			dst := nodeModulesPrefixOfDir(importPluginTargetDir(pluginPrefixEnvName(src)))
+			if dst == "" {
+				continue
+			}
+			pairs = append(pairs, prefixPair{src, dst})
+		}
+	default:
 		return nil, nil
 	}
+	var out []restoreConflict
+	seen := map[string]bool{}
+	for _, p := range pairs {
+		for _, top := range zipPrefixTops(names, p.src) {
+			key := p.dst + "\x00" + top
+			if seen[key] {
+				continue
+			}
+			seen[key] = true
+			out = append(out, restoreConflict{Prefix: p.dst, Top: top})
+		}
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].Prefix != out[j].Prefix {
+			return out[i].Prefix < out[j].Prefix
+		}
+		return out[i].Top < out[j].Top
+	})
+	return out, nil
+}
+
+// zipPrefixTops 前缀下的顶层条目名（去重排序）。
+func zipPrefixTops(names []string, prefix string) []string {
 	seen := map[string]bool{}
 	var tops []string
 	for _, n := range names {
@@ -1296,39 +1393,83 @@ func conflictTops(kind, zipPath string) ([]string, error) {
 			continue
 		}
 		rest := strings.TrimPrefix(n, prefix)
-		if rest == "" {
-			continue
-		}
 		top := rest
 		if i := strings.Index(rest, "/"); i >= 0 {
 			top = rest[:i]
 		}
-		if !seen[top] {
-			seen[top] = true
-			tops = append(tops, top)
+		if top == "" || seen[top] {
+			continue
+		}
+		seen[top] = true
+		tops = append(tops, top)
+	}
+	sort.Strings(tops)
+	return tops
+}
+
+// pluginZipRemap 跨布局导入时的条目路径改写：包内每个环境前缀改写到该环境在本机的落点前缀
+// （前缀已一致的环境保持原样，条目按原路径解出即可——各回各家）。全部恒等时返回 nil，
+// 此时走 7z 快速解压。
+func pluginZipRemap(zipPath string) func(string) string {
+	var srcs, dsts []string
+	changed := false
+	for _, src := range zipPluginPrefixes(zipPath) {
+		dst := nodeModulesPrefixOfDir(importPluginTargetDir(pluginPrefixEnvName(src)))
+		if dst == "" {
+			continue
+		}
+		srcs = append(srcs, src)
+		dsts = append(dsts, dst)
+		if dst != src {
+			changed = true
+		}
+	}
+	if !changed {
+		return nil
+	}
+	return func(name string) string {
+		for i, src := range srcs {
+			if strings.HasPrefix(name, src) {
+				return dsts[i] + name[len(src):]
+			}
+		}
+		return name // 前缀之外/未知布局：按原路径解出，不丢内容
+	}
+}
+
+// conflictTops 子包顶层条目名（sessions 的 scope 目录 / plugins 各环境的包目录），去重排序；
+// files 类目（无公共前缀）返回空。展示用（如冲突弹窗列出会被覆盖的名字）。
+func conflictTops(kind, zipPath string) ([]string, error) {
+	entries, err := restoreConflicts(kind, zipPath)
+	if err != nil {
+		return nil, err
+	}
+	seen := map[string]bool{}
+	var tops []string
+	for _, e := range entries {
+		if !seen[e.Top] {
+			seen[e.Top] = true
+			tops = append(tops, e.Top)
 		}
 	}
 	sort.Strings(tops)
 	return tops, nil
 }
 
-// countRestoreConflicts 恢复会话/插件前统计与当前环境的冲突项数（顶层目录已存在即冲突）。
+// countRestoreConflicts 恢复会话/插件前统计与当前环境的冲突项数（顶层目录已存在即冲突）；
+// 插件包带多套环境时按各自落点分别统计。
 func countRestoreConflicts(kind, zipPath string) (int, error) {
-	tops, err := conflictTops(kind, zipPath)
+	entries, err := restoreConflicts(kind, zipPath)
 	if err != nil {
 		return 0, err
-	}
-	prefix := restoreTargetPrefix(kind, zipPath)
-	if prefix == "" {
-		return 0, nil
 	}
 	home := dshHomeDir()
 	if home == "" {
 		return 0, fmt.Errorf("无法确定 harness 数据目录（DSH_HOME）")
 	}
 	n := 0
-	for _, top := range tops {
-		p := filepath.Join(home, filepath.FromSlash(prefix), filepath.FromSlash(top))
+	for _, e := range entries {
+		p := filepath.Join(home, filepath.FromSlash(e.Prefix), filepath.FromSlash(e.Top))
 		if _, err := os.Stat(p); err == nil {
 			n++
 		}
@@ -1386,7 +1527,6 @@ func restoreItem(kind, zipPath, filesDest string, overwrite bool, onStatus func(
 
 	dest := filesDest
 	backups := map[string]string{} // 原路径 → 备份路径
-	prefix := restoreTargetPrefix(kind, zipPath)
 	var remap func(string) string
 	if kind == "plugins" {
 		remap = pluginZipRemap(zipPath)
@@ -1397,15 +1537,16 @@ func restoreItem(kind, zipPath, filesDest string, overwrite bool, onStatus func(
 			return "", fmt.Errorf("无法确定 harness 数据目录（DSH_HOME）")
 		}
 		dest = home
-		if overwrite && prefix != "" {
-			// 冲突顶层目录先改名备份（同卷瞬间完成），失败可回滚
-			tops, err := conflictTops(kind, zipPath)
+		if overwrite {
+			// 冲突顶层目录先改名备份（同卷瞬间完成），失败可回滚；
+			// 插件包带多套环境时逐个落点（各环境各一份）处理。
+			conflicts, err := restoreConflicts(kind, zipPath)
 			if err != nil {
 				return "", err
 			}
 			ts := time.Now().Format("20060102-150405") + "-" + newExportUUID()[:4]
-			for _, top := range tops {
-				orig := filepath.Join(home, filepath.FromSlash(prefix), filepath.FromSlash(top))
+			for _, c := range conflicts {
+				orig := filepath.Join(home, filepath.FromSlash(c.Prefix), filepath.FromSlash(c.Top))
 				if _, err := os.Stat(orig); err != nil {
 					continue
 				}
@@ -1415,7 +1556,7 @@ func restoreItem(kind, zipPath, filesDest string, overwrite bool, onStatus func(
 					for o, b := range backups {
 						_ = os.Rename(b, o)
 					}
-					return "", fmt.Errorf("备份现有数据失败（%s）：%w", top, err)
+					return "", fmt.Errorf("备份现有数据失败（%s）：%w", c.Top, err)
 				}
 				backups[orig] = bak
 			}
@@ -1610,23 +1751,24 @@ func clearImportJournal() {
 	}
 }
 
-// restoredPluginProfileDirs 插件导入将影响的 profile 目录：只有**当前启动方式对应环境**一个
-// （导入只对当前环境生效，manifest 里记录的源 profile 名不再决定落点），与 registerRestoredPlugins
-// 的写入目标一致，供快照 / 回退使用。manifest 缺失或未含插件配置时返回空。
+// restoredPluginProfileDirs 插件导入将影响的 profile 目录：包内**每个环境各自的落点**
+// （web → profiles/web、desktop → profiles/desktop；旧包没记环境名时退回当前启动方式的环境），
+// 与 registerRestoredPlugins 的写入目标一致，供快照 / 回退使用。manifest 缺失或未含插件配置时返回空。
 func restoredPluginProfileDirs(masterZipPath string) []string {
 	data, err := zipReadFile(masterZipPath, "manifest.json")
 	if err != nil {
 		return nil
 	}
 	var m exportManifest
-	if err := json.Unmarshal(data, &m); err != nil || m.Plugins.Dependencies == nil {
+	if err := json.Unmarshal(data, &m); err != nil {
 		return nil
 	}
-	dir, _ := activeProfileDir()
-	if dir == "" {
+	sets := manifestPluginSets(m)
+	if len(sets) == 0 {
 		return nil
 	}
-	return []string{dir}
+	dirs, _ := importPluginTargets(sets)
+	return dirs
 }
 
 // snapshotImportProfiles 导入插件前快照各 profile：备份 package.json / pnpm-lock.yaml，
@@ -1712,8 +1854,8 @@ func promoteImportProfilesToLkg(dirs []string) {
 	}
 }
 
-// restoredPluginNames 从导入包 manifest 取本次恢复覆盖的插件名（dependencies 与 bundles 的
-// 并集，兼容 name@version 变体），供「按最后操作生效」对账待应用变更。
+// restoredPluginNames 从导入包 manifest 取本次恢复覆盖的插件名（**包内各环境**的 dependencies
+// 与 bundles 并集，兼容 name@version 变体），供「按最后操作生效」对账待应用变更。
 func restoredPluginNames(masterZipPath string) []string {
 	data, err := zipReadFile(masterZipPath, "manifest.json")
 	if err != nil {
@@ -1736,11 +1878,13 @@ func restoredPluginNames(masterZipPath string) []string {
 			set[base] = true
 		}
 	}
-	for name := range m.Plugins.Dependencies {
-		add(name)
-	}
-	for _, b := range m.Plugins.Bundles {
-		add(b)
+	for _, cfg := range manifestPluginSets(m) {
+		for name := range cfg.Dependencies {
+			add(name)
+		}
+		for _, b := range cfg.Bundles {
+			add(b)
+		}
 	}
 	out := make([]string, 0, len(set))
 	for n := range set {

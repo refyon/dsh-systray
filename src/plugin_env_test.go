@@ -103,36 +103,59 @@ func TestFindActivePluginRowScopesToEnv(t *testing.T) {
 	}
 }
 
-// TestProfilePluginsFollowsLaunchTarget 导出取插件清单同样按当前环境：Desktop 启动方式读
-// profiles/desktop（源机另一环境的插件不会被导出），Web 启动方式读 profiles/web。
-func TestProfilePluginsFollowsLaunchTarget(t *testing.T) {
+// TestExportCollectsAllProfiles 方案 B：导出一次带走**全部** harness 环境的插件——
+// manifest 的 plugins.profiles 按环境分组（web / desktop 各自一份清单），plugins.zip 内保留
+// 各环境自己的 profiles/<name>/node_modules/ 前缀；顶层 plugins 段留给旧版托盘（= 导出机当前
+// 启动方式那一套）。
+func TestExportCollectsAllProfiles(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("DSH_HOME", home)
-	writeTestProfile(t, home, "web", map[string]string{"pkg-web": "^1.0.0"}, nil)
-	writeTestProfile(t, home, "desktop", map[string]string{"pkg-desk": "^2.0.0"}, nil)
+	writeTestProfile(t, home, "web", map[string]string{"pkg-web": "^1.0.0"},
+		map[string]string{"pkg-web": "1.0.0"})
+	writeTestProfile(t, home, "desktop", map[string]string{"pkg-desk": "^2.0.0"},
+		map[string]string{"pkg-desk": "2.0.0"})
 
-	stubDesktopPref(t, launchTargetWeb)
-	dir, deps, err := profilePlugins()
+	stubDesktopPref(t, launchTargetWeb) // 导出机当前启动方式：Web UI
+	dest := filepath.Join(home, "exports")
+	if err := os.MkdirAll(dest, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	master, err := buildExportZip(false, true, false, nil, dest, nil, "")
+	if err != nil {
+		t.Fatalf("buildExportZip: %v", err)
+	}
+
+	mfData, err := zipReadFile(master, "manifest.json")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !sameProfileDir(dir, filepath.Join(home, "profiles", "web")) || len(deps) != 1 || deps[0] != "pkg-web" {
-		t.Fatalf("Web 启动应取 profiles/web 的插件：dir=%q deps=%v", dir, deps)
-	}
-
-	stubDesktopPref(t, launchTargetDesktop)
-	dir, deps, err = profilePlugins()
-	if err != nil {
+	var m exportManifest
+	if err := json.Unmarshal(mfData, &m); err != nil {
 		t.Fatal(err)
 	}
-	if !sameProfileDir(dir, filepath.Join(home, "profiles", "desktop")) || len(deps) != 1 || deps[0] != "pkg-desk" {
-		t.Fatalf("Desktop 启动应取 profiles/desktop 的插件：dir=%q deps=%v", dir, deps)
+	if len(m.Plugins.Profiles) != 2 {
+		t.Fatalf("应导出全部环境：%+v", m.Plugins.Profiles)
+	}
+	if _, ok := m.Plugins.Profiles["web"].Dependencies["pkg-web"]; !ok {
+		t.Fatalf("web 环境清单缺失：%+v", m.Plugins.Profiles["web"])
+	}
+	if _, ok := m.Plugins.Profiles["desktop"].Dependencies["pkg-desk"]; !ok {
+		t.Fatalf("desktop 环境清单缺失：%+v", m.Plugins.Profiles["desktop"])
+	}
+	if m.Plugins.Profile != "web" || m.Plugins.Dependencies["pkg-web"] == "" {
+		t.Fatalf("顶层 plugins 段应为当前环境（web）：%+v", m.Plugins)
+	}
+
+	inner := mustInner(t, master, exportZipPlugins)
+	wantPrefixes := []string{"profiles/desktop/node_modules/", "profiles/web/node_modules/"}
+	if got := zipPluginPrefixes(inner); !reflect.DeepEqual(got, wantPrefixes) {
+		t.Fatalf("包内应带两套环境前缀 %v：got %v", wantPrefixes, got)
 	}
 }
 
-// TestPluginImportTargetsActiveEnvOnly 插件导入只作用于当前启动方式的环境：包内记录的源
-// profile（web）不决定落点，manifest 配置也只写进 profiles/desktop，web 环境原样不变。
-func TestPluginImportTargetsActiveEnvOnly(t *testing.T) {
+// TestPluginImportTargetsFollowBundleProfiles 方案 B：导入按包内环境各回各家——旧包（只有
+// 单环境字段，profile=web）在 Desktop 启动方式下也恢复进 profiles/web，当前环境不受牵连。
+func TestPluginImportTargetsFollowBundleProfiles(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("DSH_HOME", home)
 	writeTestProfile(t, home, "web", map[string]string{"keep-web": "^1.0.0"}, nil)
@@ -145,66 +168,133 @@ func TestPluginImportTargetsActiveEnvOnly(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	want := []string{filepath.Join(home, "profiles", "desktop")}
+	want := []string{filepath.Join(home, "profiles", "web")}
 	if got := restoredPluginProfileDirs(zipPath); !reflect.DeepEqual(got, want) {
-		t.Fatalf("快照/回退目录应只有当前环境：got %v want %v", got, want)
+		t.Fatalf("快照/回退目录应为包内环境（web）：got %v want %v", got, want)
 	}
 	if err := registerRestoredPlugins(zipPath); err != nil {
 		t.Fatal(err)
 	}
-	deskRoot := map[string]any{}
-	data, err := os.ReadFile(filepath.Join(home, "profiles", "desktop", "package.json"))
+	webRoot := map[string]any{}
+	data, err := os.ReadFile(filepath.Join(home, "profiles", "web", "package.json"))
 	if err != nil {
-		t.Fatalf("Desktop 环境应被创建并写入清单：%v", err)
-	}
-	if err := json.Unmarshal(data, &deskRoot); err != nil {
 		t.Fatal(err)
 	}
-	deps, _ := deskRoot["dependencies"].(map[string]any)
-	if _, ok := deps["pkg-a"]; !ok {
-		t.Fatalf("Desktop 环境应写入导入的插件依赖：%s", data)
+	if err := json.Unmarshal(data, &webRoot); err != nil {
+		t.Fatal(err)
 	}
-	webData, _ := os.ReadFile(filepath.Join(home, "profiles", "web", "package.json"))
-	if strings.Contains(string(webData), "pkg-a") {
-		t.Fatalf("Web 环境不应被导入改动：%s", webData)
+	deps, _ := webRoot["dependencies"].(map[string]any)
+	if _, ok := deps["pkg-a"]; !ok {
+		t.Fatalf("Web 环境应写入导入的插件依赖：%s", data)
+	}
+	if _, err := os.Stat(filepath.Join(home, "profiles", "desktop")); !os.IsNotExist(err) {
+		t.Fatalf("当前环境（desktop）不该被这次导入创建/改动：err=%v", err)
 	}
 }
 
-// TestPluginRestoreRewritesIntoActiveEnv 跨启动方式导入：包内前缀 profiles/web/node_modules/
-// 被改写为当前环境的 profiles/desktop/node_modules/，插件文件落到当前环境，源环境不被写入；
-// 冲突统计同样按当前环境落点。
-func TestPluginRestoreRewritesIntoActiveEnv(t *testing.T) {
-	stubWebEnv(t) // 源机：Web 启动方式（导出包前缀 profiles/web/node_modules/）
-	master := buildPluginExport(t)
+// TestPluginRestoreAllProfiles 方案 B 的落点：两套环境的包各自解到自己的 profiles/<name>；
+// 旧布局前缀（profiles/node_modules/）在命名 profile 机器上改写为当前环境的落点。
+func TestPluginRestoreAllProfiles(t *testing.T) {
+	stubWebEnv(t)
+	master := buildPluginExport(t) // 源机：Web 环境导出（前缀 profiles/web/node_modules/）
+
+	inner := mustInner(t, master, exportZipPlugins)
+	if got := zipPluginPrefixes(inner); !reflect.DeepEqual(got, []string{"profiles/web/node_modules/"}) {
+		t.Fatalf("包内前缀应来自源机：%v", got)
+	}
 
 	homeB := t.TempDir()
 	t.Setenv("DSH_HOME", homeB)
-	inner := mustInner(t, master, exportZipPlugins)
-	if prefix := innerZipContentPrefix("plugins", inner); prefix != "profiles/web/node_modules/" {
-		t.Fatalf("包内前缀应来自源机：%q", prefix)
-	}
+	stubDesktopPref(t, launchTargetDesktop) // 目标机当前启动方式是 Desktop，但包内是 web 环境
 	if rm := pluginZipRemap(inner); rm != nil {
-		t.Fatal("同环境导入不应改写条目路径（走 7z 快速解压）")
-	}
-
-	stubDesktopPref(t, launchTargetDesktop) // 目标机：Desktop 启动方式
-	if rm := pluginZipRemap(inner); rm == nil {
-		t.Fatal("跨环境导入必须改写条目路径")
-	}
-	if n, err := countRestoreConflicts("plugins", inner); err != nil || n != 0 {
-		t.Fatalf("新环境无冲突：n=%d err=%v", n, err)
+		t.Fatal("包内环境已有同名落点，不应改写条目路径（走 7z 快速解压）")
 	}
 	if _, err := restoreItem("plugins", inner, "", true, nil); err != nil {
 		t.Fatalf("restore plugins: %v", err)
 	}
-	if _, err := os.Stat(filepath.Join(homeB, "profiles", "desktop", "node_modules", "pkg-a", "index.js")); err != nil {
-		t.Fatalf("插件应落到当前环境（profiles/desktop）：%v", err)
-	}
-	if _, err := os.Stat(filepath.Join(homeB, "profiles", "web")); !os.IsNotExist(err) {
-		t.Fatalf("源环境（profiles/web）不应被写入：err=%v", err)
+	if _, err := os.Stat(filepath.Join(homeB, "profiles", "web", "node_modules", "pkg-a", "index.js")); err != nil {
+		t.Fatalf("插件应各回各家（profiles/web）：%v", err)
 	}
 	if n, _ := countRestoreConflicts("plugins", inner); n != 1 {
-		t.Fatalf("冲突应按当前环境统计（1 项）：got %d", n)
+		t.Fatalf("冲突应按包内环境的落点统计（1 项）：got %d", n)
+	}
+
+	// 旧布局前缀 → 命名 profile 落点：需要改写条目路径
+	legacy := filepath.Join(homeB, "legacy.zip")
+	src := filepath.Join(homeB, "legacy-src", "pkg-old", "index.js")
+	if err := os.MkdirAll(filepath.Dir(src), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(src, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := zipCreate(legacy, map[string]string{"profiles/node_modules/pkg-old": filepath.Dir(src)}, nil); err != nil {
+		t.Fatal(err)
+	}
+	rm := pluginZipRemap(legacy)
+	if rm == nil {
+		t.Fatal("旧布局前缀在命名 profile 机器上必须改写")
+	}
+	if got := rm("profiles/node_modules/pkg-old/index.js"); !strings.HasPrefix(got, "profiles/desktop/node_modules/pkg-old/") {
+		t.Fatalf("旧布局前缀应改写为当前环境落点：%q", got)
+	}
+}
+
+// TestExportImportRoundTripAllProfiles 方案 B 端到端：两套环境的导出包，在全新数据目录里
+// 一次恢复——文件与清单各回各家，互不混装（目标机当前启动方式与源机不同也不影响）。
+func TestExportImportRoundTripAllProfiles(t *testing.T) {
+	stubWebEnv(t)
+	homeA := t.TempDir()
+	t.Setenv("DSH_HOME", homeA)
+	writeTestProfile(t, homeA, "web", map[string]string{"pkg-web": "^1.0.0"},
+		map[string]string{"pkg-web": "1.0.0"})
+	writeTestProfile(t, homeA, "desktop", map[string]string{"pkg-desk": "^2.0.0"},
+		map[string]string{"pkg-desk": "2.0.0"})
+	dest := filepath.Join(homeA, "exports")
+	if err := os.MkdirAll(dest, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	master, err := buildExportZip(false, true, false, nil, dest, nil, "")
+	if err != nil {
+		t.Fatalf("buildExportZip: %v", err)
+	}
+
+	homeB := t.TempDir()
+	t.Setenv("DSH_HOME", homeB)
+	stubDesktopPref(t, launchTargetDesktop) // 目标机当前启动方式：Desktop UI（源机是 Web）
+
+	wantDirs := []string{
+		filepath.Join(homeB, "profiles", "desktop"),
+		filepath.Join(homeB, "profiles", "web"),
+	}
+	if got := restoredPluginProfileDirs(master); !reflect.DeepEqual(got, wantDirs) {
+		t.Fatalf("恢复目标应为两套环境 %v：got %v", wantDirs, got)
+	}
+	if _, err := restoreItem("plugins", mustInner(t, master, exportZipPlugins), "", true, nil); err != nil {
+		t.Fatalf("restore plugins: %v", err)
+	}
+	if err := registerRestoredPlugins(master); err != nil {
+		t.Fatalf("register plugins: %v", err)
+	}
+
+	for _, c := range []struct{ profile, want, notWant string }{
+		{"web", "pkg-web", "pkg-desk"},
+		{"desktop", "pkg-desk", "pkg-web"},
+	} {
+		pkgFile := filepath.Join(homeB, "profiles", c.profile, "node_modules", c.want, "package.json")
+		if _, err := os.Stat(pkgFile); err != nil {
+			t.Fatalf("%s 环境的插件文件应恢复到位：%v", c.profile, err)
+		}
+		data, err := os.ReadFile(filepath.Join(homeB, "profiles", c.profile, "package.json"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(string(data), c.want) {
+			t.Fatalf("%s 环境清单应写入自己的依赖 %s：%s", c.profile, c.want, data)
+		}
+		if strings.Contains(string(data), c.notWant) {
+			t.Fatalf("%s 环境不该拿到另一环境的依赖 %s：%s", c.profile, c.notWant, data)
+		}
 	}
 }
 

@@ -38,9 +38,9 @@ func buildPluginExport(t *testing.T) string {
 	return p
 }
 
-// TestRestorePluginPrefixComesFromZip 回归：恢复侧插件前缀必须从 zip 内容（源 profile web）推导，
-// 而非目标机当前布局。此前 pluginsRelPrefix 在目标机无 profile 时回退 "profiles/node_modules/"，
-// 与 zip 内 "profiles/web/node_modules/" 不匹配，导致恢复文件落位/冲突检测错位。
+// TestRestorePluginPrefixComesFromZip 回归：恢复侧插件落点按**包内环境**（源 profile web）判定，
+// 而非目标机当前布局。此前按目标机前缀推导，与 zip 内 "profiles/web/node_modules/" 不匹配，
+// 会导致恢复文件落位/冲突检测错位。
 func TestRestorePluginPrefixComesFromZip(t *testing.T) {
 	stubWebEnv(t)
 	master := buildPluginExport(t)
@@ -48,9 +48,9 @@ func TestRestorePluginPrefixComesFromZip(t *testing.T) {
 	t.Setenv("DSH_HOME", homeB)
 
 	inner := mustInner(t, master, exportZipPlugins)
-	prefix := innerZipContentPrefix("plugins", inner)
-	if prefix != "profiles/web/node_modules/" {
-		t.Fatalf("prefix must derive from zip (profiles/web/node_modules/), got %q", prefix)
+	prefixes := zipPluginPrefixes(inner)
+	if len(prefixes) != 1 || prefixes[0] != "profiles/web/node_modules/" {
+		t.Fatalf("prefix must derive from zip (profiles/web/node_modules/), got %v", prefixes)
 	}
 	if n, err := countRestoreConflicts("plugins", inner); err != nil || n != 0 {
 		t.Fatalf("fresh home conflicts: n=%d err=%v", n, err)
@@ -82,8 +82,8 @@ func TestRestorePluginConflictIgnoresTargetProfile(t *testing.T) {
 	}
 
 	inner := mustInner(t, master, exportZipPlugins)
-	if prefix := innerZipContentPrefix("plugins", inner); prefix != "profiles/web/node_modules/" {
-		t.Fatalf("unexpected prefix %q", prefix)
+	if prefixes := zipPluginPrefixes(inner); len(prefixes) != 1 || prefixes[0] != "profiles/web/node_modules/" {
+		t.Fatalf("unexpected prefixes %v", prefixes)
 	}
 	if n, err := countRestoreConflicts("plugins", inner); err != nil || n != 0 {
 		t.Fatalf("conflicts must ignore target default profile: n=%d err=%v", n, err)
