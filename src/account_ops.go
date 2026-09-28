@@ -149,6 +149,10 @@ func accountFlushOps(ctx context.Context, client *accountClient) (int, error) {
 		}
 		res, err := client.ReportOps(ctx, token, ops)
 		if err != nil {
+			if accountErrorCode(err) == accErrUnauthorized {
+				// 令牌已被服务端撤销/过期：立刻停用登录态，本批与后续批次都不再重试
+				accountInvalidateSession()
+			}
 			if sent > 0 {
 				accountFlushAck(acked, cursor) // 已确认的部分照常出队，其余保留待重试
 			}

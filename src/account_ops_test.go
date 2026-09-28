@@ -14,7 +14,10 @@ func setupAccountTest(t *testing.T) {
 	t.Helper()
 	oldDir, oldBase := accountStateDirValue(), accountAPIBaseValue()
 	setAccountStateDir(t.TempDir())
-	setAccountAPIBase("")
+	// 死地址而非空值：空值等于**生产域名**，而 accountSyncKick 的异步上报会用当前基址，
+	// 埋点（登记操作记录）触发的后台上报就会拿测试令牌打生产、换回真实的 401。
+	// 需要异步上报走到假服务器的用例自行 setAccountAPIBase(client.base)。
+	setAccountAPIBase("http://127.0.0.1:1")
 	clearAccountRuntime()
 	t.Cleanup(func() {
 		waitAccountSync() // 等在跑的上报结束，避免与下面的复位竞态（-race 曾暴露）
@@ -267,5 +270,80 @@ func TestAccountFlushOpsRequiresToken(t *testing.T) {
 	}
 	if n := accountPendingCount(); n != 1 {
 		t.Fatalf("未登录时队列应保留（换账号登录后可继续上报）: %d", n)
+	}
+}
+
+// TestAccountFlushOpsUnauthorizedStopsRetry 令牌被服务端撤销（401）时必须：
+// ①立即停用登录态；②保留待上报队列（重新登录后可补报）；③状态页给出重新登录提示；
+// ④后续上报不再打服务端（噪声归零）。
+func TestAccountFlushOpsUnauthorizedStopsRetry(t *testing.T) {
+	setupAccountTest(t)
+	setAccountState(loggedInState())
+
+	requests := 0
+	client, _ := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		requests++
+		w.WriteHeader(http.StatusUnauthorized)
+		_, _ = w.Write([]byte(`{"error":{"code":"unauthorized","message":"登录已失效，请重新登录"}}`))
+	})
+
+	if err := accountEnqueueOp(opKeyAutostart, true); err != nil {
+		t.Fatalf("登记失败: %v", err)
+	}
+	if _, err := accountFlushOps(context.Background(), client); accountErrorCode(err) != accErrUnauthorized {
+		t.Fatalf("应返回 unauthorized，实际 %v", err)
+	}
+	if requests != 1 {
+		t.Fatalf("401 不应重试，实际请求 %d 次", requests)
+	}
+	if accountLoggedIn() {
+		t.Fatal("401 后应停用本地登录态")
+	}
+	if n := accountPendingCount(); n != 1 {
+		t.Fatalf("401 后待上报队列必须保留（重新登录后补报）: %d", n)
+	}
+	if st := accountSnapshot(); st.SyncError == "" {
+		t.Fatal("状态页应提示重新登录")
+	}
+	if st := loadAccountState(); st.Token != "" {
+		t.Fatalf("停用登录态应落盘，磁盘上令牌仍为 %q", st.Token)
+	} else if len(st.PendingOps) != 1 {
+		t.Fatalf("磁盘上待上报队列必须保留: %d", len(st.PendingOps))
+	}
+
+	// 再次上报：未登录 → 直接短路，不再产生请求
+	if _, err := accountFlushOps(context.Background(), client); accountErrorCode(err) != accErrUnauthorized {
+		t.Fatalf("未登录时应返回 unauthorized，实际 %v", err)
+	}
+	if requests != 1 {
+		t.Fatalf("停用登录态后不得再打服务端，实际累计请求 %d 次", requests)
+	}
+}
+
+// TestAccountSyncNowUnauthorizedStopsRetry 同步检查里拉取被判 401 时同样停用登录态。
+func TestAccountSyncNowUnauthorizedStopsRetry(t *testing.T) {
+	setupAccountTest(t)
+	setAccountState(loggedInState())
+
+	client, _ := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+		_, _ = w.Write([]byte(`{"error":{"code":"unauthorized","message":"登录已失效，请重新登录"}}`))
+	})
+	if _, err := accountSyncNow(context.Background(), client); accountErrorCode(err) != accErrUnauthorized {
+		t.Fatalf("应返回 unauthorized，实际 %v", err)
+	}
+	if accountLoggedIn() {
+		t.Fatal("同步被判 401 后应停用本地登录态")
+	}
+}
+
+// TestDecodeAccountErrorBareUnauthorized 非标准信封的 401（边缘拦下返回 HTML 等）也要归一为 unauthorized。
+func TestDecodeAccountErrorBareUnauthorized(t *testing.T) {
+	err := decodeAccountError(http.StatusUnauthorized, []byte("<html>401</html>"))
+	if code := accountErrorCode(err); code != accErrUnauthorized {
+		t.Fatalf("裸 401 应归一为 unauthorized，实际 %q", code)
+	}
+	if err := decodeAccountError(http.StatusBadGateway, []byte("<html>502</html>")); accountErrorCode(err) != "http_error" {
+		t.Fatalf("其余状态码保持 http_error，实际 %q", accountErrorCode(err))
 	}
 }

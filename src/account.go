@@ -247,6 +247,11 @@ func decodeAccountError(status int, data []byte) error {
 	if json.Unmarshal(data, &env) == nil && env.Error.Code != "" {
 		return &accountError{Code: env.Error.Code, Message: env.Error.Message, Status: status}
 	}
+	// 401 一定是「令牌不被接受」：即使响应体不是标准信封（边缘/CDN 拦下时可能是 HTML），
+	// 也归一到 unauthorized——调用方据此停用登录态，避免拿失效令牌反复重试。
+	if status == http.StatusUnauthorized {
+		return &accountError{Code: accErrUnauthorized, Message: strings.TrimSpace(string(data)), Status: status}
+	}
 	return &accountError{Code: "http_error", Message: strings.TrimSpace(string(data)), Status: status}
 }
 

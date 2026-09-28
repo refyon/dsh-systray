@@ -83,10 +83,8 @@ func accountVerifySession(ctx context.Context) {
 	me, err := newAccountClient("").Me(cctx, token)
 	if err != nil {
 		if accountErrorCode(err) == accErrUnauthorized {
-			clearAccountRuntime()
-			_ = clearAccountState()
-			log.Printf("[account] 服务端令牌已失效，已清除本地登录态")
-			emitAccountChanged()
+			accountInvalidateSession()
+			log.Printf("[account] 服务端令牌已失效，已停用本地登录态")
 			return
 		}
 		log.Printf("[account] 令牌校验失败（保留登录态，离线可用）: %v", err)

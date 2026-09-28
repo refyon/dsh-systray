@@ -602,7 +602,18 @@ func accountSyncPull(ctx context.Context, client *accountClient) (map[string]acc
 }
 
 // accountSyncNow 一次同步检查：先推本地变更，再拉服务器记录，把差异放入待生效集合（**不应用**）。
+//
+// 任一环节被判未授权（401）即停用本地登录态：拿失效令牌继续重试只会持续被拒
+// （2026-09-28 现场：旧实例每 20 分钟重试一次 /v1/ops/report，10 天累计 1004 次 401）。
 func accountSyncNow(ctx context.Context, client *accountClient) (accountSyncResult, error) {
+	res, err := accountSyncCheck(ctx, client)
+	if accountErrorCode(err) == accErrUnauthorized {
+		accountInvalidateSession()
+	}
+	return res, err
+}
+
+func accountSyncCheck(ctx context.Context, client *accountClient) (accountSyncResult, error) {
 	var res accountSyncResult
 
 	// 1) 先推：本地待上报的改动先进服务器，合并时才能正确处理并发。
@@ -783,6 +794,7 @@ func accountApplyPending(ctx context.Context, client *accountClient, notify func
 		accountSetPendingApply(pending)
 		res.Pulled = pulled
 	} else if accountErrorCode(err) == accErrUnauthorized {
+		accountInvalidateSession()
 		return res, err
 	} else {
 		logWarn("account", "应用前拉取失败（按本地待生效集合继续）: %v", err)

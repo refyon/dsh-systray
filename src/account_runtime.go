@@ -162,6 +162,32 @@ func clearAccountRuntime() {
 	accountMu.Unlock()
 }
 
+// accountInvalidateSession 服务端明确拒绝当前令牌（401）时立即停用登录态。
+//
+// 与登出的区别：**只清令牌**，待上报队列、游标、已应用序号原样保留——那些是用户本机的改动，
+// 重新登录后仍能补报（登出才丢弃队列）。清掉令牌后 accountLoggedIn() 为假，后续上报与同步
+// 全部短路，不再拿失效令牌反复打服务端（2026-09-28 现场：旧实例持有已撤销令牌，
+// 每 20 分钟重试一次 /v1/ops/report，10 天累计 1004 次 401）。
+func accountInvalidateSession() {
+	accountMu.Lock()
+	if accountCur.Token == "" {
+		accountMu.Unlock()
+		return // 已是未登录态：重复回调不重复落盘、不重复提示
+	}
+	accountCur.Token = ""
+	accountCur.TokenExpiresAt = 0
+	accountCur.IssuedAt = 0
+	err := saveAccountState(accountCur)
+	accountMu.Unlock()
+
+	if err != nil {
+		log.Printf("[account] 保存登录态失败: %v", err)
+	}
+	accountSetSyncError(accountErrorText(&accountError{Code: accErrUnauthorized}))
+	log.Printf("[account] 服务端已拒绝令牌（401）：停止上报与同步重试，等待重新登录（待上报 %d 项已保留）", accountPendingCount())
+	emitAccountChanged()
+}
+
 // accountSnapshot 组装状态快照。
 func accountSnapshot() AccountStatusInfo {
 	accountMu.Lock()
