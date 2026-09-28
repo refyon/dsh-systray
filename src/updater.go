@@ -11,6 +11,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -1919,20 +1920,76 @@ func downloadFileTo(ctx context.Context, url, dest string) error {
 	return downloadFileWithProgress(ctx, url, dest, nil)
 }
 
-// downloadFileWithProgress 下载到本地文件；直连 GitHub 失败时依次回退镜像前缀，
+// downloadFileWithProgress 下载到本地文件；GitHub 来源失败时依次回退镜像前缀，
 // 支持进度回调（pct 0~1，nil 表示不回调）与取消（ctx 取消即中断）。config.json 的 updateMirror 插到最前优先尝试。
 func downloadFileWithProgress(ctx context.Context, url, dest string, onProgress func(pct float64)) error {
-	var lastErr error
-	for _, prefix := range buildMirrors() {
-		if err := downloadOnce(ctx, prefix+url, dest, onProgress); err == nil {
+	var (
+		tried   []string
+		lastErr error
+	)
+	for _, candidate := range downloadCandidates(url) {
+		if err := downloadOnce(ctx, candidate, dest, onProgress); err == nil {
 			return nil
 		} else if ctx.Err() != nil {
 			return ctx.Err() // 已取消，直接返回
 		} else {
+			tried = append(tried, candidate)
 			lastErr = err
 		}
 	}
-	return lastErr
+	return downloadCandidatesError(tried, lastErr)
+}
+
+// downloadCandidates 下载候选地址：GitHub 来源展开为「各镜像前缀 + 直连」，其余地址只用自身。
+//
+// 为什么必须按 host 分流（2026-09-27 现场问题）：镜像前缀（ghfast.top 等）与自建中转 Worker
+// 都只代理 GitHub 路径，把官方 CDN 地址（如桌面端安装包 download.deepseek.com/...）拼在它们
+// 后面必然被拒（实测 403/404/502），而这些候选还排在直连之前——于是「下载桌面端安装包」六次
+// 尝试全部打在代理上、直连从未被用上，用户只看到「下载桌面端安装包失败：HTTP 403」。
+// 非 GitHub 地址不走镜像链，同时也避免把 CDN 地址（含私有 token 的地址）泄漏给第三方代理。
+func downloadCandidates(rawURL string) []string {
+	trimmed := strings.TrimSpace(rawURL)
+	if trimmed == "" {
+		return nil
+	}
+	if !isGitHubHost(trimmed) {
+		return []string{trimmed}
+	}
+	out := make([]string, 0, len(updateMirrors)+2)
+	for _, prefix := range buildMirrors() {
+		out = append(out, prefix+trimmed)
+	}
+	return out
+}
+
+// downloadCandidatesError 组装下载失败原因：保留最后一次错误（兼容原有文案与单测），
+// 但把「试过哪些候选」一并带上——否则用户只看到最后一个镜像的 HTTP 码，无从判断真实原因。
+func downloadCandidatesError(tried []string, lastErr error) error {
+	if lastErr == nil {
+		return fmt.Errorf("没有可用的下载地址")
+	}
+	if len(tried) <= 1 {
+		return lastErr
+	}
+	hosts := make([]string, 0, len(tried))
+	seen := map[string]bool{}
+	for _, u := range tried {
+		label := downloadCandidateLabel(u)
+		if seen[label] {
+			continue
+		}
+		seen[label] = true
+		hosts = append(hosts, label)
+	}
+	return fmt.Errorf("%w（已尝试 %d 个下载源：%s）", lastErr, len(tried), strings.Join(hosts, "、"))
+}
+
+// downloadCandidateLabel 候选地址的简短标识（只取 host，避免把完整地址塞进提示框）。
+func downloadCandidateLabel(rawURL string) string {
+	if u, err := url.Parse(strings.TrimSpace(rawURL)); err == nil && u.Host != "" {
+		return u.Host
+	}
+	return rawURL
 }
 
 // buildMirrors 返回镜像优先顺序：用户配置镜像 → 默认列表。
