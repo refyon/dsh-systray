@@ -85,6 +85,63 @@ func TestVerifySyncedPluginDefersHostDependency(t *testing.T) {
 	}
 }
 
+// TestPluginApplySpecUsesExactTargetVersion 同步应用要按「账号里的目标版本」安装，而不是照搬
+// 账号里的范围 spec：`pnpm add <name>@<范围>` 在锁定版本已满足该范围时不升级（pnpm 实测），
+// 会让「重启生效」变成静默空操作、同一项无限回到待生效（2026-09-28 现场：另一台机器升到
+// 1.7.40，本机反复应用仍是 1.7.35）。
+func TestPluginApplySpecUsesExactTargetVersion(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("DSH_HOME", home)
+	writeTestProfile(t, home, "web", map[string]string{"pkg-a": "1.7.35"},
+		map[string]string{"pkg-a": "1.7.35"})
+	dir := filepath.Join(home, "profiles", "web")
+
+	cases := []struct {
+		desc      string
+		plugin    string
+		value     pluginOpValue
+		wantSpec  string
+		wantExact string
+	}{
+		{"目标版本更新 → 按精确版本安装", "pkg-a",
+			pluginOpValue{Action: "update", Spec: "^1.7.35", Source: "npm", Version: "1.7.40"}, "1.7.40", "1.7.40"},
+		{"版本已满足 → 仍用账号 spec", "pkg-a",
+			pluginOpValue{Action: "update", Spec: "^1.7.35", Source: "npm", Version: "1.7.35"}, "^1.7.35", ""},
+		{"目标版本更旧 → 不改判（不降级）", "pkg-a",
+			pluginOpValue{Action: "update", Spec: "^1.7.30", Source: "npm", Version: "1.7.30"}, "^1.7.30", ""},
+		{"未安装 → 按精确版本安装", "pkg-new",
+			pluginOpValue{Action: "install", Spec: "^2.0.0", Source: "npm", Version: "2.0.3"}, "2.0.3", "2.0.3"},
+		{"github 来源不得换成 npm 精确版本", "pkg-a",
+			pluginOpValue{Action: "update", Spec: "git+https://github.com/o/r.git", Source: "github", Version: "9.9.9"},
+			"git+https://github.com/o/r.git", ""},
+		{"无 spec 时退回目标版本", "pkg-a",
+			pluginOpValue{Action: "update", Source: "npm", Version: "1.7.40"}, "1.7.40", "1.7.40"},
+	}
+	for _, c := range cases {
+		spec, exact := pluginApplySpec(dir, c.plugin, c.value)
+		if spec != c.wantSpec || exact != c.wantExact {
+			t.Fatalf("%s：spec=%q exact=%q，期望 %q/%q", c.desc, spec, exact, c.wantSpec, c.wantExact)
+		}
+	}
+}
+
+// TestVerifyInstalledTargetVersion 精确安装后的校验：没达到目标版本必须报错——否则「应用成功」
+// 会把同一项交回漂移重判，用户看到的是「一直提示有 1 项待同步」却无从知道原因。
+func TestVerifyInstalledTargetVersion(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("DSH_HOME", home)
+	writeTestProfile(t, home, "web", map[string]string{"pkg-a": "1.7.35"},
+		map[string]string{"pkg-a": "1.7.35"})
+	dir := filepath.Join(home, "profiles", "web")
+
+	if err := verifyInstalledTargetVersion(dir, "pkg-a", "1.7.35"); err != nil {
+		t.Fatalf("版本已达标不应报错：%v", err)
+	}
+	if err := verifyInstalledTargetVersion(dir, "pkg-a", "1.7.40"); err == nil {
+		t.Fatal("版本未达标必须报错（否则同一项会无限回到待生效）")
+	}
+}
+
 // TestRemovePluginStripsBundleEntry 卸载必须同时摘除激活声明：残留会让服务启动报
 // 「cannot resolve profile bundle」硬失败。
 func TestRemovePluginStripsBundleEntry(t *testing.T) {
