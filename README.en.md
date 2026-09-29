@@ -60,6 +60,8 @@ Designed around three core traits: **Lightweight, Reliable, Portable**.
 ### Reliable — self-check, self-heal, rollback
 - **Environment self-check**: checks node / pnpm / harness on startup and runs the built-in installer if missing (including `git clone` for a source harness)
 - **Auto-rollback on startup failure**: if the service fails to start (process crash / load error), it rolls back to the last known-good harness & plugin state and restarts
+- **Faster restarts**: teardown now polls the port until it is really released (no fixed 1-second wait), readiness is probed every 120 ms during the startup window, and the settings-page restart uses a shorter early-pass health gate — a "Restart service" typically drops from ~8-9 s to ~4-5 s, and plugin apply / import / update / reset / rollback each save more than a second
+- **Automatic recovery when the service exits on its own**: the harness exits the process when it needs a restart (full HMR reload, replacing an already-resolved plugin version). The tray now relaunches it within seconds (at most 3 attempts per 5 minutes, then it reports the failure with a reason) instead of leaving the Web UI dead
 - **Twofold update safety**: background checks for new GitHub Releases; download progress is shown in the window and cancellable; dsh-systray / DeepSeek Harness / plugins are checked independently per module, with automatic snapshots before updates, health verification after install and auto-rollback to the last working version on failure
 - **Private-repo plugins**: plugins hosted in private repositories guide you through GitHub device-flow authorization on update checks — after confirming, the browser opens automatically and the **one-time code is shown right in the progress window** (and copied to the clipboard); the check retries itself once authorized. The GitHub CLI is downloaded automatically on first use with visible progress. Credentials live in the system credential store — dsh-systray never writes any token to disk and never sends it to third-party mirrors
 - **Logs**: the Logs page follows app.log / server.log live, shows full paths, auto-scrolls to the newest writes and supports one-click clearing
@@ -132,8 +134,8 @@ Run the build commands inside `src/` (the Wails project root = the directory hol
 
 | Platform | Build command (run inside `src/`) |
 | --- | --- |
-| Windows | `wails build -s -clean -platform windows/amd64 -ldflags "-X main.appVersion=v1.1.6"` |
-| macOS | `wails build -s -clean -platform darwin/universal -ldflags "-X main.appVersion=v1.1.6"` |
+| Windows | `wails build -s -clean -platform windows/amd64 -ldflags "-X main.appVersion=v1.2.0"` |
+| macOS | `wails build -s -clean -platform darwin/universal -ldflags "-X main.appVersion=v1.2.0"` |
 
 > - Output: `src/build/bin/dsh-systray.exe` (Windows) / `src/build/bin/dsh-systray.app` (macOS); the repository root keeps no build artifacts
 > - `-s`: skips the frontend build (embeds `src/frontend/dist` directly); after frontend changes simply re-run `wails build`

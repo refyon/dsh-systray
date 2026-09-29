@@ -60,6 +60,8 @@ dsh-systray 是一个 Windows / macOS 系统托盘应用，围绕三个核心特
 ### 可靠 —— 自检、自愈、可回退
 - **环境自检**：启动时检查 node / pnpm / harness，缺失时运行内置安装脚本（含 `git clone` 拉取 harness 源码）
 - **启动失败自动回退**：服务启动失败（进程异常退出 / 加载错误）时，自动回退到上次正常运行的 harness 与插件状态并重启
+- **重启提速**：停服后按端口真实释放轮询（不再固定等 1 秒）、就绪探测 120ms 自适应、设置页重启用更短的提前通过门槛——「重启服务」典型耗时从约 8-9 秒降到约 4-5 秒；插件应用 / 导入 / 更新 / 重置 / 回退各少等 1 秒以上
+- **服务自行退出自动拉起**：harness 需要重启时会主动退出进程（HMR 整体重载、替换已解析的插件版本）；托盘在数秒内自动拉起（5 分钟窗口内最多 3 次，超限如实报失败并给出原因），不再表现为「Web UI 突然打不开」
 - **更新双保险**：后台自动检查 GitHub Releases 新版本，窗口内展示下载进度并可取消；dsh-systray / DeepSeek Harness / 插件按模块独立检查更新，更新前自动快照、安装后健康校验，失败自动回退到上一可用版本
 - **私有仓库插件**：来自私有仓库的插件在检查更新时引导 GitHub 设备流授权——弹窗确认后自动打开浏览器、**一次性授权码直接显示在进度窗口里**（同时写入剪贴板），授权完成自动重试检查（网络瞬断自动重连，最多 3 次）；首次使用会自动下载 GitHub CLI 便携版并显示下载进度。授权后还会把凭据接给更新链路（`gh auth setup-git` 写 git 凭据助手 + 用户级 `~/.npmrc` 写 `//codeload.github.com/:tokenHelper`），两处配置都只写**命令**、不写 token，也不把 token 发给第三方镜像
 - **日志**：「日志」页实时跟踪 app.log / server.log，显示完整路径，自动跟随最新写入，支持一键清空
@@ -132,8 +134,8 @@ dsh-systray 是一个 Windows / macOS 系统托盘应用，围绕三个核心特
 
 | 平台 | 构建命令（在 `src/` 下执行） |
 | --- | --- |
-| Windows | `wails build -s -clean -platform windows/amd64 -ldflags "-X main.appVersion=v1.1.6"` |
-| macOS | `wails build -s -clean -platform darwin/universal -ldflags "-X main.appVersion=v1.1.6"` |
+| Windows | `wails build -s -clean -platform windows/amd64 -ldflags "-X main.appVersion=v1.2.0"` |
+| macOS | `wails build -s -clean -platform darwin/universal -ldflags "-X main.appVersion=v1.2.0"` |
 
 > - 产物：`src/build/bin/dsh-systray.exe`（Windows）/ `src/build/bin/dsh-systray.app`（macOS），仓库根不再输出编译产物
 > - `-s`：跳过前端构建（直接内嵌 `src/frontend/dist`）；改动前端后无需其他步骤，直接重新 `wails build`
