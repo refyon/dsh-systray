@@ -134,8 +134,8 @@ dsh-systray 是一个 Windows / macOS 系统托盘应用，围绕三个核心特
 
 | 平台 | 构建命令（在 `src/` 下执行） |
 | --- | --- |
-| Windows | `wails build -s -clean -platform windows/amd64 -ldflags "-X main.appVersion=v1.2.0"` |
-| macOS | `wails build -s -clean -platform darwin/universal -ldflags "-X main.appVersion=v1.2.0"` |
+| Windows | `wails build -s -clean -platform windows/amd64 -ldflags "-X main.appVersion=v1.2.1"` |
+| macOS | `wails build -s -clean -platform darwin/universal -ldflags "-X main.appVersion=v1.2.1"` |
 
 > - 产物：`src/build/bin/dsh-systray.exe`（Windows）/ `src/build/bin/dsh-systray.app`（macOS），仓库根不再输出编译产物
 > - `-s`：跳过前端构建（直接内嵌 `src/frontend/dist`）；改动前端后无需其他步骤，直接重新 `wails build`
@@ -164,3 +164,21 @@ wails dev   # 热重载开发模式（需 Node 可选；静态前端下等同于
 | 提示方式 | MessageBox（自绘圆角弹窗） | `osascript` 通知/弹窗 |
 | loading 界面 | Wails 窗口内进度视图 | Wails 窗口内进度视图 |
 | Dock 图标 | — | 隐藏（LSUIElement，纯托盘） |
+
+### Windows：首次启动为什么可能偏慢
+
+双击托盘后，「服务就绪」的耗时几乎全花在 DeepSeek Harness 自身加载模块图上（本机实测同一套环境：
+文件缓存热 ~5s、冷 ~25-30s，涉及 7000+ 个 JS 文件），托盘侧只负责拉起与探测，无法从等待策略上缩短它。
+
+常见外因是杀毒软件实时防护对 harness 目录的逐文件扫描。若首次启动明显慢于后续启动，可为 harness 目录
+（与插件目录）加实时防护排除项——这是系统级设置，请自行评估后手动执行，本程序不会替你改系统配置：
+
+```powershell
+# 需管理员 PowerShell；路径按实际安装位置调整
+Add-MpPreference -ExclusionPath 'C:\Users\<你>\deepseek-harness'
+Add-MpPreference -ExclusionPath "$env:USERPROFILE\.dsh\profiles"
+```
+
+托盘自身的两处「白等」已分别在 v1.2.0 / v1.2.1 移除：停服后按端口真实释放轮询（不再固定等 1 秒）、
+就绪探测 120ms 自适应、以及存在 LKG 时不再让「是否打开 Web UI」等满 60s 观察窗口
+（观察照旧在后台跑完，LKG 的清除推迟到窗口末尾）。

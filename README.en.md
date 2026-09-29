@@ -134,8 +134,8 @@ Run the build commands inside `src/` (the Wails project root = the directory hol
 
 | Platform | Build command (run inside `src/`) |
 | --- | --- |
-| Windows | `wails build -s -clean -platform windows/amd64 -ldflags "-X main.appVersion=v1.2.0"` |
-| macOS | `wails build -s -clean -platform darwin/universal -ldflags "-X main.appVersion=v1.2.0"` |
+| Windows | `wails build -s -clean -platform windows/amd64 -ldflags "-X main.appVersion=v1.2.1"` |
+| macOS | `wails build -s -clean -platform darwin/universal -ldflags "-X main.appVersion=v1.2.1"` |
 
 > - Output: `src/build/bin/dsh-systray.exe` (Windows) / `src/build/bin/dsh-systray.app` (macOS); the repository root keeps no build artifacts
 > - `-s`: skips the frontend build (embeds `src/frontend/dist` directly); after frontend changes simply re-run `wails build`
@@ -164,3 +164,25 @@ Useful environment variables for local debugging: `DSH_SYSTRAY_PORT`, `DSH_SYSTR
 | Prompting | MessageBox (custom rounded dialog) | `osascript` notifications/dialogs |
 | Loading UI | in-window progress view (Wails) | in-window progress view (Wails) |
 | Dock icon | — | hidden (LSUIElement, pure tray) |
+
+### Windows: why the first start can be slow
+
+After a double-click, almost all of the time to "service ready" is spent inside DeepSeek Harness loading its
+module graph (measured on one machine, same setup: ~5 s with a warm file cache, ~25-30 s cold, over 7000 JS
+files). The tray only spawns the process and probes it, so no waiting strategy of ours can shorten that part.
+
+The usual external cause is antivirus real-time protection scanning every file of the harness directory. If the
+first start is clearly slower than later ones, you can exclude the harness (and plugin) directories from
+real-time protection — that is a system-level setting; evaluate it yourself and apply it manually, this app
+never changes your system configuration on its own:
+
+```powershell
+# Administrator PowerShell; adjust the paths to your installation
+Add-MpPreference -ExclusionPath 'C:\Users\<you>\deepseek-harness'
+Add-MpPreference -ExclusionPath "$env:USERPROFILE\.dsh\profiles"
+```
+
+Two tray-side "idle waits" were removed in v1.2.0 / v1.2.1 respectively: teardown now polls until the port
+is really released (no fixed 1-second wait), readiness is probed every 120 ms, and when an LKG exists the
+"Open Web UI?" prompt no longer waits for the full 60 s observation window (the window still runs in the
+background; the LKG is cleared only when it finishes without errors).

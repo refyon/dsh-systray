@@ -4,6 +4,34 @@
 > `## vX.Y.Z` 区块（最新在上）。CI 推送 `v*` tag 后会自动把该区块作为 GitHub Release 正文；
 > 找不到对应区块时回退为 GitHub 自动生成（提交列表）。
 
+## v1.2.1
+
+冷启动提速：**存在 LKG（上次改版尚未经冷启动验证）时，双击托盘不再让「是否打开 Web UI」等满 60 秒**。
+本机实测一次双击的耗时构成——进程启动→拉起服务 1s、服务自身加载模块图 30s（7000+ 个 JS 文件，
+冷/热文件缓存相差约 6 倍）、**就绪后又白等 60s**；第三段是本版修掉的，前两段属 harness 自身开销。
+
+### 修复
+
+- **LKG 观察窗口不再阻塞用户**：`verifyServerBootOnColdStart` 原先在存在 LKG 时禁用提前通过，用户必须
+  等满 60 秒窗口才看到就绪提示。现在把「用户可见的就绪」与「LKG 的确认」解耦——命中就绪标志 + 静默期
+  （5s / 3s）即放行，**60 秒观察窗口照旧在后台跑完**，`clearLkgAfterBootWindow()` 只在窗口走完且无加载
+  错误时才清除 LKG；迟到的加载错误仍走既有自愈与回退链路。更新/重置、插件批处理、导入恢复在跑时让位
+  （它们的回退链路可能正依赖这份 LKG）；后台兜底已被占用时宁可保留 LKG，也不在未观察的情况下当成
+  「已验证」。
+
+### 文档
+
+- README（中 / 英）新增「Windows：首次启动为什么可能偏慢」：说明耗时来自 harness 自身加载模块图，以及
+  杀毒软件实时防护逐文件扫描这一常见外因，并给出用户可自行执行的 `Add-MpPreference -ExclusionPath`
+  示例（本程序不代改系统设置）。
+
+### 测试
+
+- 新增 `TestColdStartWithLkgDefersLkgClearUntilWindowEnd`（提前通过，LKG 保留到窗口末尾才清）、
+  `TestColdStartWithLkgKeepsLkgOnBootError`（窗口内出现加载错误：不提前通过、LKG 必须保留）、
+  `TestClearLkgAfterBootWindowSkipsWhileBusy`（其它 harness 操作在跑时不清 LKG）。
+- `go vet ./...` 与 `go test -count=1 ./...` 全绿（83s）；本地 wails 构建通过。
+
 ## v1.2.0
 
 一次「重启提速 + 服务退出守护」：**所有需要重启后台服务的地方都明显变快**（设置页「重启服务」典型耗时
