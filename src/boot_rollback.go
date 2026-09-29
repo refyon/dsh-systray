@@ -328,7 +328,7 @@ func tryBootRollback(why string) (kept, rolled bool, prev string, disabledNames 
 	log.Printf("lkg: boot failed (%s), attempting rollback to last known good state", why)
 
 	killServer()
-	time.Sleep(1 * time.Second)
+	waitPortReleased(port, portReleaseTimeout)
 
 	// 2) 恢复 harness 与各 profile 的 LKG
 	restored := false

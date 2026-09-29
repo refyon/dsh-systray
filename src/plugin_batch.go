@@ -29,7 +29,6 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
-	"time"
 
 	wruntime "github.com/wailsapp/wails/v2/pkg/runtime"
 )
@@ -479,7 +478,7 @@ func pluginBatchDrain() (tasks []*pluginOpTask, splash *SplashState, paused bool
 		}
 		if !paused && serviceStopNeededForPluginOps() {
 			killServer()
-			time.Sleep(1 * time.Second)
+			waitPortReleased(port, portReleaseTimeout)
 			paused = true
 		}
 		if splash == nil {

@@ -1195,7 +1195,7 @@ func ensureServicePortUsable(interactive bool) bool {
 		log.Printf("[service] port %d preflight: in use, stopping the listener before spawn", port)
 		logUI("后台服务端口被占用", fmt.Sprintf("端口 %d，正在停止占用进程", port))
 		killServer()
-		time.Sleep(500 * time.Millisecond)
+		waitPortReleased(port, portReleaseTimeout)
 		if k2, _ := probePort(port); k2 == portOK {
 			return true
 		}
@@ -1973,27 +1973,41 @@ func runNpmHarnessAdd(ver string) (string, error) {
 	return buf.String(), err
 }
 
+// 就绪探测节奏（2026-09-30 重启提速）：固定 1s 一跳在启动窗口内是纯白等——服务常在
+// 1.5-2.5s 就绪，却要等到下一个整秒才被看见，每次重启白付 0.3-1.0s。改为启动窗口内
+// 120ms 一跳（覆盖绝大多数启动），窗口过后退避到 500ms，长启动（首次装依赖等）不再空转。
+const (
+	readyProbeStepFast = 120 * time.Millisecond
+	readyProbeStepSlow = 500 * time.Millisecond
+	readyProbeFastSpan = 5 * time.Second
+)
+
 // waitForServerReady 等待服务就绪：ready=true 表示已响应；
 // ready=false 时 why 为 "exited"（服务进程已退出，快速失败）或 "timeout"（超时但进程仍在运行）。
 func waitForServerReady(url string, serverExited <-chan error, timeout time.Duration) (bool, string) {
-	deadline := time.Now().Add(timeout)
+	start := time.Now()
+	deadline := start.Add(timeout)
 	client := newHTTPClient(3 * time.Second)
-	ticker := time.NewTicker(1 * time.Second)
-	defer ticker.Stop()
 	for {
+		if resp, err := client.Get(url); err == nil {
+			resp.Body.Close()
+			if resp.StatusCode < 500 {
+				return true, ""
+			}
+		}
+		if time.Now().After(deadline) {
+			return false, "timeout"
+		}
+		step := readyProbeStepSlow
+		if time.Since(start) < readyProbeFastSpan {
+			step = readyProbeStepFast
+		}
+		timer := time.NewTimer(step)
 		select {
 		case <-serverExited:
+			timer.Stop()
 			return false, "exited"
-		case <-ticker.C:
-			if time.Now().After(deadline) {
-				return false, "timeout"
-			}
-			if resp, err := client.Get(url); err == nil {
-				resp.Body.Close()
-				if resp.StatusCode < 500 {
-					return true, ""
-				}
-			}
+		case <-timer.C:
 		}
 	}
 }

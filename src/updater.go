@@ -376,7 +376,7 @@ func restartBackgroundService(onState func(stage string)) bool {
 	if onState != nil {
 		onState("服务已停止")
 	}
-	time.Sleep(1 * time.Second)
+	waitPortReleased(port, portReleaseTimeout)
 
 	// 端口预检（见 portcheck.go）：被系统保留（Windows 排除端口段）/ 被其它程序占用时不再
 	// spawn——必然失败，且会让下面的插件依赖自愈与「疑似插件」提示全部指向错误方向。
@@ -390,12 +390,12 @@ func restartBackgroundService(onState func(stage string)) bool {
 		return false
 	}
 
-	// 第一轮：拉起 → 就绪 → 健康窗口
+	// 第一轮：拉起 → 就绪 → 健康窗口（树未变更的重启用，用更短的提前通过门槛，见 startAndVerifyOnceQuick）
 	splash.Update(T("正在启动后台服务…"), 0.55)
 	if onState != nil {
 		onState("正在启动后台服务…")
 	}
-	ok, msg := startAndVerifyOnce()
+	ok, msg := startAndVerifyOnceQuick()
 	if !ok {
 		// 自愈：对全部 profile 做一次 pnpm 对齐（健康校验失败多由依赖树不一致引起），再重试一次
 		splash.Update(T("启动未通过健康校验，正在修复插件依赖并重试…"), 0.65)
@@ -408,9 +408,9 @@ func restartBackgroundService(onState func(stage string)) bool {
 			}
 		}
 		killServer()
-		time.Sleep(1 * time.Second)
+		waitPortReleased(port, portReleaseTimeout)
 		splash.Update(T("正在重试启动后台服务…"), 0.8)
-		ok, msg = startAndVerifyOnce()
+		ok, msg = startAndVerifyOnceQuick()
 	}
 	if !ok {
 		if onState != nil {
@@ -1217,6 +1217,13 @@ const (
 	bootVerifyQuietPeriod = 3 * time.Second
 	bootVerifyFastExitMin = 5 * time.Second
 	bootVerifyPollStep    = 1 * time.Second
+
+	// 重启路径（设置页「重启服务」等「树未变更、刚还是健康的」重启用）的提前通过门槛：3s（原 5s）。
+	// 只用于不对应 LKG 提升/整批回滚的路径：插件变更与改版路径必须等满原窗口，否则未验证的树会被
+	// 当成新基线（见 bootVerifySettleAfterHarnessChange 的说明）。剩余观察期照旧交给
+	// startLateBootWatch 后台兜底，迟到错误仍走既有自愈链路。
+	bootVerifyRestartMin   = 3 * time.Second
+	bootVerifyRestartQuiet = 2 * time.Second
 )
 
 // serverReadyMarkerRe 服务就绪标志：dsh web 打印访问链接时插件已全部注册完成——本次启动的
@@ -1282,6 +1289,17 @@ func verifyServerBootWithin(before int64, exited <-chan error, settle time.Durat
 
 // verifyServerBootPolling allowFastExit=true 时启用「就绪标志 + 静默期」提前通过。
 func verifyServerBootPolling(before int64, exited <-chan error, settle time.Duration, allowFastExit bool) bootVerifyResult {
+	return verifyServerBootPollingWithin(before, exited, settle, allowFastExit, bootVerifyQuietPeriod, bootVerifyFastExitMin)
+}
+
+// verifyServerBootQuick 重启路径（树未变更）的健康校验：用更短的提前通过门槛
+// （见 bootVerifyRestartMin/Quiet），其余语义与 verifyServerBootWithin 一致。
+func verifyServerBootQuick(before int64, exited <-chan error, settle time.Duration) bool {
+	return verifyServerBootPollingWithin(before, exited, settle, true, bootVerifyRestartQuiet, bootVerifyRestartMin) == bootHealthy
+}
+
+// verifyServerBootPollingWithin 健康校验实现（提前通过门槛由调用方给定：quiet 静默期、min 最短等待）。
+func verifyServerBootPollingWithin(before int64, exited <-chan error, settle time.Duration, allowFastExit bool, quiet, min time.Duration) bootVerifyResult {
 	start := time.Now()
 	deadline := start.Add(settle)
 	gen := serverStartGen.Load() // 本次校验观察的服务代次：期间被新进程取代即作废
@@ -1306,8 +1324,8 @@ func verifyServerBootPolling(before int64, exited <-chan error, settle time.Dura
 			default:
 			}
 		}
-		if allowFastExit && time.Since(start) >= bootVerifyFastExitMin &&
-			time.Since(lastChange) >= bootVerifyQuietPeriod &&
+		if allowFastExit && time.Since(start) >= min &&
+			time.Since(lastChange) >= quiet &&
 			serverReadyMarkerRe.MatchString(lines) {
 			startLateBootWatch(before, deadline)
 			return bootHealthy
@@ -1416,7 +1434,7 @@ func restartAndVerifyServerAfterChange() bool {
 // restartAndVerifyServerWithin 重启并健康校验（窗口由调用方指定）。
 func restartAndVerifyServerWithin(settle time.Duration) bool {
 	killServer()
-	time.Sleep(1 * time.Second)
+	waitPortReleased(port, portReleaseTimeout)
 	if serverResponding(webURL) {
 		return true // 端口已有可用服务（异常残留场景），视为可用
 	}
@@ -1518,7 +1536,7 @@ func runHarnessUpdate(latest string) {
 
 	// 1) 先停止服务（否则运行中的 node 进程会占用 node_modules 文件，快照/回退改名会失败）
 	killServer()
-	time.Sleep(1 * time.Second)
+	waitPortReleased(port, portReleaseTimeout)
 
 	// 2) 快照当前可运行版本（本地回退用）
 	splash.Update(T("正在备份当前版本…"), 0.15)

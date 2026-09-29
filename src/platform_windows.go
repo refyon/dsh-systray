@@ -657,6 +657,7 @@ func startServer() (bool, <-chan error) {
 	}
 	serverCmd = cmd
 	serverStartGen.Add(1) // 新代次：仍在观察旧进程的启动校验据此让位
+	gen := serverStartGen.Load()
 	serverStopByTray.Store(false)
 	serverStartedPort = port // 记录实际启动端口（端口修改提示与状态展示依据）
 	trackChildProcess(cmd.Process)
@@ -665,6 +666,7 @@ func startServer() (bool, <-chan error) {
 		err := cmd.Wait()
 		w.Flush() // 进程退出后补出崩溃末行（无换行残留）
 		exitCh <- err
+		noteServerExit(gen, err) // 意外退出（含 DSH 自请求重启）交给守护快速拉起，见 service_supervisor.go
 	}()
 	log.Printf("server started, pid=%d", cmd.Process.Pid)
 	go captureStartedTokenURL(from) // 捕获本次启动打印的访问链接（含新 token）缓存备后用

@@ -8,7 +8,6 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
-	"time"
 )
 
 // ==================== 重置 DeepSeek Harness ====================
@@ -264,7 +263,7 @@ func runHarnessResetFlow(clearSessions, clearPlugins bool, reqTarget string, pop
 	// 0) 先停止服务（否则运行中的 node 占用文件，清空/重装会失败）
 	splash.Update(T("正在停止后台服务…"), 0.1)
 	killServer()
-	time.Sleep(1 * time.Second)
+	waitPortReleased(port, portReleaseTimeout)
 
 	// 0.5) 形态判定：npm 预构建 / 缺失 → npm 全新安装；源码 checkout → 暂不支持自动清空重装。
 	if isSourceHarnessDir() {

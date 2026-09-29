@@ -636,7 +636,16 @@ func restartAndVerifyHealing(dirs []string) (bool, []string) {
 // 端口已有可用服务时视为成功（与本机异常残留场景的既有语义一致）。
 // 返回 (是否就绪且健康, 失败原因文案)。健康窗口确保迟于 HTTP 就绪数秒才刷出的
 // 加载错误（版本/插件不兼容）不会被当作启动成功。
-func startAndVerifyOnce() (bool, string) {
+func startAndVerifyOnce() (bool, string) { return startAndVerifyOnceWithin(false) }
+
+// startAndVerifyOnceQuick 「树未变更」的重启用（设置页「重启服务」等）单次启动周期：
+// 健康校验用更短的提前通过门槛（bootVerifyRestartMin/Quiet），其余步骤与 startAndVerifyOnce
+// 完全一致。为什么只有它能短：它的判定不对应 LKG 提升与整批回滚——插件变更/改版路径必须等满
+// 原窗口，否则未验证的树会被当成新基线（见 bootVerifySettleAfterHarnessChange 的说明）。
+func startAndVerifyOnceQuick() (bool, string) { return startAndVerifyOnceWithin(true) }
+
+// startAndVerifyOnceWithin quick 选择健康校验门槛（见上）。
+func startAndVerifyOnceWithin(quick bool) (bool, string) {
 	if serverResponding(webURL) {
 		return true, ""
 	}
@@ -653,6 +662,12 @@ func startAndVerifyOnce() (bool, string) {
 	}
 	if ok, msg := waitForServerReady(webURL, exitCh, startupTimeout); !ok {
 		return false, "服务未在预期时间内就绪（" + msg + "）。"
+	}
+	if quick {
+		if !verifyServerBootQuick(before, exitCh, bootVerifySettle) {
+			return false, "服务已响应，但启动日志存在加载错误（版本/插件不兼容）。"
+		}
+		return true, ""
 	}
 	if !verifyServerBoot(before, exitCh) {
 		return false, "服务已响应，但启动日志存在加载错误（版本/插件不兼容）。"

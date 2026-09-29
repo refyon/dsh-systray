@@ -28,7 +28,39 @@ import (
 	"os"
 	"strconv"
 	"syscall"
+	"time"
 )
+
+// 端口释放轮询：killServer 之后的「等端口回来」一律用它替代固定 time.Sleep(1s)。
+// 进程树终止到监听句柄回收实测 100-300ms，固定 1s 几乎总是白等（每次重启、每次插件应用、
+// 每次改版流程各付一次）；慢机器上 1s 也可能不够，随后 spawn 撞 EADDRINUSE。
+const (
+	portReleaseStep    = 25 * time.Millisecond
+	portReleaseTimeout = 3 * time.Second
+)
+
+// waitPortReleased 等待端口回到可绑定状态，最多等 timeout（<=0 用 portReleaseTimeout）。
+// 返回 false 有两种情形，调用方处理相同（照常 spawn，由既有端口预检/启动失败链路给结论）：
+//   - 超时仍被占用（进程树还没退干净）；
+//   - 端口被系统保留/绑定失败——等下去不会变，立即返回（见 portcheck.go 文件头的排除端口段）。
+func waitPortReleased(p int, timeout time.Duration) bool {
+	if timeout <= 0 {
+		timeout = portReleaseTimeout
+	}
+	deadline := time.Now().Add(timeout)
+	for {
+		switch kind, _ := probePort(p); kind {
+		case portOK:
+			return true
+		case portBlocked, portBindFail:
+			return false
+		}
+		if time.Now().After(deadline) {
+			return false
+		}
+		time.Sleep(portReleaseStep)
+	}
+}
 
 // portErrKind 端口预检结论。
 type portErrKind int

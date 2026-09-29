@@ -1556,7 +1556,7 @@ func runLocalPluginUpdate(row PluginRow, srcDir string) {
 
 	// 0) 先停止服务（运行中的 node 占用 profile node_modules 文件，快照改名会失败）
 	killServer()
-	time.Sleep(1 * time.Second)
+	waitPortReleased(port, portReleaseTimeout)
 
 	// 1) 快照每个声明目录
 	splash.Update(T("正在备份当前版本…"), 0.12)

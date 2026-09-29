@@ -207,3 +207,39 @@ func TestFailKindContract(t *testing.T) {
 		}
 	}
 }
+
+// TestWaitPortReleased 端口释放轮询（替代固定 time.Sleep(1s)，见 portcheck.go）：
+// 占用中等到超时，释放后立刻返回——且明显快于被替代的固定 1s 等待；不可绑定的端口不空等。
+func TestWaitPortReleased(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	p := ln.Addr().(*net.TCPAddr).Port
+
+	if waitPortReleased(p, 200*time.Millisecond) {
+		t.Fatal("端口仍被监听时不应判为已释放")
+	}
+
+	// 释放：轮询应在远早于固定 1s 等待的时间内返回 true
+	go func() {
+		time.Sleep(120 * time.Millisecond)
+		_ = ln.Close()
+	}()
+	start := time.Now()
+	if !waitPortReleased(p, 3*time.Second) {
+		t.Fatal("端口释放后应判为可用")
+	}
+	if el := time.Since(start); el > 900*time.Millisecond {
+		t.Fatalf("释放轮询过慢：%s（它的替代对象是固定 1s 等待）", el)
+	}
+
+	// 非法端口（绑定必然失败）：等下去不会变，必须立即返回
+	start = time.Now()
+	if waitPortReleased(0, 3*time.Second) {
+		t.Fatal("非法端口不应判为可用")
+	}
+	if el := time.Since(start); el > 200*time.Millisecond {
+		t.Fatalf("非法端口不应空等：%s", el)
+	}
+}
