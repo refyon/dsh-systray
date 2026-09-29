@@ -131,6 +131,97 @@ var (
 	bootSuspectActivateRe = regexp.MustCompile(`(?m)^\s*([A-Za-z0-9@/._-]+):\s+(?:Error|SyntaxError|TypeError|ReferenceError)`)
 )
 
+// harnessSkippedRe harness 对「peer 版本不兼容插件」的优雅降级点名行（写 stderr，随服务日志入库）：
+//
+//	dsh: skipping profile bundle "dsh-code-index": Error: Plugin dsh-code-index@0.8.0 is incompatible with dsh 0.2.0-rc.1: peerDependencies {...}
+//	dsh: disabling profile plugin dsh-x: Plugin dsh-x@1.0.0 is incompatible with dsh 0.2.0-rc.1: ...
+//	dsh: disabling profile plugin row "x-id": ...
+//
+// 与启动失败判据（harnessBootErrorMarkers / parseBootLogSuspects）严格分开：这两行出现时服务照常
+// 就绪，插件只是没被 harness 加载（peer 区间不覆盖当前 dsh 版本）。当成启动失败会误触发禁用自愈
+// 与 LKG 回退——而 harness 已经替用户跳过了，再摘一次 bundles 纯属多余。
+var (
+	harnessSkipBundleRe    = regexp.MustCompile(`skipping profile bundle "([^"]+)":\s*(.+)`)
+	harnessDisablePluginRe = regexp.MustCompile(`disabling profile plugin ([^:]+):\s*(.+)`)
+)
+
+// harnessCompatReason 把 harness 的不兼容说明裁成一句：去 "Error:" 前缀，并截掉后半段
+// 「Running it may cause …」风险说明与豁免指引（对用户是噪音；完整原文仍在日志里）。
+func harnessCompatReason(s string) string {
+	s = strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(s), "Error:"))
+	if i := strings.Index(s, ". Running it may cause"); i > 0 {
+		s = s[:i]
+	}
+	return trimHintLine(s)
+}
+
+// parseHarnessSkippedText 纯函数：从日志文本提取「被 harness 跳过 / 停用的插件」→ 点名版本与一句原因。
+// 名字兼容 `row "<id>"` 标签形式（行 id 与包名不一致时 harness 用 id 点名）。
+func parseHarnessSkippedText(s string) map[string]harnessSkipNotice {
+	out := map[string]harnessSkipNotice{}
+	collect := func(re *regexp.Regexp) {
+		for _, m := range re.FindAllStringSubmatch(s, -1) {
+			name := strings.TrimSpace(m[1])
+			name = strings.TrimSpace(strings.TrimPrefix(name, "row "))
+			name = strings.Trim(strings.TrimSpace(name), `"'`)
+			if name == "" {
+				continue
+			}
+			if _, seen := out[name]; seen {
+				continue
+			}
+			reason := harnessCompatReason(m[2])
+			out[name] = harnessSkipNotice{Version: harnessSkipVersion(reason, name), Reason: reason}
+		}
+	}
+	collect(harnessSkipBundleRe)
+	collect(harnessDisablePluginRe)
+	return out
+}
+
+// harnessSkipVersion 从 harness 文案 `Plugin <name>@<version> is incompatible …` 取被点名的版本；
+// 取不到（文案格式变化）返回空，由 harnessSkipApplies 保守放行。
+func harnessSkipVersion(reason, name string) string {
+	i := strings.Index(reason, name+"@")
+	if i < 0 {
+		return ""
+	}
+	rest := reason[i+len(name)+1:]
+	if j := strings.IndexAny(rest, " \t:,"); j >= 0 {
+		rest = rest[:j]
+	}
+	// 必须是版本号形态（数字开头），避免把 `@scope/name` 之类的后续文本误当版本
+	if rest == "" || rest[0] < '0' || rest[0] > '9' {
+		return ""
+	}
+	return rest
+}
+
+// harnessSkipNotice harness 跳过 / 停用某插件的点名记录。
+type harnessSkipNotice struct {
+	Version string // 记录点名的版本（harness 文案里的 <name>@<version>；解析不到为空）
+	Reason  string // 一句原因（裁剪后）
+}
+
+// harnessSkipApplies 该记录是否适用于「当前已装版本」：记录带版本时必须一致，否则属陈旧日志——
+// 同一插件早年版本不兼容、升级后已兼容（实证 2026-09-29：dsh-cost-meter 1.7.40 在 09:30 被跳过，
+// 09:58 升到 1.7.44 后已正常加载，但当前托盘进程复用已运行的服务、未轮转日志 → 扫描退化为整份
+// 日志，关于页据此误报「已被跳过」）。任一侧版本未知时放行（宁可漏报也不误报为原则的例外：文案
+// 格式变化时保持旧行为，避免功能静默失效）。
+func harnessSkipApplies(n harnessSkipNotice, installed string) bool {
+	return n.Version == "" || installed == "" || n.Version == installed
+}
+
+// harnessSkippedPlugins 扫描统一日志 offset 追加段（仅 [server] 行）得到「harness 主动跳过 /
+// 停用的插件 → 点名记录」；offset=0 时只扫本次启动窗口（bootWindowOffset）。纯告知用途：调用方
+// 只用于展示，不得据此禁用插件、重试或回退，并须按 harnessSkipApplies 过滤陈旧记录。
+func harnessSkippedPlugins(offset int64) map[string]harnessSkipNotice {
+	if m := parseHarnessSkippedText(serverLogLines(bootWindowOffset(offset))); len(m) > 0 {
+		return m
+	}
+	return nil
+}
+
 // splitPluginNames 兼容「plugin(s) failed to load: a, b, c」一行含多个名字的切分。
 func splitPluginNames(s string) []string {
 	var out []string

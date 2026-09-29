@@ -282,6 +282,8 @@ const I18N_DYN = {
   "删除": "Delete",
   "已禁用": "Disabled",
   "已禁用（{0}）": "Disabled ({0})",
+  "已被跳过": "Skipped",
+  "harness 已跳过（与当前 dsh 版本不兼容）：{0}": "Skipped by harness (incompatible with the running dsh version): {0}",
   "与当前版本不兼容": "incompatible with current version",
   "未安装": "not installed",
   "当前版本 {0}": "Version {0}",
@@ -1332,6 +1334,15 @@ function renderPluginRow(p, idx) {
     disBadge.textContent = tr("已禁用");
     name.appendChild(disBadge);
   }
+  // 「已被跳过」：harness 启动期因 peer 版本不兼容主动跳过（未加载、未落盘），与本程序的
+  // 「已禁用」（摘除 bundles + 记 disabledPlugins）是两种状态，故用不同徽标与配色区分。
+  if (p.skippedByHarness) {
+    const skipBadge = document.createElement("span");
+    skipBadge.className = "plug-badge-skip";
+    skipBadge.textContent = tr("已被跳过");
+    if (p.skippedReason) skipBadge.title = p.skippedReason;
+    name.appendChild(skipBadge);
+  }
 
   const sub = document.createElement("div");
   sub.className = "plug-sub";
@@ -1449,6 +1460,11 @@ function renderPluginRow(p, idx) {
   } else if (p.disabled && !(st && st.note)) {
     // 禁用行默认原因行（无动态检查状态时显示）
     setNote(item, fmt("已禁用（{0}）", p.disabledReason || tr("与当前版本不兼容")), "err");
+  } else if (p.skippedByHarness && !(st && st.note)) {
+    // harness 跳过行：只告知（未加载的原因），不提供「启用」——它仍在激活清单里，重启即可重试；
+    // 真正的出路是「检查更新」装到兼容版本（harness 自带 allow-version 授权也可恢复）。
+    setNote(item, fmt("harness 已跳过（与当前 dsh 版本不兼容）：{0}",
+      p.skippedReason || tr("与当前版本不兼容")), "warn");
   }
   return item;
 }

@@ -152,7 +152,12 @@ type PluginRow struct {
 	GhostDisabled  bool     `json:"ghostDisabled"`  // 「已自动禁用且无依赖声明」：自愈禁用后保留展示，可删除/重装，不可直接启用
 	Disabled       bool     `json:"disabled"`       // 是否处于禁用状态（不兼容自愈：不在 bundles 激活清单）
 	DisabledReason string   `json:"disabledReason"` // 禁用原因（启动日志错误摘要）
-	PendingOp      string   `json:"pendingOp"`      // 待应用变更：update | remove（空=无）；需重启服务才生效
+	// SkippedByHarness/SkippedReason：harness 启动期主动跳过（peer 版本区间不覆盖当前 dsh 版本）——
+	// 不落盘、不是本程序的「已禁用」（后者从 bundles 摘除并记 disabledPlugins）。只作告知，不改变
+	// 本行可执行的动作（仍可检查更新 / 删除）。
+	SkippedByHarness bool   `json:"skippedByHarness"`
+	SkippedReason    string `json:"skippedReason"`
+	PendingOp        string `json:"pendingOp"` // 待应用变更：update | remove（空=无）；需重启服务才生效
 	// PendingRisk 待应用「删除」的会话数据风险：该插件写入的自定义事件会让这些会话在删除后打不开；
 	// 前端据此显示警示与「修复」入口（nil=无风险或非删除变更）。
 	PendingRisk *pluginSessionRisk `json:"pendingRisk,omitempty"`
@@ -312,6 +317,9 @@ func buildPluginRows() []PluginRow {
 	groups := map[string][]*specGroup{}
 	var order []string               // 首次出现的包名顺序（与展示排序解耦，纯 key 记录）
 	pendingKeys := map[string]bool{} // name+"\x00"+spec → 该组来自待重指定记录
+	// harness 启动期跳过 / 停用的插件（本次启动窗口，读服务日志）：与「已禁用」并列的第二种不可用
+	// 状态，只作展示（见 harnessSkippedPlugins 注释：不得据此禁用或回退）。每次建行只扫一次日志。
+	skippedByHarness := harnessSkippedPlugins(0)
 	// addDecl 把 (name, spec) 声明加入对应 spec 组（跨 profile 同名同 spec 合并 locs）
 	addDecl := func(name, spec, dir string) {
 		if _, exists := groups[name]; !exists {
@@ -427,6 +435,10 @@ func buildPluginRows() []PluginRow {
 			if dis, disReason := pluginDisabledAcross(g.locs, name); dis {
 				rows[len(rows)-1].Disabled = true
 				rows[len(rows)-1].DisabledReason = disReason
+			}
+			if n, ok := skippedByHarness[name]; ok && harnessSkipApplies(n, ver) {
+				rows[len(rows)-1].SkippedByHarness = true
+				rows[len(rows)-1].SkippedReason = n.Reason
 			}
 		}
 	}

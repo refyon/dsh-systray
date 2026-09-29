@@ -184,6 +184,68 @@ func TestParseBootLogSuspectsBootWindow(t *testing.T) {
 	}
 }
 
+// harness 对 peer 版本不兼容插件的优雅降级点名行（skipping profile bundle / disabling profile
+// plugin）必须能解析出来展示（关于页「已被跳过」徽标），但绝不能进入启动失败判据——否则会误触发
+// 禁用自愈与 LKG 回退（harness 已经替用户跳过了，本程序再摘一次 bundles 纯属多余）。
+func TestHarnessSkippedPlugins(t *testing.T) {
+	dir := useTempLogDir(t)
+	t.Cleanup(func() { lastBootLogBase.Store(0) })
+	p := filepath.Join(dir, unifiedLogName)
+	fixture := `2026/09/29 09:30:30 [ERROR] [server] dsh: skipping profile bundle "dsh-cost-meter": Error: Plugin dsh-cost-meter@1.7.40 is incompatible with dsh 0.2.0-rc.1: peerDependencies {"@deepseek-ai/dsh-credentials":"^0.1.0-rc.6"}. Running it may cause crashes or data loss.
+2026/09/29 15:41:34 [ERROR] [server] dsh: skipping profile bundle "dsh-code-index": Error: Plugin dsh-code-index@0.8.0 is incompatible with dsh 0.2.0-rc.1: peerDependencies {"@deepseek-ai/dsh-tools":">=0.0.1-rc.1 <0.1.0 || >=0.1.0-rc.1 <0.2.0-0"}. Running it may cause crashes or data loss. Update the plugin or install a plugin version compatible with this dsh runtime. To accept this risk explicitly, grant the exact-version exemption for dsh-code-index@0.8.0 on dsh 0.2.0-rc.1 with ` + "`dsh plugin allow-version`" + `, then retry the installation or restart dsh. Exact-version exemption: not active.
+2026/09/29 15:41:35 [ERROR] [server] dsh: disabling profile plugin row "dsh-ui-taste": Plugin dsh-ui-taste@0.3.0 is incompatible with dsh 0.2.0-rc.1: peerDependencies {"@deepseek-ai/dsh-settings":"*"}. Running it may cause crashes or data loss.
+`
+	if err := os.WriteFile(p, []byte(fixture), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	got := harnessSkippedPlugins(0)
+	if len(got) != 3 {
+		t.Fatalf("skipped = %v, want 3 entries", got)
+	}
+	ci := got["dsh-code-index"]
+	if !strings.Contains(ci.Reason, "peerDependencies") || !strings.Contains(ci.Reason, "dsh 0.2.0-rc.1") {
+		t.Fatalf("code-index reason = %q, want peer/runtime detail", ci.Reason)
+	}
+	if strings.Contains(ci.Reason, "Running it may cause") || strings.Contains(ci.Reason, "Error:") {
+		t.Fatalf("reason should be trimmed to one sentence, got %q", ci.Reason)
+	}
+	if ci.Version != "0.8.0" {
+		t.Fatalf("code-index version = %q, want 0.8.0", ci.Version)
+	}
+	if _, ok := got["dsh-ui-taste"]; !ok {
+		t.Fatalf("row-form name not parsed: %v", got)
+	}
+
+	// 陈旧记录过滤（2026-09-29 实证）：dsh-cost-meter 1.7.40 在 09:30 被跳过、09:58 升到 1.7.44
+	// 已正常加载，但整份日志仍留着旧行——版本不一致时不得再报「已被跳过」。
+	cm := got["dsh-cost-meter"]
+	if cm.Version != "1.7.40" {
+		t.Fatalf("cost-meter notice version = %q, want 1.7.40", cm.Version)
+	}
+	if harnessSkipApplies(cm, "1.7.44") {
+		t.Fatal("stale notice (1.7.40) must not apply to installed 1.7.44")
+	}
+	if harnessSkipApplies(ci, "0.8.0") == false {
+		t.Fatal("notice for the installed version must apply")
+	}
+	// 版本未知时保守放行（文案格式变化不导致功能静默失效）
+	if !harnessSkipApplies(harnessSkipNotice{Reason: "x"}, "9.9.9") {
+		t.Fatal("notice without a version should still apply")
+	}
+
+	// 反向保证：这两行不得进入启动失败判据，也不得成为「嫌疑插件」（否则触发禁用自愈/回退）
+	if hasBootErrorMarkers(fixture) {
+		t.Fatal("harness graceful-degradation lines must not count as boot errors")
+	}
+	if suspects := parseBootLogSuspects(0); len(suspects) != 0 {
+		t.Fatalf("suspects = %v, want none (no self-heal trigger)", suspects)
+	}
+	// 无关日志：不产生条目
+	if m := parseHarnessSkippedText("2026/09/29 15:41:34 [INFO] [server] boot ok"); len(m) != 0 {
+		t.Fatalf("unrelated text = %v, want empty", m)
+	}
+}
+
 func TestLogLineModule(t *testing.T) {
 	if got := logLineModule("2026/09/05 09:00:00 [INFO] [server] boot"); got != "server" {
 		t.Fatalf("module = %q, want server", got)
