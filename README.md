@@ -60,6 +60,7 @@ dsh-systray 是一个 Windows / macOS 系统托盘应用，围绕三个核心特
 ### 可靠 —— 自检、自愈、可回退
 - **环境自检**：启动时检查 node / pnpm / harness，缺失时运行内置安装脚本（含 `git clone` 拉取 harness 源码）
 - **启动失败自动回退**：服务启动失败（进程异常退出 / 加载错误）时，自动回退到上次正常运行的 harness 与插件状态并重启
+- **不兼容插件如实告知**：插件因所需 API 版本不满足被 harness 启动期跳过时，关于页对应行显示「已被跳过」徽标与原因（含 harness 给出的版本区间），不再悄无声息；该状态只作告知——不改动激活清单、不触发禁用自愈，日志里的陈旧记录按版本过滤，不会误报
 - **重启提速**：停服后按端口真实释放轮询（不再固定等 1 秒）、就绪探测 120ms 自适应、设置页重启用更短的提前通过门槛——「重启服务」典型耗时从约 8-9 秒降到约 4-5 秒；插件应用 / 导入 / 更新 / 重置 / 回退各少等 1 秒以上
 - **服务自行退出自动拉起**：harness 需要重启时会主动退出进程（HMR 整体重载、替换已解析的插件版本）；托盘在数秒内自动拉起（5 分钟窗口内最多 3 次，超限如实报失败并给出原因），不再表现为「Web UI 突然打不开」
 - **更新双保险**：后台自动检查 GitHub Releases 新版本，窗口内展示下载进度并可取消；dsh-systray / DeepSeek Harness / 插件按模块独立检查更新，更新前自动快照、安装后健康校验，失败自动回退到上一可用版本
@@ -134,8 +135,8 @@ dsh-systray 是一个 Windows / macOS 系统托盘应用，围绕三个核心特
 
 | 平台 | 构建命令（在 `src/` 下执行） |
 | --- | --- |
-| Windows | `wails build -s -clean -platform windows/amd64 -ldflags "-X main.appVersion=v1.2.1"` |
-| macOS | `wails build -s -clean -platform darwin/universal -ldflags "-X main.appVersion=v1.2.1"` |
+| Windows | `wails build -s -clean -platform windows/amd64 -ldflags "-X main.appVersion=v1.2.2"` |
+| macOS | `wails build -s -clean -platform darwin/universal -ldflags "-X main.appVersion=v1.2.2"` |
 
 > - 产物：`src/build/bin/dsh-systray.exe`（Windows）/ `src/build/bin/dsh-systray.app`（macOS），仓库根不再输出编译产物
 > - `-s`：跳过前端构建（直接内嵌 `src/frontend/dist`）；改动前端后无需其他步骤，直接重新 `wails build`
@@ -164,21 +165,3 @@ wails dev   # 热重载开发模式（需 Node 可选；静态前端下等同于
 | 提示方式 | MessageBox（自绘圆角弹窗） | `osascript` 通知/弹窗 |
 | loading 界面 | Wails 窗口内进度视图 | Wails 窗口内进度视图 |
 | Dock 图标 | — | 隐藏（LSUIElement，纯托盘） |
-
-### Windows：首次启动为什么可能偏慢
-
-双击托盘后，「服务就绪」的耗时几乎全花在 DeepSeek Harness 自身加载模块图上（本机实测同一套环境：
-文件缓存热 ~5s、冷 ~25-30s，涉及 7000+ 个 JS 文件），托盘侧只负责拉起与探测，无法从等待策略上缩短它。
-
-常见外因是杀毒软件实时防护对 harness 目录的逐文件扫描。若首次启动明显慢于后续启动，可为 harness 目录
-（与插件目录）加实时防护排除项——这是系统级设置，请自行评估后手动执行，本程序不会替你改系统配置：
-
-```powershell
-# 需管理员 PowerShell；路径按实际安装位置调整
-Add-MpPreference -ExclusionPath 'C:\Users\<你>\deepseek-harness'
-Add-MpPreference -ExclusionPath "$env:USERPROFILE\.dsh\profiles"
-```
-
-托盘自身的两处「白等」已分别在 v1.2.0 / v1.2.1 移除：停服后按端口真实释放轮询（不再固定等 1 秒）、
-就绪探测 120ms 自适应、以及存在 LKG 时不再让「是否打开 Web UI」等满 60s 观察窗口
-（观察照旧在后台跑完，LKG 的清除推迟到窗口末尾）。

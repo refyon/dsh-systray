@@ -60,6 +60,7 @@ Designed around three core traits: **Lightweight, Reliable, Portable**.
 ### Reliable — self-check, self-heal, rollback
 - **Environment self-check**: checks node / pnpm / harness on startup and runs the built-in installer if missing (including `git clone` for a source harness)
 - **Auto-rollback on startup failure**: if the service fails to start (process crash / load error), it rolls back to the last known-good harness & plugin state and restarts
+- **Incompatible plugins are surfaced**: when the harness skips a plugin at startup because its required API version is not satisfied, the About page marks that row “Skipped” with the reason (including the version range the harness reports) instead of staying silent; the state is informational only — the activation list is untouched, no self-heal runs, and stale log records are filtered by version so an already-updated plugin is never misreported
 - **Faster restarts**: teardown now polls the port until it is really released (no fixed 1-second wait), readiness is probed every 120 ms during the startup window, and the settings-page restart uses a shorter early-pass health gate — a "Restart service" typically drops from ~8-9 s to ~4-5 s, and plugin apply / import / update / reset / rollback each save more than a second
 - **Automatic recovery when the service exits on its own**: the harness exits the process when it needs a restart (full HMR reload, replacing an already-resolved plugin version). The tray now relaunches it within seconds (at most 3 attempts per 5 minutes, then it reports the failure with a reason) instead of leaving the Web UI dead
 - **Twofold update safety**: background checks for new GitHub Releases; download progress is shown in the window and cancellable; dsh-systray / DeepSeek Harness / plugins are checked independently per module, with automatic snapshots before updates, health verification after install and auto-rollback to the last working version on failure
@@ -134,8 +135,8 @@ Run the build commands inside `src/` (the Wails project root = the directory hol
 
 | Platform | Build command (run inside `src/`) |
 | --- | --- |
-| Windows | `wails build -s -clean -platform windows/amd64 -ldflags "-X main.appVersion=v1.2.1"` |
-| macOS | `wails build -s -clean -platform darwin/universal -ldflags "-X main.appVersion=v1.2.1"` |
+| Windows | `wails build -s -clean -platform windows/amd64 -ldflags "-X main.appVersion=v1.2.2"` |
+| macOS | `wails build -s -clean -platform darwin/universal -ldflags "-X main.appVersion=v1.2.2"` |
 
 > - Output: `src/build/bin/dsh-systray.exe` (Windows) / `src/build/bin/dsh-systray.app` (macOS); the repository root keeps no build artifacts
 > - `-s`: skips the frontend build (embeds `src/frontend/dist` directly); after frontend changes simply re-run `wails build`
@@ -164,25 +165,3 @@ Useful environment variables for local debugging: `DSH_SYSTRAY_PORT`, `DSH_SYSTR
 | Prompting | MessageBox (custom rounded dialog) | `osascript` notifications/dialogs |
 | Loading UI | in-window progress view (Wails) | in-window progress view (Wails) |
 | Dock icon | — | hidden (LSUIElement, pure tray) |
-
-### Windows: why the first start can be slow
-
-After a double-click, almost all of the time to "service ready" is spent inside DeepSeek Harness loading its
-module graph (measured on one machine, same setup: ~5 s with a warm file cache, ~25-30 s cold, over 7000 JS
-files). The tray only spawns the process and probes it, so no waiting strategy of ours can shorten that part.
-
-The usual external cause is antivirus real-time protection scanning every file of the harness directory. If the
-first start is clearly slower than later ones, you can exclude the harness (and plugin) directories from
-real-time protection — that is a system-level setting; evaluate it yourself and apply it manually, this app
-never changes your system configuration on its own:
-
-```powershell
-# Administrator PowerShell; adjust the paths to your installation
-Add-MpPreference -ExclusionPath 'C:\Users\<you>\deepseek-harness'
-Add-MpPreference -ExclusionPath "$env:USERPROFILE\.dsh\profiles"
-```
-
-Two tray-side "idle waits" were removed in v1.2.0 / v1.2.1 respectively: teardown now polls until the port
-is really released (no fixed 1-second wait), readiness is probed every 120 ms, and when an LKG exists the
-"Open Web UI?" prompt no longer waits for the full 60 s observation window (the window still runs in the
-background; the LKG is cleared only when it finishes without errors).
