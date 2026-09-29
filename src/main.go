@@ -1381,8 +1381,11 @@ func bootstrapService(interactive bool) {
 		// 本进程拉起的服务就绪后再做健康校验（就绪 ≠ 健康：版本混装/插件不兼容会报加载错误，
 		// 且错误常迟于就绪数秒刷出——必须用覆盖窗口的 verifyServerBoot，否则会把异常当成功并误清 LKG）
 		bootError := ""
+		deferLkgClear := false // 存在 LKG 时：清除已委托给后台兜底（窗口走完且无错误才清），此处不得再清
 		if ready && startedByUs {
-			switch verifyServerBootOnColdStart(serverLogBefore, serverExitCh) {
+			var res bootVerifyResult
+			res, deferLkgClear = verifyServerBootOnColdStart(serverLogBefore, serverExitCh)
+			switch res {
 			case bootSuperseded:
 				// 校验期间服务被其它操作主动停止并接管（同步应用 / 插件批处理 / 更新 / 重置 / 导入）：
 				// 既不算失败（不报错、不回退），也不提升 LKG——服务生命周期已由该操作自己的启动校验
@@ -1396,7 +1399,7 @@ func bootstrapService(interactive bool) {
 			}
 		}
 		if ready {
-			if startedByUs {
+			if startedByUs && !deferLkgClear {
 				clearAllLkg() // 冷启动验证通过：当前状态即新的「已知良好」，旧 LKG 不再需要
 			}
 			serverReady.Store(true)

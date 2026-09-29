@@ -112,6 +112,93 @@ func TestVerifyServerBootNoFastExitWhenDisallowed(t *testing.T) {
 	}
 }
 
+// TestColdStartWithLkgDefersLkgClearUntilWindowEnd 有 LKG 的冷启动不再让用户干等满窗口：
+// 就绪标志 + 静默期即提前通过（deferred=true），LKG 保留到窗口走完且无错误才清除。
+// 依据：2026-09-29 15:20 双击冷启动实测 spawn→就绪 30s，就绪后又白等 60s 才弹「是否打开 Web UI」。
+func TestColdStartWithLkgDefersLkgClearUntilWindowEnd(t *testing.T) {
+	dir := useTempLogDir(t)
+	t.Setenv("APPDATA", t.TempDir())  // lkgMarkerPath 落在临时配置目录
+	t.Setenv("DSH_HOME", t.TempDir()) // profiles 枚举不触碰真实数据
+	prevHarness := harnessDir
+	harnessDir = t.TempDir()
+	t.Cleanup(func() { harnessDir = prevHarness })
+
+	writeLkgMarker(lkgMarker{HarnessVersion: "0.1.6"})
+	if !hasAnyLkg() {
+		t.Fatal("前置：LKG 标记未写入")
+	}
+	appendServerLine(t, dir, "dsh web: http://127.0.0.1:3080/?token=abc")
+
+	settle := bootVerifyFastExitMin + bootVerifyQuietPeriod + 2*time.Second
+	start := time.Now()
+	res, deferred := verifyServerBootWithLkgHold(0, nil, settle)
+	if res != bootHealthy || !deferred {
+		t.Fatalf("应提前通过并把 LKG 清除委托给后台（res=%v deferred=%v）", res, deferred)
+	}
+	if el := time.Since(start); el >= settle {
+		t.Fatalf("未提前通过：%s（窗口 %s）", el, settle)
+	}
+	if !hasAnyLkg() {
+		t.Fatal("窗口尚未走完就清了 LKG：迟到的加载错误将失去回退点")
+	}
+	waitLateBootWatch(t, settle+5*time.Second)
+	if hasAnyLkg() {
+		t.Fatal("窗口走完且无错误后应清除 LKG")
+	}
+}
+
+// TestColdStartWithLkgKeepsLkgOnBootError 窗口内出现加载错误：不提前通过、不委托清除、LKG 必须保留。
+func TestColdStartWithLkgKeepsLkgOnBootError(t *testing.T) {
+	dir := useTempLogDir(t)
+	t.Setenv("APPDATA", t.TempDir())
+	t.Setenv("DSH_HOME", t.TempDir())
+	prevHarness := harnessDir
+	harnessDir = t.TempDir()
+	t.Cleanup(func() { harnessDir = prevHarness })
+
+	writeLkgMarker(lkgMarker{HarnessVersion: "0.1.6"})
+	appendServerLine(t, dir, "dsh web: http://127.0.0.1:3080/?token=abc")
+	appendServerLine(t, dir, "Error: failed to import loader entry /x.js")
+
+	res, deferred := verifyServerBootWithLkgHold(0, nil, 30*time.Second)
+	if res != bootFailed {
+		t.Fatalf("窗口内出现加载错误应判失败，实际 %v", res)
+	}
+	if deferred {
+		t.Fatal("失败时不应把 LKG 清除委托给后台")
+	}
+	if !hasAnyLkg() {
+		t.Fatal("失败时必须保留 LKG 作为回退点")
+	}
+	if lateBootWatchActive.Load() {
+		t.Fatal("失败路径不应启动后台兜底")
+	}
+}
+
+// TestClearLkgAfterBootWindowSkipsWhileBusy 窗口收尾清 LKG 时，其它 harness 操作在跑就让位
+// （它们的回退链路可能正依赖这份 LKG）；空闲时正常清除。
+func TestClearLkgAfterBootWindowSkipsWhileBusy(t *testing.T) {
+	useTempLogDir(t)
+	t.Setenv("APPDATA", t.TempDir())
+	t.Setenv("DSH_HOME", t.TempDir())
+	prevHarness := harnessDir
+	harnessDir = t.TempDir()
+	t.Cleanup(func() { harnessDir = prevHarness })
+
+	writeLkgMarker(lkgMarker{HarnessVersion: "0.1.6"})
+	prevBusy := harnessOpBusy.Swap(true)
+	clearLkgAfterBootWindow()
+	if !hasAnyLkg() {
+		t.Fatal("其它 harness 操作在跑时不得清除 LKG")
+	}
+	harnessOpBusy.Store(prevBusy)
+
+	clearLkgAfterBootWindow()
+	if hasAnyLkg() {
+		t.Fatal("空闲时窗口收尾应清除 LKG")
+	}
+}
+
 // TestRemoveAllAsyncAsyncDeletion pathsToLkgBackups 展开 + 异步删除（不阻塞调用方）。
 func TestRemoveAllAsyncAsyncDeletion(t *testing.T) {
 	dir := t.TempDir()

@@ -1270,13 +1270,39 @@ func verifyServerBootAfterChange(before int64, exited <-chan error) bool {
 
 // verifyServerBootOnColdStart 冷启动（双击拉起）健康校验：仅当存在 LKG（= 上次改版尚未经
 // 冷启动验证通过）时用加长窗口，常规启动仍走短窗口——不为此让每次启动多等一分钟。
-// 注意：存在 LKG 时**不做提前通过**——该路径通过后立即清 LKG，等满窗口才能确保「迟到的加载
-// 错误」仍处于可回退状态（这正是加长窗口存在的意义）。
-func verifyServerBootOnColdStart(before int64, exited <-chan error) bootVerifyResult {
-	if hasAnyLkg() {
-		return verifyServerBootPolling(before, exited, bootVerifySettleAfterHarnessChange, false)
+//
+// 第二个返回值 deferLkgClear 表示「LKG 的清除已委托给后台兜底（窗口走完且无错误才清）」，
+// 调用方此时不得自行清除。旧实现在存在 LKG 时禁用提前通过，用户要干等满 60s 才看到
+// 「是否打开 Web UI」弹窗（2026-09-29 实测：双击后 spawn→就绪 30s，就绪→这里又 60s）。
+// 现在改为：用户可见的就绪按「就绪标志 + 静默期」提前放行，**LKG 的确认推迟到窗口末尾**——
+// 观察能力不缩水（迟到的加载错误仍走既有自愈/回退），只是不再阻塞用户。
+func verifyServerBootOnColdStart(before int64, exited <-chan error) (bootVerifyResult, bool) {
+	if !hasAnyLkg() {
+		return verifyServerBootPolling(before, exited, bootVerifySettle, true), false
 	}
-	return verifyServerBootPolling(before, exited, bootVerifySettle, true)
+	return verifyServerBootWithLkgHold(before, exited, bootVerifySettleAfterHarnessChange)
+}
+
+// verifyServerBootWithLkgHold 有 LKG 时的冷启动校验（窗口由调用方给定，便于测试）：
+// 提前通过只影响「用户可见的就绪」，LKG 的清除交给后台兜底在窗口走完且无错误时执行。
+func verifyServerBootWithLkgHold(before int64, exited <-chan error, settle time.Duration) (bootVerifyResult, bool) {
+	return verifyServerBootPollingDetailed(before, exited, settle, true,
+		bootVerifyQuietPeriod, bootVerifyFastExitMin, clearLkgAfterBootWindow)
+}
+
+// clearLkgAfterBootWindow 有 LKG 的冷启动在窗口走完且无加载错误时的收尾：此时当前状态才算
+// 新的「已知良好」。其它 harness 操作（更新/重置、插件批处理、导入恢复）在跑时让位——它们
+// 的回退链路可能正依赖这份 LKG。
+func clearLkgAfterBootWindow() {
+	if harnessOpBusy.Load() || updateFlowBusy() || pluginBatchRunning() || importRestoreRunning() {
+		log.Printf("boot window ended, but another harness operation is running; LKG kept")
+		return
+	}
+	if !hasAnyLkg() {
+		return
+	}
+	clearAllLkg()
+	log.Printf("lkg: cleared after cold-start boot window (deferred until the window finished)")
 }
 
 // verifyServerBootWithin 健康校验实现：轮询「追加段加载错误 / 进程退出」，任一命中即失败；
@@ -1300,6 +1326,13 @@ func verifyServerBootQuick(before int64, exited <-chan error, settle time.Durati
 
 // verifyServerBootPollingWithin 健康校验实现（提前通过门槛由调用方给定：quiet 静默期、min 最短等待）。
 func verifyServerBootPollingWithin(before int64, exited <-chan error, settle time.Duration, allowFastExit bool, quiet, min time.Duration) bootVerifyResult {
+	res, _ := verifyServerBootPollingDetailed(before, exited, settle, allowFastExit, quiet, min, nil)
+	return res
+}
+
+// verifyServerBootPollingDetailed 同上，额外返回 earlyPassed（是否走了提前通过），并允许
+// onClean 指定「窗口走完且无错误」时的收尾动作（nil = 无收尾；提前通过时后台兜底已在观察）。
+func verifyServerBootPollingDetailed(before int64, exited <-chan error, settle time.Duration, allowFastExit bool, quiet, min time.Duration, onClean func()) (bootVerifyResult, bool) {
 	start := time.Now()
 	deadline := start.Add(settle)
 	gen := serverStartGen.Load() // 本次校验观察的服务代次：期间被新进程取代即作废
@@ -1312,27 +1345,27 @@ func verifyServerBootPollingWithin(before int64, exited <-chan error, settle tim
 			lastChange = time.Now()
 		}
 		if hasBootErrorMarkers(lines) {
-			return bootFailed // 加载错误出现即失败（无论窗口剩余多少）
+			return bootFailed, false // 加载错误出现即失败（无论窗口剩余多少）
 		}
 		if exited != nil {
 			select {
 			case <-exited:
 				if serverExitIsSuperseded(gen) {
-					return bootSuperseded // 主动停服/被新进程取代：交由停服那个操作自己的校验收尾
+					return bootSuperseded, false // 主动停服/被新进程取代：交由停服那个操作自己的校验收尾
 				}
-				return bootFailed // 进程提前退出（启动后崩溃）
+				return bootFailed, false // 进程提前退出（启动后崩溃）
 			default:
 			}
 		}
 		if allowFastExit && time.Since(start) >= min &&
 			time.Since(lastChange) >= quiet &&
 			serverReadyMarkerRe.MatchString(lines) {
-			startLateBootWatch(before, deadline)
-			return bootHealthy
+			startLateBootWatchThen(before, deadline, onClean)
+			return bootHealthy, true
 		}
 		remain := time.Until(deadline)
 		if remain <= 0 {
-			return bootHealthy
+			return bootHealthy, false
 		}
 		step := bootVerifyPollStep
 		if remain < step {
@@ -1366,7 +1399,17 @@ func serverExitIsSuperseded(genAtStart int64) bool {
 // 出现过就绪后 45s 才刷出的 plugin tree failed to load）交由既有自愈链路处理，用户不必为这段
 // 观察期干等。同一时刻只允许一个兜底在跑。
 func startLateBootWatch(before int64, deadline time.Time) {
+	startLateBootWatchThen(before, deadline, nil)
+}
+
+// startLateBootWatchThen 同 startLateBootWatch，另在窗口走完且无加载错误时执行 onClean
+// （有 LKG 的冷启动用它把「清除 LKG」推迟到窗口末尾，见 verifyServerBootOnColdStart）。
+// 已有兜底在跑时本次不另起：收尾动作一并不做（宁可保留 LKG，也不在未观察的情况下当成已验证）。
+func startLateBootWatchThen(before int64, deadline time.Time, onClean func()) {
 	if !lateBootWatchActive.CompareAndSwap(false, true) {
+		if onClean != nil {
+			log.Printf("late boot watch already active; deferred clean-up skipped (LKG kept)")
+		}
 		return
 	}
 	go func() {
@@ -1377,6 +1420,9 @@ func startLateBootWatch(before int64, deadline time.Time) {
 				return
 			}
 			time.Sleep(2 * time.Second)
+		}
+		if onClean != nil {
+			onClean()
 		}
 	}()
 }
