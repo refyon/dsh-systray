@@ -79,7 +79,10 @@ func applyPluginOp(profile, name string, v pluginOpValue) error {
 	if v.Action == "remove" {
 		return removePluginFromProfile(dir, profile, name)
 	}
-	spec, exact := pluginApplySpec(dir, name, v)
+	spec, exact, skip := pluginApplySpec(dir, name, v)
+	if skip {
+		return nil // 版本维度已达标、记录 spec 又自相矛盾：本次无需改动（原因见 pluginApplySpec）
+	}
 	if spec == "" {
 		return fmt.Errorf("插件 %s 缺少 spec/version，无法安装", name)
 	}
@@ -98,7 +101,8 @@ func applyPluginOp(profile, name string, v pluginOpValue) error {
 	return nil
 }
 
-// pluginApplySpec 本次应用要安装的依赖 spec；exact 非空表示走了「按精确目标版本安装」。
+// pluginApplySpec 本次应用要安装的依赖 spec；exact 非空表示走了「按精确目标版本安装」；
+// skip=true 表示本次不做任何安装动作（版本维度已达标，且记录的 spec 与它自己的 Version 矛盾）。
 //
 // 为什么不能直接用账号里的 spec：跨机的 spec 常是范围（如 ^1.7.35），而 `pnpm add <name>@<范围>`
 // 在锁定文件里的版本已满足该范围时**不升级**（pnpm 11 实测：先装 1.7.35，再 add ^1.7.35 仍是
@@ -106,19 +110,28 @@ func applyPluginOp(profile, name string, v pluginOpValue) error {
 // 「重启生效」仍是 1.7.35，却报应用成功——30 秒后漂移重判又把它放回待生效，表现为「一直提示
 // 1 项待同步」（2026-09-28 现场）。目标版本比本机已装的**新**时按精确版本安装才能真正追平；
 // 目标更旧时不改判（本机更新的情况由补报路径上报账号，这里不能把新版本降级）。
-func pluginApplySpec(dir, name string, v pluginOpValue) (spec, exact string) {
+//
+// skip 的由来（2026-09-30 现场）：账号记录 spec=1.7.44 / version=1.7.45（老客户端把升级前的
+// spec 写进了记录）。本机已是 1.7.45 时，版本维度无需变更，照搬 spec 反而 `pnpm add name@1.7.44`
+// 把版本装回 1.7.44——记录自相矛盾时以 Version 为准，本次不动。
+func pluginApplySpec(dir, name string, v pluginOpValue) (spec, exact string, skip bool) {
 	spec = strings.TrimSpace(v.Spec)
 	target := strings.TrimSpace(v.Version)
 	if v.Source == "npm" && target != "" {
 		cur := installedPluginVersion(dir, name)
 		if !versionTargetSatisfied(cur, target) && compareVersions(target, cur) > 0 {
-			return target, target
+			return target, target, false
+		}
+		if versionTargetSatisfied(cur, target) && pluginRecordSpecStale(v) {
+			logInfo("account", "插件 %s 的账号记录自相矛盾（spec=%s / version=%s），本机 %s 已满足目标版本：本次不改动",
+				name, spec, target, cur)
+			return "", "", true
 		}
 	}
 	if spec == "" {
 		spec = target
 	}
-	return spec, ""
+	return spec, "", false
 }
 
 // verifyInstalledTargetVersion 精确安装后的校验：本机版本必须达到账号目标，否则如实报错。

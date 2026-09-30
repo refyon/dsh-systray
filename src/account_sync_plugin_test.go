@@ -92,8 +92,8 @@ func TestVerifySyncedPluginDefersHostDependency(t *testing.T) {
 func TestPluginApplySpecUsesExactTargetVersion(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("DSH_HOME", home)
-	writeTestProfile(t, home, "web", map[string]string{"pkg-a": "1.7.35"},
-		map[string]string{"pkg-a": "1.7.35"})
+	writeTestProfile(t, home, "web", map[string]string{"pkg-a": "1.7.35", "pkg-b": "1.7.40"},
+		map[string]string{"pkg-a": "1.7.35", "pkg-b": "1.7.40"})
 	dir := filepath.Join(home, "profiles", "web")
 
 	cases := []struct {
@@ -102,25 +102,34 @@ func TestPluginApplySpecUsesExactTargetVersion(t *testing.T) {
 		value     pluginOpValue
 		wantSpec  string
 		wantExact string
+		wantSkip  bool
 	}{
 		{"目标版本更新 → 按精确版本安装", "pkg-a",
-			pluginOpValue{Action: "update", Spec: "^1.7.35", Source: "npm", Version: "1.7.40"}, "1.7.40", "1.7.40"},
+			pluginOpValue{Action: "update", Spec: "^1.7.35", Source: "npm", Version: "1.7.40"}, "1.7.40", "1.7.40", false},
 		{"版本已满足 → 仍用账号 spec", "pkg-a",
-			pluginOpValue{Action: "update", Spec: "^1.7.35", Source: "npm", Version: "1.7.35"}, "^1.7.35", ""},
+			pluginOpValue{Action: "update", Spec: "^1.7.35", Source: "npm", Version: "1.7.35"}, "^1.7.35", "", false},
 		{"目标版本更旧 → 不改判（不降级）", "pkg-a",
-			pluginOpValue{Action: "update", Spec: "^1.7.30", Source: "npm", Version: "1.7.30"}, "^1.7.30", ""},
+			pluginOpValue{Action: "update", Spec: "^1.7.30", Source: "npm", Version: "1.7.30"}, "^1.7.30", "", false},
 		{"未安装 → 按精确版本安装", "pkg-new",
-			pluginOpValue{Action: "install", Spec: "^2.0.0", Source: "npm", Version: "2.0.3"}, "2.0.3", "2.0.3"},
+			pluginOpValue{Action: "install", Spec: "^2.0.0", Source: "npm", Version: "2.0.3"}, "2.0.3", "2.0.3", false},
 		{"github 来源不得换成 npm 精确版本", "pkg-a",
 			pluginOpValue{Action: "update", Spec: "git+https://github.com/o/r.git", Source: "github", Version: "9.9.9"},
-			"git+https://github.com/o/r.git", ""},
+			"git+https://github.com/o/r.git", "", false},
 		{"无 spec 时退回目标版本", "pkg-a",
-			pluginOpValue{Action: "update", Source: "npm", Version: "1.7.40"}, "1.7.40", "1.7.40"},
+			pluginOpValue{Action: "update", Source: "npm", Version: "1.7.40"}, "1.7.40", "1.7.40", false},
+		// 2026-09-30 现场：记录 spec 是升级前的旧版本（1.7.35），Version 是新版本（本机已装 1.7.40）
+		// ——版本维度已达标，照搬 spec 会把版本装回旧版本，必须跳过本次安装。
+		{"记录 spec 与 Version 矛盾且本机已达标 → 跳过安装（不降级）", "pkg-b",
+			pluginOpValue{Action: "update", Spec: "1.7.35", Source: "npm", Version: "1.7.40"}, "", "", true},
+		// 同一类记录但本机尚未达标：按记录的 Version 精确升级（不能被旧 spec 带去装旧版本）。
+		{"记录 spec 与 Version 矛盾且本机未达标 → 按 Version 升级", "pkg-a",
+			pluginOpValue{Action: "update", Spec: "1.7.35", Source: "npm", Version: "1.7.40"}, "1.7.40", "1.7.40", false},
 	}
 	for _, c := range cases {
-		spec, exact := pluginApplySpec(dir, c.plugin, c.value)
-		if spec != c.wantSpec || exact != c.wantExact {
-			t.Fatalf("%s：spec=%q exact=%q，期望 %q/%q", c.desc, spec, exact, c.wantSpec, c.wantExact)
+		spec, exact, skip := pluginApplySpec(dir, c.plugin, c.value)
+		if spec != c.wantSpec || exact != c.wantExact || skip != c.wantSkip {
+			t.Fatalf("%s：spec=%q exact=%q skip=%v，期望 %q/%q/%v",
+				c.desc, spec, exact, skip, c.wantSpec, c.wantExact, c.wantSkip)
 		}
 	}
 }

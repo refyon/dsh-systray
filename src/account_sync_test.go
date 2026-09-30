@@ -131,6 +131,15 @@ func TestKeyTargetSatisfiedPlugins(t *testing.T) {
 	if accountKeyTargetSatisfied(accountPluginKey("pkg-a"), v(pluginOpValue{Action: "update", Spec: "^1.0.0", Version: "1.0.3"})) {
 		t.Fatal("版本不同应判定为未满足")
 	}
+	// 记录自相矛盾（spec=旧版本 1.0.0，Version=新版本 1.0.2）时以 Version 为权威：本机已达 1.0.2，
+	// 必须判为已满足——否则这条记录永远不满足，界面常驻「1 项待同步」（2026-09-30 现场）。
+	if !accountKeyTargetSatisfied(accountPluginKey("pkg-a"), v(pluginOpValue{Action: "update", Spec: "1.0.0", Version: "1.0.2"})) {
+		t.Fatal("记录 spec 与其 Version 矛盾时应以 Version 为准（本机已达标即满足）")
+	}
+	// 但非版本写法（github 等）的 spec 不参与这条容错：来源/引用变了仍必须进待生效。
+	if accountKeyTargetSatisfied(accountPluginKey("pkg-a"), v(pluginOpValue{Action: "update", Spec: "github:o/r#v2", Source: "github", Version: "1.0.2"})) {
+		t.Fatal("非版本写法的 spec 变化不得被当作已满足")
+	}
 	if accountKeyTargetSatisfied(accountPluginKey("pkg-a"), v(pluginOpValue{Action: "remove"})) {
 		t.Fatal("已安装时 remove 目标应判定为未满足")
 	}

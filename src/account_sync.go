@@ -212,7 +212,11 @@ func accountKeyTargetSatisfiedAt(key string, value json.RawMessage, updatedAt in
 			return false
 		}
 		if want.Spec != "" && !pluginSpecSatisfied(cur, want.Spec) {
-			return false
+			// 记录自身的 spec 与它声明的 Version 矛盾（如 spec=1.7.44 / version=1.7.45）时以 Version
+			// 为准：这种记录永远不可能被判为满足，界面会常驻「1 项待同步」（见 pluginRecordSpecStale）。
+			if !pluginRecordSpecStale(want) {
+				return false
+			}
 		}
 		return true
 	}
@@ -261,6 +265,24 @@ func pluginSpecSatisfied(cur pluginOpValue, wantSpec string) bool {
 		return true
 	}
 	return cur.Version != "" && versionTargetSatisfied(cur.Version, wantSpec)
+}
+
+// specVersionLike 该依赖 spec 是否为「registry 版本 / 范围」写法（而不是 github / tarball / 本地路径）：
+// 只有这种 spec 才能参与版本判定（"1.7.44" / "^1.7.44" / "~1.x" / "latest" / "*" 等）。
+func specVersionLike(spec string) bool {
+	source, canUpdate, _ := classifyPluginSpec(spec)
+	return source == "npm" && canUpdate
+}
+
+// pluginRecordSpecStale 账号记录的 spec 与它自己声明的 Version 互相矛盾（spec 不接受该版本）。
+//
+// 由来：老版本客户端上报「更新」时把**升级前**的 spec 写进了记录（t.row 是登记变更时的快照），
+// 于是服务器上出现 spec=1.7.44 / version=1.7.45 这类记录。这类记录按 spec 判定永远不满足，
+// 本机表现是「重启后一直提示 1 项待同步」，点「重启生效」还会照搬旧 spec 把版本装回去
+// （2026-09-30 现场：另一台机器升 dsh-cost-meter 1.7.44 → 1.7.45，本机被同步回 1.7.44）。
+// 这类记录一律以 Version 为权威（上报侧已修正，见 reportPluginBatchChanges；此处兼容存量记录）。
+func pluginRecordSpecStale(want pluginOpValue) bool {
+	return want.Version != "" && specVersionLike(want.Spec) && !versionTargetSatisfied(want.Version, want.Spec)
 }
 
 // versionTargetSatisfied 已安装版本是否满足目标（精确版本 / ^ ~ 范围 / 比较符 / x 通配 / latest）。

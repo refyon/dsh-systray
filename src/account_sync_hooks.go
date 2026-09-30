@@ -17,6 +17,27 @@ import (
 	"time"
 )
 
+// profileDepSpecInDirs 读取这些 profile 目录里该包**当前**的依赖声明（第一个读到的非空声明）。
+// 用于上报「操作后」的 spec（见 reportPluginBatchChanges）。
+func profileDepSpecInDirs(dirs []string, name string) string {
+	for _, dir := range dirs {
+		data, err := os.ReadFile(filepath.Join(dir, "package.json"))
+		if err != nil {
+			continue
+		}
+		var m struct {
+			Dependencies map[string]string `json:"dependencies"`
+		}
+		if json.Unmarshal(data, &m) != nil {
+			continue
+		}
+		if s := strings.TrimSpace(m.Dependencies[name]); s != "" {
+			return s
+		}
+	}
+	return ""
+}
+
 // pluginOpValue 插件操作记录的 value 形状（与 dsh-connect docs/API.md §11 一致）。
 type pluginOpValue struct {
 	Action  string `json:"action"` // update | remove（install 由服务端/其它客户端产生）
@@ -476,6 +497,17 @@ func reportPluginBatchChanges(tasks []*pluginOpTask) {
 			val.Version = t.newVer
 			if val.Version == "" {
 				val.Version = t.target
+			}
+			// spec 必须取**操作后**的依赖声明：t.row 是登记变更时的快照（升级前），照抄会让记录
+			// 自相矛盾（spec=升级前的旧版本 / version=升级后的新版本）。2026-09-30 现场：另一台机器
+			// 把 dsh-cost-meter 1.7.44 → 1.7.45，记录里 spec 仍是 1.7.44——本机点「重启生效」时照搬
+			// 该 spec 把版本装回了 1.7.44，且这条记录永远判为「未满足」（界面常驻「1 项待同步」）。
+			if s := profileDepSpecInDirs(t.locs, t.name); s != "" {
+				val.Spec = s
+			} else if val.Source == "npm" && val.Version != "" {
+				// 读不到声明：退回安装到的精确版本（自身自洽）。其它来源不能这样改写——
+				// 把 github spec 换成版本号会让对端去 npm 装同名包。
+				val.Spec = val.Version
 			}
 		}
 		// 按插件所在环境逐个上报：同一插件可能同时装在 web 与 desktop（行级 locs 横跨两者）。

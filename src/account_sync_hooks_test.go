@@ -75,8 +75,8 @@ func TestReportPluginBatchChangesFilters(t *testing.T) {
 	if err := json.Unmarshal(upd.Value, &uv); err != nil {
 		t.Fatalf("value 不是合法 JSON: %v (%s)", err, upd.Value)
 	}
-	if uv.Action != "update" || uv.Spec != "^1.0.0" || uv.Source != "npm" || uv.Version != "1.0.2" {
-		t.Fatalf("更新记录字段错误: %+v", uv)
+	if uv.Action != "update" || uv.Spec != "1.0.2" || uv.Source != "npm" || uv.Version != "1.0.2" {
+		t.Fatalf("更新记录字段错误（spec 应取操作后的声明，读不到时退回安装到的精确版本）: %+v", uv)
 	}
 
 	rem, ok := pendingByKey(t, accountPluginKey("pkg-b"))
@@ -101,8 +101,38 @@ func TestReportPluginBatchChangesFilters(t *testing.T) {
 	if err := json.Unmarshal(inst.Value, &iv); err != nil {
 		t.Fatalf("value 不是合法 JSON: %v (%s)", err, inst.Value)
 	}
-	if iv.Action != "install" || iv.Spec != "^2.0.0" || iv.Source != "npm" || iv.Version != "2.0.0" {
+	if iv.Action != "install" || iv.Spec != "2.0.0" || iv.Source != "npm" || iv.Version != "2.0.0" {
 		t.Fatalf("安装记录字段错误: %+v", iv)
+	}
+}
+
+// TestReportPluginUpdateUsesPostOpSpec 上报的 spec 必须取**操作后**的依赖声明：t.row 是登记变更时
+// 的快照（升级前），照抄会让记录自相矛盾（spec=旧版本 / version=新版本）——对端点「重启生效」时
+// 照搬这个旧 spec 会把版本装回去，且该记录永远判为「未满足」（2026-09-30 现场：另一台机器升
+// dsh-cost-meter 1.7.44 → 1.7.45 后记录里 spec 仍是 1.7.44，本机被同步回 1.7.44）。
+func TestReportPluginUpdateUsesPostOpSpec(t *testing.T) {
+	setupAccountTest(t)
+	setAccountAPIBase("http://127.0.0.1:1") // 上报触发点指向死地址：只验证登记，不触网
+	setAccountState(loggedInState())
+
+	dir := writeProfileFixture(t, `"pkg-a":"^1.0.2"`, `"pkg-a"`) // 升级后 package.json 的声明
+	reportPluginBatchChanges([]*pluginOpTask{
+		{op: "update", name: "pkg-a", ok: true, profile: "web", locs: []string{dir},
+			row: PluginRow{Name: "pkg-a", Spec: "1.0.0", Source: "npm"}, newVer: "1.0.2"},
+	})
+	op, ok := pendingByKey(t, accountPluginKey("pkg-a"))
+	if !ok {
+		t.Fatal("缺少更新记录")
+	}
+	var v pluginOpValue
+	if err := json.Unmarshal(op.Value, &v); err != nil {
+		t.Fatalf("value 不是合法 JSON: %v", err)
+	}
+	if v.Spec != "^1.0.2" || v.Version != "1.0.2" {
+		t.Fatalf("spec 应取升级后的依赖声明（^1.0.2），实际 %+v", v)
+	}
+	if pluginRecordSpecStale(v) {
+		t.Fatalf("上报的记录不应自相矛盾: %+v", v)
 	}
 }
 
