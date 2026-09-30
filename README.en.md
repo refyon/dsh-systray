@@ -65,7 +65,7 @@ Unzip and run: the first launch deploys the runtime and harness with progress sh
 
 **Portable**
 
-- Account sync ([dsh-connect](https://github.com/refyon/dsh-connect)): start-at-login, the selected Harness version (including the prerelease channel) and every online plugin; machine-specific settings and local plugins are never uploaded
+- Account sync (email code sign-in): start-at-login, the selected Harness version (including the prerelease channel) and every online plugin; machine-specific settings and local plugins are never uploaded
 - Pulled changes apply via "restart to apply"; machines merge by newest, and failed items can be retried
 - Export / Import: sessions, installed plugins and chosen folders are bundled into a zip; import lists restorable items and prompts on conflicts with backups
 - Config lives in `config.json`, data in `~/.dsh`
@@ -137,4 +137,4 @@ Debug environment variables: `DSH_SYSTRAY_PORT`, `DSH_SYSTRAY_HARNESS_DIR`, `DSH
 
 ## Links
 
-[Website](https://refyon.github.io/dsh-systray/) · [Release notes](https://github.com/refyon/dsh-systray/releases) · [Issues](https://github.com/refyon/dsh-systray/issues) · Related: [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness), [dsh-connect](https://github.com/refyon/dsh-connect)
+[Website](https://refyon.github.io/dsh-systray/) · [Release notes](https://github.com/refyon/dsh-systray/releases) · [Issues](https://github.com/refyon/dsh-systray/issues) · Related: [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness)

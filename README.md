@@ -65,7 +65,7 @@ Windows / macOS 系统托盘应用。三个核心特性：**轻量**（单文件
 
 **可迁移**
 
-- 账号同步（[dsh-connect](https://github.com/refyon/dsh-connect)）：开机自启动、最后选用的 Harness 版本（含预发布通道）、所有在线插件；本机配置与本地插件不上传
+- 账号同步（邮箱验证码登录）：开机自启动、最后选用的 Harness 版本（含预发布通道）、所有在线插件；本机配置与本地插件不上传
 - 拉到的改动需点「重启生效」应用；多端按最新合并，单项失败可续做
 - 导出 / 导入：会话记录、已安装插件、自选文件目录打包为 zip；导入时罗列可恢复项，冲突询问并备份
 - 配置存于 `config.json`，数据存于 `~/.dsh`
@@ -137,4 +137,4 @@ wails dev
 
 ## 链接
 
-[网站](https://refyon.github.io/dsh-systray/) · [更新日志](https://github.com/refyon/dsh-systray/releases) · [Issues](https://github.com/refyon/dsh-systray/issues) · 相关项目：[DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness)、[dsh-connect](https://github.com/refyon/dsh-connect)
+[网站](https://refyon.github.io/dsh-systray/) · [更新日志](https://github.com/refyon/dsh-systray/releases) · [Issues](https://github.com/refyon/dsh-systray/issues) · 相关项目：[DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness)
