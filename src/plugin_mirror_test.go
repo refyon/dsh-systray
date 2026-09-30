@@ -19,12 +19,12 @@ func withMirrorBase(t *testing.T, base string) {
 func TestMirrorTarballURLRoundTrip(t *testing.T) {
 	withMirrorBase(t, "https://mirror.example.com")
 	sha := "a6360c98bab3d5b1bbc8ea09df57221dd79729af"
-	u := mirrorTarballURL("refyon", "dsh-connect", sha)
-	if u != "https://mirror.example.com/p/refyon/dsh-connect/tar.gz/"+sha {
+	u := mirrorTarballURL("acme", "relay", sha)
+	if u != "https://mirror.example.com/p/acme/relay/tar.gz/"+sha {
 		t.Fatalf("mirrorTarballURL = %q", u)
 	}
 	owner, repo, gotSHA, ok := parseMirrorTarballURL(u)
-	if !ok || owner != "refyon" || repo != "dsh-connect" || gotSHA != sha {
+	if !ok || owner != "acme" || repo != "relay" || gotSHA != sha {
 		t.Fatalf("parseMirrorTarballURL = (%q,%q,%q,%v)", owner, repo, gotSHA, ok)
 	}
 	// 其它 host 的中转地址不认（避免把第三方 URL 误判为 GitHub 来源）
@@ -39,7 +39,7 @@ func TestMirrorTarballURLRoundTrip(t *testing.T) {
 
 func TestMirrorTarballSpecDisabled(t *testing.T) {
 	withMirrorBase(t, "")
-	got, err := mirrorTarballSpec("github:refyon/dsh-connect")
+	got, err := mirrorTarballSpec("github:acme/relay")
 	if err != nil || got != "" {
 		t.Fatalf("未配置 mirrorBase 时应返回空（got=%q err=%v）", got, err)
 	}
@@ -52,7 +52,7 @@ func TestMirrorTarballSpecDisabled(t *testing.T) {
 
 func TestClassifyPluginSpecMirrorTarball(t *testing.T) {
 	withMirrorBase(t, "https://mirror.example.com")
-	spec := mirrorTarballURL("refyon", "dsh-connect", "a6360c98bab3d5b1bbc8ea09df57221dd79729af")
+	spec := mirrorTarballURL("acme", "relay", "a6360c98bab3d5b1bbc8ea09df57221dd79729af")
 	source, canUpdate, reason := classifyPluginSpec(spec)
 	if source != "github" || !canUpdate || reason != "" {
 		t.Fatalf("中转 tarball 地址应为可更新的 github 来源，得到 (%q,%v,%q)", source, canUpdate, reason)
@@ -68,9 +68,9 @@ func TestSpecGitHubRepoRefParse(t *testing.T) {
 	cases := []struct {
 		spec, owner, repo, ref string
 	}{
-		{"github:refyon/dsh-connect", "refyon", "dsh-connect", ""},
-		{"github:refyon/dsh-connect#main", "refyon", "dsh-connect", "main"},
-		{"github:refyon/dsh-connect.git#v1.0.0", "refyon", "dsh-connect", "v1.0.0"},
+		{"github:acme/relay", "acme", "relay", ""},
+		{"github:acme/relay#main", "acme", "relay", "main"},
+		{"github:acme/relay.git#v1.0.0", "acme", "relay", "v1.0.0"},
 	}
 	for _, c := range cases {
 		m := specGitHubRepoRefRe.FindStringSubmatch(c.spec)
@@ -81,7 +81,7 @@ func TestSpecGitHubRepoRefParse(t *testing.T) {
 			t.Errorf("%q → (%q,%q,%q)，want (%q,%q,%q)", c.spec, m[1], m[2], m[3], c.owner, c.repo, c.ref)
 		}
 	}
-	if specGitHubRepoRefRe.MatchString("github:refyon/dsh-connect/tree/main") {
+	if specGitHubRepoRefRe.MatchString("github:acme/relay/tree/main") {
 		t.Error("带路径的 spec 不应匹配（避免把子目录当 repo）")
 	}
 }

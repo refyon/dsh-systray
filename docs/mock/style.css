@@ -934,7 +934,7 @@ input { font-family: inherit; }
 /* 帮助页状态提示行的失败态（如重启失败） */
 .help-busy-error { color: var(--danger); }
 
-/* ---------- 数据同步（dsh-connect 账号） ---------- */
+/* ---------- 数据同步（账号） ---------- */
 
 /* 左侧导航项：标题 + 一行小字状态（未登录时不占位） */
 .nav-item.has-status {

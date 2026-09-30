@@ -50,7 +50,7 @@ const I18N_EN = {
   splashCancel: "Cancel update",
   navGeneral: "General", navAbout: "About", navLogs: "Logs", navExport: "Export", navImport: "Import", navHelp: "Help",
   navSync: "Data sync",
-  syncLoginTitle: "Sign in to dsh-connect",
+  syncLoginTitle: "Sign in",
   syncLoginSub: "Signing in with an email code keeps your start-at-login switch, Harness version and online plugins in sync across machines; the first sign-in with an email registers it. Machine-specific settings (directories, ports) and local plugins are never uploaded.",
   syncEmailTitle: "Email",
   syncEmailSub: "The code is sent to this address and stays valid for 10 minutes",
@@ -312,7 +312,7 @@ const I18N_DYN = {
   "将下载官方安装包（校验后）并启动安装向导；桌面端正在运行时需先退出它。确认开始吗？": "The official installer is downloaded (and verified) and its wizard is started; the Desktop app must be closed first if it is running. Continue?",
   "尝试启用": "Try enabling",
 
-  // 数据同步（dsh-connect 账号）
+  // 数据同步（账号）
   "未登录": "Not signed in",
   "登录已过期，请重新登录": "Your sign-in expired — please sign in again",
   "同步中": "Syncing",
@@ -2583,7 +2583,7 @@ function confirmDialog(title, msg, okLabel) {
 
 // ==================== 启动 ====================
 
-// ==================== 数据同步（dsh-connect 账号） ====================
+// ==================== 数据同步（账号） ====================
 //
 // 页面三态：未登录（邮箱验证码入口）/ 已登录（账号 + 同步状态）/ 重启生效提示（拉取到改动后常驻）。
 // 状态来源是 Go 侧的 AccountStatus 快照（登录态、游标、待上报数、同步中/失败）。

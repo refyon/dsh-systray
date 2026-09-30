@@ -182,7 +182,7 @@ var i18nEnMap = map[string]string{
 	"正在应用已登记的插件变更，请等待完成后再操作。":       "Pending plugin changes are being applied — please wait for it to finish.",
 	"插件已不存在（可能已被删除或移除），本项已跳过":       "The plugin no longer exists (it may have been removed) — this change was skipped",
 
-	// 账号与数据同步（dsh-connect）
+	// 账号与数据同步
 	"邮箱格式不正确":         "Enter a valid email address",
 	"操作过于频繁，请稍后再试":    "Too many requests — please try again later",
 	"验证码不正确":          "The verification code is incorrect",

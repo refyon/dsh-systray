@@ -19,7 +19,7 @@ import (
 	"time"
 )
 
-// 设置项合并键（与 dsh-connect docs/API.md §11 一致）。
+// 设置项合并键（与服务端约定一致）。
 const (
 	opKeyAutostart         = "setting:autostart"
 	opKeyHarnessPrerelease = "setting:harness_prerelease"
@@ -41,7 +41,7 @@ func accountPluginKey(name string) string {
 	return accountPluginKeyFor(accountPluginProfile, name)
 }
 
-// accountPluginKeyFor 指定 profile 的插件合并键：plugin:<profile>:<name>（与 dsh-connect 约定一致）。
+// accountPluginKeyFor 指定 profile 的插件合并键：plugin:<profile>:<name>（与服务端约定一致）。
 func accountPluginKeyFor(profile, name string) string {
 	return "plugin:" + strings.TrimSpace(profile) + ":" + strings.TrimSpace(name)
 }

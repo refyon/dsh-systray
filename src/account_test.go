@@ -13,7 +13,7 @@ import (
 	"time"
 )
 
-// newTestClient 起一个假 dsh-connect 服务并返回客户端（退避置 0，测试不等待）。
+// newTestClient 起一个假账号同步服务并返回客户端（退避置 0，测试不等待）。
 func newTestClient(t *testing.T, handler http.HandlerFunc) (*accountClient, *httptest.Server) {
 	t.Helper()
 	srv := httptest.NewServer(handler)

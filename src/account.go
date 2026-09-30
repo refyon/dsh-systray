@@ -1,6 +1,6 @@
-// account.go：dsh-connect 账号 API 客户端（登录、账号信息、操作记录同步）。
+// account.go：账号同步服务 API 客户端（登录、账号信息、操作记录同步）。
 //
-// 契约见 apps/dsh-connect/docs/API.md（服务端已上线 https://api.instantserv.ccwu.cc）。
+// 契约见服务端 API 文档（服务端已上线 https://api.instantserv.ccwu.cc）。
 // 只依赖标准库；错误按服务端 `error.code` 分支，文案由 i18n 层本地化。
 package main
 
@@ -29,7 +29,7 @@ const (
 	accountOpsMaxBatch = 100
 )
 
-// 服务端错误码（与 dsh-connect src/types.ts 一致；客户端只依赖这些）。
+// 服务端错误码（与服务端约定一致；客户端只依赖这些）。
 const (
 	accErrInvalidEmail = "invalid_email"
 	accErrRateLimited  = "rate_limited"

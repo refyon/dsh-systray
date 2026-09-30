@@ -122,7 +122,7 @@ type appConfig struct {
 	// dsh web 的 /api 有 Host/Origin 栅栏，只认 loopback 与这里声明的地址：手机经端口转发
 	// 或隧道访问时，必须把"手机看到的那个地址"声明进来，否则界面能打开但无法对话（403）。
 	TrustedHosts []string `json:"trustedHosts,omitempty"`
-	// AccountAPIBase dsh-connect 服务地址；空 = 内置正式域名（见 account.go 的 defaultAccountAPIBase）。
+	// AccountAPIBase 账号同步服务地址；空 = 内置正式域名（见 account.go 的 defaultAccountAPIBase）。
 	AccountAPIBase string `json:"accountApiBase,omitempty"`
 	// Proxy 出网代理（见 netproxy.go）：
 	//   auto（默认）  自动：显式地址 > HTTP_PROXY/HTTPS_PROXY 环境变量 > Windows 系统代理 > 直连
@@ -298,7 +298,7 @@ func saveConfig(cfg appConfig) {
 	}
 }
 
-// accountAPIBaseGlobal 运行时生效的 dsh-connect 服务地址（空 = 内置正式域名，见 account.go）。
+// accountAPIBaseGlobal 运行时生效的账号同步服务地址（空 = 内置正式域名，见 account.go）。
 // 保存配置时回写用——store 里的覆盖值由 setAccountAPIBase 写入，需与文件内容保持一致。
 var accountAPIBaseGlobal string
 

@@ -38,7 +38,7 @@ func profileDepSpecInDirs(dirs []string, name string) string {
 	return ""
 }
 
-// pluginOpValue 插件操作记录的 value 形状（与 dsh-connect docs/API.md §11 一致）。
+// pluginOpValue 插件操作记录的 value 形状（与服务端约定一致）。
 type pluginOpValue struct {
 	Action  string `json:"action"` // update | remove（install 由服务端/其它客户端产生）
 	Spec    string `json:"spec"`
