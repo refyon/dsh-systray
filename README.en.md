@@ -1,4 +1,4 @@
-﻿<h1 align="center">
+<h1 align="center">
   <img src="docs/icon.svg" width="72" alt="dsh-systray logo" />
   <br />
   dsh-systray
@@ -8,11 +8,6 @@
   Launches the
   <a href="https://github.com/deepseek-ai/deepseek-harness">DeepSeek Harness</a>
   Web server in the background and lives in the system tray.
-</p>
-
-<p align="center">
-  <a href="https://refyon.github.io/dsh-systray/"><strong>Website</strong></a> ·
-  <a href="https://github.com/refyon/dsh-systray/releases/latest">Release notes</a>
 </p>
 
 <p align="center">
@@ -26,19 +21,19 @@
   <a href="https://github.com/refyon/dsh-systray/actions/workflows/release.yml"><img alt="Release build" src="https://github.com/refyon/dsh-systray/actions/workflows/release.yml/badge.svg" /></a>
 </p>
 
-<img src="docs/screenshot-hero-en.webp" alt="dsh-systray settings window and automatic deployment / Harness dependency install" />
+<img src="docs/screenshot-hero-en.webp" alt="dsh-systray settings window" />
 
-dsh-systray is a Windows / macOS system-tray application built around three core traits: **Lightweight** (single-file, no install, no admin rights, low-footprint tray residency), **Reliable** (environment self-check & self-healing, auto-rollback on startup failure, auto-rollback on update failure), and **Portable** (one-click export/import of sessions, plugins and folders; seamless restore on another machine). A double-click starts the DeepSeek Harness Web local service in the background — no ports to remember. The UI is rebuilt on [Wails v2](https://wails.io) (Go backend + WebView2 / WKWebView frontend). The settings window organizes seven pages: autostart & the background service, versions & updates (dsh-systray / Harness / plugins checked independently per module), data sync, and live logs; the color scheme follows the system light/dark mode and auto-update is built in.
+A Windows / macOS system-tray app. Three core traits: **Lightweight** (single file, no install, no admin rights, tray residency), **Reliable** (environment self-check & self-healing, rollback on startup failure, rollback on update failure), **Portable** (account sync plus export/import of sessions, plugins and folders). Seven settings pages, bilingual UI, light/dark follows the system.
 
 > [!IMPORTANT]
-> This is a community-maintained, unofficial tool that depends on the fast-moving `@deepseek-ai/dsh`. The macOS build is not notarized by Apple and the Windows build has no commercial code signing, so the first run may require a manual allow (Windows SmartScreen “Run anyway” / macOS “right-click → Open”). First launch takes about 2–5 minutes to deploy the environment automatically.
+> A community-maintained, unofficial tool that depends on `@deepseek-ai/dsh`. The macOS build is not notarized and the Windows build is not signed, so the first run needs a manual allow. First launch takes about 2–5 minutes to deploy the environment.
 
-## System Requirements
+## System requirements
 
 | Platform | Requirement |
 | --- | --- |
-| Windows | **Windows 10 1803+ / Windows 11** with [WebView2 Runtime](https://developer.microsoft.com/microsoft-edge/webview2/) (preinstalled with Microsoft Edge; the release bundle embeds a bootstrap installer fallback that installs it automatically when missing) |
-| macOS | macOS 11.0+ (Big Sur or later) |
+| Windows | **Windows 10 1803+ / Windows 11**; [WebView2 Runtime](https://developer.microsoft.com/microsoft-edge/webview2/) (preinstalled with Microsoft Edge, installed automatically when missing) |
+| macOS | macOS 11.0+ |
 
 ## Download
 
@@ -47,121 +42,99 @@ dsh-systray is a Windows / macOS system-tray application built around three core
 | Windows | x64 | ZIP | [Download for Windows](https://github.com/refyon/dsh-systray/releases/latest/download/dsh-systray-windows-x64.zip) |
 | macOS | Intel + Apple Silicon | ZIP (.app) | [Download for macOS](https://github.com/refyon/dsh-systray/releases/latest/download/dsh-systray-macos-universal.zip) |
 
+Unzip and run: the first launch deploys the runtime and harness with progress shown in the window, then offers a one-click "open Web UI"; afterwards it starts with the system.
+
 ## Features
 
-Designed around three core traits: **Lightweight, Reliable, Portable**.
+**Lightweight**
 
-### Lightweight — double-click to use, always in the tray
-- **Start with a double-click**: windowless — launches harness in the background with `pnpm dsh web --port <port> --no-open`; the startup progress (environment check → dependency install → service ready) is visible in the window, with a prompt when ready (one-click to open the Web UI)
-- **Single-file, no install**: one exe on Windows / one .app on macOS, no admin rights; portable Node.js / pnpm runtimes are provisioned on demand
-- **Always in the tray**: the right-click menu reaches “Open Web UI / Settings / Quit”; service status at a glance; light/dark theme follows the system
-- **Single instance**: double-clicking while running shows a “already running” prompt instead of a second tray icon
+- Double-click to start: launches the harness Web service (loopback only); startup progress is shown in the window
+- Single file, no install: one exe on Windows, one .app on macOS, no admin rights; portable Node.js / pnpm provisioned on demand
+- Tray residency: "Open Web UI / Settings / Quit" menu; light/dark follows the system
+- Single instance: a second launch reports "already running"
 
-### Reliable — self-check, self-heal, rollback
-- **Environment self-check**: checks node / pnpm / harness on startup and runs the built-in installer if missing (including `git clone` for a source harness)
-- **Auto-rollback on startup failure**: if the service fails to start (process crash / load error), it rolls back to the last known-good harness & plugin state and restarts
-- **Incompatible plugins are surfaced**: when the harness skips a plugin at startup because its required API version is not satisfied, the About page marks that row “Skipped” with the reason (including the version range the harness reports) instead of staying silent; the state is informational only — the activation list is untouched, no self-heal runs, and stale log records are filtered by version so an already-updated plugin is never misreported
-- **Faster restarts**: teardown now polls the port until it is really released (no fixed 1-second wait), readiness is probed every 120 ms during the startup window, and the settings-page restart uses a shorter early-pass health gate — a "Restart service" typically drops from ~8-9 s to ~4-5 s, and plugin apply / import / update / reset / rollback each save more than a second
-- **Automatic recovery when the service exits on its own**: the harness exits the process when it needs a restart (full HMR reload, replacing an already-resolved plugin version). The tray now relaunches it within seconds (at most 3 attempts per 5 minutes, then it reports the failure with a reason) instead of leaving the Web UI dead
-- **Twofold update safety**: background checks for new GitHub Releases; download progress is shown in the window and cancellable; dsh-systray / DeepSeek Harness / plugins are checked independently per module, with automatic snapshots before updates, health verification after install and auto-rollback to the last working version on failure
-- **Private-repo plugins**: plugins hosted in private repositories guide you through GitHub device-flow authorization on update checks — after confirming, the browser opens automatically and the **one-time code is shown right in the progress window** (and copied to the clipboard); the check retries itself once authorized. The GitHub CLI is downloaded automatically on first use with visible progress. Credentials live in the system credential store — dsh-systray never writes any token to disk and never sends it to third-party mirrors
-- **Logs**: the Logs page follows app.log / server.log live, shows full paths, auto-scrolls to the newest writes and supports one-click clearing
+**Reliable**
 
-### Portable — data travels with you, seamless restore on another machine
-- **Account sync (dsh-connect)**: after signing in with an email code, your **start-at-login switch**, the **selected Harness version (including the prerelease channel)** and **every online plugin** follow the account across machines. Machine-specific settings (directories, ports) and local plugins (`file:` / `local`) are never uploaded. Pulled changes **never apply automatically** — the "Data sync" page keeps a persistent "restart to apply" prompt; the button opens a progress view (per-item text + cancel) and merges by "latest per key" (duplicate reports are idempotent, removals are tombstones that cannot come back), and a failed item can be retried without redoing the rest. Until changes land, the status reads "N waiting to apply" rather than "Synced". A background check runs every 20 minutes and the left nav shows a small colour-coded status (syncing / pending / waiting to apply / failed / synced + time)
-- **Export / Import**: sessions, installed plugins and chosen file directories are bundled into a zip backup; import parses the bundle to list restorable items, prompts on conflicts with automatic backups, and pauses/restarts the background service during restore
-- **Config is data**: all configuration lives under the user directory (`config.json`), data under `~/.dsh`, and both migrate fully with the export bundle
-- **Cross-platform consistency**: same UI and same data format on Windows and macOS (design tokens in [DESIGN.md](DESIGN.md))
+- Startup self-check of node / pnpm / harness, installed automatically when missing
+- On startup failure it rolls back to the last known-good state and restarts
+- Plugins incompatible with the current harness version are marked "Skipped" on the About page with the reason
+- "Restart service" takes about 4–5 s; a service process that exits is relaunched within 5 minutes (at most 3 times)
+- dsh-systray / Harness / plugins are checked independently; failures roll back automatically
+- Private-repo plugins: GitHub device-flow authorization with the one-time code shown in the window and copied to the clipboard
+- The Logs page follows `dsh-systray.log` (including rotated archives), shows the full path and supports clearing
 
-### Official Desktop app — use it when present, unchanged when absent
+**Portable**
 
-- **Automatic detection**: the Windows uninstall registry and (on macOS) the `DeepSeek Harness.app` bundle under `/Applications`. Once detected, the tray's "Open Web UI" becomes "**Open Desktop UI**" and launches the Desktop app (or brings the running instance to the front)
-- **Selectable default launch method**: "General → Default launch method" offers `Auto-detect (prefer Desktop)` / `Web UI (tray-managed service)` / `Desktop UI (official Desktop app)`; if the Desktop app is uninstalled the tray falls back to Web UI
-- **Version and updates follow the launch method**: under Web UI the tray-installed `@deepseek-ai/dsh` is managed (npm registry / GitHub), while under Desktop UI the installed Desktop version is read and compared against the **Desktop app's own update feed** (`download.deepseek.com`, fixed Nightly channel). "Update" downloads the official installer (sha512-verified) and starts its installer wizard
-- **Reset only exists under Web UI**: the Desktop app owns its bundled harness and data directory, so that entry is hidden under Desktop UI (and rejected by the backend)
-- **The settings page adapts itself**: under Desktop UI, entries that only affect the tray-managed Web service (service port, harness directory) are greyed out with an explanation, the reset card and prerelease channel are hidden, and a Desktop card shows version, running state, update channel, install location and a one-click launch
+- Account sync ([dsh-connect](https://github.com/refyon/dsh-connect)): start-at-login, the selected Harness version (including the prerelease channel) and every online plugin; machine-specific settings and local plugins are never uploaded
+- Pulled changes apply via "restart to apply"; machines merge by newest, and failed items can be retried
+- Export / Import: sessions, installed plugins and chosen folders are bundled into a zip; import lists restorable items and prompts on conflicts with backups
+- Config lives in `config.json`, data in `~/.dsh`
+
+**Official Desktop app**
+
+- When the Desktop app is detected, the tray's "Open Web UI" becomes "Open Desktop UI"
+- Default launch method (settings dropdown): `auto` / `web` / `desktop`
+- Version, update and reset follow the launch method; Desktop UI uses the official update feed
+- Under Desktop UI, entries that only affect the tray-managed service are greyed out or hidden
 
 ## Configuration
 
-`config.json` lives in the user config directory (optional; defaults are used when missing):
+`config.json` lives in the user config directory (optional; defaults apply when missing):
 
 ```json
 {
   "port": 3080,
-  "harnessDir": "/path/to/deepseek-harness",
+  "harnessDir": "~/deepseek-harness",
   "startupTimeoutSec": 300,
   "updateMirror": "",
+  "mirrorBase": "",
   "harnessPrerelease": false,
+  "language": "auto",
+  "proxy": "auto",
+  "trustedHosts": [],
   "accountApiBase": "",
   "launchTarget": "auto"
 }
 ```
 
-- `port`: server port, default 3080 (overridable via the `DSH_SYSTRAY_PORT` environment variable)
-- `harnessDir`: harness source / install directory; we recommend setting it explicitly to the real path (when unset the default official location `~/deepseek-harness` is used, matching the official `npx '@deepseek-ai/dsh' web` deployment semantics; the legacy private directory `%LOCALAPPDATA%\Programs\dsh-systray-harness` is only probed for migration and is no longer a deployment target)
-- `startupTimeoutSec`: timeout (seconds) waiting for the service to start, default 300 (overridable via `DSH_SYSTRAY_STARTUP_TIMEOUT`)
-- `updateMirror`: optional GitHub update download mirror prefix (handy behind mainland-China networks, e.g. `https://ghproxy.net/`)
-- `harnessPrerelease`: whether alpha/beta/rc builds count as updateable harness versions (off by default — only stable versions)
-- `accountApiBase`: optional base URL of the account-sync service ([dsh-connect](https://github.com/refyon/dsh-connect)); defaults to the official domain. The sign-in state and sync cursor live in a separate `account.json` in the same directory (mode 0600; it holds only the token and cursor, never a password) and are removed when you sign out on the "Data sync" page
-- `launchTarget`: default launch method for the tray's open action — `auto` (default; use the official Desktop app when installed) | `web` | `desktop`. It also decides which harness engine the version / check-update / update / reset actions apply to (overridable via `DSH_SYSTRAY_LAUNCH_TARGET`); see the "Official Desktop app" section
-
-## Architecture
-
-```
-┌────────────────────────────── dsh-systray (Wails v2) ──────────────────────────────┐
-│  src/frontend/ (static HTML/CSS/JS, embedded via go:embed, zero build steps)        │
-│    ├── startup/update progress view + seven settings pages (general/about/logs/export/import/sync/help)
-│    └── light/dark design tokens (style.css :root and prefers-color-scheme)          │
-├───────────────────────────────────────────────────────────────────────────────────┤
-│  Go backend (src/)                                                                  │
-│    ├── main.go       entry: config / single instance / service orchestration / window lifecycle
-│    ├── app.go        Wails Bindings (config / service / logs / update / export-import)
-│    ├── platform_*.go autostart / runtime / server / dialogs / tray icons (Windows/macOS)
-│    ├── updater.go      auto-update (whole-package exe / .app replacement, verify+rollback; harness version & prerelease channel)
-│    ├── plugin_update.go plugin inventory & per-plugin check/update (npm, GitHub default branch, local sources)
-│    └── exportimport.go / ziptool.go  data bundling & restore
-└───────────────────────────────────────────────────────────────────────────────────┘
-```
-
-- **Frontend**: plain HTML/CSS/JS without a Node build chain; Wails `-s` embeds `src/frontend/dist` directly
-- **Tray**: [energye/systray](https://github.com/energye/systray) (a fork coexisting with the Wails event loop; on macOS integrated via `RunWithExternalLoop`, without taking over NSApplication)
-- **Update**: Windows replaces the single exe; macOS replaces the whole `.app` bundle (`ditto` extraction preserves permissions)
+| Key | Description | Environment variable |
+| --- | --- | --- |
+| `port` | Server port, default 3080 | `DSH_SYSTRAY_PORT` |
+| `harnessDir` | Harness source / install directory, default `~/deepseek-harness` | `DSH_SYSTRAY_HARNESS_DIR` |
+| `startupTimeoutSec` | Startup wait timeout in seconds, default 300 | `DSH_SYSTRAY_STARTUP_TIMEOUT` |
+| `updateMirror` | GitHub download mirror prefix (e.g. `https://ghproxy.net/`) | — |
+| `mirrorBase` | Self-hosted GitHub relay URL | — |
+| `harnessPrerelease` | Treat alpha/beta/rc as updateable versions | — |
+| `language` | UI language: `auto` (follow system) / `zh` / `en` | `DSH_SYSTRAY_LANG` |
+| `proxy` | Outbound proxy: `auto` / `direct` / a proxy URL | `DSH_SYSTRAY_PROXY` |
+| `trustedHosts` | Extra trusted addresses (`host:port`) | — |
+| `accountApiBase` | Account-sync service URL; sign-in state lives in `account.json` (0600) beside it | — |
+| `launchTarget` | Default launch method `auto` / `web` / `desktop` | `DSH_SYSTRAY_LAUNCH_TARGET` |
 
 ## Building
 
-Prerequisites: Go 1.21+, [Wails CLI v2](https://wails.io/docs/gettingstarted/installation) (`go install github.com/wailsapp/wails/v2/cmd/wails@v2.15.0`), static frontend files (no Node needed).
+Prerequisites: Go 1.21+ and the [Wails CLI v2](https://wails.io/docs/gettingstarted/installation) (`go install github.com/wailsapp/wails/v2/cmd/wails@v2.15.0`).
 
-Run the build commands inside `src/` (the Wails project root = the directory holding `wails.json`); on Windows you can also use `scripts\build.ps1` (runs `generate module` + a `-skipbindings` build).
+Run the commands inside `src/`; on Windows you can also use `scripts\build.ps1`.
 
 | Platform | Build command (run inside `src/`) |
 | --- | --- |
 | Windows | `wails build -s -clean -platform windows/amd64 -ldflags "-X main.appVersion=v1.2.3"` |
 | macOS | `wails build -s -clean -platform darwin/universal -ldflags "-X main.appVersion=v1.2.3"` |
 
-> - Output: `src/build/bin/dsh-systray.exe` (Windows) / `src/build/bin/dsh-systray.app` (macOS); the repository root keeps no build artifacts
-> - `-s`: skips the frontend build (embeds `src/frontend/dist` directly); after frontend changes simply re-run `wails build`
-> - `-X main.appVersion=` injects the current version used for auto-update comparison (injected automatically when GitHub Actions builds a tagged release; local builds may omit it — the version is then `dev`, which skips update checks)
-> - On Windows add `-webview2 download` to embed a bootstrap installer for machines without WebView2 (enabled in CI)
-> - macOS output is a `.app` bundle; `src/build/darwin/Info.plist` sets `LSUIElement=true` (pure tray app — no Dock icon)
+- Output: `src/build/bin/dsh-systray.exe` / `dsh-systray.app`
+- `-X main.appVersion=`: version used for update comparison (injected from the CI tag; `dev` when omitted, which skips update checks)
+- Windows: add `-webview2 download` to cover machines without WebView2
 
 ## Development
 
 ```bash
 cd src
-wails dev   # hot-reload dev mode (Node optional; with a static frontend this equals compile & run)
+wails dev
 ```
 
-Useful environment variables for local debugging: `DSH_SYSTRAY_PORT`, `DSH_SYSTRAY_HARNESS_DIR`, `DSH_SYSTRAY_STARTUP_TIMEOUT`.
+Debug environment variables: `DSH_SYSTRAY_PORT`, `DSH_SYSTRAY_HARNESS_DIR`, `DSH_SYSTRAY_STARTUP_TIMEOUT`, `DSH_SYSTRAY_LOG_DIR`, `DSH_SYSTRAY_LANG`, `DSH_SYSTRAY_PROXY`.
 
-## Platform differences
+## Links
 
-| Capability | Windows | macOS |
-| --- | --- | --- |
-| Rendering | WebView2 (Chromium) | WKWebView (Safari engine) |
-| Start server | `cmd /c` | `sh -c` |
-| Open Web UI | `rundll32 url.dll` | `open` |
-| Autostart | registry `HKCU\...\Run` | `~/Library/LaunchAgents/*.plist` (launchd) |
-| Kill external service on quit | `netstat` + `taskkill` | `lsof` + `SIGTERM` |
-| Prompting | MessageBox (custom rounded dialog) | `osascript` notifications/dialogs |
-| Loading UI | in-window progress view (Wails) | in-window progress view (Wails) |
-| Dock icon | — | hidden (LSUIElement, pure tray) |
+[Website](https://refyon.github.io/dsh-systray/) · [Release notes](https://github.com/refyon/dsh-systray/releases) · [Issues](https://github.com/refyon/dsh-systray/issues) · Related: [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness), [dsh-connect](https://github.com/refyon/dsh-connect)

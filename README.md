@@ -1,4 +1,4 @@
-﻿<h1 align="center">
+<h1 align="center">
   <img src="docs/icon.svg" width="72" alt="dsh-systray logo" />
   <br />
   dsh-systray
@@ -8,11 +8,6 @@
   后台启动
   <a href="https://github.com/deepseek-ai/deepseek-harness">DeepSeek Harness</a>
   Web 本地服务器，并常驻系统托盘。
-</p>
-
-<p align="center">
-  <a href="https://refyon.github.io/dsh-systray/"><strong>网站</strong></a> ·
-  <a href="https://github.com/refyon/dsh-systray/releases/latest">更新日志</a>
 </p>
 
 <p align="center">
@@ -26,19 +21,19 @@
   <a href="https://github.com/refyon/dsh-systray/actions/workflows/release.yml"><img alt="Release build" src="https://github.com/refyon/dsh-systray/actions/workflows/release.yml/badge.svg" /></a>
 </p>
 
-<img src="docs/screenshot-hero.webp" alt="dsh-systray 设置窗口与自动部署/安装 Harness 依赖" />
+<img src="docs/screenshot-hero.webp" alt="dsh-systray 设置窗口" />
 
-dsh-systray 是一个 Windows / macOS 系统托盘应用，围绕三个核心特性设计：**轻量**（单文件免安装、免管理员权限、托盘常驻低占用）、**可靠**（环境自检自愈、启动失败自动回退、更新失败自动回滚）、**可迁移**（会话/插件/目录一键导出导入，换机无缝恢复）。双击即可后台拉起 DeepSeek Harness Web 本地服务，无需记忆端口。界面基于 [Wails v2](https://wails.io)（Go 后端 + WebView2 / WKWebView 前端）重构，设置窗口七页分类管理开机自启与后台服务、版本与更新（dsh-systray / Harness / 插件按模块独立检查）、数据同步、实时日志，整体配色支持浅色 / 深色自动跟随系统，内置自动更新。
+Windows / macOS 系统托盘应用。三个核心特性：**轻量**（单文件免安装、免管理员权限、托盘常驻）、**可靠**（环境自检自愈、启动失败回退、更新失败回滚）、**可迁移**（账号同步，会话 / 插件 / 目录导出导入）。设置窗口七页，界面中英双语、浅色 / 深色随系统。
 
 > [!IMPORTANT]
-> 这是一个社区维护的非官方工具，依赖快速演进的 `@deepseek-ai/dsh`。macOS 构建未经 Apple 公证，Windows 构建未做商业代码签名，首次运行可能需手动放行（Windows SmartScreen「仍要运行」/ macOS「右键 → 打开」）。首次启动约需 2–5 分钟自动部署环境。
+> 社区维护的非官方工具，依赖 `@deepseek-ai/dsh`。macOS 构建未经公证、Windows 构建未签名，首次运行需手动放行。首次启动约 2–5 分钟部署环境。
 
 ## 系统要求
 
 | 平台 | 要求 |
 | --- | --- |
-| Windows | **Windows 10 1803+ / Windows 11**，需要 [WebView2 Runtime](https://developer.microsoft.com/microsoft-edge/webview2/)（随 Microsoft Edge 预装；发行包已内嵌引导安装器兜底，缺失时自动安装） |
-| macOS | macOS 11.0+（Big Sur 及更新版本） |
+| Windows | **Windows 10 1803+ / Windows 11**；[WebView2 Runtime](https://developer.microsoft.com/microsoft-edge/webview2/)（随 Microsoft Edge 预装，缺失时自动安装） |
+| macOS | macOS 11.0+ |
 
 ## 下载
 
@@ -47,39 +42,40 @@ dsh-systray 是一个 Windows / macOS 系统托盘应用，围绕三个核心特
 | Windows | x64 | ZIP | [下载 Windows 版](https://github.com/refyon/dsh-systray/releases/latest/download/dsh-systray-windows-x64.zip) |
 | macOS | Intel + Apple Silicon | ZIP (.app) | [下载 macOS 版](https://github.com/refyon/dsh-systray/releases/latest/download/dsh-systray-macos-universal.zip) |
 
+解压后双击运行；首次启动自动部署运行环境与 harness，进度在窗口内显示，就绪后可一键打开 Web UI；此后随系统开机自启。
+
 ## 功能
 
-围绕三个核心特性设计：**轻量、可靠、可迁移**。
+**轻量**
 
-### 轻量 —— 双击即用，常驻无忧
-- **双击启动**：无窗口、后台拉起 harness 的 `pnpm dsh web --port <port> --no-open`；启动进度（运行环境检查 → 依赖安装 → 服务就绪）在窗口内可见，就绪后弹窗提示（可一键打开 Web UI）
-- **单文件免安装**：Windows 单 exe、macOS 单 .app，免管理员权限；便携 Node.js / pnpm 运行时按需自动就位
-- **托盘常驻**：右键菜单直达「打开 Web UI / 设置 / 退出」，服务状态一望即知；深浅色主题随系统自动切换
-- **单实例**：已在运行时再次双击会弹窗提示「已在运行中」，不产生第二个托盘图标
+- 双击启动：后台启动 harness Web 服务（仅监听本机），启动进度在窗口内显示
+- 单文件免安装：Windows 单 exe、macOS 单 .app，免管理员权限；便携 Node.js / pnpm 按需就位
+- 托盘常驻：菜单「打开 Web UI / 设置 / 退出」，深浅色随系统
+- 单实例：重复启动提示「已在运行中」
 
-### 可靠 —— 自检、自愈、可回退
-- **环境自检**：启动时检查 node / pnpm / harness，缺失时运行内置安装脚本（含 `git clone` 拉取 harness 源码）
-- **启动失败自动回退**：服务启动失败（进程异常退出 / 加载错误）时，自动回退到上次正常运行的 harness 与插件状态并重启
-- **不兼容插件如实告知**：插件因所需 API 版本不满足被 harness 启动期跳过时，关于页对应行显示「已被跳过」徽标与原因（含 harness 给出的版本区间），不再悄无声息；该状态只作告知——不改动激活清单、不触发禁用自愈，日志里的陈旧记录按版本过滤，不会误报
-- **重启提速**：停服后按端口真实释放轮询（不再固定等 1 秒）、就绪探测 120ms 自适应、设置页重启用更短的提前通过门槛——「重启服务」典型耗时从约 8-9 秒降到约 4-5 秒；插件应用 / 导入 / 更新 / 重置 / 回退各少等 1 秒以上
-- **服务自行退出自动拉起**：harness 需要重启时会主动退出进程（HMR 整体重载、替换已解析的插件版本）；托盘在数秒内自动拉起（5 分钟窗口内最多 3 次，超限如实报失败并给出原因），不再表现为「Web UI 突然打不开」
-- **更新双保险**：后台自动检查 GitHub Releases 新版本，窗口内展示下载进度并可取消；dsh-systray / DeepSeek Harness / 插件按模块独立检查更新，更新前自动快照、安装后健康校验，失败自动回退到上一可用版本
-- **私有仓库插件**：来自私有仓库的插件在检查更新时引导 GitHub 设备流授权——弹窗确认后自动打开浏览器、**一次性授权码直接显示在进度窗口里**（同时写入剪贴板），授权完成自动重试检查（网络瞬断自动重连，最多 3 次）；首次使用会自动下载 GitHub CLI 便携版并显示下载进度。授权后还会把凭据接给更新链路（`gh auth setup-git` 写 git 凭据助手 + 用户级 `~/.npmrc` 写 `//codeload.github.com/:tokenHelper`），两处配置都只写**命令**、不写 token，也不把 token 发给第三方镜像
-- **日志**：「日志」页实时跟踪 app.log / server.log，显示完整路径，自动跟随最新写入，支持一键清空
+**可靠**
 
-### 可迁移 —— 数据随身带，换机无缝恢复
-- **账号同步（dsh-connect）**：邮箱验证码登录后，**开机自启动**、**最后选用的 Harness 版本（含预发布通道）**与**所有在线插件**随账号在多台机器间同步；本机目录、端口等环境相关配置与本地插件（`file:` / `local`）不上传。拉到的改动**不会自动生效**——设置页「数据同步」里常驻「重启生效」提示，点按钮进入进度视图（逐项文案 + 取消），按「每 key 取最新」合并落地（重复上报幂等、删除是墓碑不会复活）、单项失败可续做；未落地前状态显示「待生效 N 项」而非「已同步」。后台每 20 分钟自动检查一次，左侧「数据同步」项以小字彩色状态显示（同步中 / 待同步 / 待生效 / 同步失败 / 已同步+时间）
-- **导出 / 导入**：会话记录、已安装插件、自选文件目录打包为 zip 备份；导入时解析压缩包罗列可恢复项，冲突询问并自动备份，恢复期间自动暂停/重启后台服务
-- **配置即数据**：全部配置保存在用户目录（`config.json`），数据在 `~/.dsh`，随导出包完整迁移
-- **跨平台一致**：Windows / macOS 同一套界面与数据格式（设计令牌见 [DESIGN.md](DESIGN.md)）
+- 启动自检 node / pnpm / harness，缺失时自动安装
+- 启动失败回退到上次正常运行状态并重启
+- 插件与当前 harness 版本不兼容时，关于页标注「已被跳过」与原因
+- 「重启服务」约 4–5 秒；服务进程退出后 5 分钟内自动拉起（最多 3 次）
+- dsh-systray / Harness / 插件按模块独立检查更新，失败自动回滚
+- 私有仓库插件：GitHub 设备流授权，一次性授权码显示在窗口内并复制到剪贴板
+- 日志页跟踪 `dsh-systray.log`（含轮转归档），显示完整路径，支持清空
 
-### 官方桌面端 —— 装了就用它，没装照旧
+**可迁移**
 
-- **自动识别**：Windows 读卸载登记、macOS 探测 `/Applications` 下的 `DeepSeek Harness.app`；检测到后托盘「打开 Web UI」自动变为「**打开 Desktop UI**」，点击即拉起桌面端（已在运行则唤到前台）
-- **默认启动方式可选**：「常规 → 默认启动方式」可选 `自动检测（优先桌面端）` / `Web UI（托盘自带服务）` / `Desktop UI（官方桌面端）`；桌面端被卸载时自动回退 Web UI
-- **版本与更新随启动方式走**：Web UI 方式下管的是托盘装的 `@deepseek-ai/dsh`（npm 源 / GitHub），Desktop UI 方式下读桌面端安装版本并比对**桌面端自带更新源**（`download.deepseek.com`，固定 Nightly），「更新」= 下载官方安装包（校验 sha512）并启动安装向导
-- **重置只在 Web UI 方式下成立**：桌面端的内置 harness 与数据目录由桌面端自己管理，该入口在 Desktop UI 方式下隐藏（后端同样拒绝）
-- **设置页自动适配**：Desktop UI 方式下，只影响托盘自带 Web 服务的条目（服务端口、Harness 目录）置灰并说明，重置卡片与预发布通道隐藏；桌面端卡片提供版本、运行状态、更新通道、安装位置与一键打开
+- 账号同步（[dsh-connect](https://github.com/refyon/dsh-connect)）：开机自启动、最后选用的 Harness 版本（含预发布通道）、所有在线插件；本机配置与本地插件不上传
+- 拉到的改动需点「重启生效」应用；多端按最新合并，单项失败可续做
+- 导出 / 导入：会话记录、已安装插件、自选文件目录打包为 zip；导入时罗列可恢复项，冲突询问并备份
+- 配置存于 `config.json`，数据存于 `~/.dsh`
+
+**官方桌面端**
+
+- 检测到桌面端后，托盘「打开 Web UI」变为「打开 Desktop UI」
+- 默认启动方式（设置页下拉）：`auto` / `web` / `desktop`
+- 版本、更新与重置随启动方式切换；Desktop UI 使用官方更新源
+- Desktop UI 下，只影响托盘服务的条目置灰或隐藏
 
 ## 配置
 
@@ -88,80 +84,57 @@ dsh-systray 是一个 Windows / macOS 系统托盘应用，围绕三个核心特
 ```json
 {
   "port": 3080,
-  "harnessDir": "/path/to/deepseek-harness",
+  "harnessDir": "~/deepseek-harness",
   "startupTimeoutSec": 300,
   "updateMirror": "",
+  "mirrorBase": "",
   "harnessPrerelease": false,
+  "language": "auto",
+  "proxy": "auto",
+  "trustedHosts": [],
   "accountApiBase": "",
   "launchTarget": "auto"
 }
 ```
 
-- `port`：服务器端口，默认 3080（可被环境变量 `DSH_SYSTRAY_PORT` 覆盖）
-- `harnessDir`：harness 源码 / 安装目录，建议显式配置为实际路径（未配置时默认官方惯例位置 `~/deepseek-harness`，与官方 `npx '@deepseek-ai/dsh' web` 部署语义一致；旧版私有目录 `%LOCALAPPDATA%\Programs\dsh-systray-harness` 仅作迁移探测，不再作为新部署目标）
-- `startupTimeoutSec`：服务启动等待超时（秒），默认 300（可被 `DSH_SYSTRAY_STARTUP_TIMEOUT` 覆盖）
-- `updateMirror`：可选，GitHub 更新下载镜像前缀（国内网络友好，如 `https://ghproxy.net/`）
-- `harnessPrerelease`：是否把 alpha/beta/rc 视为 harness 可更新版本（默认关闭，仅更新稳定版）
-- `accountApiBase`：可选，账号同步服务（[dsh-connect](https://github.com/refyon/dsh-connect)）地址，默认官方正式域名。登录态与同步游标单独存放在同目录的 `account.json`（权限 0600，只含令牌与游标，不含密码）；在「设置 → 数据同步」退出登录即清除
-- `launchTarget`：托盘「打开」的默认启动方式，`auto`（默认，装了官方桌面端就用桌面端）| `web` | `desktop`；同时决定设置页「版本 / 检查更新 / 更新 / 重置」作用于哪个 harness 引擎（可被 `DSH_SYSTRAY_LAUNCH_TARGET` 覆盖）。详见「官方桌面端」一节
-
-## 架构
-
-```
-┌────────────────────────────── dsh-systray (Wails v2) ──────────────────────────────┐
-│  src/frontend/（静态 HTML/CSS/JS，go:embed 内嵌，零构建步骤）                       │
-│    ├── 启动/更新进度视图 + 设置七页（常规/关于/日志/导出/导入/数据同步/帮助）       │
-│    └── 浅色/深色设计令牌（style.css :root 与 prefers-color-scheme）                 │
-├───────────────────────────────────────────────────────────────────────────────────┤
-│  Go 后端（src/）                                                                    │
-│    ├── main.go       入口：配置/单实例/服务编排/窗口生命周期                        │
-│    ├── app.go        Wails Bindings（配置/服务/日志/更新/导出导入）                 │
-│    ├── platform_*.go 自启动/运行时/服务器/对话框/托盘图标（Windows/macOS）          │
-│    ├── updater.go      自动更新（exe / .app 整包替换，校验+回滚；harness 版本/预发布通道）│
-│    ├── plugin_update.go 插件清单与单独检查/更新（npm、GitHub 默认分支、本地来源判定）│
-│    └── exportimport.go / ziptool.go  数据打包与恢复                                 │
-└───────────────────────────────────────────────────────────────────────────────────┘
-```
-
-- **前端**：原生 HTML/CSS/JS，无 Node 构建链；Wails `-s` 直接嵌入 `src/frontend/dist`
-- **托盘**：[energye/systray](https://github.com/energye/systray)（与 Wails 事件循环共存的 fork；macOS 经 `RunWithExternalLoop` 集成，不接管 NSApplication）
-- **更新**：Windows 替换单文件 exe；macOS 替换整个 `.app` 包（`ditto` 解压保留权限）
+| 键 | 说明 | 环境变量 |
+| --- | --- | --- |
+| `port` | 服务端口，默认 3080 | `DSH_SYSTRAY_PORT` |
+| `harnessDir` | harness 源码 / 安装目录，默认 `~/deepseek-harness` | `DSH_SYSTRAY_HARNESS_DIR` |
+| `startupTimeoutSec` | 服务启动等待超时（秒），默认 300 | `DSH_SYSTRAY_STARTUP_TIMEOUT` |
+| `updateMirror` | GitHub 下载镜像前缀（如 `https://ghproxy.net/`） | — |
+| `mirrorBase` | 自建 GitHub 中转地址 | — |
+| `harnessPrerelease` | 是否把 alpha/beta/rc 视为可更新版本 | — |
+| `language` | 界面语言 `auto`（跟随系统）/ `zh` / `en` | `DSH_SYSTRAY_LANG` |
+| `proxy` | 出网代理 `auto` / `direct` / 代理地址 | `DSH_SYSTRAY_PROXY` |
+| `trustedHosts` | 额外信任的访问地址（`host:port`） | — |
+| `accountApiBase` | 账号同步服务地址；登录态在同目录 `account.json`（0600） | — |
+| `launchTarget` | 默认启动方式 `auto` / `web` / `desktop` | `DSH_SYSTRAY_LAUNCH_TARGET` |
 
 ## 构建
 
-前置：Go 1.21+、[Wails CLI v2](https://wails.io/docs/gettingstarted/installation)（`go install github.com/wailsapp/wails/v2/cmd/wails@v2.15.0`）、前端静态文件（无需 Node）。
+前置：Go 1.21+、[Wails CLI v2](https://wails.io/docs/gettingstarted/installation)（`go install github.com/wailsapp/wails/v2/cmd/wails@v2.15.0`）。
 
-构建命令都在 `src/` 下执行（Wails 项目根 = `wails.json` 所在目录）；Windows 也可直接用 `scripts\build.ps1`（自动 `generate module` + `-skipbindings` 构建）。
+命令在 `src/` 下执行；Windows 也可用 `scripts\build.ps1`。
 
 | 平台 | 构建命令（在 `src/` 下执行） |
 | --- | --- |
 | Windows | `wails build -s -clean -platform windows/amd64 -ldflags "-X main.appVersion=v1.2.3"` |
 | macOS | `wails build -s -clean -platform darwin/universal -ldflags "-X main.appVersion=v1.2.3"` |
 
-> - 产物：`src/build/bin/dsh-systray.exe`（Windows）/ `src/build/bin/dsh-systray.app`（macOS），仓库根不再输出编译产物
-> - `-s`：跳过前端构建（直接内嵌 `src/frontend/dist`）；改动前端后无需其他步骤，直接重新 `wails build`
-> - `-X main.appVersion=` 注入当前版本号，供自动更新对比使用（GitHub Actions 打 tag 发布时自动注入；本地开发可省略，此时为 `dev`，跳过更新检查）
-> - Windows 如需为未预装 WebView2 的机器兜底，加 `-webview2 download`（内嵌引导安装器，CI 已启用）
-> - macOS 产物为 `.app` 包；`src/build/darwin/Info.plist` 已注入 `LSUIElement=true`（纯托盘应用，不显示 Dock 图标）
+- 产物：`src/build/bin/dsh-systray.exe` / `dsh-systray.app`
+- `-X main.appVersion=`：版本号（CI 按 tag 注入；省略时为 `dev`，跳过更新检查）
+- Windows 可加 `-webview2 download`（为未预装 WebView2 的机器兜底）
 
 ## 开发
 
 ```bash
 cd src
-wails dev   # 热重载开发模式（需 Node 可选；静态前端下等同于编译并运行）
+wails dev
 ```
 
-本地调试时可用环境变量：`DSH_SYSTRAY_PORT`、`DSH_SYSTRAY_HARNESS_DIR`、`DSH_SYSTRAY_STARTUP_TIMEOUT`。
+调试环境变量：`DSH_SYSTRAY_PORT`、`DSH_SYSTRAY_HARNESS_DIR`、`DSH_SYSTRAY_STARTUP_TIMEOUT`、`DSH_SYSTRAY_LOG_DIR`、`DSH_SYSTRAY_LANG`、`DSH_SYSTRAY_PROXY`。
 
-## 平台差异
+## 链接
 
-| 能力 | Windows | macOS |
-| --- | --- | --- |
-| 界面渲染 | WebView2（Chromium） | WKWebView（Safari 内核） |
-| 启动服务器 | `cmd /c` | `sh -c` |
-| 打开 Web UI | `rundll32 url.dll` | `open` |
-| 开机自启动 | 注册表 `HKCU\...\Run` | `~/Library/LaunchAgents/*.plist`（launchd） |
-| 退出杀外部服务 | `netstat` + `taskkill` | `lsof` + `SIGTERM` |
-| 提示方式 | MessageBox（自绘圆角弹窗） | `osascript` 通知/弹窗 |
-| loading 界面 | Wails 窗口内进度视图 | Wails 窗口内进度视图 |
-| Dock 图标 | — | 隐藏（LSUIElement，纯托盘） |
+[网站](https://refyon.github.io/dsh-systray/) · [更新日志](https://github.com/refyon/dsh-systray/releases) · [Issues](https://github.com/refyon/dsh-systray/issues) · 相关项目：[DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness)、[dsh-connect](https://github.com/refyon/dsh-connect)
