@@ -1005,6 +1005,20 @@ func askStartService() bool {
 	return strings.Contains(out, start)
 }
 
+// askStopServiceForDrift 装上官方桌面端、启动方式切到 Desktop UI 时的询问：是否停掉后台 Web 服务。
+// 与 askStartService 对称：桌面端自带引擎，端口上的服务只白占资源，但不静默杀掉用户可能正在用的会话。
+func askStopServiceForDrift() bool {
+	msg := T("已检测到官方桌面端，启动方式已切换为 Desktop UI。\n\n是否停止后台 Web 服务？（桌面端自带引擎，继续运行只会占用端口）")
+	stop := T("停止服务")
+	script := fmt.Sprintf(`display dialog "%s" with title "%s" buttons {%q, %q} default button %q`,
+		escapeAppleScript(msg), appName, T("保留服务"), stop, stop)
+	out, err := runAppleScript(script)
+	if err != nil {
+		return false
+	}
+	return strings.Contains(out, stop)
+}
+
 // askLaunchTargetDesktopMissing 配置为 Desktop UI 但未检测到官方桌面端时的询问。
 // 返回 "install"（安装桌面端）/ "web"（改用 Web UI）/ "keep"（保持现状）。
 func askLaunchTargetDesktopMissing() string {

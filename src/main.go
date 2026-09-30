@@ -360,6 +360,9 @@ var (
 	menuStatus        *systray.MenuItem // 状态说明行
 	mSettings         *systray.MenuItem // “设置”
 	mQuit             *systray.MenuItem // “退出”
+	// lastTrayLaunchMode 上一次写入「打开」菜单文案的启动方式（web | desktop）：文案只在
+	// refreshTrayTexts 与 refreshServiceMenu 的方式变化分支里写，据此判断是否已落后于解析结果。
+	lastTrayLaunchMode atomic.Value // string
 )
 
 // statusLineMaxRunes 托盘状态行（失败原因）的最大展示长度——菜单宽度随最长文本变化，
@@ -407,6 +410,20 @@ func trayOpenTooltip() string {
 	return T("打开网页端界面")
 }
 
+// trayLaunchModeTag 当前解析结果对应的启动方式标签（web | desktop）。
+func trayLaunchModeTag() string {
+	if launchTargetIsDesktop() {
+		return launchTargetDesktop
+	}
+	return launchTargetWeb
+}
+
+// trayTextsNeedSync 「打开」菜单文案是否已落后于当前解析结果（纯判据，便于测试）。
+func trayTextsNeedSync() bool {
+	last, _ := lastTrayLaunchMode.Load().(string)
+	return last != trayLaunchModeTag()
+}
+
 // refreshServiceMenu 按服务实际运行状态刷新托盘菜单（可跨线程、可周期调用）。
 // 就绪判定基于实际运行端口（配置端口或本进程最后启动端口），避免修改端口后、
 // 重启前「打开 Web UI」被错误禁用/指向不可达地址。
@@ -422,6 +439,16 @@ func refreshServiceMenu() {
 	systray.RunOnLoop(func() {
 		if menuOpen == nil || menuStatus == nil {
 			return
+		}
+		// 文案随解析结果同步：自动检测（auto）会在运行期翻转启动方式（桌面端装上/卸掉、检测失效），
+		// 那条路径不经过 refreshTrayTexts，不补这一步菜单会一直写着旧方式，而点击动作由
+		// openDefaultUI 按**点击时**的解析结果分派——表现为「菜单写着 Web UI，点开却是桌面端」。
+		// 判据与写入放在同一处，保证记下的方式与写进去的文案一致；只在方式确实变化时改写：
+		// Windows 上每次 SetTitle 都会打一次 SetMenuItemInfo 并触发菜单宽度重算，2 秒轮询不该每轮都做。
+		if trayTextsNeedSync() {
+			menuOpen.SetTitle(trayOpenTitle())
+			menuOpen.SetTooltip(trayOpenTooltip())
+			lastTrayLaunchMode.Store(trayLaunchModeTag())
 		}
 		if desktopTarget {
 			// desktop 启动方式：「打开 Desktop UI」常显可点（与后台服务状态解耦）。
@@ -464,6 +491,7 @@ func refreshTrayTexts() {
 		if menuOpen != nil {
 			menuOpen.SetTitle(trayOpenTitle())
 			menuOpen.SetTooltip(trayOpenTooltip())
+			lastTrayLaunchMode.Store(trayLaunchModeTag()) // 记下文案对应方式，刷新后不必再同步
 		}
 		if mSettings != nil {
 			mSettings.SetTitle(T("设置"))
@@ -494,24 +522,32 @@ func pollServiceMenu() {
 	}
 }
 
-// ==================== 启动方式漂移（desktop → web） ====================
+// ==================== 启动方式漂移（双向） ====================
 //
-// desktop 启动方式下后台服务从未启动：若官方桌面端随后被卸载（或检测失效），解析结果会回退
-// Web UI——此时托盘「打开」没有任何可用目标（服务没在跑）。发现这一次漂移后询问用户是否现在
-// 启动后台服务；不静默拉起（desktop 形态下用户并没有在用网页端）。
+// 偏好没变而解析结果变了，就是实机漂移，两个方向都要收尾（托盘文案由 refreshServiceMenu 同步）：
+//
+//	desktop → web：官方桌面端被卸载（或检测失效），解析回退 Web UI，而 desktop 形态下后台服务
+//	              从未启动——托盘「打开」此时没有可用目标。问用户是否现在启动后台服务；不静默
+//	              拉起（desktop 形态下用户并没有在用网页端）。
+//	web → desktop：装上了官方桌面端，解析切到桌面端（自带引擎）。此时端口上继续跑着的后台
+//	              Web 服务只白占资源——显式切换由 setLaunchTarget 直接停服，漂移路径照同样语义
+//	              询问，但不静默杀掉用户可能正在用的网页端会话。
 
 // lastResolvedLaunch 上一次解析出的启动方式，lastResolvedPref 是当时的偏好——两者合起来构成
 // 漂移检测基线：只有「偏好没变、解析结果却变了」才是实机漂移（桌面端被卸载/检测失效）；
 // 用户显式改偏好走 setLaunchTarget 自己的启停流程，不在这里重复询问。
-// launchDriftAsked 本次漂移是否已询问过（用户选择「暂不启动」后不再重复打扰）。
+// launchDriftAsked 本次漂移是否已询问过（用户选择「暂不处理」后不再重复打扰）。
 var (
 	lastResolvedLaunch atomic.Value // string
 	lastResolvedPref   atomic.Value // string
 	launchDriftAsked   atomic.Bool
 )
 
-// askStartServiceFn 询问「是否现在启动后台服务」的实现（测试可替换，避免真实弹窗）。
-var askStartServiceFn = askStartService
+// askStartServiceFn / askStopServiceForDriftFn 两个漂移询问的实现（测试可替换，避免真实弹窗）。
+var (
+	askStartServiceFn        = askStartService
+	askStopServiceForDriftFn = askStopServiceForDrift
+)
 
 // rememberLaunchTargetBaseline 把「当前偏好 + 当前解析结果」记为漂移检测基线。
 // 显式切换启动方式（setLaunchTarget）与轮询发现变化（checkLaunchTargetDrift）都会调用，
@@ -522,7 +558,7 @@ func rememberLaunchTargetBaseline() {
 	launchDriftAsked.Store(false)
 }
 
-// checkLaunchTargetDrift 检测 desktop → web 的启动方式漂移，并按用户选择按需启动后台服务。
+// checkLaunchTargetDrift 检测启动方式漂移（web ↔ desktop），并按用户选择收尾服务生命周期。
 // 只由 pollServiceMenu 的周期 goroutine 调用（状态无并发写）。
 func checkLaunchTargetDrift() {
 	pref := normalizeLaunchTarget(launchTargetPref)
@@ -544,21 +580,34 @@ func checkLaunchTargetDrift() {
 	if prevPref != pref {
 		return
 	}
-	if prev != launchTargetDesktop || cur != launchTargetWeb {
-		return
-	}
-	if !launchDriftAsked.CompareAndSwap(false, true) {
-		return
-	}
-	if running, _, _ := resolveRunningService(); running {
-		return
-	}
-	log.Printf("[launch] desktop target unavailable, fell back to web ui: asking user to start service")
-	go func() {
-		if askStartServiceFn() {
-			startServiceBootstrap(true)
+	switch {
+	case prev == launchTargetDesktop && cur == launchTargetWeb:
+		if !launchDriftAsked.CompareAndSwap(false, true) {
+			return
 		}
-	}()
+		if running, _, _ := resolveRunningService(); running {
+			return // 服务已在跑（用户在别处起的）：无需询问
+		}
+		log.Printf("[launch] desktop target unavailable, fell back to web ui: asking user to start service")
+		go func() {
+			if askStartServiceFn() {
+				startServiceBootstrap(true)
+			}
+		}()
+	case prev == launchTargetWeb && cur == launchTargetDesktop:
+		if !launchDriftAsked.CompareAndSwap(false, true) {
+			return
+		}
+		if running, _, _ := resolveRunningService(); !running {
+			return // 服务没在跑：桌面端形态本就该如此，不打扰
+		}
+		log.Printf("[launch] desktop target available, web service still running: asking user to stop it")
+		go func() {
+			if askStopServiceForDriftFn() {
+				stopServiceForDesktopTarget()
+			}
+		}()
+	}
 }
 
 // ==================== 托盘单击/双击 ====================
