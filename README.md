@@ -1,4 +1,4 @@
-<h1 align="center">
+﻿<h1 align="center">
   <img src="docs/icon.svg" width="72" alt="dsh-systray logo" />
   <br />
   dsh-systray
@@ -135,8 +135,8 @@ dsh-systray 是一个 Windows / macOS 系统托盘应用，围绕三个核心特
 
 | 平台 | 构建命令（在 `src/` 下执行） |
 | --- | --- |
-| Windows | `wails build -s -clean -platform windows/amd64 -ldflags "-X main.appVersion=v1.2.2"` |
-| macOS | `wails build -s -clean -platform darwin/universal -ldflags "-X main.appVersion=v1.2.2"` |
+| Windows | `wails build -s -clean -platform windows/amd64 -ldflags "-X main.appVersion=v1.2.3"` |
+| macOS | `wails build -s -clean -platform darwin/universal -ldflags "-X main.appVersion=v1.2.3"` |
 
 > - 产物：`src/build/bin/dsh-systray.exe`（Windows）/ `src/build/bin/dsh-systray.app`（macOS），仓库根不再输出编译产物
 > - `-s`：跳过前端构建（直接内嵌 `src/frontend/dist`）；改动前端后无需其他步骤，直接重新 `wails build`
