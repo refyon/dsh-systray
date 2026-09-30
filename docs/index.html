@@ -1,4 +1,4 @@
-﻿<!doctype html>
+<!doctype html>
 <html lang="zh-CN">
 <head>
 <meta charset="utf-8">
@@ -51,9 +51,13 @@ a{color:inherit;text-decoration:none}
 
 /* hub: centered carousel */
 .hub{padding:52px 0 12px}
-.car{position:relative;max-width:680px;margin:0 auto}
+.car{position:relative;max-width:840px;margin:0 auto}   /* = 截图逻辑宽 840，源图 1680（2 倍）：整数 2:1 缩放，文字不发虚 */
 .shot-stack{position:relative}
 .shot-stack .shot{width:100%;display:block;border-radius:16px;position:relative;z-index:2;box-shadow:0 18px 38px rgba(16,24,40,.10)}
+/* 实时界面预览：iframe 载入 App 真实前端（docs/mock/），DOM 自己排版渲染——
+   任意缩放比例 / DPI 下都清晰；缩放只作用在 DOM 上，不像位图那样被非整数插值。 */
+.shot-stack .shot.live{overflow:hidden;background:#fff;aspect-ratio:840/560}
+.shot-stack .shot.live iframe{position:absolute;top:0;left:0;width:840px;height:560px;border:0;background:#fff;transform-origin:top left;pointer-events:none}
 .shot-stack::before,.shot-stack::after{content:"";position:absolute;left:0;right:0;height:100%;border-radius:16px;background:#fff;z-index:1}
 .shot-stack::before{top:8px;left:-8px;box-shadow:0 10px 22px rgba(16,24,40,.07)}
 .shot-stack::after{top:16px;left:-16px;box-shadow:0 12px 26px rgba(16,24,40,.06)}
@@ -128,7 +132,9 @@ footer .sep{margin:0 8px;color:var(--border)}
   <section class="hub" id="screenshots">
     <div class="car" data-reveal>
       <div class="shot-stack car-stage">
-        <img class="shot" id="car-img" src="shots/general.webp" alt="dsh-systray 界面轮播" />
+        <div class="shot live" id="car-shot">
+          <iframe id="car-frame" src="mock/index.html?page=general&amp;lang=zh" title="dsh-systray 界面预览" scrolling="no" tabindex="-1" loading="eager"></iframe>
+        </div>
         <div class="car-bubble" id="car-cap">常规 — 自启与服务状态，一眼掌握</div>
       </div>
       <button class="car-arrow prev" id="car-prev" type="button" aria-label="上一张"></button>
@@ -410,107 +416,178 @@ footer .sep{margin:0 8px;color:var(--border)}
     els.forEach(function(el){ el.classList.add('in'); });
   }
 
-  // ==================== 界面截图轮播 ====================
-  // 图片按需加载；EN 页优先使用 docs/shots-en/（英文 UI 截图），文件缺失时回退中文截图。
-  // 末尾一张为「GitHub 授权确认」弹窗（私有仓库插件）——与其余截图一样由
-  // scripts/render_shots.mjs 按固定视口渲染（弹窗内容与 App 内一致，仓库名/插件名均为演示值）。
-  var shots = [
-    { en: 'shots-en/general.webp',     zh: 'shots/general.webp' },
-    { en: 'shots-en/about-top.webp',   zh: 'shots/about-top.webp' },
-    { en: 'shots-en/about-bottom.webp',zh: 'shots/about-bottom.webp' },
-    { en: 'shots-en/logs.webp',        zh: 'shots/logs.webp' },
-    { en: 'shots-en/export.webp',      zh: 'shots/export.webp' },
-    { en: 'shots-en/import.webp',      zh: 'shots/import.webp' },
-    { en: 'shots-en/sync.webp',        zh: 'shots/sync.webp' },
-    { en: 'shots-en/github-auth.png',  zh: 'shots/github-auth.png' }
-  ];
-  var carImg = document.getElementById('car-img');
+  // ==================== 界面预览轮播（实时 DOM，不是位图截图） ====================
+  // 为什么不用图片：位图无论出几倍，最终都要被浏览器按容器宽度做一次**非整数**缩放
+  // （100% / 125% / 150% 缩放屏各不相同），文字边缘必然发虚。这里改为 iframe 载入 App 的
+  // 真实前端（docs/mock/，由 scripts/build_mock.mjs 从 src/frontend/dist 生成 + 同一套演示
+  // 数据桩 scripts/shot-shim.mjs），界面由浏览器自己排版渲染——任意缩放比例、任意 DPI 下
+  // 都是矢量级清晰，内容与 App 内完全一致（演示值已脱敏）。
+  // 末尾一张是「GitHub 授权确认」弹窗（私有仓库插件）：与截图渲染器同口径，复用前端自己的 #modal。
+  var PAGES = ['general', 'about-top', 'about-bottom', 'logs', 'export', 'import', 'sync', 'github-auth'];
+  var NAV_OF = { 'about-top': 'about', 'about-bottom': 'about', 'github-auth': 'about' };
+  var SHOT_W = 840, SHOT_H = 560;   // App 设置窗口逻辑尺寸（src/main.go 的 winW/winH）
+
+  var carWrap = document.getElementById('car-shot');
+  var carFrame = document.getElementById('car-frame');
   var carCap = document.getElementById('car-cap');
   var carDots = document.getElementById('car-dots');
   var carBox = document.querySelector('.car');
-  var cur = 0, seq = 0, playTimer = null;
-  var loaded = {};   // 已加载完成的图片缓存（按真实 URL）
-  var pending = {};  // 正在加载中的图片
-
+  var cur = 0, playTimer = null, frameLang = '', frameReady = false, wantPage = null, frameFallback = false;
+  var dotEls = [];
   function curCaption() {
     return I18N[lang].carCap[cur] || I18N.zh.carCap[cur] || "";
   }
   function updateCarCaption() {
     carCap.textContent = curCaption();
-    carImg.alt = curCaption();
-    dotEls.forEach(function(dd, j){ dd.setAttribute('aria-label', I18N[lang].dotAria.replace('%d', j + 1)); });
+    carFrame.title = 'dsh-systray · ' + curCaption();
+    dotEls.forEach(function (dd, j) { dd.setAttribute('aria-label', I18N[lang].dotAria.replace('%d', j + 1)); });
   }
 
-  // 候选列表按序尝试（EN 优先 → zh 兜底）。修复两处旧缺陷：
-  // ① 首次加载完成/失败从未回调发起者（轮播要等第二圈才显示新图）；
-  // ② 失败时每个排队回调各触发一次 fallback（重复请求回退图）。
-  // 现在：每个请求者都会在加载完成时被回调；并发等待同一 src 共享一次加载。
-  function pickShot(idx, cb) {
-    var cands = lang === 'en' ? [shots[idx].en, shots[idx].zh] : [shots[idx].zh];
-    (function next(k) {
-      if (k >= cands.length) { cb(null); return; }
-      var src = cands[k];
-      if (loaded[src]) { cb(src); return; }
-      var q = pending[src];
-      if (!q) { q = pending[src] = []; loadOne(src, q); }
-      q.push(function (s) { if (s) cb(s); else next(k + 1); });
-    })(0);
+  // 等比缩放到容器宽度（只改 transform：DOM 内容按缩放后的分辨率重新栅格化，文字不发虚）
+  function fitFrame() {
+    var k = carWrap.clientWidth / SHOT_W;
+    carFrame.style.transform = k === 1 ? 'none' : 'scale(' + k + ')';
   }
-  function loadOne(src, q) {
-    var im = new Image();
-    im.onload = function () {
-      loaded[src] = true;
-      delete pending[src];
-      var waiters = q.slice(); q.length = 0;
-      waiters.forEach(function (f) { f(src); });
-    };
-    im.onerror = function () {
-      loaded[src] = false;
-      delete pending[src];
-      var waiters = q.slice(); q.length = 0;
-      waiters.forEach(function (f) { f(null); }); // 由各等待者自身触发下一候选（同源并发时共享一次 fallback 加载）
-    };
-    im.src = src;
+  function frameDoc() {
+    try { return carFrame.contentDocument || null; } catch (e) { return null; }
   }
-  function showShotSrc(src) {
-    carImg.src = src;
-    carImg.alt = curCaption();
+  function frameAppReady() {
+    var d = frameDoc();
+    return !!(d && d.readyState === 'complete' && d.getElementById('settings'));
+  }
+  function waitIn(doc, fn, timeoutMs, cb) {
+    var t0 = Date.now();
+    (function tick() {
+      var ok = false;
+      try { ok = !!fn(doc); } catch (e) { ok = false; }
+      if (ok) return cb(true);
+      if (Date.now() - t0 > (timeoutMs || 6000)) return cb(false);
+      setTimeout(tick, 100);
+    })();
   }
 
-  var dotEls = shots.map(function(_, i){
+  // GitHub 授权确认弹层：文案与 App 内一致（i18n.go 的 ghAuthPromptMsg + 按钮标签），
+  // 真实里是独立原生窗口，网页预览里复用前端自己的 #modal（同一套 DOM/CSS）。
+  function openAuthDialog(doc) {
+    var msg = lang === 'en'
+      ? "Plugin prompt-assistant comes from the private repository example/prompt-assistant.\n\nChecking for updates requires GitHub authorization: clicking “Sign in to GitHub” opens your browser and copies a one-time code to the clipboard — just paste it."
+      : "插件 prompt-assistant 来自私有仓库 example/prompt-assistant。\n\n检查更新需要 GitHub 授权：点击「登录 GitHub」后会打开浏览器，一次性代码自动复制到剪贴板，粘贴即可。";
+    var okLabel = lang === 'en' ? 'Sign in to GitHub' : '登录 GitHub';
+    var $ = function (id) { return doc.getElementById(id); };
+    var modal = $('modal'), title = $('modal-title'), msgEl = $('modal-msg'), okBtn = $('modal-ok'), skip = $('modal-skip');
+    if (!modal || !msgEl || !okBtn) return;
+    if (title) title.classList.add('hidden');
+    msgEl.textContent = msg;
+    okBtn.textContent = okLabel;
+    okBtn.className = 'btn btn-primary';
+    if (skip) skip.classList.add('hidden');
+    var mask = doc.querySelector('#modal .modal-mask');
+    if (mask) mask.style.background = 'transparent';
+    var card = doc.querySelector('#modal .modal-card');
+    if (card) card.style.width = '460px';
+    msgEl.style.wordBreak = 'keep-all';
+    msgEl.style.overflowWrap = 'normal';
+    modal.classList.remove('hidden');
+  }
+  function closeAuthDialog(doc) {
+    var $ = function (id) { return doc.getElementById(id); };
+    var modal = $('modal');
+    if (!modal || modal.classList.contains('hidden')) return;
+    modal.classList.add('hidden');
+    var title = $('modal-title'), skip = $('modal-skip'), card = doc.querySelector('#modal .modal-card');
+    var mask = doc.querySelector('#modal .modal-mask');
+    if (title) title.classList.remove('hidden');
+    if (skip) skip.classList.remove('hidden');
+    if (card) card.style.width = '';
+    if (mask) mask.style.background = '';
+  }
+
+  // 切到某一张「截图位」：关于页先等插件清单填充，再切页 / 滚动 / 开弹窗
+  function applyPage(page) {
+    var doc = frameDoc();
+    if (!doc) {
+      // 拿不到同源文档（file:// 直接打开 index.html 时浏览器按不透明源处理）：
+      // 退回「带参数整页重载」——页面与滚动仍由 URL 决定，只是无法在里面开授权弹窗。
+      frameFallback = true;
+      loadFrame(page);
+      return;
+    }
+    closeAuthDialog(doc);
+    var content = doc.querySelector('.content');
+    var ready = function () {
+      if (page === 'about-bottom') {
+        if (content) content.scrollTop = content.scrollHeight;
+        return;
+      }
+      var btn = doc.querySelector('.nav-item[data-page="' + (NAV_OF[page] || page) + '"]');
+      if (btn) btn.click();
+      if (content) content.scrollTop = 0;
+      if (page === 'github-auth') openAuthDialog(doc);
+    };
+    if (NAV_OF[page] === 'about') {
+      waitIn(doc, function (d) { var l = d.getElementById('plug-list'); return l && l.children.length; }, 6000, ready);
+    } else {
+      ready();
+    }
+  }
+
+  // 整页重载预览：语言切换、以及 file:// 下拿不到同源文档时使用（页面/滚动/弹窗由 URL 参数决定）
+  function loadFrame(page) {
+    frameReady = false;
+    wantPage = null;
+    var url = 'mock/index.html?page=' + encodeURIComponent(NAV_OF[page] || page) + '&lang=' + encodeURIComponent(lang);
+    if (page === 'about-bottom') url += '&scroll=bottom';
+    if (page === 'github-auth') url += '&auth=1';   // 预览页内置的授权弹层（见 build_mock.mjs）
+    carFrame.src = url;
+  }
+
+  function show(i) {
+    cur = (i + PAGES.length) % PAGES.length;
+    updateCarCaption();
+    dotEls.forEach(function (d, j) { d.classList.toggle('active', j === cur); });
+    var page = PAGES[cur];
+    if (frameLang !== lang) { frameLang = lang; loadFrame(page); return; }  // 语言变了：整页重载
+    if (!frameReady && frameAppReady()) frameReady = true;
+    if (frameFallback) { loadFrame(page); return; }                        // 跨不了源：整页重载
+    if (!frameReady) { wantPage = page; return; }                          // 首帧未就绪：等 load
+    applyPage(page);
+  }
+  function next() { show(cur + 1); }
+  function prev() { show(cur - 1); }
+  function play() {
+    stop();
+    playTimer = setInterval(next, 4500);
+  }
+  function stop() {
+    if (playTimer) { clearInterval(playTimer); playTimer = null; }
+  }
+
+  dotEls = PAGES.map(function (_, i) {
     var b = document.createElement('button');
     b.type = 'button';
     b.className = 'car-dot' + (i === 0 ? ' active' : '');
     b.setAttribute('aria-label', I18N[lang].dotAria.replace('%d', i + 1));
-    b.addEventListener('click', function(){ show(i); play(); });
+    b.addEventListener('click', function () { show(i); play(); });
     carDots.appendChild(b);
     return b;
   });
 
-  function show(i){
-    cur = (i + shots.length) % shots.length;
-    var my = ++seq;
-    updateCarCaption();
-    dotEls.forEach(function(d, j){ d.classList.toggle('active', j === cur); });
-    // 语言优先：目标语言图已缓存直接显示；未缓存则按序加载（EN 图失败自动回退 zh）。
-    // 注意不能以「任一语言已缓存」短路——zh 图缓存后切 EN 会永远显示中文图（旧缺陷）。
-    var want = (lang === 'en') ? shots[cur].en : shots[cur].zh;
-    if (loaded[want]) { showShotSrc(want); return; }
-    pickShot(cur, function (src) {
-      if (my !== seq || !src) return;
-      carImg.src = src;
-      carImg.alt = curCaption();
-    });
-  }
-  function next(){ show(cur + 1); }
-  function prev(){ show(cur - 1); }
-  function play(){
-    stop();
-    playTimer = setInterval(next, 4500);
-  }
-  function stop(){
-    if (playTimer){ clearInterval(playTimer); playTimer = null; }
-  }
+  carFrame.addEventListener('load', function () {
+    fitFrame();
+    if (!frameDoc()) {
+      // file:// 直接打开时跨不了源：只能靠 URL 参数渲染（点侧栏交互、授权弹窗不可用）
+      frameFallback = true;
+      frameReady = false;
+      return;
+    }
+    frameFallback = false;
+    frameReady = frameAppReady();
+    if (!frameReady) return;   // 前端还没渲染完：等下一次 load
+    frameLang = lang;
+    applyPage(wantPage || PAGES[cur]);
+    wantPage = null;
+  });
+  window.addEventListener('resize', fitFrame);
 
   document.getElementById('car-prev').addEventListener('click', function(){ prev(); play(); });
   document.getElementById('car-next').addEventListener('click', function(){ next(); play(); });
@@ -526,6 +603,8 @@ footer .sep{margin:0 8px;color:var(--border)}
   }, { passive: true });
 
   // 首次进入即按检测到的语言渲染（随后启动轮播）
+  frameLang = lang;
+  fitFrame();
   applyLang(lang);
   play();
 })();

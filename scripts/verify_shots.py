@@ -144,12 +144,30 @@ else:
     lines.append("  --   跳过“与渲染结果比对”（未提供 --from-render）")
 
 # ---------- 4. 脱敏 ----------
-for p in (os.path.join(ROOT, "scripts", "render_shots.mjs"),):
+# 演示值集中在 shot-shim.mjs（截图渲染器与站点实时预览共用），其余脚本只应引用它们。
+shim_path = os.path.join(ROOT, "scripts", "shot-shim.mjs")
+for p in (os.path.join(ROOT, "scripts", "render_shots.mjs"),
+          shim_path,
+          os.path.join(ROOT, "scripts", "build_mock.mjs")):
     src = open(p, encoding="utf-8").read()
     for tok in REAL_TOKENS:
         note(tok not in src, f"{os.path.basename(p)}: 不应出现本机信息 {tok!r}")
-    for tok in DEMO_TOKENS:
-        note(tok in src, f"{os.path.basename(p)}: 应使用演示值 {tok!r}")
+shim_src = open(shim_path, encoding="utf-8").read()
+for tok in DEMO_TOKENS:
+    note(tok in shim_src, f"shot-shim.mjs: 应使用演示值 {tok!r}")
+
+# ---------- 5. 站点实时界面预览（docs/mock/）与前端保持同步 ----------
+# 官网轮播直接载入 App 真实前端（iframe），前端改动后必须重跑 scripts/build_mock.mjs，
+# 否则站点预览会停留在旧界面（这里挡住这种漂移）。
+for name in ("main.js", "style.css"):
+    a = open(os.path.join(ROOT, "src", "frontend", "dist", name), encoding="utf-8").read()
+    b = open(os.path.join(DOCS, "mock", name), encoding="utf-8").read()
+    note(a == b, f"docs/mock/{name}: 应与 src/frontend/dist/{name} 一致（改前端后跑 node scripts/build_mock.mjs）")
+mock_idx = open(os.path.join(DOCS, "mock", "index.html"), encoding="utf-8").read()
+note('<script src="shim.js"></script>' in mock_idx, "docs/mock/index.html: 应注入 shim.js（Wails 运行时桩）")
+mock_shim = open(os.path.join(DOCS, "mock", "shim.js"), encoding="utf-8").read()
+note("window.go" in mock_shim and "window.runtime" in mock_shim,
+     "docs/mock/shim.js: 应提供 window.go / window.runtime")
 
 print("\n".join(lines))
 print()

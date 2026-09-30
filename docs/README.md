@@ -1,3 +1,17 @@
 # dsh-systray
 
 完整文档见仓库根目录的 [README.md](../README.md)。
+
+## 目录说明
+
+- `index.html`：官网（GitHub Pages 首页）
+- `mock/`：**站点实时界面预览**——由 `scripts/build_mock.mjs` 从 `src/frontend/dist` 生成
+  （真实前端 + 演示数据桩 `scripts/shot-shim.mjs`），官网轮播用 iframe 载入它。
+  不用位图是因为位图最终总会被浏览器按容器宽度做一次非整数缩放，文字边缘会发虚；
+  DOM 预览在任意缩放比例 / DPI 下都清晰。前端有改动时重跑 `node scripts/build_mock.mjs`。
+  单页参数：`mock/index.html?page=general|about|logs|export|import|sync&lang=zh|en&scroll=bottom&auth=1`。
+  直接双击 `index.html`（file://）也能看：此时浏览器不允许父页面操作 iframe 文档，
+  轮播改用 URL 参数逐页重载（预览页内置 `?auth=1` 的授权弹层），效果与线上一致。
+  本地更贴近线上：`python -m http.server --directory docs` 后访问 `http://127.0.0.1:8000/index.html`。
+- `shots/`、`shots-en/`：发布物料用的真实界面截图（`scripts/render_shots.mjs` 渲染）
+- `screenshot-hero*.webp`：README 主图（`scripts/make_hero.py` 合成，3 倍图）

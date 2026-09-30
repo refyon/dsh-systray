@@ -1,0 +1,535 @@
+<!DOCTYPE html>
+<!-- 由 scripts/build_mock.mjs 从 src/frontend/dist 生成：站点实时界面预览，勿手改 -->
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>dsh-systray · 界面预览</title>
+  <meta name="robots" content="noindex">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <!-- ======== 启动 / 更新进度视图 ======== -->
+  <div id="splash" class="splash hidden">
+    <div class="splash-card">
+      <div class="splash-title">DeepSeek Harness</div>
+      <div id="splash-status" class="splash-status" data-i18n="splashStatus">正在准备运行环境…</div>
+      <div class="splash-track" role="progressbar" aria-label="进度" aria-valuemin="0" aria-valuemax="100">
+        <div id="splash-fill" class="splash-fill"></div>
+      </div>
+      <button id="splash-cancel" class="btn btn-ghost splash-cancel hidden" data-i18n="splashCancel">取消更新</button>
+    </div>
+  </div>
+
+  <!-- ======== 设置主视图 ======== -->
+  <div id="settings" class="settings hidden">
+    <aside class="sidebar">
+      <nav class="nav" aria-label="设置分类">
+        <button class="nav-item active" data-page="general" data-i18n="navGeneral">常规</button>
+        </button>
+        <button class="nav-item" data-page="about" data-i18n="navAbout">关于</button>
+        <button class="nav-item" data-page="logs" data-i18n="navLogs">日志</button>
+        <button class="nav-item" data-page="export" data-i18n="navExport">导出</button>
+        <button class="nav-item" data-page="import" data-i18n="navImport">导入</button>
+        <button class="nav-item has-status" data-page="sync">
+          <span data-i18n="navSync">数据同步</span>
+          <span class="nav-status" id="sync-nav-status"></span>
+        <!-- 帮助页两个启动方式都可见，但内容按启动方式分开：desktop = 桌面端异常时改用 Web UI 的指引，
+             web = 访问令牌 / 重新鉴权（见下方 help-card 的 data-only-* 标记） -->
+        <button class="nav-item" data-page="help" data-i18n="navHelp">帮助</button>
+      </nav>
+    </aside>
+
+    <main class="content">
+      <header class="page-head"><h1 id="page-title">常规</h1></header>
+
+      <!-- 常规 -->
+      <section id="page-general" class="page">
+        <!-- 顺序（用户需求）：开机自启动 → 界面语言 → 默认启动方式 → 按启动方式显示 Desktop / Web 板块。
+             标记约定（main.js 的 applyLaunchMode 按 GetConfig().launchResolved 联动）：
+               data-only-web="hide"  仅 Web UI 启动方式成立的条目 → Desktop UI 模式下整块隐藏
+               data-only-desktop     仅 Desktop UI 启动方式适用的板块 → 其它模式隐藏
+             启动方式切换会启停后台服务：切换前弹确认（见 main.js 的 sel-launch 处理）。 -->
+        <div class="card">
+          <div class="card-row">
+            <div class="row-text">
+              <div class="row-title" data-i18n="stAutoTitle">开机自启动</div>
+              <div class="row-sub" id="autostart-sub" data-i18n="stAutoSub">登录后自动启动后台服务并常驻托盘</div>
+            </div>
+            <button id="sw-autostart" class="switch" role="switch" aria-checked="false" aria-label="开机自启动"></button>
+          </div>
+        </div>
+        <div class="card">
+          <div class="card-row">
+            <div class="row-text">
+              <div class="row-title" data-i18n="stLangTitle">界面语言</div>
+              <div class="row-sub" data-i18n="stLangSub">托盘菜单与原生弹窗随之切换；跟随系统按当前系统语言自动选择</div>
+            </div>
+            <select id="sel-lang" class="input-select" aria-label="界面语言">
+              <option value="auto" data-i18n="langAuto">跟随系统（自动检测）</option>
+              <option value="zh">简体中文</option>
+              <option value="en">English</option>
+            </select>
+          </div>
+        </div>
+        <!-- 默认启动方式：托盘「打开」指向哪个界面，同时决定下方显示 Desktop 板块还是 Web 板块，
+             以及托盘自带后台服务的启停 -->
+        <div class="card">
+          <div class="card-row">
+            <div class="row-text">
+              <div class="row-title" data-i18n="stLaunchTitle">默认启动方式</div>
+              <div class="row-sub" data-i18n="stLaunchSub">托盘「打开」默认指向哪个界面；同时决定下方版本、更新与重置操作作用于哪个 Harness 引擎</div>
+            </div>
+            <div class="btn-group">
+              <select id="sel-launch" class="input-select" aria-label="默认启动方式">
+                <option value="auto" data-i18n="launchAuto">自动检测（优先桌面端）</option>
+                <option value="web" data-i18n="launchWeb">Web UI（托盘自带服务）</option>
+                <option value="desktop" data-i18n="launchDesktop">Desktop UI（官方桌面端）</option>
+              </select>
+              <!-- 未检测到桌面端时的安装入口（下载官方安装包 + 启动安装向导；检测到后隐藏） -->
+              <button id="btn-install-desktop" class="btn btn-outline hidden" data-i18n="btnInstallDesktop">安装桌面端</button>
+            </div>
+          </div>
+          <div id="launch-hint" class="row-note launch-hint"></div>
+        </div>
+        <!-- Desktop 板块：官方桌面端（仅在 Desktop UI 启动方式且检测到安装时显示；版本号即其内置 harness 版本） -->
+        <div id="card-desktop" class="card hidden" data-only-desktop>
+          <div class="card-row">
+            <div class="row-text">
+              <div class="row-title" data-i18n="dtTitle">官方桌面端</div>
+              <div class="row-sub" id="dt-sub">—</div>
+            </div>
+            <div class="btn-group">
+              <button id="btn-open-desktop" class="btn btn-primary" data-i18n="btnOpenDesktop">打开 Desktop UI</button>
+            </div>
+          </div>
+          <div class="card-row">
+            <div class="row-text">
+              <div class="row-title" data-i18n="dtPathTitle">安装位置</div>
+              <div class="row-sub row-sub-path" id="dt-path">—</div>
+            </div>
+          </div>
+        </div>
+        <!-- Web 板块：后台服务状态（Desktop UI 模式下不启动后台服务，整块隐藏） -->
+        <div class="card" data-only-web="hide">
+          <div class="card-row">
+            <div class="row-text">
+              <div class="row-title">
+                <span id="svc-dot" class="dot dot-starting"></span>
+                <span id="svc-text" data-i18n="svcText">后台服务：启动中</span>
+              </div>
+              <div id="svc-sub" class="row-sub"></div>
+            </div>
+            <div class="btn-group">
+              <button id="btn-restart" class="btn btn-primary" data-i18n="btnRestart">重启后台服务</button>
+              <button id="btn-open-webui" class="btn btn-ghost" disabled data-i18n="btnOpenWeb">打开 Web UI</button>
+            </div>
+          </div>
+          <!-- 端口不可用（被系统保留 / 被占用）：与插件无关，后端已跳过插件自愈，这里给一键换端口入口 -->
+          <div id="svc-port-warn" class="row-warn hidden">
+            <div id="svc-port-warn-text"></div>
+            <div class="help-warn-actions">
+              <button id="btn-svc-use-port" class="btn btn-outline btn-xs"></button>
+            </div>
+          </div>
+        </div>
+        <!-- Web 板块：服务端口与 Harness 目录（只影响托盘自带的 Web 服务） -->
+        <div class="card" data-only-web="hide">
+          <div class="card-row">
+            <div class="row-text">
+              <div class="row-title" data-i18n="stPortTitle">服务端口</div>
+              <div class="row-sub" id="cfg-port-sub">http://127.0.0.1:3080</div>
+            </div>
+            <input id="inp-port" class="input input-narrow" type="number" min="1" max="65535" inputmode="numeric">
+          </div>
+          <div id="port-hint" class="row-warn port-hint hidden"></div>
+          <div class="card-row">
+            <div class="row-text">
+              <div class="row-title" data-i18n="stHarnessTitle">Harness 目录</div>
+              <div class="row-sub row-sub-path" id="cfg-harness-dir">—</div>
+            </div>
+            <button id="btn-pick-harness" class="btn btn-ghost" data-i18n="btnChoose">选择…</button>
+          </div>
+        </div>
+        <div class="card" data-only-web="hide">
+          <div class="card-row">
+            <div class="row-text">
+              <div class="row-title" data-i18n="stResetTitle">重置 DeepSeek Harness</div>
+              <div class="row-sub" data-i18n="stResetSub">停止服务并按所选官方版本全新重装 Harness</div>
+            </div>
+            <button id="btn-reset-harness" class="btn btn-danger" data-i18n="btnReset">重置服务</button>
+          </div>
+        </div>
+      </section>
+
+      <!-- 关于 -->
+      <section id="page-about" class="page hidden">
+        <div class="card">
+          <div class="card-row">
+            <div class="row-text">
+              <div class="row-title" data-i18n="abAppVerTitle">dsh-systray 版本号</div>
+              <div class="row-sub" data-i18n="abAppVerSub">桌面托盘设置程序</div>
+            </div>
+            <strong class="ver-lg" id="ver-app">—</strong>
+          </div>
+          <div class="update-line">
+            <div id="hint-systray" class="update-note"></div>
+            <button id="btn-check-systray" class="btn btn-outline btn-sm" data-i18n="btnCheckUpdate">检查更新</button>
+            <button id="btn-systray-update" class="btn btn-primary btn-sm hidden" data-i18n="btnUpdateApp">更新 dsh-systray</button>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card-row">
+            <div class="row-text">
+              <div class="row-title" data-i18n="abHarnessVerTitle">DeepSeek Harness 版本号</div>
+              <div class="row-sub" id="harness-ver-sub" data-i18n="abHarnessVerSub">后台服务引擎</div>
+            </div>
+            <strong class="ver-lg" id="ver-harness">—</strong>
+          </div>
+          <!-- 预发布通道只对 npm 版 harness（Web UI 启动方式）成立：官方桌面端通道固定 Nightly -->
+          <div class="card-row" data-only-web="hide">
+            <div class="row-text">
+              <div class="row-title" data-i18n="abPreTitle">开启预发布通道</div>
+              <div class="row-sub" data-i18n="abPreSub">alpha / beta / rc 预发布版</div>
+            </div>
+            <button id="sw-prerelease" class="switch" role="switch" aria-checked="false" aria-label="预发布通道"></button>
+          </div>
+          <div class="update-line">
+            <div id="hint-harness" class="update-note"></div>
+            <button id="btn-check-harness" class="btn btn-outline btn-sm" data-i18n="btnCheckUpdate">检查更新</button>
+            <button id="btn-harness-update" class="btn btn-primary btn-sm hidden" data-i18n="btnUpdateHarness">更新 Harness</button>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card-row">
+            <div class="row-text">
+              <div class="row-title" data-i18n="abPluginsTitle">已安装插件</div>
+              <!-- 当前启动方式对应的插件环境（Web UI / Desktop UI）：清单、行内操作与导入/恢复
+                   都只针对该环境，另一环境不显示也不改动（文案由 main.js 的 applyLaunchMode 写入） -->
+              <div id="ab-plugins-sub" class="row-sub"></div>
+            </div>
+            <span id="plug-count" class="plug-count"></span>
+          </div>
+          <!-- 待应用插件变更提示条：只提示待生效数量（不列条目，避免挤占卡片高度），
+               提供「全部撤销」「立即应用」；用户一直不应用则常驻（跨托盘重启保留）。
+               逐条撤销在各插件行内进行。 -->
+          <div id="plug-pending" class="plug-pending hidden">
+            <span id="plug-pending-text" class="plug-pending-text"></span>
+            <div class="plug-pending-actions">
+              <button id="btn-discard-all-pending" class="btn btn-outline btn-xs" data-i18n="btnDiscardAllPending">全部撤销</button>
+              <button id="btn-apply-pending" class="btn btn-primary btn-xs" data-i18n="btnApplyPending">立即应用</button>
+            </div>
+          </div>
+          <div class="plug-filter-row">
+            <input id="plug-filter" class="plug-filter" type="search" placeholder="过滤插件（名称 / 来源 / 版本）…" aria-label="过滤插件" autocomplete="off" data-i18n-ph="plugFilterPh" />
+          </div>
+          <div id="plug-list" class="plug-list"></div>
+          <div id="plug-empty" class="plug-empty row-sub hidden" data-i18n="plugEmpty">未安装任何插件</div>
+        </div>
+      </section>
+
+      <!-- 日志 -->
+      <section id="page-logs" class="page hidden">
+        <div class="log-head">
+          <button type="button" id="log-path" class="log-path" title="点击复制日志文件路径" data-i18n-title="logPathCopyHint">—</button>
+        </div>
+        <div class="log-tools">
+          <button class="btn btn-primary" id="btn-log-refresh" data-i18n="btnRefresh">刷新</button>
+          <button class="btn btn-danger" id="btn-log-clear" data-i18n="btnClear">清空</button>
+        </div>
+        <div class="card log-card">
+          <pre id="log-view" class="log-view" tabindex="0"></pre>
+        </div>
+      </section>
+
+      <!-- 导出 -->
+      <section id="page-export" class="page hidden">
+        <div id="exp-rows"></div>
+        <div class="export-foot">
+          <button id="btn-pick-dir" class="btn btn-ghost" data-i18n="btnAddDir">添加打包目录…</button>
+          <button id="btn-export" class="btn btn-primary" data-i18n="btnExport">导出…</button>
+        </div>
+        <div class="exp-result">
+          <div id="exp-hint" class="row-sub" data-i18n="expHintDefault">已选 0 项</div>
+          <button id="exp-open" class="btn btn-ghost hidden" data-i18n="btnOpenDir">打开导出目录</button>
+        </div>
+      </section>
+
+      <!-- 导入 -->
+      <section id="page-import" class="page hidden">
+        <div class="card imp-intro">
+          <div class="imp-intro-main">
+            <div class="row-title" data-i18n="impTitle">导入 dsh-systray 导出包</div>
+            <div class="row-sub" data-i18n="impSub">选择 dsh-systray-export-*.zip 压缩包，可恢复历史会话、已安装插件或文件目录。</div>
+            <!-- 桌面端启动方式：托盘不启动后台服务，插件恢复不做启动校验，改动在桌面端重启后生效 -->
+            <div class="row-sub" data-only-desktop data-i18n="impDesktopNote">
+              当前默认启动方式为官方桌面端：恢复只写文件、不启动后台服务做启动校验，插件改动在桌面端重新启动后生效。
+            </div>
+            <div id="imp-path" class="row-sub row-sub-path imp-path hidden"></div>
+          </div>
+          <button id="btn-import-pick" class="btn btn-primary btn-sm" data-i18n="btnAddZip">添加压缩包…</button>
+        </div>
+        <div id="imp-rows"></div>
+        <div id="imp-hint" class="row-sub"></div>
+        <div id="imp-progress" class="op-progress hidden">
+          <div class="splash-track"><div id="imp-fill" class="splash-fill"></div></div>
+          <span id="imp-text" class="row-sub"></span>
+          <div class="imp-cancel-row">
+            <button id="btn-imp-cancel" class="btn btn-ghost btn-sm hidden" data-i18n="btnCancelRestore">取消恢复</button>
+          </div>
+        </div>
+      </section>
+
+      <!-- 数据同步（dsh-connect 账号） -->
+      <section id="page-sync" class="page hidden">
+        <!-- 未登录：注册/登录入口（邮箱验证码两态表单） -->
+        <div id="sync-login" class="card">
+          <div class="card-row">
+            <div class="row-text">
+              <div class="row-title" data-i18n="syncLoginTitle">登录 dsh-connect 账号</div>
+              <div class="row-sub" data-i18n="syncLoginSub">
+                用邮箱验证码登录后，开机自启动、Harness 版本与在线插件会随账号同步；首次使用该邮箱即自动注册。
+                不上传本机目录、端口等环境相关配置，本地插件也不同步。
+              </div>
+            </div>
+          </div>
+          <div class="card-row">
+            <div class="row-text">
+              <div class="row-title" data-i18n="syncEmailTitle">邮箱</div>
+              <div class="row-sub" data-i18n="syncEmailSub">验证码发到该邮箱，10 分钟内有效</div>
+            </div>
+            <input
+              id="sync-email"
+              class="input input-wide"
+              type="email"
+              autocomplete="email"
+              spellcheck="false"
+              data-i18n-ph="syncEmailPh"
+              placeholder="you@example.com"
+            />
+          </div>
+          <div class="card-row">
+            <div class="row-text">
+              <div class="row-title" data-i18n="syncCodeTitle">验证码</div>
+              <div class="row-sub" id="sync-code-sub" data-i18n="syncCodeSub">先点「发送验证码」，再填入收到的 6 位数字</div>
+            </div>
+            <div class="row-actions">
+              <input id="sync-code" class="input input-narrow" inputmode="numeric" maxlength="6" autocomplete="one-time-code" />
+              <button id="btn-sync-send" class="btn btn-outline btn-sm" data-i18n="btnSyncSend">发送验证码</button>
+            </div>
+          </div>
+          <div class="card-row">
+            <div class="row-text">
+              <div class="sync-hint" id="sync-login-hint"></div>
+            </div>
+            <button id="btn-sync-login" class="btn btn-primary btn-sm" data-i18n="btnSyncLogin">登录</button>
+          </div>
+        </div>
+
+        <!-- 已登录：账号信息 + 同步状态 -->
+        <div id="sync-account" class="card hidden">
+          <div class="card-row">
+            <div class="row-text">
+              <div class="row-title" id="sync-account-email">—</div>
+              <div class="row-sub" id="sync-status-line">—</div>
+            </div>
+            <div class="row-actions">
+              <button id="btn-sync-now" class="btn btn-outline btn-sm" data-i18n="btnSyncNow">立即同步</button>
+            </div>
+          </div>
+          <div class="card-row">
+            <div class="row-text">
+              <div class="row-title" data-i18n="syncScopeTitle">同步内容</div>
+              <div class="row-sub" data-i18n="syncScopeSub">
+                开机自启动开关、最后选用的 Harness 版本（含预发布通道）、所有在线插件的安装信息
+                （Web 与 Desktop 两个环境各自一条记录，互不覆盖）；
+                不含本机目录与服务端口，本地插件不同步。
+              </div>
+              <!-- 桌面端启动方式下：Harness 版本与预发布通道不属于桌面端（其通道固定 Nightly） -->
+              <div class="row-sub" data-only-desktop data-i18n="syncScopeDesktopNote">
+                当前默认启动方式为官方桌面端：同步的 Harness 版本与预发布通道只作用于托盘自带的 Web 服务，不影响桌面端（其更新通道固定 Nightly）。
+              </div>
+            </div>
+          </div>
+          <div class="card-row">
+            <div class="row-text">
+              <div class="sync-hint" id="sync-account-hint"></div>
+            </div>
+            <button id="btn-sync-logout" class="btn btn-muted btn-sm" data-i18n="btnSyncLogout">退出登录</button>
+          </div>
+        </div>
+
+        <!-- 重启生效：从服务器拉到本机改动后常驻提示（点按钮才生效） -->
+        <div id="sync-restart" class="card sync-restart-card hidden">
+          <div class="card-row">
+            <div class="row-text">
+              <div class="row-title" data-i18n="syncRestartTitle">有来自账号的同步改动待生效</div>
+              <div class="row-sub" id="sync-restart-sub" data-i18n="syncRestartSub">
+                为避免打断当前工作，改动已保存但未应用；点击右侧按钮后合并并生效。
+              </div>
+            </div>
+            <div class="row-actions">
+              <button id="btn-sync-apply" class="btn btn-primary btn-sm" data-i18n="btnSyncApply">重启生效</button>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- 帮助 -->
+      <section id="page-help" class="page hidden">
+        <!-- 仅 Desktop UI 启动方式适用：桌面端异常（打不开/无法进行 AI 会话）时改用 Web UI 的应急指引 -->
+        <div class="card help-card" data-only-desktop>
+          <div class="row-title" data-i18n="helpFallbackTitle">Desktop UI 无法正常使用时</div>
+          <div class="row-sub" data-i18n="helpFallbackSymp">
+            官方桌面端打不开或无法正常进行 AI 会话时（引擎异常、插件不兼容、界面卡住等），
+            可以改用托盘自带的 Web UI 继续工作——两者是同一台机器上的两个界面，已保存的会话与设置不会因为切换而丢失。
+          </div>
+          <ol class="help-steps">
+            <li data-i18n="helpFallbackStep1">点下方「切换到 Web UI」：托盘会启动后台服务并把托盘「打开」指向网页端（首次启动可能需要下载运行环境，耗时数分钟）。</li>
+            <li data-i18n="helpFallbackStep2">服务就绪后，点托盘菜单「打开 Web UI」，或回到本页点「打开 Web UI」（切换到 Web UI 后本页会显示该按钮）。</li>
+            <li data-i18n="helpFallbackStep3">桌面端问题排查完、想改回桌面端时，到「常规」页把「默认启动方式」切回 Desktop UI 即可（后台服务会随之停止）。</li>
+          </ol>
+          <div class="help-actions">
+            <button id="btn-help-switch-web" class="btn btn-primary" data-i18n="btnSwitchToWeb">切换到 Web UI</button>
+          </div>
+          <div id="help-switch-busy" class="row-sub help-note hidden"></div>
+        </div>
+        <!-- 仅 Web UI 启动方式适用：讲的是托盘自带 dsh web 的访问令牌与重新鉴权 -->
+        <div class="card help-card" data-only-web="hide">
+          <div class="row-title" data-i18n="helpWebAuthTitle">Web UI 提示“需要重新鉴权”</div>
+          <div class="row-sub" data-i18n="helpWebAuthSymp">打开 harness 网页端时浏览器显示：dsh web authentication required; reopen the URL printed by dsh web.</div>
+          <div id="help-state" class="row-sub help-note hidden" data-i18n="helpStopped">后台服务未运行：启动服务后即可打开 Web UI 或复制访问链接。</div>
+          <div id="help-port" class="row-warn help-note hidden"></div>
+          <div id="help-warn" class="row-warn help-note hidden">
+            <div data-i18n="helpNoToken">没有找到带访问令牌的链接：服务不是由本程序拉起的（例如上次退出时保留了服务，或电脑重启后服务仍在运行），日志轮转也可能丢失该行。浏览器此前已正常登录过 → 直接点「打开 Web UI」；换浏览器或不带记录的窗口 → 先点下方「重启后台服务」生成新链接。</div>
+            <div class="help-warn-actions">
+              <button id="btn-help-restart" class="btn btn-outline btn-xs" data-i18n="btnRestart">重启后台服务</button>
+            </div>
+          </div>
+          <div class="row-sub help-why" data-i18n="helpWebAuthWhy">原因：后台服务每次启动都会更换访问令牌（安全设计）——旧书签与历史记录里的地址随即失效；浏览器中还没有有效凭据（首次打开、清理过 Cookie，或凭据已超过 30 天）。</div>
+          <ol class="help-steps">
+            <li data-i18n="helpWebAuthStep1">点击下方「打开 Web UI」，它会自动使用最新的访问链接。</li>
+            <li data-i18n="helpWebAuthStep2">或点击「复制访问链接」，粘贴到浏览器地址栏打开。</li>
+            <li data-i18n="helpWebAuthStep3">请按链接原样打开（地址是 127.0.0.1）——凭据与地址绑定，不要改写成 localhost。</li>
+            <li data-i18n="helpWebAuthStep4">仍打不开时，点「重启后台服务」重新生成访问链接，再回来重试。</li>
+          </ol>
+          <div class="help-actions">
+            <button id="btn-help-copy" class="btn btn-ghost" data-i18n="btnCopyLink">复制访问链接</button>
+            <button id="btn-help-open" class="btn btn-primary" data-i18n="btnOpenWeb">打开 Web UI</button>
+          </div>
+          <div id="help-busy" class="row-sub help-note hidden" data-i18n="helpRestarting">正在重启后台服务…完成后「复制访问链接」会恢复可用（当前网页端会短暂断开）。</div>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <!-- ======== 确认弹层 ======== -->
+  <div id="modal" class="modal hidden">
+    <div class="modal-mask"></div>
+    <div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="modal-title">
+      <div class="modal-title" id="modal-title" data-i18n="dlgConfirm">确认操作</div>
+      <div class="modal-msg" id="modal-msg"></div>
+      <div class="modal-actions">
+        <button class="btn btn-ghost" id="modal-cancel" data-i18n="btnCancel">取消</button>
+        <button class="btn btn-outline hidden" id="modal-skip" data-i18n="btnSkip">跳过</button>
+        <button class="btn btn-danger" id="modal-ok" data-i18n="btnOk">确定</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ======== 导出进度弹层（进度居中弹出，不依赖页面滚动） ======== -->
+  <div id="exp-modal" class="modal hidden">
+    <div class="modal-mask"></div>
+    <div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="exp-modal-title">
+      <div class="modal-title" id="exp-modal-title" data-i18n="expModalTitle">正在导出</div>
+      <div id="exp-modal-text" class="modal-msg" data-i18n="expModalText">正在准备导出…</div>
+      <div class="splash-track"><div id="exp-modal-fill" class="splash-fill"></div></div>
+      <div class="modal-actions">
+        <button class="btn btn-primary" id="exp-modal-close" data-i18n="btnDone">完成</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ======== 重置 DeepSeek Harness：内容勾选弹层 ======== -->
+  <div id="reset-modal" class="modal hidden">
+    <div class="modal-mask"></div>
+    <div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="reset-title">
+      <div class="modal-title" id="reset-title" data-i18n="rstTitle">重置 DeepSeek Harness</div>
+      <div class="modal-msg" data-i18n="rstMsg">将停止后台服务并清空 harness 目录，然后全新安装所选版本。勾选的数据将被清除且不可恢复。</div>
+      <div class="reset-target">
+        <div class="reset-target-head">
+          <label for="reset-target" class="reset-target-label" data-i18n="rstTargetLabel">重置目标版本</label>
+          <span class="row-sub" id="reset-target-cur"></span>
+        </div>
+        <select id="reset-target" class="reset-target-select" disabled>
+          <option value="" data-i18n="rstLoading">正在查询可用版本…</option>
+        </select>
+        <div id="reset-target-note" class="row-warn hidden"></div>
+      </div>
+      <div class="reset-opts">
+        <label class="reset-opt reset-opt-mandatory">
+          <input type="checkbox" id="reset-c-harness" checked disabled>
+          <span class="reset-opt-main">
+            <span class="reset-opt-title" data-i18n="rstOptHarness">Harness 服务 <em>（必选）</em></span>
+          </span>
+        </label>
+        <label class="reset-opt">
+          <input type="checkbox" id="reset-c-sessions">
+          <span class="reset-opt-main">
+            <span class="reset-opt-title" data-i18n="rstOptSessions">会话记录</span>
+            <span class="row-sub" id="reset-sessions-sub">将清除 0 条会话记录</span>
+          </span>
+        </label>
+        <label class="reset-opt">
+          <input type="checkbox" id="reset-c-plugins">
+          <span class="reset-opt-main">
+            <span class="reset-opt-title" data-i18n="rstOptPlugins">已安装插件</span>
+            <span class="row-sub" id="reset-plugins-sub">将清除 0 个已安装插件</span>
+          </span>
+        </label>
+      </div>
+      <div class="modal-actions">
+        <button class="btn btn-ghost" id="reset-cancel" data-i18n="btnCancel">取消</button>
+        <button class="btn btn-danger" id="reset-confirm" data-i18n="btnStartReset">开始重置</button>
+      </div>
+    </div>
+  </div>
+
+
+  <script src="shim.js"></script>
+  <script>
+  // preview-auth：?auth=1 时打开 GitHub 授权弹层（私有仓库插件，与 App 内同一个 #modal）
+  (function () {
+    var q = new URLSearchParams(location.search);
+    if (q.get('auth') !== '1') return;
+    var en = (q.get('lang') || 'zh') === 'en';
+    var msg = en
+      ? 'Plugin prompt-assistant comes from the private repository example/prompt-assistant.\n\nChecking for updates requires GitHub authorization: clicking \u201cSign in to GitHub\u201d opens your browser and copies a one-time code to the clipboard \u2014 just paste it.'
+      : '\u63d2\u4ef6 prompt-assistant \u6765\u81ea\u79c1\u6709\u4ed3\u5e93 example/prompt-assistant\u3002\n\n\u68c0\u67e5\u66f4\u65b0\u9700\u8981 GitHub \u6388\u6743\uff1a\u70b9\u51fb\u300c\u767b\u5f55 GitHub\u300d\u540e\u4f1a\u6253\u5f00\u6d4f\u89c8\u5668\uff0c\u4e00\u6b21\u6027\u4ee3\u7801\u81ea\u52a8\u590d\u5236\u5230\u526a\u8d34\u677f\uff0c\u7c98\u8d34\u5373\u53ef\u3002';
+    var tries = 0;
+    (function open() {
+      var list = document.getElementById('plug-list');
+      if (!list || !list.children.length) { if (++tries < 60) return setTimeout(open, 100); return; }
+      var $ = function (id) { return document.getElementById(id); };
+      var modal = $('modal'), title = $('modal-title'), msgEl = $('modal-msg'), okBtn = $('modal-ok'), skip = $('modal-skip');
+      if (!modal || !msgEl || !okBtn) return;
+      if (title) title.classList.add('hidden');
+      msgEl.textContent = msg;
+      okBtn.textContent = en ? 'Sign in to GitHub' : '\u767b\u5f55 GitHub';
+      okBtn.className = 'btn btn-primary';
+      if (skip) skip.classList.add('hidden');
+      var mask = document.querySelector('#modal .modal-mask');
+      if (mask) mask.style.background = 'transparent';
+      var card = document.querySelector('#modal .modal-card');
+      if (card) card.style.width = '460px';
+      msgEl.style.wordBreak = 'keep-all';
+      msgEl.style.overflowWrap = 'normal';
+      modal.classList.remove('hidden');
+    })();
+  })();
+</script>
+  <script src="main.js"></script>
+</body>
+</html>
