@@ -119,8 +119,8 @@ Run the commands inside `src/`; on Windows you can also use `scripts\build.ps1`.
 
 | Platform | Build command (run inside `src/`) |
 | --- | --- |
-| Windows | `wails build -s -clean -platform windows/amd64 -ldflags "-X main.appVersion=v1.2.3"` |
-| macOS | `wails build -s -clean -platform darwin/universal -ldflags "-X main.appVersion=v1.2.3"` |
+| Windows | `wails build -s -clean -platform windows/amd64 -ldflags "-X main.appVersion=v1.2.4"` |
+| macOS | `wails build -s -clean -platform darwin/universal -ldflags "-X main.appVersion=v1.2.4"` |
 
 - Output: `src/build/bin/dsh-systray.exe` / `dsh-systray.app`
 - `-X main.appVersion=`: version used for update comparison (injected from the CI tag; `dev` when omitted, which skips update checks)
