@@ -451,6 +451,13 @@ footer .sep{margin:0 8px;color:var(--border)}
   function frameDoc() {
     try { return carFrame.contentDocument || null; } catch (e) { return null; }
   }
+  // 帧里实际渲染的语言只能以它自己的 URL 参数为准：首帧 src 由 HTML 写死 lang=zh，
+  // 之后每次重载才带上当前语言。若用页面语言去"假定"帧语言，自动识别为 EN 的访客
+  // 会一直停在中文首帧（只有手动点「中 / EN」触发重载才会纠正）。
+  function urlLang(u) {
+    var m = String(u || '').match(/[?&]lang=(zh|en)/);
+    return m ? m[1] : '';
+  }
   function frameAppReady() {
     var d = frameDoc();
     return !!(d && d.readyState === 'complete' && d.getElementById('settings'));
@@ -583,7 +590,7 @@ footer .sep{margin:0 8px;color:var(--border)}
     frameFallback = false;
     frameReady = frameAppReady();
     if (!frameReady) return;   // 前端还没渲染完：等下一次 load
-    frameLang = lang;
+    frameLang = urlLang(carFrame.contentWindow.location.search) || lang;
     applyPage(wantPage || PAGES[cur]);
     wantPage = null;
   });
@@ -602,8 +609,9 @@ footer .sep{margin:0 8px;color:var(--border)}
     else { play(); }
   }, { passive: true });
 
-  // 首次进入即按检测到的语言渲染（随后启动轮播）
-  frameLang = lang;
+  // 首次进入即按检测到的语言渲染（随后启动轮播）：
+  // 首帧 src 写死 lang=zh，语言不一致时由 show() 判断出差异并带参重载
+  frameLang = urlLang(carFrame.getAttribute('src'));
   fitFrame();
   applyLang(lang);
   play();
