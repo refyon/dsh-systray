@@ -827,6 +827,10 @@ input { font-family: inherit; }
   color: var(--muted);
 }
 .files-badge.is-ok { color: var(--ok); background: color-mix(in srgb, var(--ok) 12%, transparent); }
+/* 同步中：主色（进行中），与「待同步」的灰阶明确区分 */
+.files-badge.is-active { color: var(--primary); background: color-mix(in srgb, var(--primary) 14%, transparent); }
+/* 待同步：灰阶（只是排队，尚未开始） */
+.files-badge.is-queued { color: var(--muted); background: var(--surface-2); }
 .files-badge.is-pending { color: var(--warn); background: color-mix(in srgb, var(--warn) 14%, transparent); }
 .files-badge.is-error { color: var(--danger); background: color-mix(in srgb, var(--danger) 12%, transparent); }
 .files-actions { flex: 0 0 auto; display: flex; align-items: center; gap: var(--sp-1); }

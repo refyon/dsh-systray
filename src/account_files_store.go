@@ -4,7 +4,8 @@
 //   - 一个**条目**= 用户添加的一个文件或文件夹；跨设备身份 = 条目 id + 条目内相对路径；
 //   - **绝对路径永不上传**：源设备把文件留在原位（SourcePath 只存本机），接收设备落到
 //     「接收目录/<显示名>/<相对路径>」；
-//   - 本机删除记入 Deletions（relPath → 删除时间）后立即调 DELETE 端点传播（服务端打墓碑）；
+//   - 本机删除文件**不传播**（源设备与接收端一致）：该文件只在本机停止同步、显示「已在本机移除」，
+//     元数据保留，可随时点「重新同步」从账号拉回；要把内容从账号删除只能走界面的「移除」；
 //   - 服务端下达的改动先进 PendingApply，等用户点「应用」才落地（不自动覆盖本机文件）。
 package main
 
@@ -49,11 +50,13 @@ type fileSyncAction struct {
 	EntryID   string `json:"entryId"`
 	Name      string `json:"name,omitempty"`
 	EntryKind string `json:"entryKind,omitempty"`
-	RelPath   string `json:"relPath,omitempty"`
-	Size      int64  `json:"size,omitempty"`
-	Sha256    string `json:"sha256,omitempty"`
-	Mtime     int64  `json:"mtime,omitempty"`
-	Rev       int64  `json:"rev,omitempty"`
+	// OriginDevice create_entry 的创建设备 id（迁移 0004 起）：等于本机时说明是自家残留，直接清理
+	OriginDevice string `json:"originDevice,omitempty"`
+	RelPath      string `json:"relPath,omitempty"`
+	Size         int64  `json:"size,omitempty"`
+	Sha256       string `json:"sha256,omitempty"`
+	Mtime        int64  `json:"mtime,omitempty"`
+	Rev          int64  `json:"rev,omitempty"`
 }
 
 // fileQuota 容量快照。
@@ -70,6 +73,8 @@ type fileSyncRemoteEntry struct {
 	Kind      string `json:"kind"`
 	CreatedAt int64  `json:"createdAt"`
 	UpdatedAt int64  `json:"updatedAt"`
+	// OriginDevice 创建设备 id（迁移 0004 起；旧条目为空串 = 来源未知）
+	OriginDevice string `json:"originDevice,omitempty"`
 }
 
 // fileSyncResponse 对账响应。
@@ -103,6 +108,9 @@ type fileSyncLocalFile struct {
 	Error string `json:"error,omitempty"`
 	// Blocked 因容量不足被拦下（前端据此弹「容量不足」提示；释放空间后自动重试）。
 	Blocked bool `json:"blocked,omitempty"`
+	// RemovedLocally 接收设备上用户删掉了本机副本：**只在本机停止同步，不传播删除**，
+	// 服务端与其它设备保持不变；文件保留在清单里显示「已在本机移除」，可点「重新同步」恢复。
+	RemovedLocally bool `json:"removedLocally,omitempty"`
 }
 
 // fileSyncEntry 一个同步条目。
@@ -115,10 +123,8 @@ type fileSyncEntry struct {
 	SourcePath string `json:"sourcePath,omitempty"`
 	// Files 条目内文件的本机状态（相对路径 → 状态）。
 	Files map[string]fileSyncLocalFile `json:"files,omitempty"`
-	// Deletions 本机删除台账（相对路径 → 删除时间）：传播成功后移除。
-	Deletions map[string]int64 `json:"deletions,omitempty"`
-	// Ignored 远端已删除、但本机**保留**的文件（源设备不删用户原文件）：记下时间后不再同步；
-	// 文件修改时间晚于该时间视为用户重建/改动，重新进入同步（见 fileSyncNoteFileLocked）。
+	// Ignored 「仅本机停止同步」的文件（相对路径 → 时间）：本机删除（保留元数据可重新同步）或用
+	// 「移除」删掉云端副本后本机仍保留的文件都记在这里；文件修改时间晚于该时间视为用户改动 → 重新同步。
 	Ignored map[string]int64 `json:"ignored,omitempty"`
 	// Error 条目级错误（如本机路径不存在、目录重命名失败）。
 	Error string `json:"error,omitempty"`
@@ -143,11 +149,13 @@ type FileSyncFileView struct {
 	Name    string `json:"name"`
 	Size    int64  `json:"size"`
 	Mtime   int64  `json:"mtime"`
-	// Status synced | pending-upload | pending-download | error
+	// Status synced | pending-upload（待同步）| uploading（同步中）| pending-download | error
 	Status string `json:"status"`
 	Error  string `json:"error,omitempty"`
 	// Blocked 容量不足（前端据此弹提示）
 	Blocked bool `json:"blocked"`
+	// SpeedBps 该文件上一次上传的实测速度（B/s；前端显示「1.2 MB/s」）
+	SpeedBps int64 `json:"speedBps,omitempty"`
 }
 
 // FileSyncEntryView 列表里的一个条目行（文件夹可展开为 Files）。
@@ -178,6 +186,12 @@ type FileSyncStatusInfo struct {
 	PendingCount int                 `json:"pendingCount"`
 	PendingFiles []string            `json:"pendingFiles"`
 	BlockedCount int                 `json:"blockedCount"`
+	// 上传进度（仅运行时）：前端显示「正在上传 12/605 · 345 KB/s」，并让容量随上传实时增长。
+	Uploading      bool  `json:"uploading"`
+	UploadDone     int   `json:"uploadDone"`
+	UploadTotal    int   `json:"uploadTotal"`
+	UploadBytes    int64 `json:"uploadBytes"`
+	UploadSpeedBps int64 `json:"uploadSpeedBps"`
 }
 
 // ==================== 路径与持久化 ====================
@@ -284,7 +298,11 @@ func fileSyncReceiveDir() string {
 	return filepath.Join(home, "DeepSeekSync")
 }
 
-// fileSyncEntryRoot 条目在本机的根路径（源设备 = 原位置；接收设备 = 接收目录/显示名）。
+// fileSyncEntryRoot 条目在本机的根路径。
+//
+//   - 单文件条目（kind=file）：本机路径就是那次选中的文件本身（SourcePath）；
+//   - 目录条目（源设备）：选中的目录原位置；
+//   - 接收设备：接收目录 / 云端显示名。
 func fileSyncEntryRoot(e fileSyncEntry) string {
 	if strings.TrimSpace(e.SourcePath) != "" {
 		return e.SourcePath
@@ -297,10 +315,16 @@ func fileSyncEntryRoot(e fileSyncEntry) string {
 }
 
 // fileSyncEntryLocalPath 条目内某个文件的本机路径（relPath 为空 = 条目根）。
+//
+// 单文件条目必须返回 SourcePath 本身：它的 relPath 只是云端的显示名（相对路径），
+// 再拼一次会得到 `H:\DOC\info.txt\info.txt` 这种错误路径（2026-10-05 现场）。
 func fileSyncEntryLocalPath(e fileSyncEntry, relPath string) string {
 	root := fileSyncEntryRoot(e)
 	if root == "" {
 		return ""
+	}
+	if e.Kind == "file" {
+		return root
 	}
 	if strings.TrimSpace(relPath) == "" {
 		return root
@@ -310,11 +334,45 @@ func fileSyncEntryLocalPath(e fileSyncEntry, relPath string) string {
 
 // ==================== 状态派生与快照 ====================
 
+// fileSyncEntryIsSource 本机是否为该条目的来源设备（本机添加 = 有本机原路径）。
+func fileSyncEntryIsSource(e fileSyncEntry) bool {
+	return strings.TrimSpace(e.SourcePath) != ""
+}
+
+// fileSyncStatusRank 状态优先级：错误 > 同步中 > 待同步/待下载 > 已在本机移除 > 已同步。
+// 目录与条目的状态都取子树/文件里优先级最高者（只要有后代在传就显示「同步中」）。
+func fileSyncStatusRank(status string) int {
+	switch status {
+	case "error":
+		return 4
+	case "uploading":
+		return 3
+	case "pending", "pending-upload", "pending-download":
+		return 2
+	case "removed-local":
+		return 1
+	default:
+		return 0
+	}
+}
+
+// fileSyncNormalizeStatus 文件级状态 → 条目级状态（待上传/待下载统一显示为「待同步」）。
+func fileSyncNormalizeStatus(status string) string {
+	switch status {
+	case "pending-upload", "pending-download":
+		return "pending"
+	default:
+		return status
+	}
+}
+
 // fileSyncFileStatus 单个文件的状态：有错误 → error；未上传或内容已变 → pending-upload；否则 synced。
 func fileSyncFileStatus(m fileSyncLocalFile) string {
 	switch {
 	case m.Error != "" || m.Blocked:
 		return "error"
+	case m.RemovedLocally:
+		return "removed-local"
 	case m.SyncedSha == "" || m.Sha256 != m.SyncedSha:
 		return "pending-upload"
 	default:
@@ -328,16 +386,21 @@ func fileSyncFileStatus(m fileSyncLocalFile) string {
 // 与需求「文件夹排在文件前面」一致（层级仅一级，展开/折叠由前端按 relPath 前缀分组）。
 func fileSyncSnapshotLocked() FileSyncStatusInfo {
 	out := FileSyncStatusInfo{
-		Syncing:      fileSyncSyncing,
-		Applying:     fileSyncApplying,
-		LastError:    fileSyncCur.LastError,
-		LastSyncedAt: fileSyncCur.LastSyncedAt,
-		QuotaUsed:    fileSyncCur.QuotaUsed,
-		QuotaLimit:   fileSyncCur.QuotaLimit,
-		QuotaTier:    fileSyncCur.QuotaTier,
-		ReceiveDir:   fileSyncReceiveDir(),
-		PendingCount: len(fileSyncCur.PendingApply),
-		PendingFiles: fileSyncPendingLabelsLocked(),
+		Syncing:        fileSyncSyncing,
+		Applying:       fileSyncApplying,
+		LastError:      fileSyncCur.LastError,
+		LastSyncedAt:   fileSyncCur.LastSyncedAt,
+		QuotaUsed:      fileSyncCur.QuotaUsed,
+		QuotaLimit:     fileSyncCur.QuotaLimit,
+		QuotaTier:      fileSyncCur.QuotaTier,
+		ReceiveDir:     fileSyncReceiveDir(),
+		PendingCount:   len(fileSyncCur.PendingApply),
+		PendingFiles:   fileSyncPendingLabelsLocked(),
+		Uploading:      fileSyncProg.Active,
+		UploadDone:     fileSyncProg.Done,
+		UploadTotal:    fileSyncProg.Total,
+		UploadBytes:    fileSyncProg.Bytes,
+		UploadSpeedBps: fileSyncProg.SpeedBps,
 	}
 	out.LoggedIn = accountLoggedIn()
 
@@ -371,22 +434,24 @@ func fileSyncSnapshotLocked() FileSyncStatusInfo {
 				Error:   m.Error,
 				Blocked: m.Blocked,
 			}
+			key := fileSyncTaskKey(e.ID, rel)
+			if fileSyncProg.InFlight[key] {
+				fv.Status = "uploading" // 本轮在传：行内显示「同步中」
+			}
+			if sp := fileSyncProg.FileSpeeds[key]; sp > 0 {
+				fv.SpeedBps = sp
+			}
 			if m.Blocked {
 				out.BlockedCount++
 			}
-			switch fv.Status {
-			case "error":
-				if view.Status == "synced" || view.Status == "pending" {
-					view.Status = "error"
-				}
-			case "pending-upload":
-				if view.Status == "synced" {
-					view.Status = "pending"
-				}
+			// 条目状态 = 文件状态的最高优先级（错误 > 同步中 > 待同步 > 已在本机移除 > 已同步）：
+			// 只要有文件在传，条目就该显示「同步中」，而不是只显示「待同步」。
+			if fileSyncStatusRank(fv.Status) > fileSyncStatusRank(view.Status) {
+				view.Status = fileSyncNormalizeStatus(fv.Status)
 			}
 			view.Files = append(view.Files, fv)
 		}
-		if fileSyncEntryHasPendingDownloadLocked(e.ID) && view.Status == "synced" {
+		if fileSyncEntryHasPendingDownloadLocked(e.ID) && fileSyncStatusRank(view.Status) < 2 {
 			view.Status = "pending"
 		}
 		out.Entries = append(out.Entries, view)

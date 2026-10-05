@@ -194,7 +194,7 @@ const PAGES = [
   { name: "logs", page: "logs" },
   { name: "export", page: "export" },
   { name: "import", page: "import" },
-  { name: "sync", page: "sync" },
+  { name: "sync", page: "sync", after: "scrollBottom" },
   { name: "github-auth", page: "about", after: "waitPlugins", dialog: "github" },
 ];
 

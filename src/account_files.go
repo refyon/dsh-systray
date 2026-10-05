@@ -1,4 +1,4 @@
-// account_files.go：文件/文件夹同步引擎——本机扫描、增量上传、删除传播、对账与应用。
+// account_files.go：文件/文件夹同步引擎——本机扫描、增量上传、对账与应用。
 //
 // 语义（用户已确认的推荐默认，见 docs/评估-dsh-systray-文件同步.md）：
 //   - 源设备（添加条目的那台）：文件留在原位；接收设备：落到「接收目录/<显示名>/<相对路径>」；
@@ -36,7 +36,9 @@ const (
 	// fileSyncRemoteInterval 远端对账最小间隔（无本机变更时的节流）。
 	fileSyncRemoteInterval = 5 * time.Minute
 	// fileSyncCheckTimeout 一次「扫描 + 上传 + 对账」的总预算。
-	fileSyncCheckTimeout = 5 * time.Minute
+	// 大文件夹（几百到上千个文件）即使 5 并发也可能超过几分钟——预算给足，
+	// 否则中途 context 取消会让在传文件全部报「context deadline exceeded」（2026-10-05 现场）。
+	fileSyncCheckTimeout = 15 * time.Minute
 	// fileSyncApplyTimeout 一次「应用待生效改动」的总预算（含下载全部文件）。
 	fileSyncApplyTimeout = 10 * time.Minute
 	// maxFileSyncItems 单次对账上报的条数上限（与服务端一致）。
@@ -49,7 +51,120 @@ var (
 	fileSyncSyncing   bool
 	fileSyncApplying  bool
 	fileSyncLastCheck int64
+	// 上传进度（仅运行时，不落盘）：前端显示「正在上传 x/y · n KB/s」。
+	fileSyncProg          fileSyncProgress
+	fileSyncProgLastAt    time.Time
+	fileSyncProgLastBytes int64
+	// 「同步中」标记的推送节流（与进度推送分开，避免互相影响）
+	fileSyncInFlightEmitAt time.Time
+	// 本轮上传失败日志计数（只记前几条，避免几百个文件刷屏）。
+	fileSyncErrLogCount int
 )
+
+// fileSyncProgress 本机上传进度。
+type fileSyncProgress struct {
+	Active   bool
+	Done     int
+	Total    int
+	Bytes    int64
+	SpeedBps int64
+	// InFlight 本轮在传文件（entryID\x00rel → true）：前端据此把该行显示为「同步中」。
+	InFlight map[string]bool
+	// FileSpeeds 各文件上一次上传的实测速度（B/s，entryID\x00rel → 速度）。
+	FileSpeeds map[string]int64
+	// Canceled 本轮已取消的上传：键为条目 id（整条目移除）或 taskKey（单个文件/子目录移除）。
+	Canceled map[string]bool
+}
+
+// fileSyncCancelUploads 取消某条目（rel==""）或条目内某个文件/子目录的在传任务：
+// 移除同步条目/内容后不应继续上传（用户要求）。已在传的那个请求无法中断，
+// 但排队中的任务会立刻跳过，结果也会被忽略。
+func fileSyncCancelUploads(entryID, rel string) {
+	if entryID == "" {
+		return
+	}
+	fileSyncMu.Lock()
+	defer fileSyncMu.Unlock()
+	if fileSyncProg.Canceled == nil {
+		fileSyncProg.Canceled = map[string]bool{}
+	}
+	if rel == "" {
+		fileSyncProg.Canceled[entryID] = true
+	} else {
+		fileSyncProg.Canceled[fileSyncTaskKey(entryID, rel)] = true
+	}
+	for key := range fileSyncProg.InFlight {
+		match := key == fileSyncTaskKey(entryID, rel)
+		if rel == "" {
+			match = strings.HasPrefix(key, entryID+"\x00")
+		} else {
+			// 子目录：rel 前缀下的所有文件
+			match = strings.HasPrefix(key, fileSyncTaskKey(entryID, rel)) || strings.HasPrefix(key, fileSyncTaskKey(entryID, rel+"/"))
+		}
+		if match {
+			delete(fileSyncProg.InFlight, key)
+			if fileSyncProg.Total > fileSyncProg.Done {
+				fileSyncProg.Total-- // 不再计入本轮分母，进度不会卡在 x/y
+			}
+		}
+	}
+}
+
+// fileSyncUploadCanceled 该文件的上传是否已被取消（worker 上传前检查）。
+func fileSyncUploadCanceled(entryID, rel string) bool {
+	fileSyncMu.Lock()
+	defer fileSyncMu.Unlock()
+	if fileSyncProg.Canceled == nil {
+		return false
+	}
+	return fileSyncProg.Canceled[entryID] || fileSyncProg.Canceled[fileSyncTaskKey(entryID, rel)]
+}
+
+// fileSyncCountPendingUpload 该条目本轮需要上传的文件数（进度分母）。
+func fileSyncCountPendingUpload(e *fileSyncEntry) int {
+	n := 0
+	for _, m := range e.Files {
+		if m.Sha256 == "" || m.Sha256 == m.SyncedSha {
+			continue
+		}
+		n++
+	}
+	return n
+}
+
+// fileSyncProgressTickLocked 推进进度、刷新已用容量，并按 300ms 节流推一次事件
+// （调用方须持有 fileSyncMu）。
+func fileSyncProgressTickLocked(size, used int64) {
+	fileSyncProg.Done++
+	fileSyncProg.Bytes += size
+	if used > 0 {
+		fileSyncCur.QuotaUsed = used
+	}
+	now := time.Now()
+	if fileSyncProgLastAt.IsZero() {
+		fileSyncProgLastAt, fileSyncProgLastBytes = now, 0
+		return
+	}
+	elapsed := now.Sub(fileSyncProgLastAt)
+	if elapsed < 300*time.Millisecond {
+		return
+	}
+	if secs := elapsed.Seconds(); secs > 0 {
+		fileSyncProg.SpeedBps = int64(float64(fileSyncProg.Bytes-fileSyncProgLastBytes) / secs)
+	}
+	fileSyncProgLastAt, fileSyncProgLastBytes = now, fileSyncProg.Bytes
+	_ = saveFileSyncStateLocked(fileSyncCur)
+	fileSyncEmitLocked()
+}
+
+// fileSyncEmitLocked 在持锁状态下把快照推给前端（EventsEmit 放到 goroutine，避免锁内做 IO）。
+func fileSyncEmitLocked() {
+	if appCtx == nil {
+		return
+	}
+	snap := fileSyncSnapshotLocked()
+	go wruntime.EventsEmit(appCtx, "files:changed", snap)
+}
 
 // initFileSyncState 启动时载入清单（只读，不阻塞启动），并按本机现状重判待应用动作。
 //
@@ -61,7 +176,7 @@ func initFileSyncState() {
 	if entries > 0 {
 		fileSyncScanAllLocked()
 	}
-	kept, dropped := fileSyncFilterActionsLocked(fileSyncCur.PendingApply)
+	kept, dropped, _ := fileSyncFilterActionsLocked(fileSyncCur.PendingApply)
 	fileSyncCur.PendingApply = kept
 	if dropped > 0 {
 		_ = saveFileSyncStateLocked(fileSyncCur)
@@ -141,7 +256,7 @@ func fileSyncScanAllLocked() {
 	}
 }
 
-// fileSyncScanEntryLocked 扫描一个条目：刷新文件状态、登记本机删除、清理已恢复的删除台账。
+// fileSyncScanEntryLocked 扫描一个条目：刷新文件状态，并标记本机已删除的文件（只在本机停止同步）。
 func fileSyncScanEntryLocked(e *fileSyncEntry) error {
 	root := fileSyncEntryRoot(*e)
 	if root == "" {
@@ -151,17 +266,15 @@ func fileSyncScanEntryLocked(e *fileSyncEntry) error {
 	if e.Files == nil {
 		e.Files = map[string]fileSyncLocalFile{}
 	}
-	if e.Deletions == nil {
-		e.Deletions = map[string]int64{}
-	}
-	now := fileSyncNow()
 
 	if e.Kind == "file" {
 		st, err := os.Stat(root)
 		if err != nil || st.IsDir() {
 			rel := filepath.Base(root)
-			if _, ok := e.Files[rel]; ok {
-				e.Deletions[rel] = now // 源文件被删除/改名 → 传播删除
+			if m, ok := e.Files[rel]; ok {
+				// 原文件被删除/改名 → 只在本机停止同步（不传播），保留「重新同步」入口
+				m.RemovedLocally = true
+				e.Files[rel] = m
 			}
 			e.Error = ""
 			return nil
@@ -177,6 +290,15 @@ func fileSyncScanEntryLocked(e *fileSyncEntry) error {
 		if err != nil {
 			return nil // 单个条目读不到（占用/权限）不中断整体扫描
 		}
+		// 重解析点（junction / 符号链接 / pnpm 的 node_modules 链接）一律不进同步：既防环、防越界，
+		// 也避免悬空链接产生「读取失败」把整个条目拖成失败态。判定必须走 isReparsePoint——
+		// Windows 的 junction **不会**被 Type() 标记成 ModeSymlink，且必须放在 d.IsDir() 之前。
+		if info, ierr := d.Info(); ierr == nil && isReparsePoint(info) {
+			if d.IsDir() {
+				return filepath.SkipDir
+			}
+			return nil
+		}
 		if d.IsDir() {
 			rel, rerr := filepath.Rel(root, p)
 			if rerr != nil || rel == "." {
@@ -189,9 +311,6 @@ func fileSyncScanEntryLocked(e *fileSyncEntry) error {
 				return filepath.SkipDir
 			}
 			return nil
-		}
-		if d.Type()&os.ModeSymlink != 0 {
-			return nil // 符号链接/junction 跳过（防环与越界）
 		}
 		if fileSyncExcludedFile(d.Name()) {
 			return nil
@@ -213,15 +332,18 @@ func fileSyncScanEntryLocked(e *fileSyncEntry) error {
 		e.Error = T("读取目录失败：") + walkErr.Error()
 		return walkErr
 	}
-	for rel := range e.Files {
-		if !seen[rel] {
-			e.Deletions[rel] = now // 本机删除 → 待传播
-		}
-	}
-	for rel := range e.Deletions {
+	for rel, m := range e.Files {
 		if seen[rel] {
-			delete(e.Deletions, rel) // 文件又出现了：撤销删除台账
+			continue
 		}
+		if m.SyncedSha == "" && m.Rev == 0 {
+			delete(e.Files, rel) // 从未上传成功（如读取失败被跳过的链接）：本来就没进账号，直接去掉
+			continue
+		}
+		// 本机文件被删除 → **只在本机停止同步**，不传播到账号/其它设备（源设备与接收端一致）；
+		// 保留元数据，界面显示「已在本机移除」，可点「重新同步」拉回。
+		m.RemovedLocally = true
+		e.Files[rel] = m
 	}
 	e.Error = ""
 	return nil
@@ -229,6 +351,11 @@ func fileSyncScanEntryLocked(e *fileSyncEntry) error {
 
 // fileSyncNoteFileLocked 刷新单个文件的本机状态；大小与修改时间都没变时复用已算摘要。
 func fileSyncNoteFileLocked(e *fileSyncEntry, rel string, st os.FileInfo) {
+	// 文件又出现在本机（用户恢复/重新同步）→ 撤销「已在本机移除」，重新纳入同步
+	if prev, ok := e.Files[rel]; ok && prev.RemovedLocally {
+		prev.RemovedLocally = false
+		e.Files[rel] = prev
+	}
 	// 远端已删除、本机保留的文件不进入同步；文件被改动（mtime 更新）视为用户重建 → 重新同步。
 	if ignoredAt, ok := e.Ignored[rel]; ok {
 		if st.ModTime().Unix() <= ignoredAt {
@@ -252,15 +379,13 @@ func fileSyncNoteFileLocked(e *fileSyncEntry, rel string, st os.FileInfo) {
 	m := prev
 	m.Size, m.Mtime, m.Sha256 = size, mtime, sha
 	m.Error, m.Blocked = "", false // 内容变了：清掉上次的失败/拦下状态，重新尝试
+	m.RemovedLocally = false       // 本机文件又在了（用户恢复/重新同步）：撤销「已在本机移除」
 	e.Files[rel] = m
 }
 
-// fileSyncHasLocalChangesLocked 是否有待上传内容或待传播删除（调用方须持有 fileSyncMu）。
+// fileSyncHasLocalChangesLocked 是否有待上传的本机改动（调用方须持有 fileSyncMu）。
 func fileSyncHasLocalChangesLocked() bool {
 	for _, e := range fileSyncCur.Entries {
-		if len(e.Deletions) > 0 {
-			return true
-		}
 		for _, m := range e.Files {
 			if m.Sha256 != "" && m.Sha256 != m.SyncedSha {
 				return true
@@ -273,105 +398,215 @@ func fileSyncHasLocalChangesLocked() bool {
 // ==================== 上传与删除传播 ====================
 
 // fileSyncUploadEntryLocked 上传条目内需要同步的文件，返回（上传数, 容量拦下数）。
-func fileSyncUploadEntryLocked(ctx context.Context, client *accountClient, token string, e *fileSyncEntry, q *fileQuota) (int, int) {
-	uploaded, blocked := 0, 0
-	rels := make([]string, 0, len(e.Files))
-	for rel := range e.Files {
-		rels = append(rels, rel)
-	}
-	sort.Strings(rels)
-	for _, rel := range rels {
-		m := e.Files[rel]
-		if _, gone := e.Deletions[rel]; gone {
-			continue // 本机已删除：由删除传播处理
-		}
-		if m.Sha256 == "" || m.Sha256 == m.SyncedSha {
-			continue // 读不到内容，或已同步
-		}
-		// 容量预检：替换文件时扣除它上次的占用（服务端闸门仍是权威，这里只是省一次 10 MiB 往返）
-		projected := q.Used - m.SyncedSize + m.Size
-		if m.Size > q.Limit || projected > q.Limit {
-			m.Blocked, m.Error = true, T("可用容量不足")
-			e.Files[rel] = m
-			blocked++
-			continue
-		}
-		data, err := os.ReadFile(fileSyncEntryLocalPath(*e, rel))
-		if err != nil {
-			m.Blocked, m.Error = false, T("读取失败：")+err.Error()
-			e.Files[rel] = m
-			continue
-		}
-		resp, err := client.FilesUpload(ctx, token, e.ID, rel, data, m.Sha256, m.Mtime)
-		if err != nil {
-			if accountErrorCode(err) == accErrQuotaExceeded {
-				m.Blocked, m.Error = true, T("可用容量不足")
-				blocked++
-			} else {
-				m.Blocked, m.Error = false, accountErrorText(err)
-			}
-			e.Files[rel] = m
-			continue
-		}
-		m.SyncedSha, m.SyncedSize, m.Rev = m.Sha256, m.Size, resp.Rev
-		m.Error, m.Blocked = "", false
-		e.Files[rel] = m
-		if resp.Limit > 0 {
-			q.Used, q.Limit, q.Tier = resp.Used, resp.Limit, resp.Tier
-		}
-		uploaded++
-	}
-	return uploaded, blocked
+// fileSyncUploadConcurrency 单轮并发上传线程数（用户决策：暂时固定最多 5 个）。
+const fileSyncUploadConcurrency = 5
+
+// fileSyncUploadTask 一个待上传文件（锁内构建，锁外执行）。
+type fileSyncUploadTask struct {
+	entryID    string
+	entryName  string
+	rel        string
+	path       string
+	sha        string
+	size       int64
+	mtime      int64
+	syncedSize int64
 }
 
-// fileSyncPropagateDeletionsLocked 把本机删除传播到服务端（打墓碑），返回成功条数。
-func fileSyncPropagateDeletionsLocked(ctx context.Context, client *accountClient, token string, e *fileSyncEntry, q *fileQuota) int {
-	done := 0
-	rels := make([]string, 0, len(e.Deletions))
-	for rel := range e.Deletions {
-		rels = append(rels, rel)
+// fileSyncUploadOutcome 单个文件的上传结果。
+type fileSyncUploadOutcome struct {
+	task     fileSyncUploadTask
+	err      error
+	readErr  error
+	blocked  bool
+	canceled bool
+	rev      int64
+	used     int64
+	limit    int64
+	tier     string
+	elapsed  time.Duration
+}
+
+// fileSyncTaskKey 运行时进度表的键（entry + 相对路径）。
+func fileSyncTaskKey(entryID, rel string) string { return entryID + "\x00" + rel }
+
+// fileSyncMarkInFlight 标记/取消「该文件正在上传」。只有真正拿到上传线程（并发上限内）的文件
+// 才算「同步中」，其余排队中的仍是「待同步」——否则几百个文件全显示同步中（2026-10-05 现场）。
+func fileSyncMarkInFlight(entryID, rel string, on bool) {
+	fileSyncMu.Lock()
+	defer fileSyncMu.Unlock()
+	if fileSyncProg.InFlight == nil {
+		fileSyncProg.InFlight = map[string]bool{}
 	}
-	sort.Strings(rels)
-	for _, rel := range rels {
-		out, err := client.FilesDeleteObject(ctx, token, e.ID, rel)
-		if err != nil {
-			if accountErrorCode(err) == accErrNotFound {
-				// 服务端本就没有这个文件：台账照样清掉
-				delete(e.Deletions, rel)
-				delete(e.Files, rel)
-				done++
+	key := fileSyncTaskKey(entryID, rel)
+	if on {
+		fileSyncProg.InFlight[key] = true
+		// 让前端尽快看到「同步中」（独立节流，避免影响速度统计）
+		now := time.Now()
+		if now.Sub(fileSyncInFlightEmitAt) >= 300*time.Millisecond {
+			fileSyncInFlightEmitAt = now
+			_ = saveFileSyncStateLocked(fileSyncCur)
+			fileSyncEmitLocked()
+		}
+	} else {
+		delete(fileSyncProg.InFlight, key)
+	}
+}
+
+// fileSyncBuildUploadTasksLocked 收集本轮需要上传的文件并做容量预检（调用方须持有 fileSyncMu）。
+// 返回（任务列表, 预检拦下的文件数）。
+func fileSyncBuildUploadTasksLocked(q *fileQuota) ([]fileSyncUploadTask, int) {
+	tasks := make([]fileSyncUploadTask, 0, 16)
+	blocked := 0
+	if fileSyncProg.InFlight == nil {
+		fileSyncProg.InFlight = map[string]bool{}
+	}
+	for _, key := range fileSyncSortedEntryIndexesLocked() {
+		e := &fileSyncCur.Entries[key]
+		rels := make([]string, 0, len(e.Files))
+		for rel := range e.Files {
+			rels = append(rels, rel)
+		}
+		sort.Strings(rels)
+		for _, rel := range rels {
+			m := e.Files[rel]
+			if m.Sha256 == "" || m.Sha256 == m.SyncedSha {
+				continue // 读不到内容，或已同步
 			}
-			continue // 其它错误（网络）：保留台账，下次重试
+			// 容量预检：替换文件时扣除它上次的占用（服务端闸门仍是权威，这里只是省一次 10 MiB 往返）
+			projected := q.Used - m.SyncedSize + m.Size
+			if m.Size > q.Limit || projected > q.Limit {
+				m.Blocked, m.Error = true, T("可用容量不足")
+				e.Files[rel] = m
+				blocked++
+				continue
+			}
+			tasks = append(tasks, fileSyncUploadTask{
+				entryID: e.ID, entryName: e.Name, rel: rel,
+				path: fileSyncEntryLocalPath(*e, rel),
+				sha:  m.Sha256, size: m.Size, mtime: m.Mtime, syncedSize: m.SyncedSize,
+			})
 		}
-		delete(e.Deletions, rel)
-		delete(e.Files, rel)
-		if out.Limit > 0 {
-			q.Used, q.Limit, q.Tier = out.Used, out.Limit, out.Tier
-		}
-		done++
 	}
-	return done
+	return tasks, blocked
+}
+
+// fileSyncSortedEntryIndexesLocked 条目下标按名称排序（上传顺序稳定，便于阅读日志）。
+func fileSyncSortedEntryIndexesLocked() []int {
+	idx := make([]int, 0, len(fileSyncCur.Entries))
+	for i := range fileSyncCur.Entries {
+		idx = append(idx, i)
+	}
+	sort.SliceStable(idx, func(a, b int) bool { return fileSyncCur.Entries[idx[a]].Name < fileSyncCur.Entries[idx[b]].Name })
+	return idx
+}
+
+// fileSyncRunUploads 并发执行上传（最多 fileSyncUploadConcurrency 个线程），结果按完成顺序送回。
+func fileSyncRunUploads(ctx context.Context, client *accountClient, token string, tasks []fileSyncUploadTask) <-chan fileSyncUploadOutcome {
+	out := make(chan fileSyncUploadOutcome, len(tasks))
+	sem := make(chan struct{}, fileSyncUploadConcurrency)
+	var wg sync.WaitGroup
+	for _, t := range tasks {
+		wg.Add(1)
+		go func(t fileSyncUploadTask) {
+			defer wg.Done()
+			sem <- struct{}{}
+			defer func() { <-sem }()
+			item := fileSyncUploadOutcome{task: t}
+			if fileSyncUploadCanceled(t.entryID, t.rel) {
+				item.canceled = true
+				out <- item
+				return
+			}
+			// 真正开始上传才算「同步中」（并发上限内的那几个）
+			fileSyncMarkInFlight(t.entryID, t.rel, true)
+			defer fileSyncMarkInFlight(t.entryID, t.rel, false)
+			data, err := os.ReadFile(t.path)
+			if err != nil {
+				item.readErr = err
+				out <- item
+				return
+			}
+			start := time.Now()
+			resp, err := client.FilesUpload(ctx, token, t.entryID, t.rel, data, t.sha, t.mtime)
+			item.elapsed = time.Since(start)
+			item.err = err
+			item.rev, item.used, item.limit, item.tier = resp.Rev, resp.Used, resp.Limit, resp.Tier
+			item.blocked = accountErrorCode(err) == accErrQuotaExceeded
+			out <- item
+		}(t)
+	}
+	go func() { wg.Wait(); close(out) }()
+	return out
+}
+
+// fileSyncApplyUploadOutcomeLocked 应用单个上传结果（调用方须持有 fileSyncMu）。
+func fileSyncApplyUploadOutcomeLocked(res *fileSyncResult, q *fileQuota, o fileSyncUploadOutcome) {
+	// 已取消（条目/内容被移除）：不改状态、不计进度、不动容量
+	if o.canceled {
+		delete(fileSyncProg.InFlight, fileSyncTaskKey(o.task.entryID, o.task.rel))
+		return
+	}
+	size := int64(0)
+	if idx := fileSyncFindEntryLocked(o.task.entryID); idx >= 0 {
+		e := &fileSyncCur.Entries[idx]
+		m := e.Files[o.task.rel]
+		switch {
+		case o.readErr != nil:
+			m.Blocked, m.Error = false, T("读取失败：")+o.readErr.Error()
+		case o.err != nil:
+			if o.blocked {
+				m.Blocked, m.Error = true, T("可用容量不足")
+				res.Blocked++
+			} else {
+				m.Blocked, m.Error = false, accountErrorText(o.err)
+			}
+			if fileSyncErrLogCount < 3 {
+				log.Printf("[files] 上传失败 %s/%s: %v", o.task.entryName, o.task.rel, o.err)
+				fileSyncErrLogCount++
+			}
+		default:
+			m.SyncedSha, m.SyncedSize, m.Rev = o.task.sha, o.task.size, o.rev
+			m.Error, m.Blocked = "", false
+			res.Uploaded++
+			size = o.task.size
+			if o.elapsed > 0 {
+				// Windows 计时器粒度下，毫秒级上传的 elapsed 可能为 0：该文件本轮不记速度（显示时省略）
+				if fileSyncProg.FileSpeeds == nil {
+					fileSyncProg.FileSpeeds = map[string]int64{}
+				}
+				fileSyncProg.FileSpeeds[fileSyncTaskKey(o.task.entryID, o.task.rel)] = int64(float64(o.task.size) / o.elapsed.Seconds())
+			}
+		}
+		e.Files[o.task.rel] = m
+	}
+	delete(fileSyncProg.InFlight, fileSyncTaskKey(o.task.entryID, o.task.rel))
+	if o.limit > 0 {
+		q.Used, q.Limit, q.Tier = o.used, o.limit, o.tier
+	}
+	fileSyncProgressTickLocked(size, q.Used)
 }
 
 // ==================== 对账 ====================
 
 // fileSyncResult 一次文件同步的结果（日志与测试断言用）。
+// 说明：本机删除**不再传播**到服务端（源设备与接收端一致：只在本机停止同步，可「重新同步」拉回），
+// 因此没有 Deleted 字段；从账号真正删除只走界面上的「移除」（那是由绑定直接调 DELETE 完成的）。
 type fileSyncResult struct {
 	Uploaded int
-	Deleted  int
 	Pending  int
 	Blocked  int
 }
 
 // fileSyncBuildRequestLocked 组装对账请求（调用方须持有 fileSyncMu）。
+//
+// 注意：两个列表**必须初始化为非 nil**——Go 会把 nil slice 序列化成 `null`，
+// 而服务端 schema 只认数组（2026-10-05 v1.3.0 现场：空列表 → 400 → 容量读不出、界面报「操作失败」）。
 func fileSyncBuildRequestLocked() fileSyncRequest {
-	req := fileSyncRequest{}
+	req := fileSyncRequest{Entries: []fileSyncEntryBody{}, Files: []fileSyncLocalMeta{}}
 	for _, e := range fileSyncCur.Entries {
 		req.Entries = append(req.Entries, fileSyncEntryBody{ID: e.ID, Name: e.Name, Kind: e.Kind})
 		for rel, m := range e.Files {
-			if _, gone := e.Deletions[rel]; gone {
-				continue // 本机已删除：不进对账，由 DELETE 传播
-			}
 			if m.Sha256 == "" {
 				continue
 			}
@@ -393,8 +628,9 @@ func fileSyncBuildRequestLocked() fileSyncRequest {
 }
 
 // fileSyncFilterActionsLocked 过滤「本机已经满足」的动作，其余进待应用集合（调用方须持有 fileSyncMu）。
-func fileSyncFilterActionsLocked(actions []fileSyncAction) ([]fileSyncAction, int) {
+func fileSyncFilterActionsLocked(actions []fileSyncAction) ([]fileSyncAction, int, []string) {
 	out := make([]fileSyncAction, 0, len(actions))
+	orphans := make([]string, 0, 2)
 	skipped := 0
 	for _, a := range actions {
 		idx := fileSyncFindEntryLocked(a.EntryID)
@@ -408,6 +644,8 @@ func fileSyncFilterActionsLocked(actions []fileSyncAction) ([]fileSyncAction, in
 			}
 		case "download":
 			if idx >= 0 {
+				// 内容一致就跳过。注意「已在本机移除」的文件 Sha256 仍是服务端那份摘要，
+				// 因此不会被自动拉回；用户点「重新同步」会清掉摘要，下一轮才会真正下载。
 				if m, ok := fileSyncCur.Entries[idx].Files[a.RelPath]; ok && m.Sha256 == a.Sha256 {
 					skipped++
 					continue
@@ -425,6 +663,13 @@ func fileSyncFilterActionsLocked(actions []fileSyncAction) ([]fileSyncAction, in
 				skipped++
 				continue
 			}
+			// 来源设备就是本机、而本机已无该条目 → 这是自家残留（本机删除时服务端没删干净），
+			// 不该提示「来自其它设备的改动」，交给调用方去清理服务端（2026-10-05 现场）。
+			if a.OriginDevice != "" && a.OriginDevice == accountDeviceID() {
+				orphans = append(orphans, a.EntryID)
+				skipped++
+				continue
+			}
 		case "rename_entry":
 			if idx >= 0 && fileSyncCur.Entries[idx].Name == a.Name {
 				skipped++
@@ -438,7 +683,7 @@ func fileSyncFilterActionsLocked(actions []fileSyncAction) ([]fileSyncAction, in
 		}
 		out = append(out, a)
 	}
-	return out, skipped
+	return out, skipped, orphans
 }
 
 // fileSyncCheck 一次完整同步：扫描 → 上传本机变更 → 传播本机删除 → 对账取待应用动作。
@@ -455,7 +700,6 @@ func fileSyncCheck(ctx context.Context, client *accountClient) (fileSyncResult, 
 	}
 
 	fileSyncMu.Lock()
-	defer fileSyncMu.Unlock()
 
 	fileSyncScanAllLocked()
 
@@ -466,15 +710,36 @@ func fileSyncCheck(ctx context.Context, client *accountClient) (fileSyncResult, 
 		if accountErrorCode(err) == accErrUnauthorized {
 			accountInvalidateSession()
 		}
+		fileSyncMu.Unlock()
 		return res, err
 	}
-
-	for i := range fileSyncCur.Entries {
-		up, blocked := fileSyncUploadEntryLocked(ctx, client, token, &fileSyncCur.Entries[i], &q)
-		res.Uploaded += up
-		res.Blocked += blocked
-		res.Deleted += fileSyncPropagateDeletionsLocked(ctx, client, token, &fileSyncCur.Entries[i], &q)
+	// 容量即时落盘：后续步骤（上传/对账）失败也不影响前端把容量条显示出来
+	fileSyncCur.QuotaUsed, fileSyncCur.QuotaTier = q.Used, q.Tier
+	if q.Limit > 0 {
+		fileSyncCur.QuotaLimit = q.Limit
 	}
+	_ = saveFileSyncStateLocked(fileSyncCur)
+
+	// 收集本轮待上传文件（锁内构建，锁外并发执行——上传期间不长时间持锁，界面才能实时刷新）
+	fileSyncProg = fileSyncProgress{InFlight: map[string]bool{}, FileSpeeds: map[string]int64{}, Canceled: map[string]bool{}}
+	fileSyncProgLastAt, fileSyncProgLastBytes, fileSyncErrLogCount = time.Time{}, 0, 0
+	tasks, preBlocked := fileSyncBuildUploadTasksLocked(&q)
+	res.Blocked = preBlocked
+	fileSyncProg.Active = len(tasks) > 0
+	fileSyncProg.Total = len(tasks)
+	fileSyncMu.Unlock()
+
+	if len(tasks) > 0 {
+		for o := range fileSyncRunUploads(ctx, client, token, tasks) {
+			fileSyncMu.Lock()
+			fileSyncApplyUploadOutcomeLocked(&res, &q, o)
+			fileSyncMu.Unlock()
+		}
+	}
+
+	fileSyncMu.Lock()
+	fileSyncProg.Active = false
+	fileSyncProg.InFlight = map[string]bool{}
 
 	resp, err := client.FilesSync(ctx, token, fileSyncBuildRequestLocked())
 	if err != nil {
@@ -483,10 +748,19 @@ func fileSyncCheck(ctx context.Context, client *accountClient) (fileSyncResult, 
 		if accountErrorCode(err) == accErrUnauthorized {
 			accountInvalidateSession()
 		}
+		fileSyncMu.Unlock()
 		return res, err
 	}
-	apply, _ := fileSyncFilterActionsLocked(resp.Actions)
+	apply, _, orphans := fileSyncFilterActionsLocked(resp.Actions)
 	fileSyncCur.PendingApply = apply
+	// 自家孤儿条目（来源设备=本机、本机已删除）：不提示应用，直接清理服务端残留
+	for _, id := range orphans {
+		if derr := client.FilesDeleteEntry(ctx, token, id); derr != nil && accountErrorCode(derr) != accErrNotFound {
+			log.Printf("[files] 清理孤儿条目 %s 失败（下轮重试）: %v", id, derr)
+			continue
+		}
+		logUI("清理孤儿同步条目", id)
+	}
 	if resp.Quota.Limit > 0 {
 		fileSyncCur.QuotaUsed, fileSyncCur.QuotaLimit, fileSyncCur.QuotaTier = resp.Quota.Used, resp.Quota.Limit, resp.Quota.Tier
 	} else {
@@ -497,6 +771,7 @@ func fileSyncCheck(ctx context.Context, client *accountClient) (fileSyncResult, 
 	fileSyncLastCheck = fileSyncCur.LastSyncedAt
 	res.Pending = len(apply)
 	_ = saveFileSyncStateLocked(fileSyncCur)
+	fileSyncMu.Unlock()
 	return res, nil
 }
 
@@ -700,7 +975,6 @@ func fileSyncApplyRemoveFile(a fileSyncAction) error {
 		e.Ignored[a.RelPath] = fileSyncNow()
 	}
 	delete(e.Files, a.RelPath)
-	delete(e.Deletions, a.RelPath)
 	return nil
 }
 
@@ -855,8 +1129,8 @@ func fileSyncKick() {
 		res, err := fileSyncCheck(ctx, newAccountClient(""))
 		if err != nil {
 			log.Printf("[files] 后台同步失败: %v", err)
-		} else if res.Uploaded > 0 || res.Deleted > 0 || res.Pending > 0 || res.Blocked > 0 {
-			log.Printf("[files] 后台同步完成：上传 %d、删除 %d、待应用 %d、容量拦下 %d", res.Uploaded, res.Deleted, res.Pending, res.Blocked)
+		} else if res.Uploaded > 0 || res.Pending > 0 || res.Blocked > 0 {
+			log.Printf("[files] 后台同步完成：上传 %d、待应用 %d、容量拦下 %d", res.Uploaded, res.Pending, res.Blocked)
 		}
 		emitFilesChanged()
 	}()
@@ -891,8 +1165,8 @@ func startFileSyncBackground(ctx context.Context) {
 				cancel()
 				if err != nil {
 					log.Printf("[files] 后台同步失败: %v", err)
-				} else if res.Uploaded > 0 || res.Deleted > 0 || res.Pending > 0 {
-					log.Printf("[files] 后台同步完成：上传 %d、删除 %d、待应用 %d", res.Uploaded, res.Deleted, res.Pending)
+				} else if res.Uploaded > 0 || res.Pending > 0 {
+					log.Printf("[files] 后台同步完成：上传 %d、待应用 %d", res.Uploaded, res.Pending)
 				}
 				emitFilesChanged()
 			}

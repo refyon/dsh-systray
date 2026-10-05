@@ -64,6 +64,13 @@ var (
 	accountStartupChecked bool
 )
 
+// accountDeviceID 本机在当前账号下的设备 id（文件同步用它识别「自家孤儿条目」）。
+func accountDeviceID() string {
+	accountMu.Lock()
+	defer accountMu.Unlock()
+	return accountCur.DeviceID
+}
+
 // initAccountState 启动时载入登录态（只读，不阻塞启动）。
 func initAccountState() {
 	accountMu.Lock()
@@ -285,6 +292,18 @@ func accountErrorText(err error) string {
 		return T("登录已失效，请重新登录")
 	case accErrNetwork:
 		return T("网络连接失败，请检查网络后重试")
+	case accErrQuotaExceeded:
+		return T("可用容量不足")
+	case accErrChecksumMismatch:
+		return T("上传内容校验失败，请重试")
+	case accErrNotFound:
+		return T("同步对象不存在（可能已在其它设备删除）")
+	case "bad_request":
+		return T("服务端拒绝了该请求（参数不合法）")
+	case "store_unavailable":
+		return T("服务端存储不可用，请稍后重试")
+	case "server_error", "http_error":
+		return T("服务端返回异常，请稍后重试")
 	default:
 		return T("操作失败，请稍后重试")
 	}

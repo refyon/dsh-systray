@@ -96,14 +96,6 @@ func (c *accountClient) FilesCreateEntry(ctx context.Context, token string, e fi
 	return out, err
 }
 
-// FilesRenameEntry 重命名同步条目（只改云端显示名）。
-func (c *accountClient) FilesRenameEntry(ctx context.Context, token, entryID, name string) (fileSyncRemoteEntry, error) {
-	var out fileSyncRemoteEntry
-	path := "/v1/files/entries/" + url.PathEscape(entryID)
-	err := c.do(ctx, http.MethodPatch, path, token, map[string]string{"name": name}, &out)
-	return out, err
-}
-
 // FilesDeleteEntry 删除同步条目（其它设备按「服务端没有该条目」收敛）。
 func (c *accountClient) FilesDeleteEntry(ctx context.Context, token, entryID string) error {
 	path := "/v1/files/entries/" + url.PathEscape(entryID)

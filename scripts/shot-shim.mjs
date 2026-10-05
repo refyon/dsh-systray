@@ -67,12 +67,14 @@ export const DEMO = {
     entries: [
       {
         id: "demo-entry-1", name: "项目资料", kind: "dir", isSource: true,
-        path: "C:\\Users\\demo\\Documents\\项目资料", size: 1056789, status: "pending", error: "",
+        path: "C:\\Users\\demo\\Documents\\项目资料", size: 1056789, status: "uploading", error: "",
         files: [
           { relPath: "README.md", name: "README.md", size: 4821, mtime: 0, status: "synced", error: "", blocked: false },
           { relPath: "会议记录.md", name: "会议记录.md", size: 53390, mtime: 0, status: "synced", error: "", blocked: false },
           { relPath: "设计/流程.png", name: "流程.png", size: 486233, mtime: 0, status: "synced", error: "", blocked: false },
-          { relPath: "设计/规范.pdf", name: "规范.pdf", size: 512345, mtime: 0, status: "pending-upload", error: "", blocked: false },
+          { relPath: "设计/规范.pdf", name: "规范.pdf", size: 512345, mtime: 0, status: "uploading", error: "", blocked: false, speedBps: 1310720 },
+          { relPath: "草稿/大纲.md", name: "大纲.md", size: 4096, mtime: 0, status: "pending-upload", error: "", blocked: false },
+          { relPath: "旧版/备份.zip", name: "备份.zip", size: 20480, mtime: 0, status: "removed-local", error: "", blocked: false },
         ],
       },
       {

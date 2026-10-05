@@ -1367,17 +1367,31 @@ func launchInstallerFile(path string) error {
 
 // openFile 以系统默认方式打开文件（文件同步列表的「打开」）。
 func openFile(path string) error {
+	return shellExecutePath("open", path)
+}
+
+// openFileWith 让用户重新选择打开方式（「打开方式」对话框）。
+func openFileWith(path string) error {
+	return shellExecutePath("openas", path)
+}
+
+// shellExecutePath 调 ShellExecuteW 执行给定谓词；用户取消对话框返回 errOpenCanceled（不算失败）。
+func shellExecutePath(verb, path string) error {
 	p := strings.TrimSpace(path)
 	if p == "" || !fileExists(p) {
 		return errors.New("文件不存在")
 	}
 	modShell32 := syscall.NewLazyDLL("shell32.dll")
 	pShellExecuteW := modShell32.NewProc("ShellExecuteW")
-	op, _ := syscall.UTF16PtrFromString("open")
+	op, _ := syscall.UTF16PtrFromString(verb)
 	f, _ := syscall.UTF16PtrFromString(p)
 	// ShellExecuteW 返回值 > 32 表示成功
 	r, _, callErr := pShellExecuteW.Call(0, uintptr(unsafe.Pointer(op)), uintptr(unsafe.Pointer(f)), 0, 0, 1 /* SW_SHOWNORMAL */)
 	if r <= 32 {
+		// ERROR_CANCELLED(1223)：用户在「打开方式」对话框点了取消 —— 不是失败，界面上不该报错
+		if errors.Is(callErr, syscall.Errno(1223)) {
+			return errOpenCanceled
+		}
 		if callErr != nil && callErr.Error() != "The operation completed successfully." {
 			return fmt.Errorf("ShellExecuteW 失败：%w", callErr)
 		}

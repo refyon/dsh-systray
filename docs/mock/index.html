@@ -341,7 +341,7 @@
           </div>
           <div class="card-row">
             <div class="row-text">
-              <div class="row-title" data-i18n="syncScopeTitle">同步内容</div>
+              <div class="row-title" data-i18n="syncScopeTitle">服务同步</div>
               <div class="row-sub" data-i18n="syncScopeSub">
                 开机自启动开关、最后选用的 Harness 版本（含预发布通道）、所有在线插件的安装信息
                 （Web 与 Desktop 两个环境各自一条记录，互不覆盖）；
@@ -366,10 +366,7 @@
           <div class="card-row">
             <div class="row-text">
               <div class="row-title" data-i18n="filesTitle">文件同步</div>
-              <div class="row-sub" data-i18n="filesSub">
-                自选文件或文件夹随账号同步：添加的设备保留原位置，其它设备落到「文档\DeepSeekSync」；
-                每个账号免费 10 MB，容量不足时会提示清理。
-              </div>
+              <div class="row-sub" data-i18n="filesSub">自选文件或文件夹随账号同步</div>
             </div>
             <div class="row-actions">
               <button id="btn-files-add-file" class="btn btn-outline btn-sm" data-i18n="btnFilesAddFile">添加文件</button>
@@ -407,7 +404,12 @@
             </div>
           </div>
           <div class="card-row">
-            <div class="row-text"><div class="sync-hint" id="files-hint"></div></div>
+            <div class="row-text">
+              <div class="sync-hint" id="files-hint">
+                <span id="files-hint-text"></span>
+                <button type="button" class="btn btn-ghost btn-xs hidden" id="files-hint-action"></button>
+              </div>
+            </div>
           </div>
         </div>
 
@@ -498,23 +500,6 @@
       <div class="splash-track"><div id="exp-modal-fill" class="splash-fill"></div></div>
       <div class="modal-actions">
         <button class="btn btn-primary" id="exp-modal-close" data-i18n="btnDone">完成</button>
-      </div>
-    </div>
-  </div>
-
-  <!-- ======== 文件同步：重命名条目（输入弹层） ======== -->
-  <div id="files-rename-modal" class="modal hidden">
-    <div class="modal-mask"></div>
-    <div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="files-rename-title">
-      <div class="modal-title" id="files-rename-title" data-i18n="filesRenameTitle">重命名同步条目</div>
-      <div class="modal-msg" data-i18n="filesRenameMsg">
-        名称用于列表显示与其它设备上的落盘目录名，不会改动本机的原文件。
-      </div>
-      <input id="files-rename-input" class="input input-wide" maxlength="128" spellcheck="false" />
-      <div class="row-warn hidden" id="files-rename-warn"></div>
-      <div class="modal-actions">
-        <button class="btn btn-ghost" id="files-rename-cancel" data-i18n="btnCancel">取消</button>
-        <button class="btn btn-primary" id="files-rename-ok" data-i18n="btnOk">确定</button>
       </div>
     </div>
   </div>

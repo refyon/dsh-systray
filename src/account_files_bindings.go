@@ -4,9 +4,8 @@
 //
 //	FilesStatus        状态快照（容量、条目树、待应用、容量拦下数）
 //	FilesAdd           添加文件/文件夹（系统对话框 → 建条目 → 立即同步）
-//	FilesRemoveEntry   从同步列表移除整个条目（deleteLocal 决定是否同时删除本机文件）
-//	FilesRemovePath    删除条目内的一个文件/子目录（云端打墓碑传播，可选删除本机）
-//	FilesRenameEntry   重命名条目（改云端显示名；接收设备同步改目录名）
+//	FilesRemoveEntry   从同步列表移除整个条目（本机文件保持不动）
+//	FilesRemovePath    移除条目内的一个文件/子目录（云端打墓碑传播，本机文件保持不动）
 //	FilesOpenEntry     以系统默认方式打开文件（或条目根）
 //	FilesApplyPending  应用服务端下达的改动（下载/删除/改名）
 //	FilesSyncNow       立即同步一次（扫描 + 上传 + 对账）
@@ -88,13 +87,15 @@ func fileSyncAddPath(kind, path string) (FileSyncStatusInfo, error) {
 	}
 
 	name := fileSyncUniqueEntryName(filepath.Base(abs))
+	if !fileSyncValidEntryName(name) {
+		return fileSyncStatusSnapshot(), errors.New(T("名称不合法（不能包含 \\ / : * ? \" < > | 等字符，也不能是保留名）"))
+	}
 	entry := fileSyncEntry{
 		ID:         newOpID(),
 		Name:       name,
 		Kind:       kind,
 		SourcePath: abs,
 		Files:      map[string]fileSyncLocalFile{},
-		Deletions:  map[string]int64{},
 	}
 
 	if token := accountToken(); token != "" {
@@ -174,10 +175,10 @@ func fileSyncCheckOverlap(path, excludeID string) error {
 }
 
 // FilesRemovePath 从同步中删除条目内的一个文件或一个子目录：
-// 云端打墓碑（传播到其它设备），deleteLocal=true 时同时删除本机对应文件/目录。
+// 云端打墓碑（传播到其它设备）；本机文件一律保留（用户决策：不再支持删除本机文件）。
 //
 // 与 FilesRemoveEntry 的分工：本函数只处理条目内容（条目本身保留）。
-func (a *App) FilesRemovePath(entryID, relPath string, deleteLocal bool) (FileSyncStatusInfo, error) {
+func (a *App) FilesRemovePath(entryID, relPath string) (FileSyncStatusInfo, error) {
 	token := accountToken()
 	if token == "" {
 		return fileSyncStatusSnapshot(), errors.New(T("请先登录账号"))
@@ -186,6 +187,8 @@ func (a *App) FilesRemovePath(entryID, relPath string, deleteLocal bool) (FileSy
 	if relPath == "" {
 		return fileSyncStatusSnapshot(), errors.New(T("条目不存在"))
 	}
+	// 先取消该文件/子目录下排队中的上传（用户要求：移除后不再继续上传）
+	fileSyncCancelUploads(entryID, relPath)
 
 	fileSyncMu.Lock()
 	idx := fileSyncFindEntryLocked(entryID)
@@ -196,7 +199,6 @@ func (a *App) FilesRemovePath(entryID, relPath string, deleteLocal bool) (FileSy
 	}
 	entry := fileSyncCur.Entries[idx]
 	targets := fileSyncPathsUnderLocked(entry, relPath)
-	root := fileSyncEntryRoot(entry)
 	fileSyncMu.Unlock()
 
 	if len(targets) == 0 {
@@ -216,32 +218,67 @@ func (a *App) FilesRemovePath(entryID, relPath string, deleteLocal bool) (FileSy
 	fileSyncMu.Lock()
 	if idx := fileSyncFindEntryLocked(entryID); idx >= 0 {
 		e := &fileSyncCur.Entries[idx]
-		if deleteLocal {
-			for _, rel := range targets {
-				p := fileSyncEntryLocalPath(*e, rel)
-				if p == "" {
-					continue
-				}
-				if err := os.Remove(p); err != nil && !os.IsNotExist(err) {
-					fileSyncMu.Unlock()
-					return fileSyncStatusSnapshot(), fmt.Errorf(T("删除本机文件失败：")+"%v", err)
-				}
-			}
-			if p := fileSyncEntryLocalPath(*e, relPath); p != "" {
-				fileSyncPruneEmptyDirs(p, root)
-			}
+		if e.Ignored == nil {
+			e.Ignored = map[string]int64{}
 		}
 		for _, rel := range targets {
+			// 本机文件保留 → 记入「忽略」台账，否则下一轮扫描会把它重新拉回同步并重传；
+			// 用户之后改动该文件（mtime 变新）会自动重新纳入同步（见 fileSyncNoteFileLocked）。
+			e.Ignored[rel] = fileSyncNow()
 			delete(e.Files, rel)
-			delete(e.Deletions, rel)
 		}
 		_ = saveFileSyncStateLocked(fileSyncCur)
 	}
 	snap := fileSyncSnapshotLocked()
 	fileSyncMu.Unlock()
 
-	logUI("删除同步内容", fmt.Sprintf("%s/%s（%d 个文件，删除本机=%v）", entry.Name, relPath, len(targets), deleteLocal))
+	// 云端已随内容删除释放空间：立刻刷新容量（用户要求）
+	fileSyncRefreshQuota()
+	snap = fileSyncStatusSnapshot()
+
+	logUI("移除同步内容", fmt.Sprintf("%s/%s（%d 个文件）", entry.Name, relPath, len(targets)))
 	emitFilesChanged()
+	return snap, nil
+}
+
+// FilesRestorePath 把「已在本机移除」的文件重新纳入同步（relPath 为空 = 整个条目）：
+// 从本机清单移除该文件，下一轮对账即把它当「本机缺文件」重新下载。
+// 本机删除只在本机生效（不传播到账号），恢复就靠这个入口。
+func (a *App) FilesRestorePath(entryID, relPath string) (FileSyncStatusInfo, error) {
+	relPath = strings.TrimSpace(strings.ReplaceAll(relPath, "\\", "/"))
+	fileSyncMu.Lock()
+	idx := fileSyncFindEntryLocked(entryID)
+	if idx < 0 {
+		snap := fileSyncSnapshotLocked()
+		fileSyncMu.Unlock()
+		return snap, errors.New(T("条目不存在"))
+	}
+	e := &fileSyncCur.Entries[idx]
+	restored := 0
+	for rel, m := range e.Files {
+		if !m.RemovedLocally {
+			continue
+		}
+		if relPath != "" && rel != relPath && !strings.HasPrefix(rel, relPath+"/") {
+			continue
+		}
+		// 从本机清单移除该文件：对账时本机就是「缺这个文件」→ 服务端下发下载动作
+		// （若只是清标志位，下一轮扫描发现文件仍不在本机，又会标记回「已在本机移除」）
+		delete(e.Files, rel)
+		restored++
+	}
+	for rel := range e.Ignored {
+		if relPath == "" || rel == relPath || strings.HasPrefix(rel, relPath+"/") {
+			delete(e.Ignored, rel) // 「移除」后本机仍保留的文件：重新纳入同步
+		}
+	}
+	_ = saveFileSyncStateLocked(fileSyncCur)
+	snap := fileSyncSnapshotLocked()
+	fileSyncMu.Unlock()
+
+	logUI("重新同步文件", fmt.Sprintf("%s/%s（%d 项）", e.Name, relPath, restored))
+	emitFilesChanged()
+	fileSyncKick()
 	return snap, nil
 }
 
@@ -258,9 +295,32 @@ func fileSyncPathsUnderLocked(e fileSyncEntry, relPath string) []string {
 	return out
 }
 
+// fileSyncRefreshQuota 主动刷新容量：删除条目/文件后云端已释放空间，界面要立刻反映（用户要求）。
+func fileSyncRefreshQuota() {
+	token := accountToken()
+	if token == "" {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	q, err := newAccountClient("").FilesQuota(ctx, token)
+	if err != nil {
+		return
+	}
+	fileSyncMu.Lock()
+	fileSyncCur.QuotaUsed, fileSyncCur.QuotaTier = q.Used, q.Tier
+	if q.Limit > 0 {
+		fileSyncCur.QuotaLimit = q.Limit
+	}
+	_ = saveFileSyncStateLocked(fileSyncCur)
+	fileSyncMu.Unlock()
+}
+
 // FilesRemoveEntry 从同步列表移除条目：云端删除（其它设备据此收敛）+ 本机清单移除；
 // deleteLocal=true 时同时删除本机文件（前端必须二次确认）。
-func (a *App) FilesRemoveEntry(id string, deleteLocal bool) (FileSyncStatusInfo, error) {
+func (a *App) FilesRemoveEntry(id string) (FileSyncStatusInfo, error) {
+	// 先取消该条目所有排队中的上传，再走云端删除（用户要求：移除后不再继续上传）
+	fileSyncCancelUploads(id, "")
 	fileSyncMu.Lock()
 	idx := fileSyncFindEntryLocked(id)
 	if idx < 0 {
@@ -283,19 +343,7 @@ func (a *App) FilesRemoveEntry(id string, deleteLocal bool) (FileSyncStatusInfo,
 	fileSyncMu.Lock()
 	idx = fileSyncFindEntryLocked(id)
 	if idx >= 0 {
-		e := fileSyncCur.Entries[idx]
-		if deleteLocal {
-			if r := fileSyncEntryRoot(e); r != "" {
-				if !fileSyncSafeToDelete(r) {
-					fileSyncMu.Unlock()
-					return fileSyncStatusSnapshot(), errors.New(T("该路径受保护，未删除本机文件"))
-				}
-				if err := os.RemoveAll(r); err != nil {
-					fileSyncMu.Unlock()
-					return fileSyncStatusSnapshot(), fmt.Errorf(T("删除本机文件失败：")+"%v", err)
-				}
-			}
-		}
+		// 只从同步清单移除：本机文件保持不动（用户决策：不再支持移除时删除本机文件）
 		fileSyncCur.Entries = append(fileSyncCur.Entries[:idx], fileSyncCur.Entries[idx+1:]...)
 		fileSyncCur.PendingApply = fileSyncDropEntryActionsLocked(id)
 		_ = saveFileSyncStateLocked(fileSyncCur)
@@ -303,7 +351,11 @@ func (a *App) FilesRemoveEntry(id string, deleteLocal bool) (FileSyncStatusInfo,
 	snap := fileSyncSnapshotLocked()
 	fileSyncMu.Unlock()
 
-	logUI("移除文件同步条目", fmt.Sprintf("%s（删除本机文件=%v）", entry.Name, deleteLocal))
+	// 云端已随条目删除释放空间：立刻刷新容量，界面剩余容量随即变大（用户要求）
+	fileSyncRefreshQuota()
+	snap = fileSyncStatusSnapshot()
+
+	logUI("移除文件同步条目", entry.Name)
 	emitFilesChanged()
 	return snap, nil
 }
@@ -319,63 +371,28 @@ func fileSyncDropEntryActionsLocked(entryID string) []fileSyncAction {
 	return out
 }
 
-// FilesRenameEntry 重命名条目：改云端显示名；接收设备把本机目录一并改名（源设备不动原路径）。
-func (a *App) FilesRenameEntry(id, name string) (FileSyncStatusInfo, error) {
-	name = strings.TrimSpace(name)
-	if !fileSyncValidEntryName(name) {
-		return fileSyncStatusSnapshot(), errors.New(T("名称不合法（不能包含 \\ / : * ? \" < > | 等字符，也不能是保留名）"))
-	}
-	token := accountToken()
-	if token == "" {
-		return fileSyncStatusSnapshot(), errors.New(T("请先登录账号"))
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-	if _, err := newAccountClient("").FilesRenameEntry(ctx, token, id, name); err != nil {
-		return fileSyncStatusSnapshot(), errors.New(accountErrorText(err))
-	}
+// errOpenCanceled 「打开方式」对话框被用户取消（Windows ERROR_CANCELLED）：
+// 这不是失败，绑定层直接吞掉，界面不报错（2026-10-05 现场）。
+var errOpenCanceled = errors.New("open canceled by user")
 
-	fileSyncMu.Lock()
-	idx := fileSyncFindEntryLocked(id)
-	if idx < 0 {
-		snap := fileSyncSnapshotLocked()
-		fileSyncMu.Unlock()
-		return snap, errors.New(T("条目不存在"))
-	}
-	for i := range fileSyncCur.Entries {
-		if i != idx && strings.EqualFold(fileSyncCur.Entries[i].Name, name) {
-			snap := fileSyncSnapshotLocked()
-			fileSyncMu.Unlock()
-			return snap, errors.New(T("已有同名条目"))
-		}
-	}
-	e := &fileSyncCur.Entries[idx]
-	old := e.Name
-	e.Name = name
-	if strings.TrimSpace(e.SourcePath) == "" && old != name {
-		oldRoot := fileSyncEntryRoot(fileSyncEntry{Name: old})
-		newRoot := fileSyncEntryRoot(*e)
-		if oldRoot != "" && newRoot != "" {
-			if _, err := os.Stat(oldRoot); err == nil {
-				if err := os.Rename(oldRoot, newRoot); err != nil {
-					e.Error = T("重命名本机目录失败：") + err.Error()
-				} else {
-					e.Error = ""
-				}
-			}
-		}
-	}
-	_ = saveFileSyncStateLocked(fileSyncCur)
-	snap := fileSyncSnapshotLocked()
-	fileSyncMu.Unlock()
-
-	logUI("重命名文件同步条目", fmt.Sprintf("%s → %s", old, name))
-	emitFilesChanged()
-	return snap, nil
-}
+// 打开函数做成变量，便于用例注入（真实 ShellExecuteW 无法在单测里跑）。
+var (
+	openFileFn     = openFile
+	openFileWithFn = openFileWith
+)
 
 // FilesOpenEntry 以系统默认方式打开条目内某个文件（relPath 为空 = 打开条目根）。
+// 用户在「打开方式」对话框里取消时静默返回成功——那不是错误。
 func (a *App) FilesOpenEntry(id, relPath string) error {
+	return a.filesOpen(id, relPath, false)
+}
+
+// FilesOpenEntryWith 让用户重新选择打开方式（默认方式启动失败时由界面提供）。
+func (a *App) FilesOpenEntryWith(id, relPath string) error {
+	return a.filesOpen(id, relPath, true)
+}
+
+func (a *App) filesOpen(id, relPath string, chooseApp bool) error {
 	fileSyncMu.Lock()
 	idx := fileSyncFindEntryLocked(id)
 	target := ""
@@ -389,7 +406,16 @@ func (a *App) FilesOpenEntry(id, relPath string) error {
 	if _, err := os.Stat(target); err != nil {
 		return errors.New(T("文件不存在（可能已被移动或删除）"))
 	}
-	return openFile(target)
+	var err error
+	if chooseApp {
+		err = openFileWithFn(target)
+	} else {
+		err = openFileFn(target)
+	}
+	if errors.Is(err, errOpenCanceled) {
+		return nil // 用户取消：静默
+	}
+	return err
 }
 
 // FilesApplyPending 应用服务端下达的改动（用户显式动作，不自动覆盖本机文件）。
@@ -440,7 +466,7 @@ func (a *App) FilesSyncNow() (FileSyncStatusInfo, error) {
 		}
 		return fileSyncStatusSnapshot(), errors.New(accountErrorText(err))
 	}
-	log.Printf("[files] 手动同步完成：上传 %d、删除 %d、待应用 %d、容量拦下 %d", res.Uploaded, res.Deleted, res.Pending, res.Blocked)
+	log.Printf("[files] 手动同步完成：上传 %d、待应用 %d、容量拦下 %d", res.Uploaded, res.Pending, res.Blocked)
 	return fileSyncStatusSnapshot(), nil
 }
 

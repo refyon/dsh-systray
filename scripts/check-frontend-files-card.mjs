@@ -37,7 +37,7 @@ if (start < 0 || end < 0) {
   else pass(`文件同步段引用的 ${ids.size} 个元素 id 全部存在`);
 }
 
-for (const id of ['sync-files', 'files-capacity-fill', 'files-pending', 'files-toolbar', 'files-empty', 'files-tree', 'files-rename-modal']) {
+for (const id of ['sync-files', 'files-capacity-fill', 'files-pending', 'files-toolbar', 'files-empty', 'files-tree', 'files-hint-text', 'files-hint-action']) {
   if (!html.includes(`id="${id}"`)) fail(`index.html 缺少关键元素 #${id}`);
 }
 
@@ -169,7 +169,7 @@ const entry = {
 const flat = T.filesEntryHtml(entry);
 checkTrue('名称被转义（无原始标签）', !flat.includes('<img src=x'));
 checkTrue('转义后保留可读文本', flat.includes('&lt;img'));
-checkTrue('条目行含打开/重命名/移除', flat.includes('data-fact="open"') && flat.includes('data-fact="rename"') && flat.includes('data-fact="remove"'));
+checkTrue('条目行含打开/移除，且不再提供重命名', flat.includes('data-fact="open"') && flat.includes('data-fact="remove"') && !flat.includes('data-fact="rename"'));
 checkTrue('来源标注为本机原位置', flat.includes('本机原位置'));
 checkTrue('未展开时不渲染子行', !flat.includes('c.txt'));
 
@@ -184,6 +184,60 @@ checkTrue('展开子目录后渲染其中文件', deeper.includes('c.txt'));
 checkTrue('深层目录缩进更大', deeper.includes('--depth:2'));
 delete T.filesExpanded['e1'];
 delete T.filesExpanded['e1/sub'];
+
+// 行内规则：待同步/同步中的文件只能移除（不可打开）；同步完成的才可打开；同步中显示速度
+const syncFile = { relPath: 'a.txt', name: 'a.txt', size: 1024, mtime: 1, status: 'synced', error: '', blocked: false };
+const pendFile = { relPath: 'b.txt', name: 'b.txt', size: 1024, mtime: 1, status: 'pending-upload', error: '', blocked: false };
+const busyFile = { relPath: 'c.txt', name: 'c.txt', size: 4096, mtime: 1, status: 'uploading', error: '', blocked: false, speedBps: 1048576 };
+const e2 = { id: 'e2', name: 'dir2', kind: 'dir', isSource: true, path: 'C:/x', size: 6144, status: 'pending', files: [syncFile, pendFile, busyFile] };
+T.filesExpanded['e2'] = true;
+const rows = T.filesEntryHtml(e2);
+const rowOf = (rel) => rows.split('<div class="files-row"').find((r) => r.includes(`data-rel="${rel}"`)) || '';
+checkTrue('已同步文件行可打开', rowOf('a.txt').includes('data-fact="open"'));
+checkTrue('待同步文件行不可打开（仅移除）', !rowOf('b.txt').includes('data-fact="open"') && rowOf('b.txt').includes('data-fact="remove"'));
+checkTrue('同步中文件行不可打开', !rowOf('c.txt').includes('data-fact="open"'));
+checkTrue('同步中文件行显示状态与速度', rowOf('c.txt').includes('同步中') && rowOf('c.txt').includes('1 MB/s'));
+
+// 「已在本机移除」：可重新同步（不显示打开）
+const goneFile = { relPath: 'gone.txt', name: 'gone.txt', size: 2048, mtime: 1, status: 'removed-local', error: '', blocked: false };
+const e3 = { id: 'e3', name: 'dir3', kind: 'dir', isSource: true, path: 'C:/y', size: 2048, status: 'removed-local', files: [goneFile] };
+T.filesExpanded['e3'] = true;
+const goneRows = T.filesEntryHtml(e3);
+const goneRow = goneRows.split('<div class="files-row"').find((r) => r.includes('data-rel="gone.txt"')) || '';
+checkTrue('已在本机移除的文件行显示徽标', goneRow.includes('已在本机移除'));
+checkTrue('已在本机移除的文件行可重新同步', goneRow.includes('data-fact="restore"'));
+checkTrue('已在本机移除的文件行不可打开', !goneRow.includes('data-fact="open"'));
+checkTrue('条目行也提供整条目重新同步', goneRows.includes('data-fact="restore"') && goneRows.includes('data-rel=""'));
+delete T.filesExpanded['e3'];
+
+// 目录状态聚合：只要有后代在传，目录（含更上一级）就显示「同步中」
+const busyTree = T.filesBuildTree([
+  { relPath: 'sub/deep/busy.txt', name: 'busy.txt', size: 10, mtime: 1, status: 'uploading' },
+  { relPath: 'sub/idle.txt', name: 'idle.txt', size: 10, mtime: 1, status: 'pending-upload' },
+  { relPath: 'done.txt', name: 'done.txt', size: 10, mtime: 1, status: 'synced' },
+]);
+checkTrue('子目录含在传文件 → 同步中', busyTree.dirMap.get('sub').dirMap.get('deep').status === 'uploading');
+checkTrue('上级目录同样显示同步中', busyTree.dirMap.get('sub').status === 'uploading');
+checkTrue('条目根聚合为同步中', busyTree.status === 'uploading');
+
+const errTree = T.filesBuildTree([
+  { relPath: 'sub/a.txt', name: 'a.txt', size: 1, mtime: 1, status: 'uploading' },
+  { relPath: 'sub/b.txt', name: 'b.txt', size: 1, mtime: 1, status: 'error' },
+]);
+checkTrue('错误优先级高于同步中', errTree.dirMap.get('sub').status === 'error');
+
+const pendTree = T.filesBuildTree([
+  { relPath: 'sub/a.txt', name: 'a.txt', size: 1, mtime: 1, status: 'pending-upload' },
+  { relPath: 'sub/b.txt', name: 'b.txt', size: 1, mtime: 1, status: 'synced' },
+]);
+checkTrue('待同步优先于已同步', pendTree.dirMap.get('sub').status === 'pending-upload');
+
+const goneTree = T.filesBuildTree([
+  { relPath: 'sub/a.txt', name: 'a.txt', size: 1, mtime: 1, status: 'removed-local' },
+  { relPath: 'sub/b.txt', name: 'b.txt', size: 1, mtime: 1, status: 'synced' },
+]);
+checkTrue('已在本机移除优先于已同步', goneTree.dirMap.get('sub').status === 'removed-local');
+delete T.filesExpanded['e2'];
 
 console.log(failures === 0 ? '通过：文件卡静态检查与纯函数回归全部通过' : `${failures} 项失败`);
 process.exit(failures === 0 ? 0 : 1);

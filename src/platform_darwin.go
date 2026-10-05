@@ -479,6 +479,12 @@ func openFile(path string) error {
 	return nil
 }
 
+// openFileWith macOS：暂不提供「选择打开方式」入口（macOS 无对应系统对话框封装），
+// 明确报错由界面提示，避免静默什么都不做。
+func openFileWith(path string) error {
+	return errors.New("当前系统暂不支持选择打开方式")
+}
+
 func launchAgentPlistPath() string {
 	home, _ := os.UserHomeDir()
 	return filepath.Join(home, "Library", "LaunchAgents", launchAgentLabel+".plist")

@@ -5,6 +5,8 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"os"
@@ -90,6 +92,8 @@ type fakeFilesServer struct {
 	uploads []string
 	deletes []string
 	gets    []string
+	// uploadDelay 每个上传请求的人为延迟（验证「移除后停止排队上传」这类时序行为）。
+	uploadDelay time.Duration
 	// failUploads 按 relPath 注入上传失败（验证「单文件失败不拖垮整批、下次重试」）。
 	failUploads map[string]bool
 }
@@ -186,6 +190,9 @@ func (f *fakeFilesServer) handler(t *testing.T) http.HandlerFunc {
 			key := fakeKey(entryID, rel)
 			switch r.Method {
 			case http.MethodPut:
+				if f.uploadDelay > 0 {
+					time.Sleep(f.uploadDelay)
+				}
 				data, _ := io.ReadAll(r.Body)
 				sha := r.Header.Get("x-file-sha256")
 				if sha != fileSyncHashBytes(data) {
@@ -266,9 +273,8 @@ func TestFileSyncScanDiscoversExcludesAndTracksDeletion(t *testing.T) {
 		t.Fatalf("子目录文件未发现: %v", e.Files)
 	}
 
-	// 修改文件 → 摘要更新；删除文件 → 记入删除台账
+	// 修改文件 → 摘要更新
 	fsWriteFile(t, filepath.Join(src, "a.txt"), "hello world")
-	os.Remove(filepath.Join(src, "sub", "b.txt"))
 	fileSyncMu.Lock()
 	err := fileSyncScanEntryLocked(&e)
 	fileSyncMu.Unlock()
@@ -278,17 +284,42 @@ func TestFileSyncScanDiscoversExcludesAndTracksDeletion(t *testing.T) {
 	if m := e.Files["a.txt"]; m.Sha256 != fileSyncHashBytes([]byte("hello world")) {
 		t.Fatalf("修改后摘要未更新: %+v", m)
 	}
-	if _, ok := e.Deletions["sub/b.txt"]; !ok {
-		t.Fatalf("删除未登记: %v", e.Deletions)
+
+	// 删除**从未上传成功**的文件（读取失败被跳过的链接等）：直接从清单移除（账号里本来就没有它）
+	os.Remove(filepath.Join(src, "sub", "b.txt"))
+	fileSyncMu.Lock()
+	_ = fileSyncScanEntryLocked(&e)
+	fileSyncMu.Unlock()
+	if _, ok := e.Files["sub/b.txt"]; ok {
+		t.Fatalf("未上传过的已删文件应移出清单: %v", e.Files)
 	}
 
-	// 文件又出现 → 撤销删除台账
+	// 删除**已上传过**的文件：只在本机停止同步（标记 RemovedLocally），不传播到账号
 	fsWriteFile(t, filepath.Join(src, "sub", "b.txt"), "world")
 	fileSyncMu.Lock()
 	_ = fileSyncScanEntryLocked(&e)
 	fileSyncMu.Unlock()
-	if _, ok := e.Deletions["sub/b.txt"]; ok {
-		t.Fatalf("文件恢复后删除台账未清理: %v", e.Deletions)
+	m := e.Files["sub/b.txt"]
+	m.SyncedSha, m.Rev, m.SyncedSize = m.Sha256, 1, m.Size
+	e.Files["sub/b.txt"] = m
+	os.Remove(filepath.Join(src, "sub", "b.txt"))
+	fileSyncMu.Lock()
+	_ = fileSyncScanEntryLocked(&e)
+	fileSyncMu.Unlock()
+	if m := e.Files["sub/b.txt"]; !m.RemovedLocally {
+		t.Fatalf("已上传文件被删除后应标记「已在本机移除」: %+v", m)
+	}
+	if got := fileSyncFileStatus(e.Files["sub/b.txt"]); got != "removed-local" {
+		t.Fatalf("状态应为 removed-local，实际 %s", got)
+	}
+
+	// 文件又出现 → 撤销「已在本机移除」，重新纳入同步
+	fsWriteFile(t, filepath.Join(src, "sub", "b.txt"), "world")
+	fileSyncMu.Lock()
+	_ = fileSyncScanEntryLocked(&e)
+	fileSyncMu.Unlock()
+	if m := e.Files["sub/b.txt"]; m.RemovedLocally {
+		t.Fatalf("文件恢复后不应仍标记「已在本机移除」: %+v", m)
 	}
 }
 
@@ -326,8 +357,8 @@ func TestFileSyncScanFileEntryDeleted(t *testing.T) {
 	fileSyncMu.Lock()
 	_ = fileSyncScanEntryLocked(&e)
 	fileSyncMu.Unlock()
-	if _, ok := e.Deletions["one.txt"]; !ok {
-		t.Fatalf("单文件删除未登记: %v", e.Deletions)
+	if m := e.Files["one.txt"]; !m.RemovedLocally {
+		t.Fatalf("单文件条目源文件被删除后应标记「已在本机移除」: %+v", m)
 	}
 }
 
@@ -352,9 +383,12 @@ func TestFileSyncFilterActions(t *testing.T) {
 		{Kind: "rename_entry", EntryID: "e1", Name: "n2"},                 // 保留
 		{Kind: "remove_file", EntryID: "e1", RelPath: "zz.txt"},           // 本机没有 → 丢弃
 	}
-	out, skipped := fileSyncFilterActionsLocked(actions)
+	out, skipped, orphans := fileSyncFilterActionsLocked(actions)
 	if skipped != 6 {
 		t.Fatalf("应丢弃 6 条，实际 %d（保留 %v）", skipped, out)
+	}
+	if len(orphans) != 0 {
+		t.Fatalf("本机设备 id 为空时不应判为自家孤儿：%v", orphans)
 	}
 	kinds := make([]string, 0, len(out))
 	for _, a := range out {
@@ -368,7 +402,7 @@ func TestFileSyncFilterActions(t *testing.T) {
 
 // ---------- 上传 / 删除传播 / 容量拦下 ----------
 
-func TestFileSyncCheckUploadsAndPropagatesDeletion(t *testing.T) {
+func TestFileSyncCheckUploadsAndKeepsLocalDeletion(t *testing.T) {
 	dir := setupFileSyncTest(t)
 	setAccountState(loggedInState())
 	src := filepath.Join(dir, "src")
@@ -408,7 +442,7 @@ func TestFileSyncCheckUploadsAndPropagatesDeletion(t *testing.T) {
 		t.Fatalf("LastSyncedAt 未记录")
 	}
 
-	// 本机删除 → 传播到服务端并清理台账
+	// 本机删除 → **只在本机停止同步**：不调 DELETE、不动账号内容，标记「已在本机移除」可重新同步
 	if err := os.Remove(filepath.Join(src, "sub", "b.txt")); err != nil {
 		t.Fatal(err)
 	}
@@ -416,16 +450,26 @@ func TestFileSyncCheckUploadsAndPropagatesDeletion(t *testing.T) {
 	if err != nil {
 		t.Fatalf("同步失败: %v", err)
 	}
-	if res.Deleted != 1 || !fake.hasDelete("sub/b.txt") {
-		t.Fatalf("删除未传播：res=%+v deletes=%v", res, fake.deletes)
+	if len(fake.deletes) != 0 {
+		t.Fatalf("本机删除不应传播到账号：%v", fake.deletes)
 	}
-	e = fsEntry(t, 0)
-	if _, ok := e.Files["sub/b.txt"]; ok {
-		t.Fatalf("删除后本机仍保留元数据")
+	if _, still := fake.uploadMeta("sub/b.txt"); !still {
+		t.Fatalf("账号里应仍保留该文件")
 	}
-	if len(e.Deletions) != 0 {
-		t.Fatalf("删除台账未清理: %v", e.Deletions)
+	if m := fsEntry(t, 0).Files["sub/b.txt"]; !m.RemovedLocally {
+		t.Fatalf("应标记「已在本机移除」: %+v", m)
 	}
+	if used := fileSyncQuotaUsed(t); used != int64(len("hello")+len("world")) {
+		t.Fatalf("账号容量不应因本机删除而释放：%d", used)
+	}
+}
+
+// fileSyncQuotaUsed 读取当前已用容量（测试用）。
+func fileSyncQuotaUsed(t *testing.T) int64 {
+	t.Helper()
+	fileSyncMu.Lock()
+	defer fileSyncMu.Unlock()
+	return fileSyncCur.QuotaUsed
 }
 
 func TestFileSyncCheckBlocksWhenOverQuota(t *testing.T) {
@@ -525,19 +569,20 @@ func TestFileSyncApplyKeepsFailedAction(t *testing.T) {
 	}
 }
 
-func TestFileSyncDeletion404ClearsLedger(t *testing.T) {
+// TestFileSyncLocalDeleteKeepsServerCopy 本机删除后账号内容仍在（不传播），界面显示「已在本机移除」；
+// 用户点「重新同步」后清掉本机摘要，下一轮对账会重新下载。
+func TestFileSyncLocalDeleteKeepsServerCopy(t *testing.T) {
 	dir := setupFileSyncTest(t)
 	setAccountState(loggedInState())
 	src := filepath.Join(dir, "src")
 	fsWriteFile(t, filepath.Join(src, "a.txt"), "x")
-	fake := newFakeFilesServer() // 服务端没有这个文件：DELETE 返回 404
+	fake := newFakeFilesServer()
+	fake.putObject("e1", "a.txt", []byte("x"), 1)
 	client, _ := newTestClient(t, fake.handler(t))
 	fsSetEntry(t, fileSyncEntry{
 		ID: "e1", Name: "notes", Kind: "dir", SourcePath: src,
-		Files:     map[string]fileSyncLocalFile{"a.txt": {Size: 1, Mtime: 1, Sha256: "aa", SyncedSha: "aa", Rev: 1}},
-		Deletions: map[string]int64{"a.txt": 1},
+		Files: map[string]fileSyncLocalFile{"a.txt": {Size: 1, Mtime: 1, Sha256: fileSyncHashBytes([]byte("x")), SyncedSha: fileSyncHashBytes([]byte("x")), Rev: 1}},
 	})
-	// 真实流程：本机文件已被删除，删除台账待传播（若文件仍在，扫描会把它重新纳入同步）
 	if err := os.Remove(filepath.Join(src, "a.txt")); err != nil {
 		t.Fatal(err)
 	}
@@ -545,12 +590,31 @@ func TestFileSyncDeletion404ClearsLedger(t *testing.T) {
 	if _, err := fileSyncCheck(context.Background(), client); err != nil {
 		t.Fatalf("同步失败: %v", err)
 	}
-	e := fsEntry(t, 0)
-	if len(e.Deletions) != 0 {
-		t.Fatalf("服务端本就无此文件时删除台账应清空: %v", e.Deletions)
+	if len(fake.deletes) != 0 {
+		t.Fatalf("不应传播删除：%v", fake.deletes)
 	}
-	if _, ok := e.Files["a.txt"]; ok {
-		t.Fatalf("已删除文件不该留在同步清单: %v", e.Files)
+	if m := fsEntry(t, 0).Files["a.txt"]; !m.RemovedLocally {
+		t.Fatalf("应标记「已在本机移除」: %+v", m)
+	}
+	if fileSyncStatusSnapshot().Entries[0].Files[0].Status != "removed-local" {
+		t.Fatalf("快照状态应为 removed-local：%+v", fileSyncStatusSnapshot().Entries[0].Files[0])
+	}
+
+	// 重新同步：把该文件从本机清单移除 → 服务端下发的下载动作不再被「内容一致」过滤掉
+	app := &App{}
+	if _, err := app.FilesRestorePath("e1", "a.txt"); err != nil {
+		t.Fatalf("重新同步失败: %v", err)
+	}
+	if _, ok := fsEntry(t, 0).Files["a.txt"]; ok {
+		t.Fatalf("重新同步后本机清单不应再持有该文件：%+v", fsEntry(t, 0).Files)
+	}
+	sha := fileSyncHashBytes([]byte("x"))
+	fake.actions = []fileSyncAction{{Kind: "download", EntryID: "e1", RelPath: "a.txt", Size: 1, Sha256: sha, Mtime: 1, Rev: 1}}
+	if _, err := fileSyncCheck(context.Background(), client); err != nil {
+		t.Fatalf("同步失败: %v", err)
+	}
+	if got := fileSyncStatusSnapshot().PendingCount; got != 1 {
+		t.Fatalf("应产生一条待应用（下载），实际 %d", got)
 	}
 }
 
@@ -923,7 +987,7 @@ func TestFileSyncSnapshotView(t *testing.T) {
 	}
 }
 
-func TestFileSyncRemovePathDeletesFilesAndPropagates(t *testing.T) {
+func TestFileSyncRemovePathPropagatesAndKeepsLocalFiles(t *testing.T) {
 	dir := setupFileSyncTest(t)
 	setAccountState(loggedInState())
 	src := filepath.Join(dir, "src")
@@ -945,8 +1009,8 @@ func TestFileSyncRemovePathDeletesFilesAndPropagates(t *testing.T) {
 	}})
 
 	app := &App{}
-	if _, err := app.FilesRemovePath("e1", "sub", true); err != nil {
-		t.Fatalf("删除子目录失败: %v", err)
+	if _, err := app.FilesRemovePath("e1", "sub"); err != nil {
+		t.Fatalf("移除子目录失败: %v", err)
 	}
 	if !fake.hasDelete("sub/a.txt") || !fake.hasDelete("sub/b.txt") {
 		t.Fatalf("未传播删除: %v", fake.deletes)
@@ -954,8 +1018,9 @@ func TestFileSyncRemovePathDeletesFilesAndPropagates(t *testing.T) {
 	if fake.hasDelete("keep.txt") {
 		t.Fatalf("误删同条目的其它文件: %v", fake.deletes)
 	}
-	if _, err := os.Stat(filepath.Join(src, "sub")); !os.IsNotExist(err) {
-		t.Fatalf("本机子目录未删除: %v", err)
+	// 本机文件一律保留（用户决策：移除只影响同步清单）
+	if _, err := os.Stat(filepath.Join(src, "sub", "a.txt")); err != nil {
+		t.Fatalf("本机文件不应被删除: %v", err)
 	}
 	if _, err := os.Stat(filepath.Join(src, "keep.txt")); err != nil {
 		t.Fatalf("保留文件被误删: %v", err)
@@ -964,8 +1029,8 @@ func TestFileSyncRemovePathDeletesFilesAndPropagates(t *testing.T) {
 		t.Fatalf("元数据未清理: %v", e.Files)
 	}
 	// 不存在的路径：明确报错，不静默成功
-	if _, err := app.FilesRemovePath("e1", "nope.txt", true); err == nil {
-		t.Fatalf("删除不存在的文件应报错")
+	if _, err := app.FilesRemovePath("e1", "nope.txt"); err == nil {
+		t.Fatalf("移除不存在的文件应报错")
 	}
 }
 
@@ -1105,14 +1170,376 @@ func TestFileSyncWireContract(t *testing.T) {
 	}
 }
 
+// TestFileSyncBuildRequestSendsEmptyArrays 空清单也必须是数组：Go 的 nil slice 会序列化成
+// `null`，服务端 schema 只认数组 → 400（2026-10-05 v1.3.0 现场：容量读不出 + 「操作失败」）。
+func TestFileSyncBuildRequestSendsEmptyArrays(t *testing.T) {
+	setupFileSyncTest(t)
+	fileSyncMu.Lock()
+	fileSyncCur = fileSyncState{}
+	req := fileSyncBuildRequestLocked()
+	fileSyncMu.Unlock()
+
+	raw, err := json.Marshal(req)
+	if err != nil {
+		t.Fatalf("序列化失败: %v", err)
+	}
+	got := string(raw)
+	if strings.Contains(got, "null") {
+		t.Fatalf("空请求不应含 null: %s", got)
+	}
+	if !strings.Contains(got, `"entries":[]`) || !strings.Contains(got, `"files":[]`) {
+		t.Fatalf("空请求应为空数组: %s", got)
+	}
+}
+
+// countingRT 统计在途请求数与峰值（验证上传并发上限）。
+type countingRT struct {
+	mu       sync.Mutex
+	inFlight int
+	max      int
+}
+
+func (c *countingRT) RoundTrip(req *http.Request) (*http.Response, error) {
+	c.mu.Lock()
+	c.inFlight++
+	if c.inFlight > c.max {
+		c.max = c.inFlight
+	}
+	c.mu.Unlock()
+	defer func() {
+		c.mu.Lock()
+		c.inFlight--
+		c.mu.Unlock()
+	}()
+	return http.DefaultTransport.RoundTrip(req)
+}
+
+func TestFileSyncUploadsAreConcurrentAndCapped(t *testing.T) {
+	dir := setupFileSyncTest(t)
+	setAccountState(loggedInState())
+	src := filepath.Join(dir, "src")
+	for i := 0; i < 12; i++ {
+		fsWriteFile(t, filepath.Join(src, fmt.Sprintf("f%02d.txt", i)), strings.Repeat("x", 2048))
+	}
+	fsSetEntry(t, fileSyncEntry{ID: "e1", Name: "many", Kind: "dir", SourcePath: src})
+
+	fake := newFakeFilesServer()
+	client, _ := newTestClient(t, fake.handler(t))
+	rt := &countingRT{}
+	client.fileHTTP = &http.Client{Transport: rt}
+
+	res, err := fileSyncCheck(context.Background(), client)
+	if err != nil {
+		t.Fatalf("同步失败: %v", err)
+	}
+	if res.Uploaded != 12 {
+		t.Fatalf("应上传 12 个文件，实际 %d", res.Uploaded)
+	}
+	if rt.max > fileSyncUploadConcurrency {
+		t.Fatalf("并发数超过上限 %d：实测峰值 %d", fileSyncUploadConcurrency, rt.max)
+	}
+	if rt.max < 2 {
+		t.Fatalf("未观察到并发上传（峰值 %d）", rt.max)
+	}
+	// 上传完成：全部标记已同步，进度归零，逐文件速度已记录
+	e := fsEntry(t, 0)
+	for rel, m := range e.Files {
+		if m.SyncedSha != m.Sha256 || m.Error != "" {
+			t.Fatalf("文件 %s 未标记已同步: %+v", rel, m)
+		}
+	}
+	snap := fileSyncStatusSnapshot()
+	if snap.Uploading {
+		t.Fatalf("上传结束后应退出上传态: %+v", snap)
+	}
+	if snap.UploadTotal != 12 || snap.UploadDone != 12 {
+		t.Fatalf("进度未走完：done=%d total=%d", snap.UploadDone, snap.UploadTotal)
+	}
+	// 逐文件速度：至少记录了一部分（Windows 计时器粒度下毫秒级上传可能测得 0，属正常），
+	// 且快照里至少有一个文件带上速度（前端就是按这个字段显示的）。
+	fileSyncMu.Lock()
+	speeds := len(fileSyncProg.FileSpeeds)
+	fileSyncMu.Unlock()
+	if speeds == 0 || speeds > 12 {
+		t.Fatalf("逐文件速度记录异常：%d", speeds)
+	}
+	withSpeed := 0
+	for _, f := range fileSyncStatusSnapshot().Entries[0].Files {
+		if f.SpeedBps > 0 {
+			withSpeed++
+		}
+	}
+	if withSpeed == 0 {
+		t.Fatalf("快照里没有任何文件带上传速度")
+	}
+}
+
+// TestFileSyncSingleFileEntryUsesSelectedPath 单文件条目（kind=file）的本机路径就是选中的文件本身：
+// 再拼一次 relPath 会得到 `H:\DOC\info.txt\info.txt` → 读取失败（2026-10-05 现场）。
+func TestFileSyncSingleFileEntryUsesSelectedPath(t *testing.T) {
+	dir := setupFileSyncTest(t)
+	setAccountState(loggedInState())
+	target := filepath.Join(dir, "info.txt")
+	fsWriteFile(t, target, "hello single file")
+	fsSetEntry(t, fileSyncEntry{ID: "e1", Name: "info.txt", Kind: "file", SourcePath: target})
+
+	if got := fileSyncEntryLocalPath(fsEntry(t, 0), "info.txt"); got != target {
+		t.Fatalf("单文件条目路径错误：%s（应为 %s）", got, target)
+	}
+
+	fileSyncMu.Lock()
+	e := fileSyncCur.Entries[0]
+	err := fileSyncScanEntryLocked(&e)
+	fileSyncCur.Entries[0] = e
+	fileSyncMu.Unlock()
+	if err != nil {
+		t.Fatalf("扫描失败: %v", err)
+	}
+	m, ok := fsEntry(t, 0).Files["info.txt"]
+	if !ok {
+		t.Fatalf("单文件条目应登记 info.txt：%+v", fsEntry(t, 0).Files)
+	}
+	if m.Error != "" {
+		t.Fatalf("不应有读取错误：%s", m.Error)
+	}
+	if m.Sha256 != fileSyncHashBytes([]byte("hello single file")) {
+		t.Fatalf("摘要错误：%+v", m)
+	}
+
+	fake := newFakeFilesServer()
+	client, _ := newTestClient(t, fake.handler(t))
+	res, err := fileSyncCheck(context.Background(), client)
+	if err != nil {
+		t.Fatalf("同步失败: %v", err)
+	}
+	if res.Uploaded != 1 {
+		t.Fatalf("单文件条目应上传 1 个，实际 %d", res.Uploaded)
+	}
+	if m := fsEntry(t, 0).Files["info.txt"]; m.SyncedSha == "" {
+		t.Fatalf("未标记已同步：%+v", m)
+	}
+}
+
+// TestFileSyncCancelStopsPendingUploads 取消（移除条目/内容）后，排队中的上传不再发出。
+func TestFileSyncCancelStopsPendingUploads(t *testing.T) {
+	dir := setupFileSyncTest(t)
+	setAccountState(loggedInState())
+	src := filepath.Join(dir, "src")
+	for i := 0; i < 40; i++ {
+		fsWriteFile(t, filepath.Join(src, fmt.Sprintf("f%02d.txt", i)), strings.Repeat("x", 4096))
+	}
+	fsSetEntry(t, fileSyncEntry{ID: "e1", Name: "many", Kind: "dir", SourcePath: src})
+
+	fake := newFakeFilesServer()
+	fake.uploadDelay = 10 * time.Millisecond
+	client, _ := newTestClient(t, fake.handler(t))
+
+	done := make(chan fileSyncResult, 1)
+	go func() {
+		res, _ := fileSyncCheck(context.Background(), client)
+		done <- res
+	}()
+	time.Sleep(60 * time.Millisecond) // 让前几个文件先传起来
+	fileSyncCancelUploads("e1", "")
+	res := <-done
+
+	fake.mu.Lock()
+	sent := len(fake.uploads)
+	fake.mu.Unlock()
+	if sent >= 40 {
+		t.Fatalf("取消后仍在继续上传：%d/40", sent)
+	}
+	if res.Uploaded >= 40 {
+		t.Fatalf("取消后不应再计入上传成功：%d", res.Uploaded)
+	}
+	fileSyncMu.Lock()
+	total := fileSyncProg.Total
+	fileSyncMu.Unlock()
+	if total > 40 {
+		t.Fatalf("进度分母异常：%d", total)
+	}
+}
+
+// TestFileSyncFilterDropsOwnOrphanEntries 来源设备就是本机的 create_entry 不入待应用，
+// 而是交给调用方清理服务端残留（2026-10-05 现场：本机上传的文件被提示「来自其它设备的改动」）。
+func TestFileSyncFilterDropsOwnOrphanEntries(t *testing.T) {
+	dir := setupFileSyncTest(t)
+	_ = dir
+	setAccountState(loggedInState())
+	accountMu.Lock()
+	accountCur.DeviceID = "dev-self"
+	accountMu.Unlock()
+
+	fileSyncMu.Lock()
+	fileSyncCur.Entries = nil
+	out, _, orphans := fileSyncFilterActionsLocked([]fileSyncAction{
+		{Kind: "create_entry", EntryID: "mine", Name: "mine", OriginDevice: "dev-self"},   // 自家残留 → 清理
+		{Kind: "create_entry", EntryID: "other", Name: "other", OriginDevice: "dev-peer"}, // 其它设备 → 保留
+		{Kind: "create_entry", EntryID: "legacy", Name: "legacy"},                         // 旧数据无来源 → 保留
+	})
+	fileSyncMu.Unlock()
+
+	if len(orphans) != 1 || orphans[0] != "mine" {
+		t.Fatalf("自家孤儿识别错误：%v", orphans)
+	}
+	if len(out) != 2 {
+		t.Fatalf("其它设备/旧数据的条目应保留：%v", out)
+	}
+	for _, a := range out {
+		if a.EntryID == "mine" {
+			t.Fatalf("自家孤儿不应留在待应用集合：%v", out)
+		}
+	}
+}
+
+// TestFileSyncOnlyInFlightFilesShowUploading 只有真正拿到上传线程的文件才是「同步中」，
+// 排队中的保持「待同步」——否则几百个文件全显示同步中（2026-10-05 现场）。
+func TestFileSyncOnlyInFlightFilesShowUploading(t *testing.T) {
+	dir := setupFileSyncTest(t)
+	setAccountState(loggedInState())
+	src := filepath.Join(dir, "src")
+	for i := 0; i < 40; i++ {
+		fsWriteFile(t, filepath.Join(src, fmt.Sprintf("f%02d.txt", i)), strings.Repeat("x", 512))
+	}
+	fsSetEntry(t, fileSyncEntry{ID: "e1", Name: "many", Kind: "dir", SourcePath: src})
+
+	fake := newFakeFilesServer()
+	fake.uploadDelay = 20 * time.Millisecond
+	client, _ := newTestClient(t, fake.handler(t))
+
+	done := make(chan struct{})
+	go func() {
+		_, _ = fileSyncCheck(context.Background(), client)
+		close(done)
+	}()
+	time.Sleep(150 * time.Millisecond)
+	snap := fileSyncStatusSnapshot()
+	uploading := 0
+	for _, f := range snap.Entries[0].Files {
+		if f.Status == "uploading" {
+			uploading++
+		}
+	}
+	<-done
+
+	if uploading == 0 {
+		t.Fatalf("进行中应有文件显示「同步中」：%+v", snap.Entries[0].Files)
+	}
+	if uploading > fileSyncUploadConcurrency {
+		t.Fatalf("「同步中」文件数超过并发上限 %d：实测 %d", fileSyncUploadConcurrency, uploading)
+	}
+	// 条目（以及前端按前缀聚合出的上级文件夹）也应显示「同步中」，而不是「待同步」
+	if snap.Entries[0].Status != "uploading" {
+		t.Fatalf("有文件在传时条目状态应为 uploading，实际 %s", snap.Entries[0].Status)
+	}
+	for _, f := range fileSyncStatusSnapshot().Entries[0].Files {
+		if f.Status == "uploading" {
+			t.Fatalf("同步结束后不应残留「同步中」：%+v", f)
+		}
+	}
+	if got := fileSyncStatusSnapshot().Entries[0].Status; got != "synced" {
+		t.Fatalf("同步结束后条目状态应为 synced，实际 %s", got)
+	}
+}
+
+// TestFileSyncRemovedFileStaysOutOfSync 移除单个文件（本机保留）后，重新扫描不应把它拉回同步：
+// 否则下一轮扫描发现文件还在 → 重新上传 → 用户的移除等于白做（2026-10-05 现场）。
+func TestFileSyncRemovedFileStaysOutOfSync(t *testing.T) {
+	dir := setupFileSyncTest(t)
+	setAccountState(loggedInState())
+	src := filepath.Join(dir, "src")
+	fsWriteFile(t, filepath.Join(src, "keep.txt"), "k")
+	fsWriteFile(t, filepath.Join(src, "drop.txt"), "d")
+
+	fake := newFakeFilesServer()
+	fake.putObject("e1", "keep.txt", []byte("k"), 1)
+	fake.putObject("e1", "drop.txt", []byte("d"), 1)
+	_, srv := newTestClient(t, fake.handler(t))
+	setAccountAPIBase(srv.URL)
+	fsSetEntry(t, fileSyncEntry{ID: "e1", Name: "notes", Kind: "dir", SourcePath: src, Files: map[string]fileSyncLocalFile{
+		"keep.txt": {Size: 1, Mtime: 1, Sha256: "k", SyncedSha: "k", Rev: 1},
+		"drop.txt": {Size: 1, Mtime: 1, Sha256: "d", SyncedSha: "d", Rev: 1},
+	}})
+
+	app := &App{}
+	if _, err := app.FilesRemovePath("e1", "drop.txt"); err != nil {
+		t.Fatalf("移除文件失败: %v", err)
+	}
+	if !fake.hasDelete("drop.txt") {
+		t.Fatalf("未传播删除: %v", fake.deletes)
+	}
+
+	// 重新扫描：drop.txt 还在磁盘上，但不该回到同步清单
+	fileSyncMu.Lock()
+	e := fileSyncCur.Entries[0]
+	_ = fileSyncScanEntryLocked(&e)
+	fileSyncCur.Entries[0] = e
+	fileSyncMu.Unlock()
+	if _, ok := fsEntry(t, 0).Files["drop.txt"]; ok {
+		t.Fatalf("已移除的文件不应被重新纳入同步：%+v", fsEntry(t, 0).Files)
+	}
+	if _, ok := fsEntry(t, 0).Files["keep.txt"]; !ok {
+		t.Fatalf("其它文件不应受影响：%+v", fsEntry(t, 0).Files)
+	}
+
+	// 用户改动该文件（mtime 变新）→ 重新纳入同步
+	future := time.Now().Add(2 * time.Second)
+	if err := os.Chtimes(filepath.Join(src, "drop.txt"), future, future); err != nil {
+		t.Fatalf("改时间失败: %v", err)
+	}
+	fileSyncMu.Lock()
+	e = fileSyncCur.Entries[0]
+	_ = fileSyncScanEntryLocked(&e)
+	fileSyncCur.Entries[0] = e
+	fileSyncMu.Unlock()
+	if _, ok := fsEntry(t, 0).Files["drop.txt"]; !ok {
+		t.Fatalf("改动后的文件应重新纳入同步：%+v", fsEntry(t, 0).Files)
+	}
+}
+
+// TestFileSyncOpenCanceledIsSilent 打开时用户在「打开方式」对话框取消 → 静默成功；
+// 真正的启动失败才把原因交给界面（界面据此提示并允许重新选择打开方式）。
+func TestFileSyncOpenCanceledIsSilent(t *testing.T) {
+	dir := setupFileSyncTest(t)
+	setAccountState(loggedInState())
+	target := filepath.Join(dir, "info.txt")
+	fsWriteFile(t, target, "hello")
+	fsSetEntry(t, fileSyncEntry{ID: "e1", Name: "info.txt", Kind: "file", SourcePath: target})
+
+	origOpen, origOpenWith := openFileFn, openFileWithFn
+	defer func() { openFileFn, openFileWithFn = origOpen, origOpenWith }()
+
+	app := &App{}
+	openFileFn = func(string) error { return errOpenCanceled }
+	if err := app.FilesOpenEntry("e1", "info.txt"); err != nil {
+		t.Fatalf("用户取消不该报错：%v", err)
+	}
+
+	openFileFn = func(string) error { return errors.New("没有可用的打开方式") }
+	if err := app.FilesOpenEntry("e1", "info.txt"); err == nil {
+		t.Fatalf("真正的启动失败应把原因交给界面")
+	}
+
+	openFileWithFn = func(string) error { return errOpenCanceled }
+	if err := app.FilesOpenEntryWith("e1", "info.txt"); err != nil {
+		t.Fatalf("选择打开方式时取消同样静默：%v", err)
+	}
+	openFileWithFn = func(string) error { return errors.New("对话框打不开") }
+	if err := app.FilesOpenEntryWith("e1", "info.txt"); err == nil {
+		t.Fatalf("选择打开方式失败应报错")
+	}
+}
+
 func TestFileSyncStateRoundTrip(t *testing.T) {
 	dir := setupFileSyncTest(t)
 	st := fileSyncState{
 		Entries: []fileSyncEntry{{
 			ID: "e1", Name: "notes", Kind: "dir", SourcePath: filepath.Join(dir, "src"),
-			Files:     map[string]fileSyncLocalFile{"a.txt": {Size: 5, Mtime: 1700000000, Sha256: "aa", SyncedSha: "aa", SyncedSize: 5, Rev: 1}},
-			Deletions: map[string]int64{"b.txt": 1700000001},
-			Ignored:   map[string]int64{"c.txt": 1700000002},
+			Files: map[string]fileSyncLocalFile{
+				"a.txt": {Size: 5, Mtime: 1700000000, Sha256: "aa", SyncedSha: "aa", SyncedSize: 5, Rev: 1},
+				"b.txt": {Size: 1, Mtime: 1700000001, Sha256: "bb", SyncedSha: "bb", Rev: 1, RemovedLocally: true},
+			},
+			Ignored: map[string]int64{"c.txt": 1700000002},
 		}},
 		PendingApply: []fileSyncAction{{Kind: "download", EntryID: "e1", RelPath: "a.txt", Sha256: "bb"}},
 		QuotaUsed:    5,
@@ -1128,7 +1555,7 @@ func TestFileSyncStateRoundTrip(t *testing.T) {
 	}
 	got := loadFileSyncState()
 	if len(got.Entries) != 1 || got.Entries[0].Files["a.txt"].SyncedSha != "aa" ||
-		got.Entries[0].Deletions["b.txt"] != 1700000001 || got.Entries[0].Ignored["c.txt"] != 1700000002 {
+		!got.Entries[0].Files["b.txt"].RemovedLocally || got.Entries[0].Ignored["c.txt"] != 1700000002 {
 		t.Fatalf("往返后条目状态丢失: %+v", got.Entries)
 	}
 	if got.QuotaUsed != 5 || got.QuotaLimit != 10*1024*1024 || got.LastSyncedAt != 1700000003 {
