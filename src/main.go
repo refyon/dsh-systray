@@ -682,6 +682,8 @@ func main() {
 	pendingPluginOpsFromConfig = cfg.PendingPluginOps
 	// 登录态（account.json）与待上报操作记录：只读载入，不阻塞启动。
 	initAccountState()
+	// 文件同步清单（filesync.json）：同样只读载入，联网与扫描在后台循环里做。
+	initFileSyncState()
 
 	// 自愈历史自启动项：旧版本注册的自启动条目未带 --autostart 参数，或残留
 	// 「裸二进制直接 exec」形态（macOS 上因缺 bundle 上下文导致开机自启失效），
@@ -808,6 +810,7 @@ func onStartup(ctx context.Context) {
 	loadStartupPendingPluginOps()     // 跨托盘重启保留「待应用变更未生效」提示（逐条校验后载入）
 	revalidatePendingApplyOnStartup() // 同步待生效集合按本机现状重校验（上次应用中途退出的自愈）
 	startAccountBackground(ctx)       // 启动自动登录校验 + 每 20 分钟一次的后台同步检查（需求④⑤）
+	startFileSyncBackground(ctx)      // 文件同步：每 60 秒扫描本机，有变更或超时即上传/对账
 	if runtime.GOOS == "darwin" {
 		// 系统关机/注销/重启回调须在托盘启动前注册，避免通知竞态丢失。
 		// true=关机/注销开始（跳过停服询问直接放行）；false=会话恢复（FUS 切回，复位）。

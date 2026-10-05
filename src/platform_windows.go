@@ -1365,6 +1365,27 @@ func launchInstallerFile(path string) error {
 	return nil
 }
 
+// openFile 以系统默认方式打开文件（文件同步列表的「打开」）。
+func openFile(path string) error {
+	p := strings.TrimSpace(path)
+	if p == "" || !fileExists(p) {
+		return errors.New("文件不存在")
+	}
+	modShell32 := syscall.NewLazyDLL("shell32.dll")
+	pShellExecuteW := modShell32.NewProc("ShellExecuteW")
+	op, _ := syscall.UTF16PtrFromString("open")
+	f, _ := syscall.UTF16PtrFromString(p)
+	// ShellExecuteW 返回值 > 32 表示成功
+	r, _, callErr := pShellExecuteW.Call(0, uintptr(unsafe.Pointer(op)), uintptr(unsafe.Pointer(f)), 0, 0, 1 /* SW_SHOWNORMAL */)
+	if r <= 32 {
+		if callErr != nil && callErr.Error() != "The operation completed successfully." {
+			return fmt.Errorf("ShellExecuteW 失败：%w", callErr)
+		}
+		return fmt.Errorf("ShellExecuteW 返回码 %d", r)
+	}
+	return nil
+}
+
 // askLaunchDesktopInstaller 桌面端正在运行时的确认：安装程序会要求先退出桌面端。
 // 本程序不代为强制结束（可能中断用户正在跑的任务），只把后果说清楚再交给用户决定。
 func askLaunchDesktopInstaller(running bool) bool {

@@ -361,6 +361,56 @@
           </div>
         </div>
 
+        <!-- 文件/文件夹同步（跟随账号：容量 + 列表 + 操作） -->
+        <div id="sync-files" class="card hidden">
+          <div class="card-row">
+            <div class="row-text">
+              <div class="row-title" data-i18n="filesTitle">文件同步</div>
+              <div class="row-sub" data-i18n="filesSub">
+                自选文件或文件夹随账号同步：添加的设备保留原位置，其它设备落到「文档\DeepSeekSync」；
+                每个账号免费 10 MB，容量不足时会提示清理。
+              </div>
+            </div>
+            <div class="row-actions">
+              <button id="btn-files-add-file" class="btn btn-outline btn-sm" data-i18n="btnFilesAddFile">添加文件</button>
+              <button id="btn-files-add-dir" class="btn btn-outline btn-sm" data-i18n="btnFilesAddDir">添加文件夹</button>
+              <button id="btn-files-sync" class="btn btn-ghost btn-sm" data-i18n="btnFilesSync">立即同步</button>
+            </div>
+          </div>
+          <div class="card-row">
+            <div class="row-text files-capacity">
+              <div class="row-sub" id="files-capacity-text">—</div>
+              <div class="files-track"><div class="files-fill" id="files-capacity-fill"></div></div>
+            </div>
+          </div>
+          <div class="card-row hidden" id="files-pending">
+            <div class="row-text">
+              <div class="row-title" data-i18n="filesPendingTitle">有来自其它设备的改动待应用</div>
+              <div class="row-sub" id="files-pending-sub"></div>
+            </div>
+            <div class="row-actions">
+              <button id="btn-files-apply" class="btn btn-primary btn-sm" data-i18n="btnFilesApply">应用改动</button>
+            </div>
+          </div>
+          <div class="card-row files-list-row">
+            <div class="row-text">
+              <div class="files-toolbar hidden" id="files-toolbar">
+                <span class="row-sub" data-i18n="filesSortLabel">排序</span>
+                <button type="button" class="btn btn-ghost btn-xs files-sort is-active" data-sort="name" data-i18n="filesSortName">名称</button>
+                <button type="button" class="btn btn-ghost btn-xs files-sort" data-sort="size" data-i18n="filesSortSize">大小</button>
+                <button type="button" class="btn btn-ghost btn-xs files-sort" data-sort="mtime" data-i18n="filesSortTime">修改时间</button>
+              </div>
+              <div class="row-sub" id="files-empty" data-i18n="filesEmpty">
+                还没有同步的文件或文件夹，点上方「添加文件」或「添加文件夹」开始。
+              </div>
+              <div class="files-tree" id="files-tree"></div>
+            </div>
+          </div>
+          <div class="card-row">
+            <div class="row-text"><div class="sync-hint" id="files-hint"></div></div>
+          </div>
+        </div>
+
         <!-- 重启生效：从服务器拉到本机改动后常驻提示（点按钮才生效） -->
         <div id="sync-restart" class="card sync-restart-card hidden">
           <div class="card-row">
@@ -448,6 +498,23 @@
       <div class="splash-track"><div id="exp-modal-fill" class="splash-fill"></div></div>
       <div class="modal-actions">
         <button class="btn btn-primary" id="exp-modal-close" data-i18n="btnDone">完成</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ======== 文件同步：重命名条目（输入弹层） ======== -->
+  <div id="files-rename-modal" class="modal hidden">
+    <div class="modal-mask"></div>
+    <div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="files-rename-title">
+      <div class="modal-title" id="files-rename-title" data-i18n="filesRenameTitle">重命名同步条目</div>
+      <div class="modal-msg" data-i18n="filesRenameMsg">
+        名称用于列表显示与其它设备上的落盘目录名，不会改动本机的原文件。
+      </div>
+      <input id="files-rename-input" class="input input-wide" maxlength="128" spellcheck="false" />
+      <div class="row-warn hidden" id="files-rename-warn"></div>
+      <div class="modal-actions">
+        <button class="btn btn-ghost" id="files-rename-cancel" data-i18n="btnCancel">取消</button>
+        <button class="btn btn-primary" id="files-rename-ok" data-i18n="btnOk">确定</button>
       </div>
     </div>
   </div>

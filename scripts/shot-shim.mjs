@@ -56,6 +56,34 @@ export const DEMO = {
     "2026-08-11 09:12:10 [INFO] export finished: dsh-systray-export-20260811-091210-1a2b3c4d.zip",
     "2026-08-11 09:12:12 [INFO] already up to date (current v1.1.0)",
   ],
+  // 文件同步（数据同步页的文件卡）：虚构条目与演示路径；容量取 10 MB 免费档的中间值。
+  // 时间戳与 FROZEN_NOW 同口径（不泄露拍摄时间）。
+  files: {
+    syncedAt: Math.floor(new Date("2026-01-01T09:30:00").getTime() / 1000),
+    mtime: Math.floor(new Date("2026-08-11T09:10:00").getTime() / 1000),
+    receiveDir: "C:\\Users\\demo\\Documents\\DeepSeekSync",
+    quotaUsed: 1234567,
+    quotaLimit: 10 * 1024 * 1024,
+    entries: [
+      {
+        id: "demo-entry-1", name: "项目资料", kind: "dir", isSource: true,
+        path: "C:\\Users\\demo\\Documents\\项目资料", size: 1056789, status: "pending", error: "",
+        files: [
+          { relPath: "README.md", name: "README.md", size: 4821, mtime: 0, status: "synced", error: "", blocked: false },
+          { relPath: "会议记录.md", name: "会议记录.md", size: 53390, mtime: 0, status: "synced", error: "", blocked: false },
+          { relPath: "设计/流程.png", name: "流程.png", size: 486233, mtime: 0, status: "synced", error: "", blocked: false },
+          { relPath: "设计/规范.pdf", name: "规范.pdf", size: 512345, mtime: 0, status: "pending-upload", error: "", blocked: false },
+        ],
+      },
+      {
+        id: "demo-entry-2", name: "notes.txt", kind: "file", isSource: false,
+        path: "C:\\Users\\demo\\Documents\\DeepSeekSync\\notes.txt", size: 2048, status: "synced", error: "",
+        files: [{ relPath: "notes.txt", name: "notes.txt", size: 2048, mtime: 0, status: "synced", error: "", blocked: false }],
+      },
+    ],
+    pendingCount: 2,
+    pendingFiles: ["项目资料/设计/规范.pdf", "notes.txt（重命名）"],
+  },
 };
 
 
@@ -167,6 +195,26 @@ export function shimSource(lang) {
     AccountSyncNow: async () => api.AccountStatus(),
     AccountApplyPending: async () => api.AccountStatus(),
     CancelSyncApply: noop,
+
+    // ---- 文件同步（数据同步页的文件卡；演示条目见 DEMO.files）----
+    FilesStatus: async () => {
+      const F = D.files;
+      const stamp = (m) => (m || F.mtime);
+      return {
+        loggedIn: true, syncing: false, applying: false, lastError: "",
+        lastSyncedAt: F.syncedAt, quotaUsed: F.quotaUsed, quotaLimit: F.quotaLimit, quotaTier: "free",
+        receiveDir: F.receiveDir,
+        entries: F.entries.map((e) => ({ ...e, files: e.files.map((f) => ({ ...f, mtime: stamp(f.mtime) })) })),
+        pendingCount: F.pendingCount, pendingFiles: F.pendingFiles, blockedCount: 0,
+      };
+    },
+    FilesAdd: async () => api.FilesStatus(),
+    FilesSyncNow: async () => api.FilesStatus(),
+    FilesApplyPending: async () => api.FilesStatus(),
+    FilesRemoveEntry: async () => api.FilesStatus(),
+    FilesRemovePath: async () => api.FilesStatus(),
+    FilesRenameEntry: async () => api.FilesStatus(),
+    FilesOpenEntry: noop,
 
     // ---- 帮助 / 重置 / 其它 ----
     WebTokenURL: async () => D.webURL,

@@ -38,6 +38,10 @@ const (
 	accErrOTPTooMany   = "otp_too_many_attempts"
 	accErrUnauthorized = "unauthorized"
 	accErrMailFailed   = "mail_send_failed"
+	// 文件同步端点（docs/API.md 端点 13-20）的扩展码。
+	accErrNotFound         = "not_found"
+	accErrQuotaExceeded    = "quota_exceeded"
+	accErrChecksumMismatch = "checksum_mismatch"
 	// accErrNetwork 客户端侧错误码：连接失败/超时（服务端不会返回）。
 	accErrNetwork = "network"
 )
@@ -148,6 +152,9 @@ type accountOpsReport struct {
 type accountClient struct {
 	base string
 	http *http.Client
+	// fileHTTP 文件同步的传输客户端：单文件上限 10 MiB，超时比普通 API 长得多
+	// （普通 API 10s，见 accountRequestTimeout）；为 nil 时按需创建。
+	fileHTTP *http.Client
 	// backoff 退避时长（可注入；测试置 0，生产为 300ms × 2^n）。
 	backoff func(attempt int) time.Duration
 }
@@ -160,7 +167,8 @@ func newAccountClient(base string) *accountClient {
 		base: strings.TrimRight(base, "/"),
 		// newHTTPClient 带统一代理解析（环境变量 / Windows 系统代理 / config.json 显式配置），
 		// 直连被阻断的环境（见 netproxy.go 头部说明）据此自动走系统代理。
-		http: newHTTPClient(accountRequestTimeout),
+		http:     newHTTPClient(accountRequestTimeout),
+		fileHTTP: newHTTPClient(fileSyncTransferTimeout),
 		backoff: func(attempt int) time.Duration {
 			return 300 * time.Millisecond * time.Duration(1<<uint(attempt))
 		},

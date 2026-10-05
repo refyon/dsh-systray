@@ -743,6 +743,95 @@ input { font-family: inherit; }
 .imp-ptext.err { color: var(--danger); }
 .imp-ptext.ok { color: var(--ok); }
 
+/* ---------- 文件/文件夹同步（数据同步页的文件卡） ---------- */
+.files-capacity { width: 100%; }
+.files-track {
+  margin-top: var(--sp-2);
+  height: 8px;
+  background: var(--surface-2);
+  border-radius: 999px;
+  overflow: hidden;
+}
+.files-fill {
+  height: 100%;
+  width: 0;
+  background: var(--primary);
+  border-radius: 999px;
+  transition: width 180ms cubic-bezier(.2, 0, 0, 1);
+}
+.files-fill.is-warn { background: var(--warn); }
+.files-fill.is-danger { background: var(--danger); }
+.files-list-row { align-items: flex-start; }
+.files-toolbar {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  margin-bottom: var(--sp-2);
+  flex-wrap: wrap;
+}
+.files-sort.is-active {
+  background: var(--primary-soft);
+  color: var(--primary);
+}
+.files-tree { margin-top: var(--sp-2); }
+.files-entry + .files-entry { margin-top: var(--sp-1); }
+.files-row {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  min-height: 34px;
+  padding: var(--sp-1) var(--sp-2);
+  padding-left: calc(var(--sp-2) + var(--depth, 0) * 16px);
+  border-radius: var(--radius-sm);
+}
+.files-row:hover { background: var(--surface-2); }
+.files-row-entry { font-weight: 600; }
+.files-caret {
+  flex: 0 0 auto;
+  width: 20px;
+  height: 20px;
+  line-height: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  border-radius: var(--radius-sm);
+}
+.files-caret:hover { background: var(--surface-2); color: var(--text); }
+.files-caret-empty { cursor: default; }
+.files-main { flex: 1 1 0; min-width: 0; }
+.files-name {
+  font-size: var(--fs-base);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.files-meta {
+  color: var(--muted);
+  font-size: var(--fs-xs);
+  margin-top: 2px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.files-err { color: var(--danger); font-size: var(--fs-xs); margin-top: 2px; }
+.files-badge {
+  flex: 0 0 auto;
+  font-size: var(--fs-xs);
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: var(--surface-2);
+  color: var(--muted);
+}
+.files-badge.is-ok { color: var(--ok); background: color-mix(in srgb, var(--ok) 12%, transparent); }
+.files-badge.is-pending { color: var(--warn); background: color-mix(in srgb, var(--warn) 14%, transparent); }
+.files-badge.is-error { color: var(--danger); background: color-mix(in srgb, var(--danger) 12%, transparent); }
+.files-actions { flex: 0 0 auto; display: flex; align-items: center; gap: var(--sp-1); }
+.files-danger { color: var(--danger); }
+
 /* ---------- Modal ---------- */
 .modal {
   position: fixed;

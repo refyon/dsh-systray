@@ -42,6 +42,7 @@ const state = {
   shotPage: "",         // 截图模式当前页（GetShotPage 返回；空=正常模式）
   shotScroll: "",       // 截图模式内容区滚动量（bottom/像素/空）
   launchResolved: "",   // 当前生效的启动方式（web|desktop）：切换后插件清单要按新环境重拉
+  filesEntries: [],     // 文件同步条目快照（Go FileSyncStatusInfo.entries）：行内操作按 id 取显示名
 };
 
 // ==================== 界面语言（en 字典；默认 DOM 为中文，zh↔en 就地双向切换） ====================
@@ -66,6 +67,20 @@ const I18N_EN = {
   syncRestartTitle: "Synced changes are waiting to take effect",
   syncRestartSub: "To avoid interrupting your work the changes are saved but not applied yet. Click the button to merge and apply them.",
   btnSyncApply: "Restart to apply",
+  filesTitle: "File sync",
+  filesSub: "Sync the files and folders you pick: the device that added them keeps them in place, other devices receive them under “Documents\\DeepSeekSync”. Each account gets 10 MB free; you'll be warned when it runs out.",
+  btnFilesAddFile: "Add file",
+  btnFilesAddDir: "Add folder",
+  btnFilesSync: "Sync now",
+  filesPendingTitle: "Changes from your other devices are waiting",
+  btnFilesApply: "Apply changes",
+  filesSortLabel: "Sort",
+  filesSortName: "Name",
+  filesSortSize: "Size",
+  filesSortTime: "Modified",
+  filesEmpty: "No files or folders synced yet — use “Add file” or “Add folder” above to start.",
+  filesRenameTitle: "Rename sync entry",
+  filesRenameMsg: "The name is used in this list and as the folder name on your other devices; it never renames your local files.",
   stAutoTitle: "Start at login", stAutoSub: "Start the background service and keep it in the tray after login",
   stAutoSubDesktop: "Start the tray at login and keep it running; the Desktop UI does not start the background service",
   stLangTitle: "Interface language", stLangSub: "Tray menu and native dialogs switch with it; “Follow system” picks the OS language",
@@ -379,6 +394,38 @@ const I18N_DYN = {
   // 补登此前遗漏的动态文案（英文界面原本会回退中文，check-frontend-i18n 一直告警）
   "已取消恢复": "Restore cancelled",
   "将撤销 {0} 项尚未生效的变更（更新/删除），已安装的插件不受影响。确认撤销吗？": "This will undo {0} pending change(s) (update/remove); installed plugins are unaffected. Continue?",
+
+  // 文件/文件夹同步（文件卡）
+  // 注：「已同步 / 同步失败 / 同步失败：{0} / 删除 / 移除 / 正在同步… / 正在应用… / 正在应用同步改动…」
+  // 已在账号同步与插件文案里登记过，这里不重复定义（同名键会被后者覆盖，容易改错一处）。
+  "待上传": "To upload",
+  "待下载": "To download",
+  "展开或折叠": "Expand or collapse",
+  "打开": "Open",
+  "重命名": "Rename",
+  "本机原位置": "Original location",
+  "接收目录": "Receive folder",
+  "{0} 个文件": "{0} file(s)",
+  "已用 {0} / 共 {1}": "Using {0} of {1}",
+  "正在读取容量…": "Reading capacity…",
+  "共 {0} 项：{1}{2}": "{0} item(s): {1}{2}",
+  "可用容量不足": "Not enough space",
+  "有 {0} 个文件因容量不足未同步。请删除部分已同步文件或移除条目后重试；已同步的内容不受影响。": "{0} file(s) could not be synced because the account is out of space. Delete some synced files or remove an entry and try again; already-synced content is unaffected.",
+  "知道了": "Got it",
+  "正在读取所选内容…": "Reading the selection…",
+  "已加入同步，正在上传…": "Added to sync — uploading…",
+  "同步完成": "Sync finished",
+  "改动已应用": "Changes applied",
+  "已移除同步条目": "Sync entry removed",
+  "已删除同步内容": "Synced content deleted",
+  "名称不能为空": "Name cannot be empty",
+  "移除同步条目？": "Remove this sync entry?",
+  "「{0}」将从账号同步中移除（其它设备上的同一条目也会移除）。是否同时删除本机文件？": "“{0}” will be removed from account sync (the same entry is removed on your other devices). Delete the local files too?",
+  "同时删除本机文件": "Delete local files too",
+  "仅移出同步（保留本机文件）": "Only remove from sync (keep local files)",
+  "删除该文件夹的同步内容？": "Delete this folder from sync?",
+  "删除该文件的同步内容？": "Delete this file from sync?",
+  "「{0}」会从账号同步中删除（其它设备上的副本也会删除）。是否同时删除本机文件？": "“{0}” will be deleted from account sync (copies on your other devices are deleted too). Delete the local files as well?",
 };
 function tr(s) { return (curLangCode() === "en" && I18N_DYN[s]) || s; }
 function fmt(s) {
@@ -470,7 +517,7 @@ function showPage(name) {
   // 帮助页：进入即刷新服务状态（按钮可用性与警告提示按运行态/令牌可用性渲染）
   if (name === "help") refreshService();
   // 数据同步页：进入即拉取账号状态与同步进度
-  if (name === "sync") refreshSync();
+  if (name === "sync") { refreshSync(); refreshFiles(); }
 }
 
 /** 截图模式：把内容区滚动到 DSH_SYSTRAY_SHOT_SCROLL 指定位置（bottom=最底；数字=像素）。
@@ -2315,7 +2362,9 @@ function wireEvents() {
   });
 
   // 账号/同步状态变化（登录、后台同步完成、令牌失效）→ 刷新「数据同步」页与左侧小字状态
-  EventsOn("account:changed", () => { refreshSync(); });
+  EventsOn("account:changed", () => { refreshSync(); refreshFiles(); });
+  // 文件同步状态变化（扫描/上传/对账/应用）→ 刷新文件卡（容量条、列表、待应用）
+  EventsOn("files:changed", () => { refreshFiles(); });
 
   // 同步改动应用结束（成功/取消/失败，Go 侧统一 emit sync:apply:done）：
   // 收起进度视图、复位按钮、刷新插件与服务状态，并把结果写进页内提示。
@@ -2834,6 +2883,454 @@ function wireSync() {
   if (email) email.addEventListener("keydown", (e) => { if (e.key === "Enter") doSyncSendCode(); });
 }
 
+// ==================== 数据同步：文件/文件夹 ====================
+//
+// 列表口径：行 = 用户添加的条目（文件夹/文件）。文件夹条目可展开显示内部文件树（子目录 → 文件）。
+// 排序：文件夹优先，组内按 名称/大小/修改时间 升/降序（再次点同一键切换方向）。
+// 删除一律二次确认；条目删除提供「同时删除本机文件 / 仅移出同步」两档。
+
+let filesSort = { key: "name", dir: 1 };
+const filesExpanded = {}; // 展开态：条目 id 或 `id/子路径` → true
+let filesQuotaWarned = 0; // 已提示过的容量不足文件数（避免每次刷新重复弹窗）
+// 排序键的中文标签：渲染时再 tr()，语言切换后标签跟着走（不用缓存译文）。
+const FILES_SORT_LABEL = { name: "名称", size: "大小", mtime: "修改时间" };
+
+/** filesFmtSize 容量友好格式（换算后数值保持 1000 以内）。 */
+function filesFmtSize(n) {
+  const v = Math.max(0, Number(n) || 0);
+  if (v < 1000) return v + " B";
+  const units = ["KB", "MB", "GB", "TB"];
+  let x = v / 1000;
+  let i = 0;
+  let shown = x >= 100 ? Math.round(x) : Math.round(x * 10) / 10;
+  // 进位保护：999950 → 999.95 KB 四舍五入成 1000，要再进一级（否则显示「1000 KB」而不是「1 MB」）
+  while (shown >= 1000 && i < units.length - 1) {
+    x /= 1000;
+    i += 1;
+    shown = x >= 100 ? Math.round(x) : Math.round(x * 10) / 10;
+  }
+  return shown + " " + units[i];
+}
+
+/** filesStatusView 状态 → 徽标文案与语义色类。 */
+function filesStatusView(status) {
+  switch (status) {
+    case "synced": return { text: tr("已同步"), cls: "is-ok" };
+    case "pending":
+    case "pending-upload": return { text: tr("待上传"), cls: "is-pending" };
+    case "pending-download": return { text: tr("待下载"), cls: "is-pending" };
+    case "error": return { text: tr("同步失败"), cls: "is-error" };
+    default: return { text: "", cls: "" };
+  }
+}
+
+/** filesBuildTree 条目内扁平文件列表（relPath）→ 树。 */
+function filesBuildTree(files) {
+  const root = { name: "", path: "", dirs: [], dirMap: new Map(), files: [], size: 0, mtime: 0, count: 0, status: "synced" };
+  for (const f of files || []) {
+    const parts = String(f.relPath || "").split("/");
+    let node = root;
+    for (let i = 0; i < parts.length - 1; i += 1) {
+      const key = parts[i];
+      let child = node.dirMap.get(key);
+      if (!child) {
+        child = {
+          name: key,
+          path: parts.slice(0, i + 1).join("/"),
+          dirs: [], dirMap: new Map(), files: [],
+          size: 0, mtime: 0, count: 0, status: "synced",
+        };
+        node.dirMap.set(key, child);
+        node.dirs.push(child);
+      }
+      node = child;
+    }
+    node.files.push(f);
+  }
+  filesTreeStats(root);
+  return root;
+}
+
+/** filesTreeStats 目录聚合：大小 = 子树合计，时间 = 子树最新，状态取最差（error > pending > synced）。 */
+function filesTreeStats(node) {
+  let size = 0;
+  let mtime = 0;
+  let count = 0;
+  let status = "synced";
+  const bump = (s) => {
+    if (s === "error") status = "error";
+    else if (s !== "synced" && status === "synced") status = "pending";
+  };
+  for (const d of node.dirs) {
+    const st = filesTreeStats(d);
+    size += st.size;
+    count += st.count;
+    mtime = Math.max(mtime, st.mtime);
+    bump(st.status);
+  }
+  for (const f of node.files) {
+    size += Number(f.size) || 0;
+    count += 1;
+    mtime = Math.max(mtime, Number(f.mtime) || 0);
+    bump(f.status);
+  }
+  node.size = size;
+  node.mtime = mtime;
+  node.count = count;
+  node.status = status;
+  return node;
+}
+
+/** filesSortTree 排序：目录优先，组内按当前排序键与方向。 */
+function filesSortTree(node) {
+  const cmp = (a, b) => {
+    let r;
+    if (filesSort.key === "size") r = (a.size || 0) - (b.size || 0);
+    else if (filesSort.key === "mtime") r = (a.mtime || 0) - (b.mtime || 0);
+    else r = String(a.name).localeCompare(String(b.name), "zh-Hans-CN");
+    if (r === 0) r = String(a.name).localeCompare(String(b.name), "zh-Hans-CN");
+    return r * filesSort.dir;
+  };
+  node.dirs.sort(cmp);
+  node.files.sort(cmp);
+  for (const d of node.dirs) filesSortTree(d);
+  return node;
+}
+
+/** filesRowHtml 一行（文件夹或文件）；depth 控制缩进。 */
+function filesRowHtml(o) {
+  const view = filesStatusView(o.status);
+  const caret = o.isDir
+    ? `<button type="button" class="files-caret" data-fact="toggle" data-entry="${esc(o.entryId)}" data-rel="${esc(o.rel)}" aria-expanded="${o.expanded ? "true" : "false"}" aria-label="${tr("展开或折叠")}">${o.expanded ? "▾" : "▸"}</button>`
+    : '<span class="files-caret files-caret-empty"></span>';
+  const meta = [];
+  meta.push(filesFmtSize(o.size));
+  if (o.isDir) meta.push(fmt("{0} 个文件", o.count || 0));
+  if (o.mtime) meta.push(syncFmtTime(o.mtime));
+  const err = o.error ? `<div class="files-err">${esc(o.error)}</div>` : "";
+  const actions = [];
+  actions.push(`<button type="button" class="btn btn-ghost btn-xs" data-fact="open" data-entry="${esc(o.entryId)}" data-rel="${esc(o.rel)}">${tr("打开")}</button>`);
+  if (o.rel === "") actions.push(`<button type="button" class="btn btn-ghost btn-xs" data-fact="rename" data-entry="${esc(o.entryId)}">${tr("重命名")}</button>`);
+  actions.push(`<button type="button" class="btn btn-ghost btn-xs files-danger" data-fact="remove" data-entry="${esc(o.entryId)}" data-rel="${esc(o.rel)}" data-dir="${o.isDir ? "1" : "0"}">${tr("删除")}</button>`);
+  return (
+    `<div class="files-row" style="--depth:${o.depth}">` +
+    caret +
+    `<div class="files-main"><div class="files-name">${o.isDir ? "📁" : "📄"} ${esc(o.name)}</div>` +
+    `<div class="files-meta">${esc(meta.join(" · "))}</div>${err}</div>` +
+    (view.text ? `<span class="files-badge ${view.cls}">${view.text}</span>` : "") +
+    `<div class="files-actions">${actions.join("")}</div></div>`
+  );
+}
+
+/** filesNodeHtml 递归渲染树（展开的目录才渲染子行）。 */
+function filesNodeHtml(node, entryId, depth) {
+  let html = "";
+  for (const d of node.dirs) {
+    const key = entryId + "/" + d.path;
+    const expanded = !!filesExpanded[key];
+    html += filesRowHtml({
+      entryId, rel: d.path, name: d.name, isDir: true, size: d.size, mtime: d.mtime,
+      count: d.count, status: d.status, error: "", depth, expanded,
+    });
+    if (expanded) html += filesNodeHtml(d, entryId, depth + 1);
+  }
+  for (const f of node.files) {
+    html += filesRowHtml({
+      entryId, rel: f.relPath, name: f.name, isDir: false, size: f.size, mtime: f.mtime,
+      count: 1, status: f.status, error: f.error || "", depth,
+    });
+  }
+  return html;
+}
+
+/** filesEntryHtml 一个条目行（+ 展开的文件树）。 */
+function filesEntryHtml(e) {
+  const isDir = e.kind === "dir";
+  const expanded = !!filesExpanded[e.id];
+  const view = filesStatusView(e.status);
+  const meta = [filesFmtSize(e.size)];
+  if (isDir) meta.push(fmt("{0} 个文件", (e.files || []).length));
+  meta.push(e.isSource ? tr("本机原位置") : tr("接收目录"));
+  if (e.path) meta.push(e.path);
+  const caret = isDir
+    ? `<button type="button" class="files-caret" data-fact="toggle" data-entry="${esc(e.id)}" data-rel="" aria-expanded="${expanded ? "true" : "false"}" aria-label="${tr("展开或折叠")}">${expanded ? "▾" : "▸"}</button>`
+    : '<span class="files-caret files-caret-empty"></span>';
+  const err = e.error ? `<div class="files-err">${esc(e.error)}</div>` : "";
+  const tree = isDir && expanded
+    ? filesNodeHtml(filesSortTree(filesBuildTree(e.files || [])), e.id, 1)
+    : "";
+  return (
+    `<div class="files-entry">` +
+    `<div class="files-row files-row-entry" style="--depth:0">` + caret +
+    `<div class="files-main"><div class="files-name">${isDir ? "📁" : "📄"} ${esc(e.name)}</div>` +
+    `<div class="files-meta">${esc(meta.filter(Boolean).join(" · "))}</div>${err}</div>` +
+    (view.text ? `<span class="files-badge ${view.cls}">${view.text}</span>` : "") +
+    `<div class="files-actions">` +
+    `<button type="button" class="btn btn-ghost btn-xs" data-fact="open" data-entry="${esc(e.id)}" data-rel="">${tr("打开")}</button>` +
+    `<button type="button" class="btn btn-ghost btn-xs" data-fact="rename" data-entry="${esc(e.id)}">${tr("重命名")}</button>` +
+    `<button type="button" class="btn btn-ghost btn-xs files-danger" data-fact="remove" data-entry="${esc(e.id)}" data-rel="" data-dir="${isDir ? "1" : "0"}">${tr("移除")}</button>` +
+    `</div></div>` + tree + `</div>`
+  );
+}
+
+/** renderFilesCard 渲染文件卡（容量、待应用、列表、空态）。 */
+function renderFilesCard(st) {
+  const card = $("sync-files");
+  if (!card) return;
+  const loggedIn = !!(st && st.loggedIn);
+  card.classList.toggle("hidden", !loggedIn);
+  if (!loggedIn) { filesQuotaWarned = 0; return; }
+
+  // 容量条
+  const used = Number(st.quotaUsed) || 0;
+  const limit = Number(st.quotaLimit) || 0;
+  const pct = limit > 0 ? Math.min(1, used / limit) : 0;
+  const fill = $("files-capacity-fill");
+  if (fill) {
+    fill.style.width = Math.round(pct * 100) + "%";
+    fill.className = "files-fill" + (pct >= 1 ? " is-danger" : pct >= 0.8 ? " is-warn" : "");
+  }
+  $("files-capacity-text").textContent = limit > 0
+    ? fmt("已用 {0} / 共 {1}", filesFmtSize(used), filesFmtSize(limit))
+    : tr("正在读取容量…");
+
+  // 待应用块
+  const pending = $("files-pending");
+  const n = Number(st.pendingCount) || 0;
+  pending.classList.toggle("hidden", n === 0 && !st.applying);
+  if (n > 0 || st.applying) {
+    const list = (st.pendingFiles || []).slice(0, 3).join("、");
+    const more = (st.pendingFiles || []).length > 3 ? "…" : "";
+    $("files-pending-sub").textContent = st.applying
+      ? tr("正在应用…")
+      : fmt("共 {0} 项：{1}{2}", n, list, more);
+  }
+
+  // 列表 / 空态
+  const entries = st.entries || [];
+  state.filesEntries = entries; // 供行内操作按 id 取条目（重命名/删除的文案要用显示名）
+  const toolbar = $("files-toolbar");
+  toolbar.classList.toggle("hidden", entries.length === 0);
+  document.querySelectorAll(".files-sort").forEach((b) => {
+    const key = b.dataset.sort;
+    const active = key === filesSort.key;
+    b.classList.toggle("is-active", active);
+    b.textContent = tr(FILES_SORT_LABEL[key] || key) + (active ? (filesSort.dir < 0 ? " ↓" : " ↑") : "");
+  });
+  $("files-empty").classList.toggle("hidden", entries.length > 0);
+  $("files-tree").innerHTML = entries.map(filesEntryHtml).join("");
+
+  // 按钮可用性
+  const busy = !!st.syncing || !!st.applying;
+  $("btn-files-add-file").disabled = busy;
+  $("btn-files-add-dir").disabled = busy;
+  $("btn-files-sync").disabled = busy;
+  $("btn-files-apply").disabled = busy;
+  if (busy) filesHint(st.applying ? tr("正在应用同步改动…") : tr("正在同步…"));
+  else if (st.lastError) filesHint(fmt("同步失败：{0}", st.lastError), true);
+  else filesHint("");
+
+  // 容量不足：首次出现（或数量变化）时弹窗提示
+  const blocked = Number(st.blockedCount) || 0;
+  if (blocked > 0 && blocked !== filesQuotaWarned) {
+    filesQuotaWarned = blocked;
+    confirmDialog(
+      "可用容量不足",
+      fmt("有 {0} 个文件因容量不足未同步。请删除部分已同步文件或移除条目后重试；已同步的内容不受影响。", blocked),
+      "知道了",
+    );
+  } else if (blocked === 0) {
+    filesQuotaWarned = 0;
+  }
+}
+
+/** refreshFiles 读取 Go 侧文件同步状态并渲染。 */
+async function refreshFiles() {
+  const g = bindings();
+  if (!g || typeof g.FilesStatus !== "function") return;
+  try {
+    renderFilesCard(await g.FilesStatus());
+  } catch (err) {
+    console.error("FilesStatus", err);
+  }
+}
+
+/** filesHint 卡内提示（isError 时用语义红）。 */
+function filesHint(text, isError) {
+  const el = $("files-hint");
+  if (!el) return;
+  el.textContent = text || "";
+  el.classList.toggle("is-error", !!isError);
+}
+
+/** filesAskRename 输入弹层：返回新名称或 null（取消）。 */
+function filesAskRename(current) {
+  return new Promise((resolve) => {
+    const modal = $("files-rename-modal");
+    const input = $("files-rename-input");
+    const warn = $("files-rename-warn");
+    input.value = current || "";
+    warn.classList.add("hidden");
+    modal.classList.remove("hidden");
+    input.focus();
+    input.select();
+    const done = (val) => {
+      modal.classList.add("hidden");
+      $("files-rename-ok").removeEventListener("click", onOk);
+      $("files-rename-cancel").removeEventListener("click", onCancel);
+      input.removeEventListener("keydown", onKey);
+      resolve(val);
+    };
+    const onOk = () => {
+      const v = (input.value || "").trim();
+      if (!v) { warn.textContent = tr("名称不能为空"); warn.classList.remove("hidden"); return; }
+      done(v);
+    };
+    const onCancel = () => done(null);
+    const onKey = (e) => { if (e.key === "Enter") onOk(); if (e.key === "Escape") onCancel(); };
+    $("files-rename-ok").addEventListener("click", onOk);
+    $("files-rename-cancel").addEventListener("click", onCancel);
+    input.addEventListener("keydown", onKey);
+  });
+}
+
+async function filesDoAdd(kind) {
+  const g = bindings();
+  if (!g || typeof g.FilesAdd !== "function") return;
+  filesHint(tr("正在读取所选内容…"));
+  try {
+    renderFilesCard(await g.FilesAdd(kind));
+    filesHint(tr("已加入同步，正在上传…"));
+  } catch (err) {
+    filesHint(String(err), true);
+  }
+}
+
+async function filesDoSync() {
+  const g = bindings();
+  if (!g || typeof g.FilesSyncNow !== "function") return;
+  filesHint(tr("正在同步…"));
+  try {
+    renderFilesCard(await g.FilesSyncNow());
+    filesHint(tr("同步完成"));
+  } catch (err) {
+    filesHint(String(err), true);
+    await refreshFiles();
+  }
+}
+
+async function filesDoApply() {
+  const g = bindings();
+  if (!g || typeof g.FilesApplyPending !== "function") return;
+  filesHint(tr("正在应用同步改动…"));
+  try {
+    renderFilesCard(await g.FilesApplyPending());
+    filesHint(tr("改动已应用"));
+  } catch (err) {
+    filesHint(String(err), true);
+    await refreshFiles();
+  }
+}
+
+async function filesDoOpen(entryId, rel) {
+  const g = bindings();
+  if (!g || typeof g.FilesOpenEntry !== "function") return;
+  try {
+    await g.FilesOpenEntry(entryId, rel);
+  } catch (err) {
+    filesHint(String(err), true);
+  }
+}
+
+async function filesDoRename(entryId) {
+  const g = bindings();
+  if (!g || typeof g.FilesRenameEntry !== "function") return;
+  const entry = (state.filesEntries || []).find((e) => e.id === entryId);
+  const name = await filesAskRename(entry ? entry.name : "");
+  if (name === null) return;
+  try {
+    renderFilesCard(await g.FilesRenameEntry(entryId, name));
+  } catch (err) {
+    filesHint(String(err), true);
+  }
+}
+
+async function filesDoRemove(entryId, rel, isDir) {
+  const g = bindings();
+  if (!g) return;
+  const entry = (state.filesEntries || []).find((e) => e.id === entryId);
+  if (!entry) return;
+  if (rel === "") {
+    // 整个条目：三选（同时删除本机文件 / 仅移出同步 / 取消）
+    const choice = await confirmDialog3(
+      "移除同步条目？",
+      fmt("「{0}」将从账号同步中移除（其它设备上的同一条目也会移除）。是否同时删除本机文件？", entry.name),
+      "同时删除本机文件",
+      "仅移出同步（保留本机文件）",
+    );
+    if (choice === "cancel") return;
+    try {
+      renderFilesCard(await g.FilesRemoveEntry(entryId, choice === "ok"));
+      filesHint(tr("已移除同步条目"));
+    } catch (err) {
+      filesHint(String(err), true);
+    }
+    return;
+  }
+  const choice = await confirmDialog3(
+    isDir ? "删除该文件夹的同步内容？" : "删除该文件的同步内容？",
+    fmt("「{0}」会从账号同步中删除（其它设备上的副本也会删除）。是否同时删除本机文件？", rel),
+    "同时删除本机文件",
+    "仅移出同步（保留本机文件）",
+  );
+  if (choice === "cancel") return;
+  try {
+    renderFilesCard(await g.FilesRemovePath(entryId, rel, choice === "ok"));
+    filesHint(tr("已删除同步内容"));
+  } catch (err) {
+    filesHint(String(err), true);
+  }
+}
+
+/** filesToggle 展开/折叠（条目或子目录）。 */
+function filesToggle(entryId, rel) {
+  const key = rel ? entryId + "/" + rel : entryId;
+  filesExpanded[key] = !filesExpanded[key];
+  refreshFiles();
+}
+
+function wireFiles() {
+  const addFile = $("btn-files-add-file");
+  if (!addFile) return;
+  addFile.addEventListener("click", () => filesDoAdd("file"));
+  $("btn-files-add-dir").addEventListener("click", () => filesDoAdd("dir"));
+  $("btn-files-sync").addEventListener("click", filesDoSync);
+  $("btn-files-apply").addEventListener("click", filesDoApply);
+  document.querySelectorAll(".files-sort").forEach((btn) => {
+    btn.dataset.labelAsc = tr(btn.textContent.trim());
+    btn.dataset.labelDesc = tr(btn.textContent.trim()) + " ↓";
+    btn.addEventListener("click", () => {
+      const key = btn.dataset.sort;
+      if (filesSort.key === key) filesSort.dir = -filesSort.dir;
+      else filesSort = { key, dir: 1 };
+      refreshFiles();
+    });
+  });
+  $("files-tree").addEventListener("click", (ev) => {
+    const btn = ev.target.closest("[data-fact]");
+    if (!btn) return;
+    const entryId = btn.dataset.entry || "";
+    const rel = btn.dataset.rel || "";
+    switch (btn.dataset.fact) {
+      case "toggle": filesToggle(entryId, rel); break;
+      case "open": filesDoOpen(entryId, rel); break;
+      case "rename": filesDoRename(entryId); break;
+      case "remove": filesDoRemove(entryId, rel, btn.dataset.dir === "1"); break;
+      default: break;
+    }
+  });
+}
+
 async function init() {
   snapshotStaticZh(); // 语言快照必须先于任何 en 覆盖（zh 还原基线）
   wireEvents();
@@ -2845,6 +3342,7 @@ async function init() {
   wireImport();
   wireHelp();
   wireSync();
+  wireFiles();
 
   document.querySelectorAll(".nav-item").forEach((b) => {
     b.addEventListener("click", () => showPage(b.dataset.page));
@@ -2855,6 +3353,8 @@ async function init() {
 
   // 左侧「数据同步」小字状态：启动即渲染一次（未打开该页也要可见）
   refreshSync();
+  // 文件同步卡：未打开该页也先取一次（容量条与待应用提示要能立刻反映）
+  refreshFiles();
 
   // 截图/预览：DSH_SYSTRAY_SHOT_PAGE 指定后直接显示对应页面；SHOT_SCROLL 指定滚动位置
   try {

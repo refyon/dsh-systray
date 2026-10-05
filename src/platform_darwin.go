@@ -462,6 +462,23 @@ func revealFile(path string) {
 	trackChildProcess(cmd.Process)
 }
 
+// openFile macOS：用系统默认应用打开文件（open <path>）。
+func openFile(path string) error {
+	p := strings.TrimSpace(path)
+	if p == "" {
+		return errors.New("文件不存在")
+	}
+	if _, err := os.Stat(p); err != nil {
+		return err
+	}
+	cmd := exec.Command("open", p)
+	if err := cmd.Start(); err != nil {
+		return err
+	}
+	trackChildProcess(cmd.Process)
+	return nil
+}
+
 func launchAgentPlistPath() string {
 	home, _ := os.UserHomeDir()
 	return filepath.Join(home, "Library", "LaunchAgents", launchAgentLabel+".plist")

@@ -327,7 +327,8 @@ func (a *App) AccountVerify(email, code string) (AccountStatusInfo, error) {
 	}
 
 	accountMu.Lock()
-	if accountCur.Email != "" && !strings.EqualFold(accountCur.Email, sess.User.Email) {
+	switchedAccount := accountCur.Email != "" && !strings.EqualFold(accountCur.Email, sess.User.Email)
+	if switchedAccount {
 		accountCur = accountState{} // 换账号：游标与基线作废
 	}
 	accountCur.Token = sess.Token
@@ -341,10 +342,14 @@ func (a *App) AccountVerify(email, code string) (AccountStatusInfo, error) {
 	accountSyncErr = ""
 	accountMu.Unlock()
 
+	if switchedAccount {
+		resetFileSyncStateForAccountSwitch() // 文件同步清单属于旧账号，作废后由用户在新账号下重新添加
+	}
 	if err := saveAccountState(saved); err != nil {
 		log.Printf("[account] 保存登录态失败: %v", err)
 	}
 	logUI("登录成功", maskEmail(sess.User.Email))
+	fileSyncKick() // 登录后立即检查一次文件同步（拉取账号上已有的条目）
 	return accountSnapshot(), nil
 }
 
