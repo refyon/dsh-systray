@@ -1574,6 +1574,9 @@ func showMainWindow() {
 		return
 	}
 	alreadyOpen := mainWindowVisible()
+	// 窗口显示前再确保一次最大化被禁用：窗口可能是隐藏创建的（自启动/服务已就绪），
+	// onDomReady 那一次若失败（窗口尚未创建），这里补上（Windows 改样式，其它平台空实现）。
+	startDisableWindowMaximize("dsh-systray")
 	wruntime.WindowShow(appCtx)
 	ensureMainWindowForeground() // 平台实现：把窗口真正置前（需求：所有弹窗/窗口自动前台）
 	if alreadyOpen {

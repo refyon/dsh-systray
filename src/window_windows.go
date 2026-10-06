@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"strings"
+	"sync/atomic"
 	"syscall"
 	"time"
 	"unsafe"
@@ -70,7 +71,11 @@ func disableWindowMaximize(title string) error {
 	return nil
 }
 
-// findWindowByPIDAndTitle 按进程 id + 标题找主窗口（标题为空时只按进程匹配可见窗口）。
+// findWindowByPIDAndTitle 按进程 id + 标题找主窗口（标题为空时只按进程匹配，且要求窗口可见）。
+//
+// 标题非空时**不要求窗口可见**：服务已在运行/自启动时窗口是隐藏创建的（Wails StartHidden），
+// 按「只找可见窗口」匹配会永远找不到（2026-10-06 现场日志：每次启动都记「禁用窗口最大化
+// 按钮失败」，用户看到的仍是可点的最大化按钮）。标题是精确匹配，足以定位主窗口。
 func findWindowByPIDAndTitle(pid uint32, title string) (uintptr, error) {
 	var found uintptr
 	cb := syscall.NewCallback(func(hwnd uintptr, _ uintptr) uintptr {
@@ -79,15 +84,14 @@ func findWindowByPIDAndTitle(pid uint32, title string) (uintptr, error) {
 		if winPID != pid {
 			return 1 // 继续枚举
 		}
-		if visible, _, _ := procIsWindowVisible.Call(hwnd); visible == 0 {
-			return 1
-		}
 		if title != "" {
 			buf := make([]uint16, 512)
 			n, _, _ := procGetWindowTextW.Call(hwnd, uintptr(unsafe.Pointer(&buf[0])), uintptr(len(buf)))
 			if n == 0 || !strings.EqualFold(syscall.UTF16ToString(buf[:n]), title) {
 				return 1
 			}
+		} else if visible, _, _ := procIsWindowVisible.Call(hwnd); visible == 0 {
+			return 1
 		}
 		found = hwnd
 		return 0 // 找到，停止枚举
@@ -99,12 +103,20 @@ func findWindowByPIDAndTitle(pid uint32, title string) (uintptr, error) {
 	return found, nil
 }
 
-// startDisableWindowMaximize 异步禁用最大化：窗口在 onDomReady 后才保证已创建，
-// 因此带几次重试；全部失败只记一条日志。
+// maximizeDisabled 记录「最大化已禁用」：窗口样式一旦去掉 WS_MAXIMIZEBOX 就不会自己回来，
+// 成功一次即可——之后每次打开设置窗口再调用本函数直接返回，不重复枚举窗口。
+var maximizeDisabled atomic.Bool
+
+// startDisableWindowMaximize 异步禁用最大化：窗口在 onDomReady 后才保证已创建，因此带重试
+// （约 3 秒）；全部失败只记一条日志。窗口显示后再调用一次是安全的（已禁用则立即返回）。
 func startDisableWindowMaximize(title string) {
+	if maximizeDisabled.Load() {
+		return
+	}
 	go func() {
-		for i := 0; i < 10; i++ {
+		for i := 0; i < 20; i++ {
 			if err := disableWindowMaximize(title); err == nil {
+				maximizeDisabled.Store(true)
 				log.Printf("[app] 已禁用窗口最大化按钮")
 				return
 			}
