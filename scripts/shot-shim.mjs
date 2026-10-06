@@ -83,8 +83,11 @@ export const DEMO = {
         files: [{ relPath: "notes.txt", name: "notes.txt", size: 2048, mtime: 0, status: "synced", error: "", blocked: false }],
       },
     ],
-    pendingCount: 2,
-    pendingFiles: ["项目资料/设计/规范.pdf", "notes.txt（重命名）"],
+    pendingCount: 0,
+    pendingFiles: [],
+    // 远端改动自动落地的小字提示（时间 + 项数）
+    remoteAppliedAt: Math.floor(new Date("2026-08-11T09:06:00").getTime() / 1000),
+    remoteAppliedCount: 2,
   },
 };
 
@@ -208,6 +211,7 @@ export function shimSource(lang) {
         receiveDir: F.receiveDir,
         entries: F.entries.map((e) => ({ ...e, files: e.files.map((f) => ({ ...f, mtime: stamp(f.mtime) })) })),
         pendingCount: F.pendingCount, pendingFiles: F.pendingFiles, blockedCount: 0,
+        remoteAppliedAt: F.remoteAppliedAt, remoteAppliedCount: F.remoteAppliedCount,
       };
     },
     FilesAdd: async () => api.FilesStatus(),

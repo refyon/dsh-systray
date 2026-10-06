@@ -96,7 +96,7 @@ sandbox.globalThis = sandbox;
 // main.js 顶层的 let/const 不挂 vm 全局对象，追加探针把内部绑定暴露出来（见文件头说明）。
 const probe = `
 ;globalThis.__files = {
-  filesFmtSize, filesBuildTree, filesSortTree, filesEntryHtml,
+  filesFmtSize, filesBuildTree, filesSortTree, filesEntryHtml, filesSortEntries,
   get filesSort() { return filesSort; },
   set filesSort(v) { filesSort = v; },
   filesExpanded,
@@ -197,6 +197,27 @@ checkTrue('已同步文件行可打开', rowOf('a.txt').includes('data-fact="ope
 checkTrue('待同步文件行不可打开（仅移除）', !rowOf('b.txt').includes('data-fact="open"') && rowOf('b.txt').includes('data-fact="remove"'));
 checkTrue('同步中文件行不可打开', !rowOf('c.txt').includes('data-fact="open"'));
 checkTrue('同步中文件行显示状态与速度', rowOf('c.txt').includes('同步中') && rowOf('c.txt').includes('1 MB/s'));
+
+// 顶层列表排序（点「名称/大小/修改时间」必须真的重排——只排展开后的树内文件是不够的）
+const sortList = [
+  { id: 'a', name: 'zeta.txt', kind: 'file', size: 300, mtime: 30 },
+  { id: 'b', name: 'alpha', kind: 'dir', size: 100, mtime: 10 },
+  { id: 'c', name: 'beta.txt', kind: 'file', size: 200, mtime: 20 },
+];
+const names = (list) => list.map((e) => e.name).join(',');
+T.filesSort = { key: 'name', dir: 1 };
+checkTrue('按名称升序（文件夹在前）', names(T.filesSortEntries(sortList)) === 'alpha,beta.txt,zeta.txt');
+T.filesSort = { key: 'name', dir: -1 };
+checkTrue('按名称降序（文件夹仍在前）', names(T.filesSortEntries(sortList)) === 'alpha,zeta.txt,beta.txt');
+T.filesSort = { key: 'size', dir: 1 };
+checkTrue('按大小升序', names(T.filesSortEntries(sortList)) === 'alpha,beta.txt,zeta.txt');
+T.filesSort = { key: 'size', dir: -1 };
+checkTrue('按大小降序', names(T.filesSortEntries(sortList)) === 'alpha,zeta.txt,beta.txt');
+T.filesSort = { key: 'mtime', dir: -1 };
+checkTrue('按修改时间降序', names(T.filesSortEntries(sortList)) === 'alpha,zeta.txt,beta.txt');
+T.filesSort = { key: 'mtime', dir: 1 };
+checkTrue('不改动入参数组（返回副本）', sortList[0].name === 'zeta.txt' && names(T.filesSortEntries(sortList)) === 'alpha,beta.txt,zeta.txt');
+T.filesSort = { key: 'name', dir: 1 };
 
 // 「已在本机移除」：可重新同步（不显示打开）
 const goneFile = { relPath: 'gone.txt', name: 'gone.txt', size: 2048, mtime: 1, status: 'removed-local', error: '', blocked: false };

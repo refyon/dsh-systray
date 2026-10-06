@@ -102,7 +102,7 @@ func fileSyncAddPath(kind, path string) (FileSyncStatusInfo, error) {
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
 		client := newAccountClient("")
-		body := fileSyncEntryBody{ID: entry.ID, Name: entry.Name, Kind: entry.Kind}
+		body := fileSyncEntryBody{ID: entry.ID, Name: entry.Name, Kind: entry.Kind, SourcePath: entry.SourcePath}
 		if _, err := client.FilesCreateEntry(ctx, token, body); err != nil {
 			if accountErrorCode(err) == accErrUnauthorized {
 				accountInvalidateSession()
@@ -461,20 +461,34 @@ func (a *App) FilesSyncNow() (FileSyncStatusInfo, error) {
 	res, err := fileSyncCheck(ctx, newAccountClient(""))
 	emitFilesChanged()
 	if err != nil {
+		// 手动同步失败也要留日志（此前只在界面提示，排障时无迹可循——2026-10-06 现场）
+		log.Printf("[files] 手动同步失败: %v", err)
 		if accountErrorCode(err) == accErrUnauthorized {
 			return fileSyncStatusSnapshot(), errors.New(T("登录已失效，请重新登录"))
 		}
 		return fileSyncStatusSnapshot(), errors.New(accountErrorText(err))
 	}
-	log.Printf("[files] 手动同步完成：上传 %d、待应用 %d、容量拦下 %d", res.Uploaded, res.Pending, res.Blocked)
+	log.Printf("[files] 手动同步完成：上传 %d、已应用 %d、待应用 %d、容量拦下 %d", res.Uploaded, res.Applied, res.Pending, res.Blocked)
 	return fileSyncStatusSnapshot(), nil
 }
 
-// beginFileApply 置位「应用进行中」；已有同步/应用在跑时返回 false。
+// beginFileApply 置位「应用进行中」；已有同步/应用在跑时返回 false（用户手动「重试」路径）。
 func beginFileApply() bool {
 	fileSyncMu.Lock()
 	defer fileSyncMu.Unlock()
 	if fileSyncApplying || fileSyncSyncing {
+		return false
+	}
+	fileSyncApplying = true
+	return true
+}
+
+// beginFileApplyAuto 自动应用专用守卫：同步轮次内部调用，**不受「同步进行中」影响**
+// （用 beginFileApply 会永远返回 false，远端改动就落不了地——2026-10-06 现场）。
+func beginFileApplyAuto() bool {
+	fileSyncMu.Lock()
+	defer fileSyncMu.Unlock()
+	if fileSyncApplying {
 		return false
 	}
 	fileSyncApplying = true

@@ -172,6 +172,8 @@ func fileSyncEmitLocked() {
 func initFileSyncState() {
 	fileSyncMu.Lock()
 	fileSyncCur = loadFileSyncState()
+	// 上一次会话的失败文案不带到本次启动（界面否则会在首轮同步前显示过期错误）
+	fileSyncCur.LastError = ""
 	entries := len(fileSyncCur.Entries)
 	if entries > 0 {
 		fileSyncScanAllLocked()
@@ -188,17 +190,98 @@ func initFileSyncState() {
 	}
 }
 
-// resetFileSyncStateForAccountSwitch 换账号时作废文件同步清单：远端条目属于旧账号，
-// 沿用会让新账号下的对账把本机条目判成「服务端已删除」而误删本地副本。
-func resetFileSyncStateForAccountSwitch() {
+// fileSyncOnAccountLogin 登录后处理清单归属：
+//
+//   - 同一账号重新登录（退出再登录）→ **保留**清单，避免把账号上的文件全量重下一次；
+//   - 换账号（或清单没有归属记录）→ 作废：远端条目属于旧账号，沿用会让新账号下的对账
+//     把本机条目判成「服务端已删除」而误删本地副本。
+func fileSyncOnAccountLogin(userID string) {
 	fileSyncMu.Lock()
+	defer fileSyncMu.Unlock()
+	if userID == "" {
+		return
+	}
+	// 登录后不沿用上一次会话的失败文案：等本轮同步真的失败再显示（否则会把历史错误当成当前问题）
+	fileSyncCur.LastError = ""
+	if fileSyncCur.UserID == userID {
+		_ = saveFileSyncStateLocked(fileSyncCur)
+		return
+	}
+	if fileSyncCur.UserID == "" {
+		// 旧版本写的清单没有归属记录：**认领**给当前账号（否则每次重新登录都会清空 → 全量重下）
+		fileSyncCur.UserID = userID
+		_ = saveFileSyncStateLocked(fileSyncCur)
+		return
+	}
 	had := len(fileSyncCur.Entries)
-	fileSyncCur = fileSyncState{}
+	fileSyncCur = fileSyncState{UserID: userID}
 	_ = saveFileSyncStateLocked(fileSyncCur)
-	fileSyncMu.Unlock()
 	if had > 0 {
 		log.Printf("[files] 账号已切换：文件同步清单已清空（原 %d 个条目需在新账号下重新添加）", had)
 	}
+}
+
+// fileSyncReattachOwnEntriesLocked 自愈：对账响应里若某条目由**本机**创建、且带着原路径，
+// 而本机这条却是接收端（老数据、或清单曾丢失后被当成接收端重建），就自动回源路径并重扫。
+// 调用方须持有 fileSyncMu。返回回源条数。
+func fileSyncReattachOwnEntriesLocked(remote []fileSyncRemoteEntry) int {
+	dev := accountDeviceID()
+	if dev == "" {
+		return 0
+	}
+	done := 0
+	for _, r := range remote {
+		if r.OriginDevice != dev || strings.TrimSpace(r.SourcePath) == "" {
+			continue
+		}
+		idx := fileSyncFindEntryLocked(r.ID)
+		if idx < 0 {
+			continue
+		}
+		e := &fileSyncCur.Entries[idx]
+		if strings.TrimSpace(e.SourcePath) != "" {
+			continue // 已经是源设备
+		}
+		root, ok := fileSyncUsableSourcePath(r.SourcePath, e.Kind)
+		if !ok {
+			// 原路径在本机不存在：记下来供界面说明，内容按接收端保存
+			if e.OriginPath != r.SourcePath || !e.SourcePathMissing {
+				e.OriginPath, e.SourcePathMissing = r.SourcePath, true
+				log.Printf("[files] 条目 %s 的原路径 %s 在本机不存在，保持接收目录副本", e.Name, r.SourcePath)
+			}
+			continue
+		}
+		e.SourcePath, e.SourcePathMissing, e.OriginPath = root, false, ""
+		e.Error = ""
+		if e.Files == nil {
+			e.Files = map[string]fileSyncLocalFile{}
+		}
+		_ = fileSyncScanEntryLocked(e) // 以原路径重扫（内容一致的文件保持已同步，不会重传）
+		log.Printf("[files] 条目 %s 由本机创建，已自动同步回原路径 %s", e.Name, root)
+		logUI("自动回源路径", fmt.Sprintf("%s → %s", e.Name, root))
+		done++
+	}
+	return done
+}
+
+// fileSyncUsableSourcePath 校验服务端记下的来源路径在本机是否可用：
+// 必须是绝对路径、存在，且类型与条目一致（file 对应文件、dir 对应目录）。
+func fileSyncUsableSourcePath(path, kind string) (string, bool) {
+	p := strings.TrimSpace(path)
+	if p == "" || !filepath.IsAbs(p) {
+		return "", false
+	}
+	st, err := os.Stat(p)
+	if err != nil {
+		return "", false
+	}
+	if kind == "dir" && !st.IsDir() {
+		return "", false
+	}
+	if kind == "file" && st.IsDir() {
+		return "", false
+	}
+	return p, true
 }
 
 // ==================== 扫描 ====================
@@ -596,6 +679,8 @@ type fileSyncResult struct {
 	Uploaded int
 	Pending  int
 	Blocked  int
+	// Applied 本轮自动落地的远端改动项数（用户要求：远端改动直接更新到本地，不再等点击）
+	Applied int
 }
 
 // fileSyncBuildRequestLocked 组装对账请求（调用方须持有 fileSyncMu）。
@@ -753,6 +838,9 @@ func fileSyncCheck(ctx context.Context, client *accountClient) (fileSyncResult, 
 	}
 	apply, _, orphans := fileSyncFilterActionsLocked(resp.Actions)
 	fileSyncCur.PendingApply = apply
+	// 自愈：服务端记着「本机创建 + 原路径」，而本机这条却是接收端（老数据 / 曾经丢过清单）
+	// → 这里直接回源路径（用户要求：源设备自动同步回源路径，不靠人工指定）。
+	fileSyncReattachOwnEntriesLocked(resp.Entries)
 	// 自家孤儿条目（来源设备=本机、本机已删除）：不提示应用，直接清理服务端残留
 	for _, id := range orphans {
 		if derr := client.FilesDeleteEntry(ctx, token, id); derr != nil && accountErrorCode(derr) != accErrNotFound {
@@ -772,16 +860,52 @@ func fileSyncCheck(ctx context.Context, client *accountClient) (fileSyncResult, 
 	res.Pending = len(apply)
 	_ = saveFileSyncStateLocked(fileSyncCur)
 	fileSyncMu.Unlock()
+
+	// 远端改动**直接落地**（用户要求：不再等点「应用改动」）；失败项留在待应用集合，下轮自动重试。
+	// 小字提示保留痕迹：什么时候应用了多少项（见 RemoteAppliedAt/Count）。
+	if len(apply) > 0 && beginFileApplyAuto() {
+		ar, aerr := fileSyncApplyAll(ctx, client)
+		endFileApply()
+		if aerr != nil {
+			log.Printf("[files] 自动应用远端改动失败: %v", aerr)
+		}
+		if ar.Applied > 0 {
+			// 小字只报「真正落地的文件数」；纯条目级改动（如远端改名）才回退用条目数
+			count := ar.Files
+			if count == 0 {
+				count = ar.Entries
+			}
+			fileSyncMu.Lock()
+			fileSyncCur.RemoteAppliedAt = fileSyncNow()
+			fileSyncCur.RemoteAppliedCount = count
+			_ = saveFileSyncStateLocked(fileSyncCur)
+			fileSyncMu.Unlock()
+			res.Applied = ar.Applied
+			logUI("已应用远端改动", fmt.Sprintf("%d 项（文件 %d、条目 %d）", ar.Applied, ar.Files, ar.Entries))
+		}
+		if ar.Failed > 0 {
+			log.Printf("[files] 远端改动有 %d 项未能应用（下轮重试）: %v", ar.Failed, ar.Errors)
+		}
+		// 剩余待应用项数（真正的「待应用」）——供日志与界面显示
+		fileSyncMu.Lock()
+		res.Pending = len(fileSyncCur.PendingApply)
+		fileSyncMu.Unlock()
+	}
 	return res, nil
 }
 
 // ==================== 应用待生效改动 ====================
 
 // fileSyncApplyResult 应用结果（前端提示用）。
+//
+// 计数口径：Applied 是所有成功项（含条目级）；小字提示只用 Files（真正落到本机/从本机删除的文件数）——
+// 否则「远端新增 1 个文件」会因为「新建条目」也算一项而显示成「2 项」，对用户没有意义（2026-10-06 现场）。
 type fileSyncApplyResult struct {
 	Applied int
 	Failed  int
 	Errors  []string
+	Files   int // 文件级：下载 / 删除文件
+	Entries int // 条目级：新建 / 改名 / 移除条目
 }
 
 // fileSyncApplyAll 执行待应用动作：建条目 → 重命名 → 下载 → 删文件 → 移除条目。
@@ -812,6 +936,7 @@ func fileSyncApplyAll(ctx context.Context, client *accountClient) (fileSyncApply
 				continue
 			}
 			res.Applied++
+			res.Entries++
 		default:
 			rest = append(rest, a)
 		}
@@ -819,6 +944,10 @@ func fileSyncApplyAll(ctx context.Context, client *accountClient) (fileSyncApply
 	// 第二阶段：下载与删除
 	kept := make([]fileSyncAction, 0, len(rest))
 	for _, a := range rest {
+		// 上传由同步阶段负责（服务器可能仍下发 upload 动作）：不计入「远端更新」
+		if a.Kind == "upload" || a.Kind == "" {
+			continue
+		}
 		var err error
 		switch a.Kind {
 		case "download":
@@ -827,8 +956,6 @@ func fileSyncApplyAll(ctx context.Context, client *accountClient) (fileSyncApply
 			err = fileSyncApplyRemoveFile(a)
 		case "remove_entry":
 			err = fileSyncApplyRemoveEntry(a)
-		case "upload":
-			err = nil // 上传由同步阶段负责，不该出现在待应用集合；忽略
 		default:
 			err = nil
 		}
@@ -839,6 +966,11 @@ func fileSyncApplyAll(ctx context.Context, client *accountClient) (fileSyncApply
 			continue
 		}
 		res.Applied++
+		if a.Kind == "download" || a.Kind == "remove_file" {
+			res.Files++
+		} else {
+			res.Entries++
+		}
 	}
 
 	fileSyncMu.Lock()
@@ -858,12 +990,27 @@ func fileSyncApplyEntryAction(a fileSyncAction) error {
 		if idx >= 0 {
 			return nil
 		}
-		fileSyncCur.Entries = append(fileSyncCur.Entries, fileSyncEntry{
+		entry := fileSyncEntry{
 			ID:    a.EntryID,
 			Name:  a.Name,
 			Kind:  firstNonEmpty(a.EntryKind, "dir"),
 			Files: map[string]fileSyncLocalFile{},
-		})
+		}
+		// 先校验设备：如果这个条目本来就是**本机**创建的（来源设备 id = 本机），说明本机是源设备
+		// （可能只是本机清单丢了）。此时用服务端记下的原路径自动同步回原位置，
+		// 而不是按接收端把内容下成接收目录里的副本（2026-10-06 现场）。
+		if dev := accountDeviceID(); dev != "" && a.OriginDevice == dev && strings.TrimSpace(a.SourcePath) != "" {
+			if root, ok := fileSyncUsableSourcePath(a.SourcePath, entry.Kind); ok {
+				entry.SourcePath = root
+				log.Printf("[files] 条目 %s 由本机创建，自动同步回原路径 %s", entry.Name, root)
+			} else {
+				// 源路径文件/文件夹已不存在：保留记录以便界面说明，内容按接收端落到接收目录
+				entry.OriginPath = a.SourcePath
+				entry.SourcePathMissing = true
+				log.Printf("[files] 条目 %s 的原路径 %s 已不存在，按接收端保存到接收目录", entry.Name, a.SourcePath)
+			}
+		}
+		fileSyncCur.Entries = append(fileSyncCur.Entries, entry)
 		return nil
 	case "rename_entry":
 		if idx < 0 {
@@ -1144,32 +1291,41 @@ func startFileSyncBackground(ctx context.Context) {
 	go func() {
 		ticker := time.NewTicker(fileSyncLocalInterval)
 		defer ticker.Stop()
+		// 启动**立即**检查一次：远端改动（下载/改名，以及「本机创建的条目自动回源路径」）
+		// 不该等到第一个 tick（60 秒）才生效——2026-10-06 现场：用户以为只有点「立即同步」才恢复。
+		// 账号状态在这之前已载入（main.go: initAccountState → initFileSyncState → 本函数）。
+		fileSyncBackgroundCheck(ctx)
 		for {
 			select {
 			case <-ctx.Done():
 				return
 			case <-ticker.C:
-				if !accountLoggedIn() {
-					continue
-				}
-				fileSyncMu.Lock()
-				fileSyncScanAllLocked()
-				dirty := fileSyncHasLocalChangesLocked()
-				due := fileSyncNow()-fileSyncLastCheck >= int64(fileSyncRemoteInterval/time.Second)
-				fileSyncMu.Unlock()
-				if !dirty && !due {
-					continue
-				}
-				cctx, cancel := context.WithTimeout(ctx, fileSyncCheckTimeout)
-				res, err := fileSyncCheck(cctx, newAccountClient(""))
-				cancel()
-				if err != nil {
-					log.Printf("[files] 后台同步失败: %v", err)
-				} else if res.Uploaded > 0 || res.Pending > 0 {
-					log.Printf("[files] 后台同步完成：上传 %d、待应用 %d", res.Uploaded, res.Pending)
-				}
-				emitFilesChanged()
+				fileSyncBackgroundCheck(ctx)
 			}
 		}
 	}()
+}
+
+// fileSyncBackgroundCheck 后台一轮：本机扫描 +（有改动或到了远端对账间隔）完整同步一次。
+func fileSyncBackgroundCheck(ctx context.Context) {
+	if ctx == nil || ctx.Err() != nil || !accountLoggedIn() {
+		return
+	}
+	fileSyncMu.Lock()
+	fileSyncScanAllLocked()
+	dirty := fileSyncHasLocalChangesLocked()
+	due := fileSyncNow()-fileSyncLastCheck >= int64(fileSyncRemoteInterval/time.Second)
+	fileSyncMu.Unlock()
+	if !dirty && !due {
+		return
+	}
+	cctx, cancel := context.WithTimeout(ctx, fileSyncCheckTimeout)
+	res, err := fileSyncCheck(cctx, newAccountClient(""))
+	cancel()
+	if err != nil {
+		log.Printf("[files] 后台同步失败: %v", err)
+	} else if res.Uploaded > 0 || res.Applied > 0 || res.Pending > 0 {
+		log.Printf("[files] 后台同步完成：上传 %d、已应用 %d、待应用 %d", res.Uploaded, res.Applied, res.Pending)
+	}
+	emitFilesChanged()
 }

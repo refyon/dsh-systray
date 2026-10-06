@@ -374,7 +374,14 @@
               <button id="btn-files-sync" class="btn btn-ghost btn-sm" data-i18n="btnFilesSync">立即同步</button>
             </div>
           </div>
-          <div class="card-row">
+          <div class="card-row" id="files-loggedout-row">
+            <div class="row-text">
+              <div class="row-sub" data-i18n="filesLoggedOutHint">
+                登录账号后同步文件，这里会显示已同步的文件与剩余容量。
+              </div>
+            </div>
+          </div>
+          <div class="card-row" id="files-capacity-row">
             <div class="row-text files-capacity">
               <div class="row-sub" id="files-capacity-text">—</div>
               <div class="files-track"><div class="files-fill" id="files-capacity-fill"></div></div>
@@ -382,14 +389,14 @@
           </div>
           <div class="card-row hidden" id="files-pending">
             <div class="row-text">
-              <div class="row-title" data-i18n="filesPendingTitle">有来自其它设备的改动待应用</div>
+              <div class="row-title" data-i18n="filesPendingTitle">有远端改动未能应用</div>
               <div class="row-sub" id="files-pending-sub"></div>
             </div>
             <div class="row-actions">
-              <button id="btn-files-apply" class="btn btn-primary btn-sm" data-i18n="btnFilesApply">应用改动</button>
+              <button id="btn-files-apply" class="btn btn-primary btn-sm" data-i18n="btnFilesApply">重试</button>
             </div>
           </div>
-          <div class="card-row files-list-row">
+          <div class="card-row files-list-row" id="files-list-row">
             <div class="row-text">
               <div class="files-toolbar hidden" id="files-toolbar">
                 <span class="row-sub" data-i18n="filesSortLabel">排序</span>
@@ -403,7 +410,7 @@
               <div class="files-tree" id="files-tree"></div>
             </div>
           </div>
-          <div class="card-row">
+          <div class="card-row" id="files-hint-row">
             <div class="row-text">
               <div class="sync-hint" id="files-hint">
                 <span id="files-hint-text"></span>

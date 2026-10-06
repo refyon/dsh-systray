@@ -72,8 +72,9 @@ const I18N_EN = {
   btnFilesAddFile: "Add file",
   btnFilesAddDir: "Add folder",
   btnFilesSync: "Sync now",
-  filesPendingTitle: "Changes from your other devices are waiting",
-  btnFilesApply: "Apply changes",
+  filesPendingTitle: "Some remote changes could not be applied",
+  btnFilesApply: "Retry",
+  filesLoggedOutHint: "Sign in to sync files — what you sync and how much room is left will show up here.",
   filesSortLabel: "Sort",
   filesSortName: "Name",
   filesSortSize: "Size",
@@ -336,6 +337,7 @@ const I18N_DYN = {
   "已登录，尚未同步": "Signed in — not synced yet",
   "正在检查同步…": "Checking sync…",
   "已同步 · 最后同步 {0}": "Synced · last {0}",
+  "已同步 · 最后同步 {0} · 远端更新 {1} 项于 {2}": "Synced · last {0} · {1} remote change(s) applied at {2}",
   "同步失败：{0}": "Sync failed: {0}",
   "请先填写邮箱": "Enter your email first",
   "请输入 6 位验证码": "Enter the 6-digit code",
@@ -3130,8 +3132,21 @@ function renderFilesCard(st, opts) {
   if (!card) return;
   const forceTree = !!(opts && opts.forceTree);
   const loggedIn = !!(st && st.loggedIn);
-  card.classList.toggle("hidden", !loggedIn);
-  if (!loggedIn) { filesQuotaWarned = 0; return; }
+  // 板块始终可见：未登录时清空内容，只留一行说明（用户要求）
+  card.classList.remove("hidden");
+  $("files-loggedout-row").classList.toggle("hidden", loggedIn);
+  $("files-capacity-row").classList.toggle("hidden", !loggedIn);
+  $("files-list-row").classList.toggle("hidden", !loggedIn);
+  $("files-hint-row").classList.toggle("hidden", !loggedIn);
+  if (!loggedIn) {
+    filesQuotaWarned = 0;
+    $("files-pending").classList.add("hidden");
+    for (const id of ["btn-files-add-file", "btn-files-add-dir", "btn-files-sync"]) {
+      const b = $(id);
+      if (b) b.disabled = true;
+    }
+    return;
+  }
 
   // 容量条
   const used = Number(st.quotaUsed) || 0;
@@ -3195,7 +3210,12 @@ function renderFilesCard(st, opts) {
   } else if (st.lastError) {
     filesHint(fmt("同步失败：{0}", st.lastError), true);
   } else if (st.lastSyncedAt) {
-    filesHint(fmt("已同步 · 最后同步 {0}", syncFmtTime(st.lastSyncedAt)));
+    // 小字提示：最后同步时间 + 最近一次「远端改动自动落地」的时间与项数（用户要求保留痕迹）
+    const applied = Number(st.remoteAppliedCount) || 0;
+    const appliedAt = Number(st.remoteAppliedAt) || 0;
+    filesHint(applied > 0 && appliedAt > 0
+      ? fmt("已同步 · 最后同步 {0} · 远端更新 {1} 项于 {2}", syncFmtTime(st.lastSyncedAt), applied, syncFmtTime(appliedAt))
+      : fmt("已同步 · 最后同步 {0}", syncFmtTime(st.lastSyncedAt)));
   } else {
     filesHint("");
   }

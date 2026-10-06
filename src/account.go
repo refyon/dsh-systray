@@ -11,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"strings"
 	"time"
@@ -70,9 +71,17 @@ func accountErrorCode(err error) string {
 }
 
 // accountAPIBase 返回生效的服务地址：config.json 的 accountApiBase → 默认正式域名。
+//
+// 覆盖值必须是一个可用的 http(s) 地址；否则忽略并告警——一个残留的坏地址（例如调试用的
+// 本地端口）会让所有请求打向死地址，而界面只报「网络连接失败」，极难定位（2026-10-06 现场）。
 func accountAPIBase() string {
 	if v := strings.TrimSpace(accountAPIBaseValue()); v != "" {
-		return strings.TrimRight(v, "/")
+		low := strings.ToLower(v)
+		if strings.HasPrefix(low, "http://") || strings.HasPrefix(low, "https://") {
+			return strings.TrimRight(v, "/")
+		}
+		log.Printf("[account] 忽略非法服务地址覆盖值 %q（需以 http:// 或 https:// 开头），改用默认地址", v)
+		return defaultAccountAPIBase
 	}
 	return defaultAccountAPIBase
 }
@@ -91,6 +100,9 @@ type accountUser struct {
 }
 
 type accountDeviceInfo struct {
+	// ID 本机稳定设备标识（首次登录生成后持久化）：服务端据此复用同一设备，
+	// 否则每次登录都换 id，「本机创建的条目/操作」就无法识别（2026-10-06 现场）。
+	ID         string `json:"id,omitempty"`
 	Name       string `json:"name,omitempty"`
 	Platform   string `json:"platform,omitempty"`
 	AppVersion string `json:"appVersion,omitempty"`

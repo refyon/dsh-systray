@@ -80,6 +80,7 @@ func initAccountState() {
 		log.Printf("[account] 已载入登录态 email=%s cursor=%d baseline=%v",
 			maskEmail(accountCur.Email), accountCur.Cursor, accountCur.BaselineDone)
 	}
+	log.Printf("[account] 服务地址 %s（默认=%v）", accountAPIBase(), accountAPIBase() == defaultAccountAPIBase)
 }
 
 // accountLoggedIn 是否已登录且本地有效期未过（埋点上报的前置判断）。
@@ -256,12 +257,23 @@ func accountMarkStartupChecked() {
 }
 
 // accountDeviceSelf 上报给服务端的设备信息（不采集硬件 UUID）。
+//
+// 带上本机**稳定设备 id**：首次（或旧版本没有记录时）生成一次并持久化在登录态里，
+// 之后每次登录/换账号都复用它——否则服务端每次都当新设备，「本机创建的条目」无法识别
+// （自动回源路径、孤儿条目清理都依赖它，2026-10-06 现场）。
 func accountDeviceSelf() accountDeviceInfo {
 	name, err := os.Hostname()
 	if err != nil || strings.TrimSpace(name) == "" {
 		name = "unknown"
 	}
-	return accountDeviceInfo{Name: name, Platform: runtime.GOOS, AppVersion: appVersion}
+	accountMu.Lock()
+	id := strings.TrimSpace(accountCur.DeviceID)
+	if id == "" {
+		id = newOpID()
+		accountCur.DeviceID = id // 登录成功后随登录态一起落盘（见 AccountVerify）
+	}
+	accountMu.Unlock()
+	return accountDeviceInfo{ID: id, Name: name, Platform: runtime.GOOS, AppVersion: appVersion}
 }
 
 // maskEmail 日志脱敏：`user@example.com` → `u***@example.com`。
@@ -271,6 +283,25 @@ func maskEmail(email string) string {
 		return "***"
 	}
 	return email[:1] + "***" + email[at:]
+}
+
+// accountErrorDetail 取错误的底层描述并截断（用于在提示后附上可排障的简短原因）。
+func accountErrorDetail(err error, max int) string {
+	if err == nil {
+		return ""
+	}
+	msg := strings.TrimSpace(err.Error())
+	var ae *accountError
+	if errors.As(err, &ae) && strings.TrimSpace(ae.Message) != "" {
+		msg = strings.TrimSpace(ae.Message)
+	}
+	if msg == "" {
+		return ""
+	}
+	if len(msg) > max {
+		msg = msg[:max] + "…"
+	}
+	return msg
 }
 
 // accountErrorText 把错误映射成用户可读文案（中文为 i18n 键，英文见 i18n.go）。
@@ -291,7 +322,12 @@ func accountErrorText(err error) string {
 	case accErrUnauthorized:
 		return T("登录已失效，请重新登录")
 	case accErrNetwork:
-		return T("网络连接失败，请检查网络后重试")
+		// 附上底层原因（截断）：只提示「网络连接失败」无法排障（2026-10-06 现场）
+		base := T("网络连接失败，请检查网络后重试")
+		if detail := accountErrorDetail(err, 90); detail != "" {
+			return base + "（" + detail + "）"
+		}
+		return base
 	case accErrQuotaExceeded:
 		return T("可用容量不足")
 	case accErrChecksumMismatch:
@@ -361,9 +397,8 @@ func (a *App) AccountVerify(email, code string) (AccountStatusInfo, error) {
 	accountSyncErr = ""
 	accountMu.Unlock()
 
-	if switchedAccount {
-		resetFileSyncStateForAccountSwitch() // 文件同步清单属于旧账号，作废后由用户在新账号下重新添加
-	}
+	// 同一账号重新登录保留文件同步清单（不重传/重下）；换账号才作废
+	fileSyncOnAccountLogin(saved.UserID)
 	if err := saveAccountState(saved); err != nil {
 		log.Printf("[account] 保存登录态失败: %v", err)
 	}
@@ -392,6 +427,8 @@ func (a *App) AccountLogout() (AccountStatusInfo, error) {
 		revokeErr = err
 	}
 	logUI("退出登录", maskEmail(st.Email))
+	// 文件卡要立刻回到「未登录」态（清空容量与列表，显示提示）——本机清单留在磁盘上等下次登录
+	emitFilesChanged()
 
 	status := accountSnapshot()
 	if revokeErr != nil {

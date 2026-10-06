@@ -119,8 +119,8 @@ Windows / macOS 系统托盘应用。三个核心特性：**轻量**（单文件
 
 | 平台 | 构建命令（在 `src/` 下执行） |
 | --- | --- |
-| Windows | `wails build -s -clean -platform windows/amd64 -ldflags "-X main.appVersion=v1.3.1"` |
-| macOS | `wails build -s -clean -platform darwin/universal -ldflags "-X main.appVersion=v1.3.1"` |
+| Windows | `wails build -s -clean -platform windows/amd64 -ldflags "-X main.appVersion=v1.3.2"` |
+| macOS | `wails build -s -clean -platform darwin/universal -ldflags "-X main.appVersion=v1.3.2"` |
 
 - 产物：`src/build/bin/dsh-systray.exe` / `dsh-systray.app`
 - `-X main.appVersion=`：版本号（CI 按 tag 注入；省略时为 `dev`，跳过更新检查）

@@ -27,6 +27,9 @@ type fileSyncEntryBody struct {
 	ID   string `json:"id"`
 	Name string `json:"name"`
 	Kind string `json:"kind"`
+	// SourcePath 本机原路径：随创建条目一起登记，供来源设备丢失清单后自动同步回原路径
+	// （非来源设备只拿到相对路径，见 docs/API.md 端点 15）。
+	SourcePath string `json:"sourcePath,omitempty"`
 }
 
 // fileSyncLocalMeta 对账入参里的本机文件状态。
@@ -52,11 +55,13 @@ type fileSyncAction struct {
 	EntryKind string `json:"entryKind,omitempty"`
 	// OriginDevice create_entry 的创建设备 id（迁移 0004 起）：等于本机时说明是自家残留，直接清理
 	OriginDevice string `json:"originDevice,omitempty"`
-	RelPath      string `json:"relPath,omitempty"`
-	Size         int64  `json:"size,omitempty"`
-	Sha256       string `json:"sha256,omitempty"`
-	Mtime        int64  `json:"mtime,omitempty"`
-	Rev          int64  `json:"rev,omitempty"`
+	// SourcePath create_entry 的来源设备原路径（迁移 0005 起）：来源设备据此自动同步回原路径
+	SourcePath string `json:"sourcePath,omitempty"`
+	RelPath    string `json:"relPath,omitempty"`
+	Size       int64  `json:"size,omitempty"`
+	Sha256     string `json:"sha256,omitempty"`
+	Mtime      int64  `json:"mtime,omitempty"`
+	Rev        int64  `json:"rev,omitempty"`
 }
 
 // fileQuota 容量快照。
@@ -75,6 +80,8 @@ type fileSyncRemoteEntry struct {
 	UpdatedAt int64  `json:"updatedAt"`
 	// OriginDevice 创建设备 id（迁移 0004 起；旧条目为空串 = 来源未知）
 	OriginDevice string `json:"originDevice,omitempty"`
+	// SourcePath 来源设备上的原路径（迁移 0005 起；空串 = 未知，按接收端处理）
+	SourcePath string `json:"sourcePath,omitempty"`
 }
 
 // fileSyncResponse 对账响应。
@@ -126,12 +133,18 @@ type fileSyncEntry struct {
 	// Ignored 「仅本机停止同步」的文件（相对路径 → 时间）：本机删除（保留元数据可重新同步）或用
 	// 「移除」删掉云端副本后本机仍保留的文件都记在这里；文件修改时间晚于该时间视为用户改动 → 重新同步。
 	Ignored map[string]int64 `json:"ignored,omitempty"`
+	// OriginPath / SourcePathMissing：本机曾是来源设备，但服务端记下的原路径在本机已不存在
+	// （文件被删/移走）——此时按接收端保存副本，界面说明原委。
+	OriginPath        string `json:"originPath,omitempty"`
+	SourcePathMissing bool   `json:"sourcePathMissing,omitempty"`
 	// Error 条目级错误（如本机路径不存在、目录重命名失败）。
 	Error string `json:"error,omitempty"`
 }
 
 // fileSyncState filesync.json 的内容。
 type fileSyncState struct {
+	// UserID 清单归属账号：同一账号重新登录时继续用（不再全量重传），换账号才作废。
+	UserID       string           `json:"userId,omitempty"`
 	Entries      []fileSyncEntry  `json:"entries,omitempty"`
 	PendingApply []fileSyncAction `json:"pendingApply,omitempty"`
 	QuotaUsed    int64            `json:"quotaUsed,omitempty"`
@@ -139,6 +152,9 @@ type fileSyncState struct {
 	QuotaTier    string           `json:"quotaTier,omitempty"`
 	LastSyncedAt int64            `json:"lastSyncedAt,omitempty"`
 	LastError    string           `json:"lastError,omitempty"`
+	// 远端改动直接落地后的小字提示：什么时候、应用了多少项（用户要求保留可见痕迹）
+	RemoteAppliedAt    int64 `json:"remoteAppliedAt,omitempty"`
+	RemoteAppliedCount int   `json:"remoteAppliedCount,omitempty"`
 }
 
 // ==================== 状态视图（前端列表渲染的数据源） ====================
@@ -160,15 +176,20 @@ type FileSyncFileView struct {
 
 // FileSyncEntryView 列表里的一个条目行（文件夹可展开为 Files）。
 type FileSyncEntryView struct {
-	ID       string             `json:"id"`
-	Name     string             `json:"name"`
-	Kind     string             `json:"kind"`
-	IsSource bool               `json:"isSource"`
-	Path     string             `json:"path"`
-	Size     int64              `json:"size"`
-	Status   string             `json:"status"`
-	Error    string             `json:"error,omitempty"`
-	Files    []FileSyncFileView `json:"files"`
+	ID       string `json:"id"`
+	Name     string `json:"name"`
+	Kind     string `json:"kind"`
+	IsSource bool   `json:"isSource"`
+	Path     string `json:"path"`
+	Size     int64  `json:"size"`
+	// Mtime 条目内文件的最新修改时间（列表按「修改时间」排序用；空条目为 0）
+	Mtime  int64              `json:"mtime"`
+	Status string             `json:"status"`
+	Error  string             `json:"error,omitempty"`
+	Files  []FileSyncFileView `json:"files"`
+	// SourcePathMissing 本机曾是来源设备、但原路径已不存在：内容按接收端保存，界面说明原委
+	SourcePathMissing bool   `json:"sourcePathMissing,omitempty"`
+	OriginPath        string `json:"originPath,omitempty"`
 }
 
 // FileSyncStatusInfo 「数据同步 → 文件同步」卡的状态快照（JSON 字段名即前端读取名）。
@@ -192,6 +213,9 @@ type FileSyncStatusInfo struct {
 	UploadTotal    int   `json:"uploadTotal"`
 	UploadBytes    int64 `json:"uploadBytes"`
 	UploadSpeedBps int64 `json:"uploadSpeedBps"`
+	// 远端改动自动落地的小字提示：时间 + 项数（0 = 从未）
+	RemoteAppliedAt    int64 `json:"remoteAppliedAt"`
+	RemoteAppliedCount int   `json:"remoteAppliedCount"`
 }
 
 // ==================== 路径与持久化 ====================
@@ -386,33 +410,46 @@ func fileSyncFileStatus(m fileSyncLocalFile) string {
 // 与需求「文件夹排在文件前面」一致（层级仅一级，展开/折叠由前端按 relPath 前缀分组）。
 func fileSyncSnapshotLocked() FileSyncStatusInfo {
 	out := FileSyncStatusInfo{
-		Syncing:        fileSyncSyncing,
-		Applying:       fileSyncApplying,
-		LastError:      fileSyncCur.LastError,
-		LastSyncedAt:   fileSyncCur.LastSyncedAt,
-		QuotaUsed:      fileSyncCur.QuotaUsed,
-		QuotaLimit:     fileSyncCur.QuotaLimit,
-		QuotaTier:      fileSyncCur.QuotaTier,
-		ReceiveDir:     fileSyncReceiveDir(),
-		PendingCount:   len(fileSyncCur.PendingApply),
-		PendingFiles:   fileSyncPendingLabelsLocked(),
-		Uploading:      fileSyncProg.Active,
-		UploadDone:     fileSyncProg.Done,
-		UploadTotal:    fileSyncProg.Total,
-		UploadBytes:    fileSyncProg.Bytes,
-		UploadSpeedBps: fileSyncProg.SpeedBps,
+		Syncing:            fileSyncSyncing,
+		Applying:           fileSyncApplying,
+		LastError:          fileSyncCur.LastError,
+		LastSyncedAt:       fileSyncCur.LastSyncedAt,
+		QuotaUsed:          fileSyncCur.QuotaUsed,
+		QuotaLimit:         fileSyncCur.QuotaLimit,
+		QuotaTier:          fileSyncCur.QuotaTier,
+		ReceiveDir:         fileSyncReceiveDir(),
+		PendingCount:       len(fileSyncCur.PendingApply),
+		PendingFiles:       fileSyncPendingLabelsLocked(),
+		Uploading:          fileSyncProg.Active,
+		UploadDone:         fileSyncProg.Done,
+		UploadTotal:        fileSyncProg.Total,
+		UploadBytes:        fileSyncProg.Bytes,
+		UploadSpeedBps:     fileSyncProg.SpeedBps,
+		RemoteAppliedAt:    fileSyncCur.RemoteAppliedAt,
+		RemoteAppliedCount: fileSyncCur.RemoteAppliedCount,
 	}
 	out.LoggedIn = accountLoggedIn()
+	// 未登录：文件卡清空内容（容量、列表、进度一律不外露），由前端显示「登录后同步可查看」提示。
+	// 本机清单仍留在 filesync.json 里，重新登录后继续用（不会重传所有文件）。
+	if !out.LoggedIn {
+		return FileSyncStatusInfo{
+			LoggedIn:   false,
+			ReceiveDir: fileSyncReceiveDir(),
+			Entries:    []FileSyncEntryView{},
+		}
+	}
 
 	for _, e := range fileSyncCur.Entries {
 		view := FileSyncEntryView{
-			ID:       e.ID,
-			Name:     e.Name,
-			Kind:     e.Kind,
-			IsSource: strings.TrimSpace(e.SourcePath) != "",
-			Path:     fileSyncEntryRoot(e),
-			Status:   "synced",
-			Error:    e.Error,
+			ID:                e.ID,
+			Name:              e.Name,
+			Kind:              e.Kind,
+			IsSource:          strings.TrimSpace(e.SourcePath) != "",
+			Path:              fileSyncEntryRoot(e),
+			Status:            "synced",
+			Error:             e.Error,
+			SourcePathMissing: e.SourcePathMissing,
+			OriginPath:        e.OriginPath,
 		}
 		if e.Error != "" {
 			view.Status = "error"
@@ -425,6 +462,9 @@ func fileSyncSnapshotLocked() FileSyncStatusInfo {
 		for _, rel := range rels {
 			m := e.Files[rel]
 			view.Size += m.Size
+			if m.Mtime > view.Mtime {
+				view.Mtime = m.Mtime // 条目按「修改时间」排序取最新
+			}
 			fv := FileSyncFileView{
 				RelPath: rel,
 				Name:    fileSyncDisplayName(rel),

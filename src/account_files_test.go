@@ -613,8 +613,54 @@ func TestFileSyncLocalDeleteKeepsServerCopy(t *testing.T) {
 	if _, err := fileSyncCheck(context.Background(), client); err != nil {
 		t.Fatalf("同步失败: %v", err)
 	}
-	if got := fileSyncStatusSnapshot().PendingCount; got != 1 {
-		t.Fatalf("应产生一条待应用（下载），实际 %d", got)
+	// 远端改动**直接落地**：文件回到本机，不留待应用，并记下「远端更新」痕迹
+	if _, err := os.Stat(filepath.Join(src, "a.txt")); err != nil {
+		t.Fatalf("远端改动应已自动落地到本机：%v", err)
+	}
+	snap := fileSyncStatusSnapshot()
+	if snap.PendingCount != 0 {
+		t.Fatalf("远端改动已落地，不该残留待应用：%d", snap.PendingCount)
+	}
+	// 计数口径：只数真正落地的文件（这条只有 1 个下载动作 → 1）
+	if snap.RemoteAppliedCount != 1 || snap.RemoteAppliedAt == 0 {
+		t.Fatalf("未记录远端更新痕迹：applied=%d at=%d", snap.RemoteAppliedCount, snap.RemoteAppliedAt)
+	}
+}
+
+// TestFileSyncRemoteAppliedCountCountsFilesOnly 「远端更新 N 项」只数文件：
+// 新建条目 + 下载 1 个文件应显示 1 项（而不是 2 项）。
+func TestFileSyncRemoteAppliedCountCountsFilesOnly(t *testing.T) {
+	dir := setupFileSyncTest(t)
+	setAccountState(loggedInState())
+	receive := fileSyncReceiveDir()
+	fake := newFakeFilesServer()
+	fake.putObject("e1", "notes.txt", []byte("hello"), 1)
+	client, _ := newTestClient(t, fake.handler(t))
+	sha := fileSyncHashBytes([]byte("hello"))
+	fake.actions = []fileSyncAction{
+		{Kind: "create_entry", EntryID: "e1", Name: "notes.txt", EntryKind: "file"},
+		{Kind: "download", EntryID: "e1", RelPath: "notes.txt", Size: 5, Sha256: sha, Mtime: 1, Rev: 1},
+		{Kind: "upload", EntryID: "e1", RelPath: "notes.txt"}, // 服务器仍可能下发；不计入
+	}
+	_ = dir
+	fileSyncMu.Lock()
+	fileSyncCur.Entries = nil
+	fileSyncMu.Unlock()
+
+	res, err := fileSyncCheck(context.Background(), client)
+	if err != nil {
+		t.Fatalf("同步失败: %v", err)
+	}
+	if res.Applied != 2 { // 条目 + 文件都被应用（upload 不计）
+		t.Fatalf("应用项数应为 2，实际 %d", res.Applied)
+	}
+	snap := fileSyncStatusSnapshot()
+	if snap.RemoteAppliedCount != 1 {
+		t.Fatalf("小字应只数文件（1 项），实际 %d", snap.RemoteAppliedCount)
+	}
+	// 单文件条目的落点就是接收目录下的显示名本身（不再多一层 relPath）
+	if _, err := os.Stat(filepath.Join(receive, "notes.txt")); err != nil {
+		t.Fatalf("文件应落到接收目录：%v", err)
 	}
 }
 
@@ -942,6 +988,7 @@ func TestFileSyncSafeToDelete(t *testing.T) {
 
 func TestFileSyncSnapshotView(t *testing.T) {
 	setupFileSyncTest(t)
+	setAccountState(loggedInState()) // 未登录时快照清空（板块显示「登录后可查看」提示）
 	fileSyncMu.Lock()
 	fileSyncCur = fileSyncState{
 		QuotaUsed:  10,
@@ -1067,7 +1114,7 @@ func TestFileSyncInitRevalidatesPendingActions(t *testing.T) {
 	}
 }
 
-func TestFileSyncResetOnAccountSwitch(t *testing.T) {
+func TestFileSyncAccountOwnership(t *testing.T) {
 	dir := setupFileSyncTest(t)
 	src := filepath.Join(dir, "src")
 	fsWriteFile(t, filepath.Join(src, "a.txt"), "x")
@@ -1076,13 +1123,28 @@ func TestFileSyncResetOnAccountSwitch(t *testing.T) {
 	_ = saveFileSyncStateLocked(fileSyncCur)
 	fileSyncMu.Unlock()
 
-	resetFileSyncStateForAccountSwitch()
+	// 旧版本清单没有归属记录：首次登录应**认领**（保留），而不是清空
+	setAccountState(loggedInState())
+	fileSyncOnAccountLogin("u-1")
+	if got := loadFileSyncState(); len(got.Entries) != 1 || got.UserID != "u-1" {
+		t.Fatalf("首次登录应认领清单并保留: %+v", got)
+	}
+	// 同一账号重新登录（退出再登录）：清单保留，不重下/重传
+	fileSyncOnAccountLogin("u-1")
+	if got := loadFileSyncState(); len(got.Entries) != 1 {
+		t.Fatalf("同账号重新登录应保留清单: %+v", got)
+	}
+	if snap := fileSyncStatusSnapshot(); len(snap.Entries) != 1 {
+		t.Fatalf("同账号重新登录后列表应还在: %+v", snap)
+	}
 
+	// 换账号：清单作废（远端条目属于旧账号）
+	fileSyncOnAccountLogin("u-2")
+	if got := loadFileSyncState(); len(got.Entries) != 0 || len(got.PendingApply) != 0 || got.UserID != "u-2" {
+		t.Fatalf("换账号后磁盘清单未清空: %+v", got)
+	}
 	if snap := fileSyncStatusSnapshot(); len(snap.Entries) != 0 || snap.PendingCount != 0 {
 		t.Fatalf("换账号后内存清单未清空: %+v", snap)
-	}
-	if got := loadFileSyncState(); len(got.Entries) != 0 || len(got.PendingApply) != 0 {
-		t.Fatalf("换账号后磁盘清单未清空: %+v", got)
 	}
 }
 
@@ -1527,6 +1589,158 @@ func TestFileSyncOpenCanceledIsSilent(t *testing.T) {
 	openFileWithFn = func(string) error { return errors.New("对话框打不开") }
 	if err := app.FilesOpenEntryWith("e1", "info.txt"); err == nil {
 		t.Fatalf("选择打开方式失败应报错")
+	}
+}
+
+// TestFileSyncSnapshotClearsWhenLoggedOut 退出登录后文件卡清空内容（容量/列表/进度不外露），
+// 但本机清单保留在磁盘上，重新登录即恢复显示（用户要求）。
+func TestFileSyncSnapshotClearsWhenLoggedOut(t *testing.T) {
+	dir := setupFileSyncTest(t)
+	_ = dir
+	fileSyncMu.Lock()
+	fileSyncCur = fileSyncState{
+		QuotaUsed:  10,
+		QuotaLimit: 100,
+		Entries:    []fileSyncEntry{{ID: "e1", Name: "notes", Kind: "dir", SourcePath: "s"}},
+	}
+	snap := fileSyncSnapshotLocked()
+	fileSyncMu.Unlock()
+	if snap.LoggedIn {
+		t.Fatalf("未登录时 LoggedIn 应为 false")
+	}
+	if len(snap.Entries) != 0 || snap.QuotaUsed != 0 || snap.QuotaLimit != 0 || snap.PendingCount != 0 {
+		t.Fatalf("未登录时文件卡应清空：%+v", snap)
+	}
+
+	setAccountState(loggedInState())
+	back := fileSyncStatusSnapshot()
+	if !back.LoggedIn || len(back.Entries) != 1 || back.QuotaLimit != 100 {
+		t.Fatalf("重新登录后应恢复显示本机清单：%+v", back)
+	}
+}
+
+// TestFileSyncEntryFromOwnDeviceReattachesSourcePath 先校验设备身份再落盘：
+//   - 本机创建的条目（originDevice=本机）+ 服务端记下的原路径在本机可用 → **自动同步回原路径**，
+//     不在接收目录造副本（2026-10-06 现场：H:\DOC\info.txt 曾被下成 Documents 里的副本）；
+//   - 原路径已不存在 → 才按接收端落到接收目录，并标记 sourcePathMissing 由界面说明；
+//   - 其它设备创建的条目 → 始终按接收端处理。
+func TestFileSyncEntryFromOwnDeviceReattachesSourcePath(t *testing.T) {
+	dir := setupFileSyncTest(t)
+	setAccountState(loggedInState())
+	accountMu.Lock()
+	accountCur.DeviceID = "dev-self"
+	accountMu.Unlock()
+
+	// 场景 A：原路径仍在本机 → 自动回源
+	original := filepath.Join(dir, "H-DOC-info.txt")
+	fsWriteFile(t, original, "hello")
+	fileSyncMu.Lock()
+	fileSyncCur = fileSyncState{}
+	fileSyncMu.Unlock()
+	if err := fileSyncApplyEntryAction(fileSyncAction{
+		Kind: "create_entry", EntryID: "mine", Name: "info.txt", EntryKind: "file",
+		OriginDevice: "dev-self", SourcePath: original,
+	}); err != nil {
+		t.Fatalf("建条目失败: %v", err)
+	}
+	snap := fileSyncStatusSnapshot()
+	if len(snap.Entries) != 1 {
+		t.Fatalf("条目未建立：%+v", snap.Entries)
+	}
+	if !snap.Entries[0].IsSource || snap.Entries[0].Path != original {
+		t.Fatalf("本机创建的条目应自动回源路径 %s：%+v", original, snap.Entries[0])
+	}
+	if snap.Entries[0].SourcePathMissing {
+		t.Fatalf("原路径可用时不该标记缺失：%+v", snap.Entries[0])
+	}
+
+	// 场景 B：原路径已不存在 → 接收目录副本 + 标记
+	fileSyncMu.Lock()
+	fileSyncCur = fileSyncState{}
+	fileSyncMu.Unlock()
+	missing := filepath.Join(dir, "no-such-file.txt")
+	if err := fileSyncApplyEntryAction(fileSyncAction{
+		Kind: "create_entry", EntryID: "gone", Name: "gone.txt", EntryKind: "file",
+		OriginDevice: "dev-self", SourcePath: missing,
+	}); err != nil {
+		t.Fatalf("建条目失败: %v", err)
+	}
+	snap = fileSyncStatusSnapshot()
+	if snap.Entries[0].IsSource {
+		t.Fatalf("原路径不存在时应按接收端处理：%+v", snap.Entries[0])
+	}
+	if !snap.Entries[0].SourcePathMissing || snap.Entries[0].OriginPath != missing {
+		t.Fatalf("应标记原路径缺失并带上原路径：%+v", snap.Entries[0])
+	}
+
+	// 场景 C：别的设备创建的条目 → 接收端，且不标记
+	fileSyncMu.Lock()
+	fileSyncCur = fileSyncState{}
+	fileSyncMu.Unlock()
+	if err := fileSyncApplyEntryAction(fileSyncAction{
+		Kind: "create_entry", EntryID: "peer", Name: "peer.txt", EntryKind: "file",
+		OriginDevice: "dev-peer", SourcePath: "/home/peer/peer.txt",
+	}); err != nil {
+		t.Fatalf("建条目失败: %v", err)
+	}
+	snap = fileSyncStatusSnapshot()
+	if snap.Entries[0].IsSource || snap.Entries[0].SourcePathMissing {
+		t.Fatalf("其它设备的条目应按接收端处理：%+v", snap.Entries[0])
+	}
+}
+
+// TestFileSyncSelfHealsReceiverEntryWithOwnSourcePath 服务端记着「本机创建 + 原路径」，
+// 而本机这条是接收端（老数据 / 清单曾丢失）→ 下一轮对账自动回源路径（不靠人工指定）。
+func TestFileSyncSelfHealsReceiverEntryWithOwnSourcePath(t *testing.T) {
+	dir := setupFileSyncTest(t)
+	setAccountState(loggedInState())
+	accountMu.Lock()
+	accountCur.DeviceID = "dev-self"
+	accountMu.Unlock()
+
+	original := filepath.Join(dir, "H-DOC-note.txt")
+	fsWriteFile(t, original, "world")
+	fileSyncMu.Lock()
+	fileSyncCur = fileSyncState{Entries: []fileSyncEntry{{
+		ID: "e1", Name: "note.txt", Kind: "file", // 没有 SourcePath：被当成接收端
+		Files: map[string]fileSyncLocalFile{},
+	}}}
+	n := fileSyncReattachOwnEntriesLocked([]fileSyncRemoteEntry{{
+		ID: "e1", Name: "note.txt", Kind: "file", OriginDevice: "dev-self", SourcePath: original,
+	}})
+	fileSyncMu.Unlock()
+	if n != 1 {
+		t.Fatalf("应回源 1 个条目，实际 %d", n)
+	}
+	snap := fileSyncStatusSnapshot()
+	if !snap.Entries[0].IsSource || snap.Entries[0].Path != original {
+		t.Fatalf("应自动回源到 %s：%+v", original, snap.Entries[0])
+	}
+	if _, ok := snap.Entries[0].Files[0].RelPath, true; !ok {
+		t.Fatalf("回源后应重扫出文件：%+v", snap.Entries[0].Files)
+	}
+
+	// 原路径不存在：不误回源，只标记说明
+	fileSyncMu.Lock()
+	fileSyncCur = fileSyncState{Entries: []fileSyncEntry{{ID: "e2", Name: "gone.txt", Kind: "file", Files: map[string]fileSyncLocalFile{}}}}
+	fileSyncReattachOwnEntriesLocked([]fileSyncRemoteEntry{{
+		ID: "e2", Name: "gone.txt", Kind: "file", OriginDevice: "dev-self", SourcePath: filepath.Join(dir, "nope.txt"),
+	}})
+	fileSyncMu.Unlock()
+	got := fileSyncStatusSnapshot().Entries[0]
+	if got.IsSource || !got.SourcePathMissing {
+		t.Fatalf("原路径不存在时应保持接收端并标记：%+v", got)
+	}
+
+	// 别的设备创建的条目：不动
+	fileSyncMu.Lock()
+	fileSyncCur = fileSyncState{Entries: []fileSyncEntry{{ID: "e3", Name: "peer.txt", Kind: "file", Files: map[string]fileSyncLocalFile{}}}}
+	n = fileSyncReattachOwnEntriesLocked([]fileSyncRemoteEntry{{
+		ID: "e3", Name: "peer.txt", Kind: "file", OriginDevice: "dev-peer", SourcePath: original,
+	}})
+	fileSyncMu.Unlock()
+	if n != 0 || fileSyncStatusSnapshot().Entries[0].IsSource {
+		t.Fatalf("其它设备的条目不该被回源")
 	}
 }
 
