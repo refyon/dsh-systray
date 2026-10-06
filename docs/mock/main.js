@@ -406,6 +406,11 @@ const I18N_DYN = {
   "选择打开方式": "Choose an app",
   "移动": "Move",
   "移动到本机其它位置": "Move to another location on this device",
+  // 排序键标签：renderFilesCard 每次渲染都按 tr() 重写按钮文字，缺这三条动态译文时
+  // 会把静态层已译好的 Name/Size/Modified 又写回中文（2026-10-06 英文截图里发现）。
+  "名称": "Name",
+  "大小": "Size",
+  "修改时间": "Modified",
   "已移动同步位置；本机文件已搬到新位置": "Location updated — local files were moved to the new location.",
   "该条目同步的是文件夹，请选择文件夹": "This item syncs a folder — please pick a folder",
   "该条目同步的是单个文件，请选择文件": "This item syncs a single file — please pick a file",
@@ -490,6 +495,9 @@ function rerenderDynamicText() {
   // applyLaunchMode 排在其后：它写入的是动态文案（「打开 Desktop UI」「更新桌面端」等），
   // 必须在静态层用 ZH_SNAP/I18N_EN 覆盖过 DOM 之后再按当前启动方式重刷一次。
   [refreshService, renderPlugins, renderExportRows, renderImportRows, refreshSync,
+    // 文件卡（条目名/状态徽标/容量行/按钮）也是动态文案，且首屏渲染早于语言就绪——
+    // 不在这里重刷，英文界面会留下中文行（2026-10-06 截图里发现）。
+    () => refreshFiles(true),
     () => applyLaunchMode(state.cfg)].forEach((fn) => {
     if (typeof fn === "function") { try { fn(); } catch (e) { console.error("rerenderDynamicText", fn && fn.name, e); } }
   });
