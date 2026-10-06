@@ -64,6 +64,55 @@ func TestClassifyPluginSpecMirrorTarball(t *testing.T) {
 	}
 }
 
+// TestGithubRepoFromSpecMirrorTarball 中转 tarball 地址也要能反解出 owner/repo：
+// 版本解析（fetchGithubLatestVersion）与「仓库不可见 → 引导授权」都走这条路径，
+// 只认显式 GitHub 形态时行内会报「无法解析 GitHub 来源：<中转地址>」（2026-10-06 现场）。
+func TestGithubRepoFromSpecMirrorTarball(t *testing.T) {
+	sha := "4456a2ae85ce886483063a63c5fa1e792ca9e6d1"
+	// 形态识别与 host 无关：账号同步记录里的 spec 可能是另一台机器（另一台镜像）写下的
+	for _, spec := range []string{
+		"https://dsh-mirror.refyon.ccwu.cc/p/refyon/restrict-discipline/tar.gz/" + sha,
+		"https://other-mirror.example.com/p/refyon/restrict-discipline/tar.gz/" + sha,
+		"  https://dsh-mirror.refyon.ccwu.cc/p/refyon/restrict-discipline/tar.gz/" + sha + "  ",
+	} {
+		o, r, ok := githubRepoFromSpec(spec)
+		if !ok || o != "refyon" || r != "restrict-discipline" {
+			t.Errorf("spec %q → (%q,%q,%v)，want (refyon,restrict-discipline,true)", spec, o, r, ok)
+		}
+	}
+	// 显式 GitHub 形态不受影响
+	if o, r, ok := githubRepoFromSpec("github:acme/relay#main"); !ok || o != "acme" || r != "relay" {
+		t.Errorf("显式 github: 形态被破坏：(%q,%q,%v)", o, r, ok)
+	}
+	// 非中转形态的固定压缩包/本地路径仍然不认
+	for _, spec := range []string{"https://example.com/pack-1.0.0.tgz", "file:D:/workspace/plugins/x", ""} {
+		if _, _, ok := githubRepoFromSpec(spec); ok {
+			t.Errorf("spec %q 不应被识别为 GitHub 来源", spec)
+		}
+	}
+}
+
+// TestNormalizeSpecTextMirrorTarball 中转 tarball 地址与 github:owner/repo 是同一来源：
+// 不归一的话账号记录永远判不满足 → 已应用记录每轮重入队、界面常驻「待生效 1 项」。
+func TestNormalizeSpecTextMirrorTarball(t *testing.T) {
+	withMirrorBase(t, "https://dsh-mirror.refyon.ccwu.cc")
+	spec := mirrorTarballURL("refyon", "restrict-discipline", "4456a2ae85ce886483063a63c5fa1e792ca9e6d1")
+	if got := normalizeSpecText(spec); got != "refyon/restrict-discipline" {
+		t.Fatalf("normalizeSpecText(中转地址) = %q，want refyon/restrict-discipline", got)
+	}
+	if !pluginSpecSatisfied(pluginOpValue{Spec: spec, Version: "1.5.0"}, "github:refyon/restrict-discipline") {
+		t.Error("本机声明为中转地址、账号记录为 github: 形态时应判为已满足")
+	}
+	if pluginSpecSatisfied(pluginOpValue{Spec: spec, Version: "1.5.0"}, "github:refyon/dsh-ui-taste") {
+		t.Error("不同仓库不得因归一化被误判为同一来源")
+	}
+	// 既有写法不受影响
+	if !pluginSpecSatisfied(pluginOpValue{Spec: "github:refyon/dsh-ui-taste", Version: "0.3.0"},
+		"https://github.com/refyon/dsh-ui-taste.git") {
+		t.Error("既有 github 写法归一化被破坏")
+	}
+}
+
 func TestSpecGitHubRepoRefParse(t *testing.T) {
 	cases := []struct {
 		spec, owner, repo, ref string

@@ -300,6 +300,24 @@ func githubSpecParts(spec string) (owner, repo string, ok bool) {
 	return "", "", false
 }
 
+// githubRepoFromSpec 提取任意 GitHub 来源 spec 的 owner/repo：显式 GitHub 形态（github: /
+// git+https / git@ / owner/repo 简写）或中转 Worker 的 tarball 地址
+// （<host>/p/<owner>/<repo>/tar.gz/<sha>，见 mirrorTarballURLRe）。
+//
+// 为什么需要它：mirrorBase 启用后 pnpm 会把依赖 spec 落成中转地址（下载提速），而版本解析只认
+// 显式 GitHub 形态 → 「检查更新」报「无法解析 GitHub 来源：<中转地址>」（2026-10-06 现场）。
+// 形态识别不校验 host：来源仓库由 owner/repo 决定，与当初经哪台镜像下载无关（账号同步记录里的
+// spec 也常是另一台机器写下的写法）。
+func githubRepoFromSpec(spec string) (owner, repo string, ok bool) {
+	if owner, repo, ok = githubSpecParts(spec); ok {
+		return owner, repo, true
+	}
+	if m := mirrorTarballURLRe.FindStringSubmatch(strings.TrimSpace(spec)); m != nil {
+		return m[1], m[2], true
+	}
+	return "", "", false
+}
+
 // buildPluginRows 枚举所有 profile 的用户插件并组装展示行。
 // 同一包名 + 同一 spec 出现在多个 profile 时合并为一行（locs 收集全部目录，更新时逐一执行）；
 // 同一包名存在不同 spec（极少见）时分行展示，行 ID 带 spec 区分。
@@ -936,7 +954,7 @@ func decodeGithubContents(body []byte) ([]byte, error) {
 // fetchGithubLatestVersion 按默认分支 package.json 的 version 判定最新版本
 // （用户确认的决策：不跟随安装 spec 里可能带的 #branch/#tag，统一以默认分支为准）。
 func fetchGithubLatestVersion(spec string) (string, error) {
-	owner, repo, ok := githubSpecParts(spec)
+	owner, repo, ok := githubRepoFromSpec(spec)
 	if !ok {
 		return "", fmt.Errorf("无法解析 GitHub 来源：%s", spec)
 	}

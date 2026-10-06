@@ -251,7 +251,10 @@ func normalizeVersionText(s string) string {
 }
 
 // normalizeSpecText 归一化依赖声明文本：去空白、大小写不敏感、github:owner/repo 与
-// https://github.com/owner/repo(.git) 视为同一来源（跨机声明写法可能不同）。
+// https://github.com/owner/repo(.git) 视为同一来源（跨机声明写法可能不同）；
+// 中转 Worker 的 tarball 地址（<host>/p/<owner>/<repo>/tar.gz/<sha>）同样归一为 owner/repo——
+// 不归一的话，账号记录（github:…）与本机声明（中转地址）永远判为不同来源，已应用记录每轮被
+// 重新入队、界面常驻「待生效 1 项」，点「重启生效」还会重装一遍同一版本（2026-10-06 现场）。
 func normalizeSpecText(s string) string {
 	s = strings.TrimSpace(s)
 	low := strings.ToLower(s)
@@ -260,6 +263,9 @@ func normalizeSpecText(s string) string {
 			s = s[len(p):]
 			break
 		}
+	}
+	if m := mirrorTarballURLRe.FindStringSubmatch(s); m != nil {
+		s = m[1] + "/" + m[2]
 	}
 	return strings.ToLower(strings.TrimSuffix(strings.TrimSpace(s), ".git"))
 }
