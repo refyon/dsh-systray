@@ -81,17 +81,18 @@ func fsSetPending(t *testing.T, actions ...fileSyncAction) {
 // ---------- 假文件服务端（端点 13-20 的最小实现） ----------
 
 type fakeFilesServer struct {
-	mu      sync.Mutex
-	limit   int64
-	used    int64
-	rev     int64
-	entries map[string]fileSyncRemoteEntry
-	objects map[string][]byte
-	meta    map[string]fileSyncLocalMeta
-	actions []fileSyncAction
-	uploads []string
-	deletes []string
-	gets    []string
+	mu       sync.Mutex
+	limit    int64
+	used     int64
+	rev      int64
+	entries  map[string]fileSyncRemoteEntry
+	objects  map[string][]byte
+	meta     map[string]fileSyncLocalMeta
+	requests []fileSyncRequest
+	actions  []fileSyncAction
+	uploads  []string
+	deletes  []string
+	gets     []string
 	// uploadDelay 每个上传请求的人为延迟（验证「移除后停止排队上传」这类时序行为）。
 	uploadDelay time.Duration
 	// failUploads 按 relPath 注入上传失败（验证「单文件失败不拖垮整批、下次重试」）。
@@ -175,6 +176,7 @@ func (f *fakeFilesServer) handler(t *testing.T) http.HandlerFunc {
 		case "/v1/files/sync":
 			var body fileSyncRequest
 			_ = json.NewDecoder(r.Body).Decode(&body)
+			f.requests = append(f.requests, body) // handler 开头已持有 f.mu（勿重复加锁：Go 互斥不可重入）
 			entries := make([]fileSyncRemoteEntry, 0, len(f.entries))
 			for _, e := range f.entries {
 				entries = append(entries, e)
@@ -383,7 +385,7 @@ func TestFileSyncFilterActions(t *testing.T) {
 		{Kind: "rename_entry", EntryID: "e1", Name: "n2"},                 // 保留
 		{Kind: "remove_file", EntryID: "e1", RelPath: "zz.txt"},           // 本机没有 → 丢弃
 	}
-	out, skipped, orphans := fileSyncFilterActionsLocked(actions)
+	out, skipped, orphans := fileSyncFilterActionsLocked(actions, nil)
 	if skipped != 6 {
 		t.Fatalf("应丢弃 6 条，实际 %d（保留 %v）", skipped, out)
 	}
@@ -1422,9 +1424,11 @@ func TestFileSyncCancelStopsPendingUploads(t *testing.T) {
 	}
 }
 
-// TestFileSyncFilterDropsOwnOrphanEntries 来源设备就是本机的 create_entry 不入待应用，
-// 而是交给调用方清理服务端残留（2026-10-05 现场：本机上传的文件被提示「来自其它设备的改动」）。
-func TestFileSyncFilterDropsOwnOrphanEntries(t *testing.T) {
+// TestFileSyncFilterKeepsOwnEntriesWithoutTombstone 来源设备=本机、本机没有该条目时：
+//   - **有移除记录**（用户点过「移除」，服务端删除失败）→ 自家残留，交给调用方清理服务端；
+//   - **没有移除记录**（清单丢了）→ 必须当新条目建回来，绝不能删云端数据
+//     ——2026-10-06 现场：清单被清空后，这台机器把账号上两个条目连同服务端数据一起删了。
+func TestFileSyncFilterKeepsOwnEntriesWithoutTombstone(t *testing.T) {
 	dir := setupFileSyncTest(t)
 	_ = dir
 	setAccountState(loggedInState())
@@ -1434,22 +1438,24 @@ func TestFileSyncFilterDropsOwnOrphanEntries(t *testing.T) {
 
 	fileSyncMu.Lock()
 	fileSyncCur.Entries = nil
+	fileSyncCur.RemovedEntries = map[string]int64{"removed": 1700000000} // 这个条目用户确实移除过
 	out, _, orphans := fileSyncFilterActionsLocked([]fileSyncAction{
-		{Kind: "create_entry", EntryID: "mine", Name: "mine", OriginDevice: "dev-self"},   // 自家残留 → 清理
-		{Kind: "create_entry", EntryID: "other", Name: "other", OriginDevice: "dev-peer"}, // 其它设备 → 保留
-		{Kind: "create_entry", EntryID: "legacy", Name: "legacy"},                         // 旧数据无来源 → 保留
-	})
+		{Kind: "create_entry", EntryID: "removed", Name: "removed", OriginDevice: "dev-self"}, // 有移除记录 → 清理残留
+		{Kind: "create_entry", EntryID: "lost", Name: "lost", OriginDevice: "dev-self"},       // 清单丢失 → 建回来
+		{Kind: "create_entry", EntryID: "other", Name: "other", OriginDevice: "dev-peer"},     // 其它设备 → 保留
+		{Kind: "create_entry", EntryID: "legacy", Name: "legacy"},                             // 旧数据无来源 → 保留
+	}, nil)
 	fileSyncMu.Unlock()
 
-	if len(orphans) != 1 || orphans[0] != "mine" {
-		t.Fatalf("自家孤儿识别错误：%v", orphans)
+	if len(orphans) != 1 || orphans[0] != "removed" {
+		t.Fatalf("只有本机移除过的条目才算残留：%v", orphans)
 	}
-	if len(out) != 2 {
-		t.Fatalf("其它设备/旧数据的条目应保留：%v", out)
+	if len(out) != 3 {
+		t.Fatalf("清单丢失/其它设备/旧数据的条目都应保留：%v", out)
 	}
 	for _, a := range out {
-		if a.EntryID == "mine" {
-			t.Fatalf("自家孤儿不应留在待应用集合：%v", out)
+		if a.EntryID == "removed" {
+			t.Fatalf("移除过的条目不该重新建回：%+v", a)
 		}
 	}
 }
@@ -1741,6 +1747,417 @@ func TestFileSyncSelfHealsReceiverEntryWithOwnSourcePath(t *testing.T) {
 	fileSyncMu.Unlock()
 	if n != 0 || fileSyncStatusSnapshot().Entries[0].IsSource {
 		t.Fatalf("其它设备的条目不该被回源")
+	}
+}
+
+// TestFileSyncStateBackupRestoresLedger 状态文件损坏/丢失时从备份恢复清单：
+// 清单静默变空会让本机把账号上的条目误判成残留（2026-10-06 现场：云端两个条目被删）。
+func TestFileSyncStateBackupRestoresLedger(t *testing.T) {
+	dir := setupFileSyncTest(t)
+	entry := fileSyncEntry{ID: "e1", Name: "notes", Kind: "dir", SourcePath: filepath.Join(dir, "notes")}
+	fileSyncMu.Lock()
+	fileSyncCur = fileSyncState{UserID: "u-1", Entries: []fileSyncEntry{entry}}
+	if err := saveFileSyncStateLocked(fileSyncCur); err != nil {
+		fileSyncMu.Unlock()
+		t.Fatalf("保存失败: %v", err)
+	}
+	fileSyncMu.Unlock()
+
+	p := fileSyncStatePath()
+	if _, err := os.Stat(p + ".bak"); err != nil {
+		t.Fatalf("应写出备份文件：%v", err)
+	}
+	// 主文件损坏 → 从备份恢复
+	if err := os.WriteFile(p, []byte("{ 坏掉的 JSON"), 0o600); err != nil {
+		t.Fatalf("写入损坏文件失败: %v", err)
+	}
+	got := loadFileSyncState()
+	if len(got.Entries) != 1 || got.Entries[0].ID != "e1" || got.UserID != "u-1" {
+		t.Fatalf("应从备份恢复清单：%+v", got)
+	}
+	// 主文件消失 → 同样从备份恢复
+	if err := os.Remove(p); err != nil {
+		t.Fatalf("删除主文件失败: %v", err)
+	}
+	got = loadFileSyncState()
+	if len(got.Entries) != 1 {
+		t.Fatalf("主文件丢失时应从备份恢复：%+v", got)
+	}
+	// 两个都没有 → 空清单（不 panic）
+	_ = os.Remove(p + ".bak")
+	if got = loadFileSyncState(); len(got.Entries) != 0 {
+		t.Fatalf("无状态文件时应返回空清单：%+v", got)
+	}
+}
+
+// TestFileSyncRelocateMovesLocalFiles 更改本机位置 = **移动**（用户要求）：
+//   - 旧位置的文件搬到新位置，搬完清理源文件与空目录；
+//   - 目标已有同名且内容相同 → 视为同一份（丢源那份）；内容不同 → 覆盖并留「(冲突-本机)」副本；
+//   - 本机不上报新位置的数据（内容没变，不该重传）；
+//   - 旧位置本来就没有的文件交给服务器按正常同步补下来。
+func TestFileSyncRelocateMovesLocalFiles(t *testing.T) {
+	dir := setupFileSyncTest(t)
+	setAccountState(loggedInState())
+	accountMu.Lock()
+	accountCur.DeviceID = "dev-self"
+	accountCur.Token = "tok"
+	accountMu.Unlock()
+
+	sameSha := fileSyncHashBytes([]byte("same"))
+	movedSha := fileSyncHashBytes([]byte("payload"))
+	fake := newFakeFilesServer()
+	fake.entries["e1"] = fileSyncRemoteEntry{ID: "e1", Name: "notes", Kind: "dir", OriginDevice: "dev-self"}
+	fake.putObject("e1", "same.txt", []byte("same"), 100)
+	fake.putObject("e1", "moved.txt", []byte("payload"), 100)
+	fake.putObject("e1", "missing.txt", []byte("from-server"), 100)
+	client, _ := newTestClient(t, fake.handler(t))
+	setAccountAPIBase(client.base)
+	t.Cleanup(func() { setAccountAPIBase("") })
+
+	oldRoot := filepath.Join(dir, "old")
+	fsWriteFile(t, filepath.Join(oldRoot, "same.txt"), "same")
+	fsWriteFile(t, filepath.Join(oldRoot, "moved.txt"), "payload")
+	fsWriteFile(t, filepath.Join(oldRoot, "sub", "nested.txt"), "nested") // 未纳入同步的本地文件也要跟着搬
+	newRoot := filepath.Join(dir, "new")
+	fsWriteFile(t, filepath.Join(newRoot, "same.txt"), "same") // 目标已有同一份
+
+	fileSyncMu.Lock()
+	fileSyncCur = fileSyncState{Entries: []fileSyncEntry{{
+		ID: "e1", Name: "notes", Kind: "dir", SourcePath: oldRoot, OriginDevice: "dev-self",
+		Files: map[string]fileSyncLocalFile{
+			"same.txt":  {Sha256: sameSha, SyncedSha: sameSha},
+			"moved.txt": {Sha256: movedSha, SyncedSha: movedSha},
+		},
+	}}}
+	fileSyncMu.Unlock()
+
+	if _, err := fileSyncRelocateEntry("e1", newRoot); err != nil {
+		t.Fatalf("更改位置失败: %v", err)
+	}
+
+	// 1) 文件被移动：新位置有内容，旧位置已清空（含子目录与空壳目录）
+	if b, err := os.ReadFile(filepath.Join(newRoot, "moved.txt")); err != nil || string(b) != "payload" {
+		t.Fatalf("文件应被移动到新位置：%v %q", err, string(b))
+	}
+	if b, err := os.ReadFile(filepath.Join(newRoot, "sub", "nested.txt")); err != nil || string(b) != "nested" {
+		t.Fatalf("未纳入同步的本地文件也应一起搬：%v", err)
+	}
+	if _, err := os.Stat(filepath.Join(oldRoot, "moved.txt")); !os.IsNotExist(err) {
+		t.Fatalf("移动后源文件应被清理：%v", err)
+	}
+	if _, err := os.Stat(oldRoot); !os.IsNotExist(err) {
+		t.Fatalf("搬空的旧目录应被清理：%v", err)
+	}
+	// 目标已有同一份内容：保留一份即可（内容仍正确）
+	if b, err := os.ReadFile(filepath.Join(newRoot, "same.txt")); err != nil || string(b) != "same" {
+		t.Fatalf("内容相同的文件应合并为一份：%v", err)
+	}
+
+	// 2) 扫描后状态正确：两个文件都显示已同步，没有「已在本机移除」
+	after := fileSyncStatusSnapshot().Entries[0]
+	if !strings.HasPrefix(after.Path, newRoot) {
+		t.Fatalf("条目应指向新位置：%+v", after)
+	}
+	statusOf := map[string]string{}
+	for _, f := range after.Files {
+		statusOf[f.RelPath] = f.Status
+	}
+	if statusOf["moved.txt"] != "synced" || statusOf["same.txt"] != "synced" {
+		t.Fatalf("移动后应保持已同步：%+v", statusOf)
+	}
+	for _, f := range after.Files {
+		if f.Status == "removed-local" {
+			t.Fatalf("移动不该显示已在本机移除：%+v", after.Files)
+		}
+	}
+
+	// 3) 没有把新位置的数据当改动上传（移动后内容没变；上报的记录与服务端一致，且没有上传请求）
+	waitFileSyncIdle(t)
+	fake.mu.Lock()
+	uploads := append([]string(nil), fake.uploads...)
+	reqs := append([]fileSyncRequest(nil), fake.requests...)
+	metas := map[string]fileSyncLocalMeta{}
+	for k, v := range fake.meta {
+		metas[k] = v
+	}
+	fake.mu.Unlock()
+	if len(uploads) != 0 {
+		// 允许上传的只有「条目里本来没有、新位置才发现的文件」；已同步的文件不得被重传
+		for _, up := range uploads {
+			if strings.Contains(up, "moved.txt") || strings.Contains(up, "same.txt") {
+				t.Fatalf("已同步的文件不该因移动被重传：%v", uploads)
+			}
+		}
+	}
+	for _, req := range reqs {
+		for _, m := range req.Files {
+			if m.EntryID != "e1" {
+				continue
+			}
+			if want, ok := metas[fakeKey(m.EntryID, m.RelPath)]; ok && want.Sha256 != m.Sha256 {
+				t.Fatalf("上报内容与服务端不一致（会被当成本机改动上传）：%+v vs %+v", m, want)
+			}
+		}
+	}
+
+	// 4) 服务器上本机缺的文件（missing.txt）由正常同步补下来
+	fake.mu.Lock()
+	fake.actions = []fileSyncAction{
+		{Kind: "download", EntryID: "e1", RelPath: "missing.txt", Size: 11, Sha256: fileSyncHashBytes([]byte("from-server")), Mtime: 100, Rev: 1},
+	}
+	fake.mu.Unlock()
+	fileSyncKick()
+	waitFileSyncIdle(t)
+	if b, err := os.ReadFile(filepath.Join(newRoot, "missing.txt")); err != nil || string(b) != "from-server" {
+		t.Fatalf("本机缺的文件应补到新位置：%v %q", err, string(b))
+	}
+}
+
+// waitFileSyncIdle 等待后台同步跑完（改位置会踢一次同步，测试里不能与它并发调 fileSyncCheck）。
+func waitFileSyncIdle(t *testing.T) {
+	t.Helper()
+	deadline := time.Now().Add(15 * time.Second)
+	for time.Now().Before(deadline) {
+		fileSyncMu.Lock()
+		busy := fileSyncSyncing
+		fileSyncMu.Unlock()
+		if !busy {
+			time.Sleep(50 * time.Millisecond) // 让收尾写盘落地
+			return
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	t.Fatal("等待后台同步结束超时")
+}
+
+// TestFileSyncRelocateBackToOriginal 回归用户现场：改过去再改回来不应卡住（移动是幂等的往返）。
+func TestFileSyncRelocateBackToOriginal(t *testing.T) {
+	dir := setupFileSyncTest(t)
+	setAccountState(loggedInState())
+
+	orig := filepath.Join(dir, "orig")
+	fsWriteFile(t, filepath.Join(orig, "a.txt"), "hello")
+	other := filepath.Join(dir, "other")
+	if err := os.MkdirAll(other, 0o755); err != nil {
+		t.Fatalf("建目录失败: %v", err)
+	}
+	sha := fileSyncHashBytes([]byte("hello"))
+	fileSyncMu.Lock()
+	fileSyncCur = fileSyncState{Entries: []fileSyncEntry{{
+		ID: "e1", Name: "notes", Kind: "dir", SourcePath: orig, OriginDevice: "dev-peer",
+		Files: map[string]fileSyncLocalFile{"a.txt": {Sha256: sha, SyncedSha: sha}},
+	}}}
+	fileSyncMu.Unlock()
+
+	if _, err := fileSyncRelocateEntry("e1", other); err != nil {
+		t.Fatalf("改到新位置失败: %v", err)
+	}
+	if _, err := fileSyncRelocateEntry("e1", orig); err != nil {
+		t.Fatalf("改回原位置失败: %v", err)
+	}
+	if b, err := os.ReadFile(filepath.Join(orig, "a.txt")); err != nil || string(b) != "hello" {
+		t.Fatalf("改回原位置后文件应就位：%v %q", err, string(b))
+	}
+	after := fileSyncStatusSnapshot().Entries[0]
+	if after.Status == "pending-upload" || after.Status == "error" {
+		t.Fatalf("往返移动后不该卡在待同步/错误：%+v", after)
+	}
+	for _, f := range after.Files {
+		if f.Status == "removed-local" {
+			t.Fatalf("往返移动后不该显示已在本机移除：%+v", after.Files)
+		}
+	}
+}
+
+// TestFileSyncRelocateConflictKeepsReplacedCopy 目标已有同名但内容不同：用搬过来的覆盖，
+// 被覆盖的那份留「(冲突-本机)」副本（不静默丢用户数据）。
+func TestFileSyncRelocateConflictKeepsReplacedCopy(t *testing.T) {
+	dir := setupFileSyncTest(t)
+	setAccountState(loggedInState())
+
+	oldRoot := filepath.Join(dir, "old")
+	fsWriteFile(t, filepath.Join(oldRoot, "a.txt"), "newer-local")
+	newRoot := filepath.Join(dir, "new")
+	fsWriteFile(t, filepath.Join(newRoot, "a.txt"), "existing-other")
+	sha := fileSyncHashBytes([]byte("newer-local"))
+	fileSyncMu.Lock()
+	fileSyncCur = fileSyncState{Entries: []fileSyncEntry{{
+		ID: "e1", Name: "notes", Kind: "dir", SourcePath: oldRoot, OriginDevice: "dev-peer",
+		Files: map[string]fileSyncLocalFile{"a.txt": {Sha256: sha, SyncedSha: sha}},
+	}}}
+	fileSyncMu.Unlock()
+
+	moved, conflicts, _ := fileSyncMoveLocalContent("dir", oldRoot, newRoot)
+	if moved != 1 || conflicts != 1 {
+		t.Fatalf("应移动 1 个并替换 1 个冲突：moved=%d conflicts=%d", moved, conflicts)
+	}
+	if b, err := os.ReadFile(filepath.Join(newRoot, "a.txt")); err != nil || string(b) != "newer-local" {
+		t.Fatalf("目标应被搬过来的文件覆盖：%v %q", err, string(b))
+	}
+	// 被覆盖的那份留「(冲突-本机)」副本（生成器会给下一个可用名，勿再用它推算期望路径）
+	copies, _ := filepath.Glob(filepath.Join(newRoot, "a (冲突-本机)*.txt"))
+	if len(copies) != 1 {
+		t.Fatalf("应留下 1 个冲突副本，实际 %v", copies)
+	}
+	if b, err := os.ReadFile(copies[0]); err != nil || string(b) != "existing-other" {
+		t.Fatalf("冲突副本应是被覆盖的那份内容：%v %q", err, string(b))
+	}
+}
+
+// TestFileSyncRelocateFileEntryMovesFile 文件条目的移动：旧文件搬到新落点（含跨卷复制路径）。
+func TestFileSyncRelocateFileEntryMovesFile(t *testing.T) {
+	dir := setupFileSyncTest(t)
+	setAccountState(loggedInState())
+
+	src := filepath.Join(dir, "single.txt")
+	fsWriteFile(t, src, "single")
+	dstDir := filepath.Join(dir, "dest")
+	if err := os.MkdirAll(dstDir, 0o755); err != nil {
+		t.Fatalf("建目录失败: %v", err)
+	}
+	dst, err := fileSyncFileEntryTargetIn(dstDir, "single.txt")
+	if err != nil {
+		t.Fatalf("落点解析失败: %v", err)
+	}
+	sha := fileSyncHashBytes([]byte("single"))
+	fileSyncMu.Lock()
+	fileSyncCur = fileSyncState{Entries: []fileSyncEntry{{
+		ID: "e1", Name: "single.txt", Kind: "file", SourcePath: src, OriginDevice: "dev-peer",
+		Files: map[string]fileSyncLocalFile{"single.txt": {Sha256: sha, SyncedSha: sha}},
+	}}}
+	fileSyncMu.Unlock()
+
+	if _, err := fileSyncRelocateEntry("e1", dst); err != nil {
+		t.Fatalf("更改位置失败: %v", err)
+	}
+	if b, err := os.ReadFile(dst); err != nil || string(b) != "single" {
+		t.Fatalf("文件应被移动到新落点：%v %q", err, string(b))
+	}
+	if _, err := os.Stat(src); !os.IsNotExist(err) {
+		t.Fatalf("移动后源文件应被清理：%v", err)
+	}
+	if after := fileSyncStatusSnapshot().Entries[0]; after.Status == "error" {
+		t.Fatalf("不该报错：%+v", after)
+	}
+}
+
+// TestFileSyncRelocateFileEntryIntoFolder 文件条目的落点与覆盖交给系统对话框决定：
+// 用户可用系统「另存为」对话框把文件放进某个文件夹并沿用原名（`<文件夹>/<条目名>`），
+// 也可以改名或指定已存在的文件——**是否覆盖由系统自己询问**，App 不再自建询问弹窗。
+func TestFileSyncRelocateFileEntryIntoFolder(t *testing.T) {
+	dir := setupFileSyncTest(t)
+	target, err := fileSyncFileEntryTargetIn(dir, "note.txt")
+	if err != nil {
+		t.Fatalf("目录内落点不该报错：%v", err)
+	}
+	if target != filepath.Join(dir, "note.txt") {
+		t.Fatalf("应保留文件名：%s", target)
+	}
+	if err := fileSyncCheckAdoptTarget(target, "file"); err != nil {
+		t.Fatalf("目录内尚不存在的落点应被接受（等服务器内容落地）：%v", err)
+	}
+	// 文件名里的非法字符被替换（否则落点会跑到别的目录）
+	weird, err := fileSyncFileEntryTargetIn(dir, `a/b:c*.txt`)
+	if err != nil {
+		t.Fatalf("应能规整文件名：%v", err)
+	}
+	if strings.ContainsAny(filepath.Base(weird), `/\:*?`) || filepath.Dir(weird) != dir {
+		t.Fatalf("文件名应被规整到同目录内：%s", weird)
+	}
+	// 已有的同名文件（用户在系统对话框里确认替换）：接受该落点
+	existing := filepath.Join(dir, "exists.txt")
+	fsWriteFile(t, existing, "old")
+	if err := fileSyncCheckAdoptTarget(existing, "file"); err != nil {
+		t.Fatalf("已存在的文件应由系统询问后接受：%v", err)
+	}
+	// 目录条目仍然只能选目录
+	fsWriteFile(t, filepath.Join(dir, "plain.txt"), "x")
+	if err := fileSyncCheckAdoptTarget(filepath.Join(dir, "plain.txt"), "dir"); err == nil {
+		t.Fatal("文件夹条目选到文件时应报错")
+	}
+	if err := fileSyncCheckAdoptTarget(dir, "dir"); err != nil {
+		t.Fatalf("文件夹条目选目录应通过：%v", err)
+	}
+}
+
+// TestFileSyncRelocateRegistersSourcePathForOrigin 改位置时：本机创建的条目把新位置登记到账号
+// （日后清单丢失能回到新位置），其它设备创建的条目只改本机、不发 PATCH。
+func TestFileSyncRelocateRegistersSourcePathForOrigin(t *testing.T) {
+	dir := setupFileSyncTest(t)
+	setAccountState(loggedInState())
+	accountMu.Lock()
+	accountCur.DeviceID = "dev-self"
+	accountCur.Token = "tok"
+	accountMu.Unlock()
+
+	newRoot := filepath.Join(dir, "new-root")
+	if err := os.MkdirAll(newRoot, 0o755); err != nil {
+		t.Fatalf("建目录失败: %v", err)
+	}
+
+	patched := make(chan string, 1)
+	client, _ := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPatch && strings.HasSuffix(r.URL.Path, "/source-path") {
+			var body struct {
+				SourcePath string `json:"sourcePath"`
+			}
+			raw, _ := io.ReadAll(r.Body)
+			_ = json.Unmarshal(raw, &body)
+			patched <- body.SourcePath
+			_, _ = w.Write([]byte(`{"id":"e1","name":"notes","kind":"dir","sourcePath":""}`))
+			return
+		}
+		switch r.URL.Path {
+		case "/v1/files/quota":
+			_, _ = w.Write([]byte(`{"used":0,"limit":10485760,"tier":"free"}`))
+		case "/v1/files/sync":
+			_, _ = w.Write([]byte(`{"entries":[],"actions":[],"quota":{"used":0,"limit":10485760,"tier":"free"}}`))
+		case "/v1/files/objects":
+			_, _ = w.Write([]byte(`{}`))
+		default:
+			t.Errorf("未预期请求: %s %s", r.Method, r.URL.Path)
+			w.WriteHeader(http.StatusNotFound)
+		}
+	})
+	setAccountAPIBase(client.base)
+	t.Cleanup(func() { setAccountAPIBase("") })
+
+	fileSyncMu.Lock()
+	fileSyncCur = fileSyncState{Entries: []fileSyncEntry{{
+		ID: "e1", Name: "notes", Kind: "dir", SourcePath: filepath.Join(dir, "old"), OriginDevice: "dev-self",
+		Files: map[string]fileSyncLocalFile{},
+	}}}
+	fileSyncMu.Unlock()
+	if _, err := fileSyncRelocateEntry("e1", newRoot); err != nil {
+		t.Fatalf("更改位置失败: %v", err)
+	}
+	select {
+	case got := <-patched:
+		if got != newRoot {
+			t.Fatalf("应把新位置登记到账号，实际 %q", got)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("本机创建的条目应把新位置登记到账号（PATCH source-path）")
+	}
+
+	// 其它设备创建的条目：只改本机
+	peerRoot := filepath.Join(dir, "peer-root")
+	if err := os.MkdirAll(peerRoot, 0o755); err != nil {
+		t.Fatalf("建目录失败: %v", err)
+	}
+	fileSyncMu.Lock()
+	fileSyncCur = fileSyncState{Entries: []fileSyncEntry{{
+		ID: "e2", Name: "peer", Kind: "dir", SourcePath: filepath.Join(dir, "old"), OriginDevice: "dev-peer",
+		Files: map[string]fileSyncLocalFile{},
+	}}}
+	fileSyncMu.Unlock()
+	if _, err := fileSyncRelocateEntry("e2", peerRoot); err != nil {
+		t.Fatalf("更改位置失败: %v", err)
+	}
+	select {
+	case got := <-patched:
+		t.Fatalf("其它设备的条目不该登记到账号，却收到了 %q", got)
+	case <-time.After(300 * time.Millisecond):
 	}
 }
 

@@ -21,7 +21,9 @@ import (
 const defaultAccountAPIBase = "https://api.instantserv.ccwu.cc"
 
 const (
-	accountRequestTimeout = 10 * time.Second
+	// accountRequestTimeout 单次 API 请求超时（含重试前的等待）：网络抖动或走代理时 10 秒偏紧——
+	// 2026-10-06 现场：/v1/ops/since 连续 3 次 10 秒超时导致整轮同步失败、本机改动补报不上去。
+	accountRequestTimeout = 20 * time.Second
 	// accountRetryAttempts 网络错误/5xx 的重试次数（4xx 立即返回，不重试）。
 	accountRetryAttempts = 3
 	// accountOpsPageSize 单次增量拉取的条数（服务端上限 500）。

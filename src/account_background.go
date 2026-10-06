@@ -112,7 +112,8 @@ func accountBackgroundTick(ctx context.Context) {
 	}
 	defer endAccountSync()
 
-	cctx, cancel := context.WithTimeout(ctx, 60*time.Second)
+	// 120 秒：单请求 20 秒 × 最多 3 次重试（见 accountRequestTimeout），60 秒会在重试途中被掐断。
+	cctx, cancel := context.WithTimeout(ctx, 120*time.Second)
 	defer cancel()
 
 	res, err := accountSyncNow(cctx, newAccountClient(""))

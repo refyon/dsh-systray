@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -505,8 +506,10 @@ func TestReconcileLocalPluginsReportsLaterInstall(t *testing.T) {
 }
 
 // tombstoneSyncServer 假服务器：单条删除墓碑记录（带真实 updatedAt），并接受上报。
-func tombstoneSyncServer(t *testing.T, key string, value string, seq, updatedAt int64) *accountClient {
+// tombstoneSyncServer 假的同步服务端（只处理 since/report），并把**实际上报的 op** 收集到 captured。
+func tombstoneSyncServer(t *testing.T, key string, value string, seq, updatedAt int64) (*accountClient, *[][2]string) {
 	t.Helper()
+	captured := &[][2]string{}
 	client, _ := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/v1/ops/since":
@@ -514,13 +517,25 @@ func tombstoneSyncServer(t *testing.T, key string, value string, seq, updatedAt 
 				`{"ops":[{"seq":%d,"opId":"o-%d","key":%q,"value":%s,"deviceId":"other","updatedAt":%d}],"cursor":%d,"hasMore":false}`,
 				seq, seq, key, value, updatedAt, seq)))
 		case "/v1/ops/report":
-			_, _ = w.Write([]byte(`{"accepted":1,"duplicates":0,"cursor":100}`))
+			var body struct {
+				Ops []struct {
+					Key   string          `json:"key"`
+					Value json.RawMessage `json:"value"`
+				} `json:"ops"`
+			}
+			raw, _ := io.ReadAll(r.Body)
+			if json.Unmarshal(raw, &body) == nil {
+				for _, op := range body.Ops {
+					*captured = append(*captured, [2]string{op.Key, string(op.Value)})
+				}
+			}
+			_, _ = w.Write([]byte(fmt.Sprintf(`{"accepted":%d,"duplicates":0,"cursor":100}`, len(body.Ops))))
 		default:
 			t.Errorf("未预期路径: %s", r.URL.Path)
 			w.WriteHeader(http.StatusNotFound)
 		}
 	})
-	return client
+	return client, captured
 }
 
 // TestSyncUnblocksPendingTombstoneAndReportsInstall 回归 2026-09-24 现场（dsh-cost-meter）：
@@ -562,7 +577,7 @@ func TestSyncUnblocksPendingTombstoneAndReportsInstall(t *testing.T) {
 	accountCur.PendingApply = true
 	accountMu.Unlock()
 
-	client := tombstoneSyncServer(t, key, string(remove), 30, tombstoneAt)
+	client, captured := tombstoneSyncServer(t, key, string(remove), 30, tombstoneAt)
 	if _, err := accountSyncNow(context.Background(), client); err != nil {
 		t.Fatalf("同步失败: %v", err)
 	}
@@ -570,13 +585,127 @@ func TestSyncUnblocksPendingTombstoneAndReportsInstall(t *testing.T) {
 	if keys := accountPendingKeys(); len(keys) != 0 {
 		t.Fatalf("被更晚安装盖过的墓碑不应留在待生效集合，实际 %v", keys)
 	}
-	v, ok := pendingPluginValue(t, name)
+	// 补报的 install 应当**本轮就发给服务器**（收尾会再推一次），本地队列里不再残留
+	v, ok := reportedPluginValue(captured, key)
 	if !ok || v.Action != "install" {
-		t.Fatalf("应对账补报 install，实际 %+v（存在=%v）", v, ok)
+		t.Fatalf("应对账补报 install 并发给服务器，实际 %+v（存在=%v，已上报=%v）", v, ok, *captured)
 	}
 	if v.Version != "1.7.35" || v.Source != "npm" {
 		t.Fatalf("补报字段错误: %+v", v)
 	}
+	if _, left := pendingPluginValue(t, name); left {
+		t.Fatalf("补报已发出，本地队列不该再留这一条")
+	}
+}
+
+// TestPluginTargetSatisfiedWhenLocalVersionNewer 本机版本**高于**账号记录时视为已满足：
+// harness 自己把插件升到 1.5.0、账号记录还停在 1.4.3 时，不该再提示「1 项改动待生效」
+// （点「重启生效」还会把插件降级回 1.4.3）——2026-10-06 现场（restrict-discipline）。
+func TestPluginTargetSatisfiedWhenLocalVersionNewer(t *testing.T) {
+	setupAccountTest(t)
+	old := accountLocalPluginValueFn
+	t.Cleanup(func() { accountLocalPluginValueFn = old })
+	accountLocalPluginValueFn = func(profile, name string) (pluginOpValue, bool) {
+		if name != "restrict-discipline" {
+			return pluginOpValue{}, false
+		}
+		return pluginOpValue{Action: "update", Spec: "github:refyon/restrict-discipline", Source: "github", Version: "1.5.0"}, true
+	}
+	key := accountPluginKey("restrict-discipline")
+	cases := []struct {
+		name  string
+		value string
+		want  bool
+	}{
+		{"本机更高（harness 自己装的）→ 已满足", `{"action":"update","spec":"github:refyon/restrict-discipline","source":"github","version":"1.4.3"}`, true},
+		{"同版本 → 已满足", `{"action":"update","spec":"github:refyon/restrict-discipline","source":"github","version":"1.5.0"}`, true},
+		{"远端更高 → 未满足（等待应用）", `{"action":"update","spec":"github:refyon/restrict-discipline","source":"github","version":"1.6.0"}`, false},
+	}
+	for _, c := range cases {
+		got := accountKeyTargetSatisfiedAt(key, json.RawMessage(c.value), 1790738817)
+		if got != c.want {
+			t.Fatalf("%s：accountKeyTargetSatisfiedAt = %v，期望 %v", c.name, got, c.want)
+		}
+	}
+}
+
+// TestSyncReportsPluginWhenPullFails 拉取失败也不该阻断本机插件改动的补报：账号侧
+// /v1/ops/since 超时（2026-10-06 现场）时，「harness 自己装了新版插件」仍要进账号记录。
+func TestSyncReportsPluginWhenPullFails(t *testing.T) {
+	setupAccountTest(t)
+	setAccountState(loggedInState())
+
+	const name = "restrict-discipline"
+	key := accountPluginKey(name)
+	stubLocalPlugins(t, accountLocalPlugin{Name: name, Spec: "github:refyon/restrict-discipline", Source: "github", Version: "1.5.0", InstalledAt: 3000})
+	oldVal := accountLocalPluginValueFn
+	t.Cleanup(func() { accountLocalPluginValueFn = oldVal })
+	accountLocalPluginValueFn = func(profile, n string) (pluginOpValue, bool) {
+		if n != name {
+			return pluginOpValue{}, false
+		}
+		return pluginOpValue{Action: "update", Spec: "github:refyon/restrict-discipline", Source: "github", Version: "1.5.0"}, true
+	}
+
+	// 服务端：条目拉取一律 500（模拟超时/不可用），heads 扫描返回空 → 补报 install
+	captured := &[][2]string{}
+	client, _ := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/ops/since":
+			q := r.URL.Query()
+			if q.Get("cursor") == "0" { // heads 扫描（对账用）
+				_, _ = w.Write([]byte(`{"ops":[],"cursor":0,"hasMore":false}`))
+				return
+			}
+			w.WriteHeader(http.StatusInternalServerError)
+			_, _ = w.Write([]byte(`{"error":{"code":"internal_error","message":"boom"}}`))
+		case "/v1/ops/report":
+			var body struct {
+				Ops []struct {
+					Key   string          `json:"key"`
+					Value json.RawMessage `json:"value"`
+				} `json:"ops"`
+			}
+			raw, _ := io.ReadAll(r.Body)
+			if json.Unmarshal(raw, &body) == nil {
+				for _, op := range body.Ops {
+					*captured = append(*captured, [2]string{op.Key, string(op.Value)})
+				}
+			}
+			_, _ = w.Write([]byte(fmt.Sprintf(`{"accepted":%d,"duplicates":0,"cursor":100}`, len(body.Ops))))
+		default:
+			t.Errorf("未预期路径: %s", r.URL.Path)
+			w.WriteHeader(http.StatusNotFound)
+		}
+	})
+
+	accountMu.Lock()
+	accountCur.Cursor = 62 // 走增量拉取（非基线）
+	accountCur.BaselineDone = true
+	accountMu.Unlock()
+
+	if _, err := accountSyncNow(context.Background(), client); err == nil {
+		t.Fatal("拉取失败时应返回错误（界面据此显示同步失败）")
+	}
+	v, ok := reportedPluginValue(captured, key)
+	if !ok || v.Version != "1.5.0" {
+		t.Fatalf("拉取失败时仍应把本机插件版本补报上服务器，实际 %+v（存在=%v，已上报=%v）", v, ok, *captured)
+	}
+}
+
+// reportedPluginValue 从假服务端收到的上报里取出指定 key 的插件值。
+func reportedPluginValue(captured *[][2]string, key string) (pluginOpValue, bool) {
+	for _, item := range *captured {
+		if item[0] != key {
+			continue
+		}
+		var v pluginOpValue
+		if json.Unmarshal([]byte(item[1]), &v) != nil {
+			continue
+		}
+		return v, true
+	}
+	return pluginOpValue{}, false
 }
 
 // TestSyncKeepsPendingTombstoneWhenLocalInstallOlder 反向保护：本机安装**早于**墓碑（真正的
@@ -611,7 +740,7 @@ func TestSyncKeepsPendingTombstoneWhenLocalInstallOlder(t *testing.T) {
 	accountCur.AppliedVals = map[string]appliedRecord{key: {Seq: 30, Value: remove, UpdatedAt: tombstoneAt}}
 	accountMu.Unlock()
 
-	client := tombstoneSyncServer(t, key, string(remove), 30, tombstoneAt)
+	client, _ := tombstoneSyncServer(t, key, string(remove), 30, tombstoneAt)
 	if _, err := accountSyncNow(context.Background(), client); err != nil {
 		t.Fatalf("同步失败: %v", err)
 	}

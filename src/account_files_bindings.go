@@ -103,7 +103,8 @@ func fileSyncAddPath(kind, path string) (FileSyncStatusInfo, error) {
 		defer cancel()
 		client := newAccountClient("")
 		body := fileSyncEntryBody{ID: entry.ID, Name: entry.Name, Kind: entry.Kind, SourcePath: entry.SourcePath}
-		if _, err := client.FilesCreateEntry(ctx, token, body); err != nil {
+		created, err := client.FilesCreateEntry(ctx, token, body)
+		if err != nil {
 			if accountErrorCode(err) == accErrUnauthorized {
 				accountInvalidateSession()
 				return fileSyncStatusSnapshot(), errors.New(accountErrorText(err))
@@ -111,10 +112,13 @@ func fileSyncAddPath(kind, path string) (FileSyncStatusInfo, error) {
 			// 显示名与账号下其它设备已有条目冲突：换后缀重试一次
 			entry.Name = fileSyncUniqueEntryName(name + " 2")
 			body.Name = entry.Name
-			if _, err2 := client.FilesCreateEntry(ctx, token, body); err2 != nil {
-				return fileSyncStatusSnapshot(), errors.New(accountErrorText(err2))
+			created, err = client.FilesCreateEntry(ctx, token, body)
+			if err != nil {
+				return fileSyncStatusSnapshot(), errors.New(accountErrorText(err))
 			}
 		}
+		// 记下创建设备（服务端回执）：本机创建 → 「移动」时同步登记到账号
+		entry.OriginDevice = created.OriginDevice
 	}
 
 	fileSyncMu.Lock()
@@ -130,6 +134,312 @@ func fileSyncAddPath(kind, path string) (FileSyncStatusInfo, error) {
 	fileSyncKick()
 	emitFilesChanged()
 	return snap, nil
+}
+
+// FilesSetLocalPath 把条目移动到本机其它位置（「移动」）：
+//
+//   - 文件夹条目：选一个**文件夹**，条目内容按原文件名铺进去；
+//   - 文件条目：选**文件夹** → 文件放进该文件夹并保留文件名；选**文件** → 用服务器内容覆盖它；
+//   - **旧位置的文件保持不动**（App 从不替用户删本机文件）；
+//   - 换位置后以**服务器内容为准**（铺数据阶段，见 fileSyncRelocateEntry）；
+//   - 若本机正是该条目的创建者，同时把新路径登记到账号（日后清单丢失能回到新位置），
+//     否则只改本机（创建者的路径不该被我们覆盖）。
+func (a *App) FilesSetLocalPath(id string) (FileSyncStatusInfo, error) {
+	if !accountLoggedIn() {
+		return fileSyncStatusSnapshot(), errors.New(T("请先登录账号"))
+	}
+	fileSyncMu.Lock()
+	idx := fileSyncFindEntryLocked(id)
+	if idx < 0 {
+		snap := fileSyncSnapshotLocked()
+		fileSyncMu.Unlock()
+		return snap, errors.New(T("条目不存在"))
+	}
+	entry := fileSyncCur.Entries[idx]
+	kind, entryName := entry.Kind, entry.Name
+	fileSyncMu.Unlock()
+
+	if shotMode {
+		return fileSyncStatusSnapshot(), nil // 截图模式不弹系统对话框
+	}
+	abs, err := pickRelocateTarget(kind, entryName)
+	if err != nil {
+		return fileSyncStatusSnapshot(), err
+	}
+	if abs == "" {
+		return fileSyncStatusSnapshot(), nil // 用户取消
+	}
+	if err := fileSyncCheckAdoptTarget(abs, kind); err != nil {
+		return fileSyncStatusSnapshot(), err
+	}
+	return fileSyncRelocateEntry(id, abs)
+}
+
+// pickRelocateTarget 选移动目标，全部借用**系统对话框**：
+//   - 文件夹条目：系统「选择文件夹」；
+//   - 文件条目：系统「保存文件」对话框（预填条目文件名）——放进某个文件夹并沿用该名字，
+//     或改名/换位置都由用户决定；目标已存在时由**系统自己**弹「是否替换」，App 不再多问一次。
+func pickRelocateTarget(kind, entryName string) (string, error) {
+	if kind == "dir" {
+		p, err := wruntime.OpenDirectoryDialog(appCtx, wruntime.OpenDialogOptions{Title: T("移动到哪个文件夹")})
+		if err != nil || strings.TrimSpace(p) == "" {
+			return "", err
+		}
+		return filepath.Abs(p)
+	}
+	defaultName := sanitizeRelName(entryName)
+	if defaultName == "" {
+		defaultName = "sync"
+	}
+	p, err := wruntime.SaveFileDialog(appCtx, wruntime.SaveDialogOptions{
+		Title:           T("移动到哪里"),
+		DefaultFilename: defaultName,
+	})
+	if err != nil || strings.TrimSpace(p) == "" {
+		return "", err
+	}
+	return filepath.Abs(p)
+}
+
+// fileSyncFileEntryTargetIn 文件条目选了文件夹时的落点：`<文件夹>/<条目名>`（保留文件名）。
+func fileSyncFileEntryTargetIn(dir, entryName string) (string, error) {
+	name := sanitizeRelName(entryName)
+	if name == "" {
+		return "", errors.New(T("条目名不可用作文件名，请选择具体文件"))
+	}
+	if st, err := os.Stat(dir); err != nil || !st.IsDir() {
+		return "", errors.New(T("文件不存在（可能已被移动或删除）"))
+	}
+	return filepath.Join(dir, name), nil
+}
+
+// sanitizeRelName 去掉文件名里不允许的路径分隔与保留字符（作为目录内的落点文件名用）。
+func sanitizeRelName(name string) string {
+	name = strings.TrimSpace(name)
+	name = strings.NewReplacer("/", "_", "\\", "_", ":", "_", "*", "_", "?", "_", "\"", "_", "<", "_", ">", "_", "|", "_").Replace(name)
+	name = strings.Trim(name, ". ")
+	return name
+}
+
+// fileSyncRelocateEntry 「移动」的核心：把本机内容**移动**到新位置（不是复制、也不是重下），
+// 再按新位置重新扫描；本机是创建者时把新路径登记到账号。
+//
+// 语义（用户要求，按操作系统"移动"的行为）：
+//   - 旧位置存在的文件搬到新位置（保留相对结构/文件名），**搬完源头即清理**（含留空的目录）；
+//   - 目标已有同名文件：内容相同视为同一份（丢掉源那份）；内容不同则用搬过来的覆盖，
+//     被覆盖的那份留一个「(冲突-本机)」副本（不静默丢用户数据）；
+//   - 旧位置本来就没有的文件（未同步/已删除）不动，由服务器按正常同步补下来；
+//   - 因此"改过去再改回来"也只是再移动一次，不会卡住。
+func fileSyncRelocateEntry(id, newRoot string) (FileSyncStatusInfo, error) {
+	fileSyncMu.Lock()
+	idx := fileSyncFindEntryLocked(id)
+	if idx < 0 {
+		snap := fileSyncSnapshotLocked()
+		fileSyncMu.Unlock()
+		return snap, errors.New(T("条目不存在"))
+	}
+	e := &fileSyncCur.Entries[idx]
+	oldRoot := fileSyncEntryRoot(*e)
+	kind, name := e.Kind, e.Name
+	dev := accountDeviceID()
+	isOrigin := dev != "" && e.OriginDevice == dev
+	fileSyncMu.Unlock()
+
+	moved, conflicts, skipped := fileSyncMoveLocalContent(kind, oldRoot, newRoot)
+	if samePath(oldRoot, newRoot) {
+		moved, conflicts, skipped = 0, 0, 0
+	}
+
+	fileSyncMu.Lock()
+	idx = fileSyncFindEntryLocked(id)
+	if idx < 0 {
+		snap := fileSyncSnapshotLocked()
+		fileSyncMu.Unlock()
+		return snap, errors.New(T("条目不存在"))
+	}
+	e = &fileSyncCur.Entries[idx]
+	e.SourcePath = newRoot
+	e.SourcePathMissing, e.OriginPath, e.Error = false, "", ""
+	if e.Files == nil {
+		e.Files = map[string]fileSyncLocalFile{}
+	}
+	// 搬过来的文件内容没变：清掉「已在本机移除」标记并重扫（同一份内容继续显示已同步）
+	for rel, m := range e.Files {
+		if m.RemovedLocally {
+			delete(e.Files, rel)
+		}
+	}
+	_ = fileSyncScanEntryLocked(e)
+	_ = saveFileSyncStateLocked(fileSyncCur)
+	snap := fileSyncSnapshotLocked()
+	fileSyncMu.Unlock()
+
+	if isOrigin {
+		if token := accountToken(); token != "" {
+			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			_, perr := newAccountClient("").FilesSetSourcePath(ctx, token, id, newRoot)
+			cancel()
+			if perr != nil {
+				log.Printf("[files] 登记新同步位置到账号失败（本机已生效）: %v", perr)
+			}
+		}
+	}
+
+	logUI("移动同步位置", fmt.Sprintf("%s（%s）：%s → %s，移动 %d 个文件、冲突替换 %d、跳过 %d",
+		name, kind, oldRoot, newRoot, moved, conflicts, skipped))
+	emitFilesChanged()
+	fileSyncKick()
+	return snap, nil
+}
+
+// fileSyncMoveLocalContent 把 oldRoot 下的内容移动到 newRoot（同卷 rename，跨卷复制后删除），
+// 返回 (移动的文件数, 内容不同被覆盖的冲突数, 内容相同直接去重的跳过数)。
+//
+// 冲突规则按操作系统"移动"：目标同名且内容相同 = 同一份（丢源）；内容不同 = 搬过来的覆盖目标，
+// 目标原内容留「(冲突-本机)」副本。文件条目 oldRoot 就是那个文件本身。
+func fileSyncMoveLocalContent(kind, oldRoot, newRoot string) (int, int, int) {
+	if oldRoot == "" || newRoot == "" || samePath(oldRoot, newRoot) {
+		return 0, 0, 0
+	}
+	moved, conflicts, skipped := 0, 0, 0
+	moveOne := func(src, dst string) {
+		if samePath(src, dst) {
+			return
+		}
+		st, err := os.Stat(src)
+		if err != nil || st.IsDir() {
+			return
+		}
+		if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
+			log.Printf("[files] 移动 %s 失败（建目录）: %v", src, err)
+			return
+		}
+		if dstInfo, derr := os.Stat(dst); derr == nil && !dstInfo.IsDir() {
+			same, herr := fileSyncSameContent(src, dst)
+			if herr == nil && same {
+				// 内容相同：同一份文件，丢掉源那份即为“移动”完成
+				if rmErr := os.Remove(src); rmErr == nil {
+					skipped++
+				}
+				return
+			}
+			// 内容不同：先留副本再覆盖（不静默丢数据）
+			if _, cerr := fileSyncCopyFile(dst, fileSyncConflictPath(dst)); cerr == nil {
+				conflicts++
+			}
+		}
+		if err := os.Rename(src, dst); err == nil {
+			moved++
+			return
+		}
+		// 跨卷：复制后删除
+		if _, cerr := fileSyncCopyFile(src, dst); cerr != nil {
+			log.Printf("[files] 移动 %s → %s 失败: %v", src, dst, cerr)
+			return
+		}
+		if rmErr := os.Remove(src); rmErr != nil {
+			log.Printf("[files] 移动后删除源文件失败 %s: %v", src, rmErr)
+			return
+		}
+		moved++
+	}
+
+	if kind == "file" {
+		moveOne(oldRoot, newRoot)
+		return moved, conflicts, skipped
+	}
+	// 目录条目：非递归遍历源目录（含未纳入同步的本地文件，与系统移动一致），只搬文件
+	_ = filepath.WalkDir(oldRoot, func(path string, d os.DirEntry, err error) error {
+		if err != nil {
+			return nil
+		}
+		if d.IsDir() {
+			return nil
+		}
+		rel, rerr := filepath.Rel(oldRoot, path)
+		if rerr != nil {
+			return nil
+		}
+		moveOne(path, filepath.Join(newRoot, rel))
+		return nil
+	})
+	// 搬空的旧目录清理掉（含嵌套空目录；留一个空壳目录没有意义）
+	fileSyncPruneTreeEmpty(oldRoot)
+	return moved, conflicts, skipped
+}
+
+// fileSyncPruneTreeEmpty 自底向上删除 root 下的空目录，最后若 root 也空了就一并删除。
+func fileSyncPruneTreeEmpty(root string) {
+	for i := 0; i < 64; i++ {
+		removed := false
+		_ = filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
+			if err != nil || !d.IsDir() || samePath(path, root) {
+				return nil
+			}
+			if entries, rerr := os.ReadDir(path); rerr == nil && len(entries) == 0 {
+				if os.Remove(path) == nil {
+					removed = true
+				}
+			}
+			return nil
+		})
+		if !removed {
+			break
+		}
+	}
+	if entries, err := os.ReadDir(root); err == nil && len(entries) == 0 {
+		_ = os.Remove(root)
+	}
+}
+
+// fileSyncSameContent 两个文件内容是否一致（大小不同直接判定不同）。
+func fileSyncSameContent(a, b string) (bool, error) {
+	ai, err := os.Stat(a)
+	if err != nil {
+		return false, err
+	}
+	bi, err := os.Stat(b)
+	if err != nil {
+		return false, err
+	}
+	if ai.Size() != bi.Size() {
+		return false, nil
+	}
+	ah, err := fileSyncHashFile(a)
+	if err != nil {
+		return false, err
+	}
+	bh, err := fileSyncHashFile(b)
+	if err != nil {
+		return false, err
+	}
+	return ah == bh, nil
+}
+
+// fileSyncCheckAdoptTarget 校验「移动」选中的目标：
+// 文件夹条目必须是目录；文件条目可以是文件（覆盖）或目录下的同名文件落点；不能是接收目录。
+func fileSyncCheckAdoptTarget(abs, kind string) error {
+	st, err := os.Stat(abs)
+	if err != nil {
+		// 文件条目选文件夹时，落点是「文件夹/文件名」——该文件还不存在是正常的
+		if kind == "file" && os.IsNotExist(err) {
+			if pst, perr := os.Stat(filepath.Dir(abs)); perr == nil && pst.IsDir() {
+				return nil
+			}
+		}
+		return errors.New(T("文件不存在（可能已被移动或删除）"))
+	}
+	if kind == "dir" && !st.IsDir() {
+		return errors.New(T("该条目同步的是文件夹，请选择文件夹"))
+	}
+	receive := fileSyncReceiveDir()
+	if receive != "" && samePath(abs, receive) {
+		return errors.New(T("接收目录本身不能作为同步位置"))
+	}
+	if err := fileSyncCheckOverlap(abs, ""); err != nil {
+		return err
+	}
+	return nil
 }
 
 // fileSyncUniqueEntryName 本机显示名去重（`名字`、`名字 (2)`、`名字 (3)`…）。
@@ -329,6 +639,10 @@ func (a *App) FilesRemoveEntry(id string) (FileSyncStatusInfo, error) {
 		return snap, errors.New(T("条目不存在"))
 	}
 	entry := fileSyncCur.Entries[idx]
+	// 先记移除墓碑：服务端那次删除万一失败，下次同步才能区分「用户真的移除了」与
+	// 「本机清单丢了」——两者都表现为「来源设备=本机、本机没有该条目」。
+	fileSyncCur.noteEntryRemoved(id, fileSyncNow())
+	_ = saveFileSyncStateLocked(fileSyncCur)
 	fileSyncMu.Unlock()
 
 	if token := accountToken(); token != "" {
@@ -338,6 +652,10 @@ func (a *App) FilesRemoveEntry(id string) (FileSyncStatusInfo, error) {
 		if err != nil && accountErrorCode(err) != accErrNotFound {
 			return fileSyncStatusSnapshot(), errors.New(accountErrorText(err))
 		}
+		fileSyncMu.Lock()
+		fileSyncCur.clearEntryRemoved(id) // 服务端已确认删除，墓碑使命完成
+		_ = saveFileSyncStateLocked(fileSyncCur)
+		fileSyncMu.Unlock()
 	}
 
 	fileSyncMu.Lock()

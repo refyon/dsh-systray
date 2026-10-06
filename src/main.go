@@ -22,6 +22,7 @@ import (
 	"dsh-systray/internal/systray"
 	"github.com/wailsapp/wails/v2"
 	"github.com/wailsapp/wails/v2/pkg/options"
+	"github.com/wailsapp/wails/v2/pkg/options/mac"
 	"github.com/wailsapp/wails/v2/pkg/options/windows"
 	wruntime "github.com/wailsapp/wails/v2/pkg/runtime"
 )
@@ -798,6 +799,10 @@ func main() {
 			WindowIsTranslucent:  false,
 			Theme:                windows.SystemDefault,
 		},
+		// macOS：关闭缩放（最大化）按钮——主窗口是固定尺寸的，缩放只会把它拉到屏幕左上角。
+		Mac: &mac.Options{
+			DisableZoom: true,
+		},
 	})
 	if err != nil {
 		log.Printf("wails run: %v", err)
@@ -807,10 +812,11 @@ func main() {
 // onStartup Wails 应用启动回调：建立上下文、启动 macOS 托盘、开始后台服务编排。
 func onStartup(ctx context.Context) {
 	appCtx = ctx
-	loadStartupPendingPluginOps()     // 跨托盘重启保留「待应用变更未生效」提示（逐条校验后载入）
-	revalidatePendingApplyOnStartup() // 同步待生效集合按本机现状重校验（上次应用中途退出的自愈）
-	startAccountBackground(ctx)       // 启动自动登录校验 + 每 20 分钟一次的后台同步检查（需求④⑤）
-	startFileSyncBackground(ctx)      // 文件同步：每 60 秒扫描本机，有变更或超时即上传/对账
+	loadStartupPendingPluginOps()       // 跨托盘重启保留「待应用变更未生效」提示（逐条校验后载入）
+	revalidatePendingApplyOnStartup()   // 同步待生效集合按本机现状重校验（上次应用中途退出的自愈）
+	startAccountBackground(ctx)         // 启动自动登录校验 + 每 20 分钟一次的后台同步检查（需求④⑤）
+	startFileSyncBackground(ctx)        // 文件同步：每 60 秒扫描本机，有变更或超时即上传/对账
+	startServiceWatchdog(ctx, nil, nil) // 服务存活看门狗：静默死亡（如沿用的服务）自动拉起
 	if runtime.GOOS == "darwin" {
 		// 系统关机/注销/重启回调须在托盘启动前注册，避免通知竞态丢失。
 		// true=关机/注销开始（跳过停服询问直接放行）；false=会话恢复（FUS 切回，复位）。
@@ -962,6 +968,8 @@ func signalShotReady() {
 
 // onDomReady 前端就绪：非自启动场景通知前端进入 splash 视图。
 func onDomReady(ctx context.Context) {
+	// 固定尺寸窗口：禁用最大化按钮（Windows 改窗口样式，macOS 走 mac.Options.DisableZoom）
+	startDisableWindowMaximize("dsh-systray")
 	// 截图/预览模式：窗口保持置顶（WebView2 偶发重绘/失焦会让一次性置顶失效，
 	// 常驻心跳每 1.2s 重新置顶，保证 PrintWindow / 屏幕截取窗口始终最前且不被遮挡）。
 	if os.Getenv("DSH_SYSTRAY_SHOW_WINDOW") == "1" {
@@ -1059,8 +1067,13 @@ func onShutdown(ctx context.Context) {
 			keepPID = serverCmd.Process.Pid
 		}
 		killChildProcesses(keepPID)
+		// 服务继续跑，但它的输出由本进程 tail：停机前把残留半行补进统一日志。
+		// 注意：服务输出是**文件句柄**（不是管道），本进程退出不会影响它继续写
+		// ——2026-10-06 的「服务静默终止」正是管道读端随托盘退出消失导致的。
+		stopServerLogTail()
 		log.Printf("quit with backend server kept running")
 	} else {
+		stopServerLogTail()
 		killServer()
 		killChildProcesses(0)
 		log.Printf("quit with backend server stopped")
@@ -1409,7 +1422,11 @@ func bootstrapService(interactive bool) {
 	var serverExitCh <-chan error
 	serverLogBefore := int64(0)
 	if serverResponding(webURL) {
+		// 服务由先前进程拉起（上次退出保留了服务 / 重启电脑后仍在跑）：本进程没有它的句柄，
+		// 但输出仍写在 server.log —— 从文件末尾开始 tail，把后续输出并回统一日志
+		// （此前这段输出完全看不到，排障只能靠猜）。
 		log.Printf("server already running on %s, skipping spawn", webURL)
+		startServerLogTail(true)
 		started = true
 	} else {
 		// 本次启动的健康校验只扫描此后的追加日志段；先轮转留档，使本次冷启动现场独立成档

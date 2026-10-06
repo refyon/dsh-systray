@@ -96,6 +96,18 @@ func (c *accountClient) FilesCreateEntry(ctx context.Context, token string, e fi
 	return out, err
 }
 
+// FilesSetSourcePath 更新条目的来源路径（只有创建该条目的设备能改，其它设备服务端返回 403）。
+//
+// 用途：用户在来源设备上用「移动」把同步位置换到别处后，把新位置登记到账号，
+// 这样日后本机清单丢失仍能自动回到**新**位置，而不是旧路径。
+func (c *accountClient) FilesSetSourcePath(ctx context.Context, token, entryID, sourcePath string) (fileSyncRemoteEntry, error) {
+	var out fileSyncRemoteEntry
+	path := "/v1/files/entries/" + url.PathEscape(entryID) + "/source-path"
+	body := map[string]string{"sourcePath": sourcePath}
+	err := c.do(ctx, http.MethodPatch, path, token, body, &out)
+	return out, err
+}
+
 // FilesDeleteEntry 删除同步条目（其它设备按「服务端没有该条目」收敛）。
 func (c *accountClient) FilesDeleteEntry(ctx context.Context, token, entryID string) error {
 	path := "/v1/files/entries/" + url.PathEscape(entryID)

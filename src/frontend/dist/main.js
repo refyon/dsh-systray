@@ -404,6 +404,12 @@ const I18N_DYN = {
   "已在本机移除": "Removed locally",
   "重新同步": "Sync again",
   "选择打开方式": "Choose an app",
+  "移动": "Move",
+  "移动到本机其它位置": "Move to another location on this device",
+  "已移动同步位置；本机文件已搬到新位置": "Location updated — local files were moved to the new location.",
+  "该条目同步的是文件夹，请选择文件夹": "This item syncs a folder — please pick a folder",
+  "该条目同步的是单个文件，请选择文件": "This item syncs a single file — please pick a file",
+  "接收目录本身不能作为同步位置": "The receive folder itself cannot be used as a sync location",
   "源设备原路径 {0} 在本机已不存在，内容已保存为接收目录副本": "The original path {0} no longer exists on this device — the content is kept as a copy under the receive folder.",
   "已重新纳入同步，稍后可从账号拉回": "Back in sync — it will be pulled from your account shortly",
   "展开或折叠": "Expand or collapse",
@@ -2915,17 +2921,21 @@ function filesTreeInteractive() {
 // 排序键的中文标签：渲染时再 tr()，语言切换后标签跟着走（不用缓存译文）。
 const FILES_SORT_LABEL = { name: "名称", size: "大小", mtime: "修改时间" };
 
-/** filesFmtSize 容量友好格式（换算后数值保持 1000 以内）。 */
+/** filesFmtSize 容量友好格式（换算后数值保持 1024 以内）。
+ *
+ * 用 1024 进制（Windows 资源管理器口径：同样标 KB/MB）：配额是产品约定的 10 MiB
+ * （10485760 字节），按 1000 进制显示会变成「10.5 MB」，看起来像配额写错了
+ * ——2026-10-06 用户反馈。改 1024 进制后同一份数据稳定显示「10.0 MB」。 */
 function filesFmtSize(n) {
   const v = Math.max(0, Number(n) || 0);
-  if (v < 1000) return v + " B";
+  if (v < 1024) return v + " B";
   const units = ["KB", "MB", "GB", "TB"];
-  let x = v / 1000;
+  let x = v / 1024;
   let i = 0;
   let shown = x >= 100 ? Math.round(x) : Math.round(x * 10) / 10;
-  // 进位保护：999950 → 999.95 KB 四舍五入成 1000，要再进一级（否则显示「1000 KB」而不是「1 MB」）
-  while (shown >= 1000 && i < units.length - 1) {
-    x /= 1000;
+  // 进位保护：1023.95 KB 四舍五入成 1024，要再进一级（否则显示「1024 KB」而不是「1 MB」）
+  while (shown >= 1024 && i < units.length - 1) {
+    x /= 1024;
     i += 1;
     shown = x >= 100 ? Math.round(x) : Math.round(x * 10) / 10;
   }
@@ -3126,11 +3136,13 @@ function filesEntryHtml(e) {
   // 条目行：有文件「已在本机移除」时给一个整条目「重新同步」；打开照旧
   const removedCount = (e.files || []).filter((f) => f.status === "removed-local").length;
   actions.push(`<button type="button" class="btn btn-ghost btn-xs" data-fact="open" data-entry="${esc(e.id)}" data-rel="">${tr("打开")}</button>`);
+  // 把该条目移动到本机的其它位置（系统式移动；文件条目用系统保存对话框，覆盖由系统询问）
+  actions.push(`<button type="button" class="btn btn-ghost btn-xs" data-fact="relocate" data-entry="${esc(e.id)}" title="${esc(tr("移动到本机其它位置"))}">${tr("移动")}</button>`);
   if (removedCount > 0) {
     actions.push(`<button type="button" class="btn btn-ghost btn-xs" data-fact="restore" data-entry="${esc(e.id)}" data-rel="">${tr("重新同步")}</button>`);
   }
   const entryActions = actions.join("");
-  // 本机曾是来源设备、但原路径在本机已不存在（文件被删/移走）：说明为什么这里出现的是副本
+  // 本机曾是来源设备、但原路径已不存在（文件被删/移走）：说明为什么这里出现的是副本
   const adoptHint = e.sourcePathMissing
     ? `<div class="files-err">${esc(fmt("源设备原路径 {0} 在本机已不存在，内容已保存为接收目录副本", e.originPath || ""))}</div>`
     : "";
@@ -3367,6 +3379,19 @@ async function filesDoRestore(entryId, rel) {
   }
 }
 
+/** filesDoRelocate 把条目移动到本机其它位置（系统式移动：搬文件、清理源；覆盖由系统对话框询问）。 */
+async function filesDoRelocate(entryId) {
+  const g = bindings();
+  if (!g || typeof g.FilesSetLocalPath !== "function") return;
+  try {
+    const st = await g.FilesSetLocalPath(entryId);
+    renderFilesCard(st, { forceTree: true });
+    filesHint(tr("已移动同步位置；本机文件已搬到新位置"), false);
+  } catch (err) {
+    filesHint(String(err), true);
+  }
+}
+
 async function filesDoRemove(entryId, rel, isDir) {
   const g = bindings();
   if (!g) return;
@@ -3433,6 +3458,7 @@ function wireFiles() {
       case "toggle": filesToggle(entryId, rel); break;
       case "open": filesDoOpen(entryId, rel); break;
       case "restore": filesDoRestore(entryId, rel); break;
+      case "relocate": filesDoRelocate(entryId); break;
       case "remove": filesDoRemove(entryId, rel, btn.dataset.dir === "1"); break;
       default: break;
     }

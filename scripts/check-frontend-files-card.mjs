@@ -122,14 +122,16 @@ function checkTrue(name, cond) {
   else fail(name);
 }
 
-// 容量换算：换算后数值保持 1000 以内（含四舍五入进位到下一单位）
+// 容量换算：1024 进制（Windows 资源管理器口径），换算后数值保持 1024 以内
 check('0 字节', T.filesFmtSize(0), '0 B');
-check('999 字节', T.filesFmtSize(999), '999 B');
-check('1000 字节', T.filesFmtSize(1000), '1 KB');
-check('1234 字节', T.filesFmtSize(1234), '1.2 KB');
-check('999499 字节（≥100 显示整数）', T.filesFmtSize(999499), '999 KB');
-check('999950 字节（进位到 MB）', T.filesFmtSize(999950), '1 MB');
-check('10 MiB', T.filesFmtSize(10 * 1024 * 1024), '10.5 MB');
+check('1023 字节', T.filesFmtSize(1023), '1023 B');
+check('1024 字节', T.filesFmtSize(1024), '1 KB');
+check('1536 字节', T.filesFmtSize(1536), '1.5 KB');
+check('100 MB 级（≥100 显示整数）', T.filesFmtSize(100 * 1024 * 1024 + 500000), '100 MB');
+check('1023.95 KB（进位到 MB）', T.filesFmtSize(1048524), '1 MB');
+// 免费档配额就是 10 MiB：必须显示成 10.0 MB（按 1000 进制会显示 10.5 MB，看起来像配额写错）
+check('10 MiB 配额', T.filesFmtSize(10485760), '10 MB');
+check('已用 93144 字节', T.filesFmtSize(93144), '91 KB');
 check('非法输入', T.filesFmtSize(undefined), '0 B');
 
 // 目录树聚合与排序
@@ -170,6 +172,11 @@ const flat = T.filesEntryHtml(entry);
 checkTrue('名称被转义（无原始标签）', !flat.includes('<img src=x'));
 checkTrue('转义后保留可读文本', flat.includes('&lt;img'));
 checkTrue('条目行含打开/移除，且不再提供重命名', flat.includes('data-fact="open"') && flat.includes('data-fact="remove"') && !flat.includes('data-fact="rename"'));
+// 「更改本机位置」：把条目同步到本机其它文件/文件夹（旧位置文件保持不动）
+checkTrue('条目行提供移动按钮', flat.includes('data-fact="relocate"') && flat.includes('>移动<'));
+checkTrue('移动走 FilesSetLocalPath 绑定', /case "relocate": filesDoRelocate\(/.test(js) && /g\.FilesSetLocalPath\(entryId\)/.test(js));
+checkTrue('移动后提示本机文件已搬走', js.includes('已移动同步位置；本机文件已搬到新位置'));
+checkTrue('不再由 App 自建覆盖询问', !js.includes('更改位置') && !js.includes('正在把账号内容同步到新位置'));
 checkTrue('来源标注为本机原位置', flat.includes('本机原位置'));
 checkTrue('未展开时不渲染子行', !flat.includes('c.txt'));
 

@@ -12,6 +12,7 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"sort"
@@ -137,6 +138,9 @@ type fileSyncEntry struct {
 	// （文件被删/移走）——此时按接收端保存副本，界面说明原委。
 	OriginPath        string `json:"originPath,omitempty"`
 	SourcePathMissing bool   `json:"sourcePathMissing,omitempty"`
+	// OriginDevice 创建该条目的设备 id（服务端记录）：等于本机时本机是来源设备，
+	// 「移动」需要把新路径登记到账号，供日后清单丢失时回源到新位置。
+	OriginDevice string `json:"originDevice,omitempty"`
 	// Error 条目级错误（如本机路径不存在、目录重命名失败）。
 	Error string `json:"error,omitempty"`
 }
@@ -155,6 +159,41 @@ type fileSyncState struct {
 	// 远端改动直接落地后的小字提示：什么时候、应用了多少项（用户要求保留可见痕迹）
 	RemoteAppliedAt    int64 `json:"remoteAppliedAt,omitempty"`
 	RemoteAppliedCount int   `json:"remoteAppliedCount,omitempty"`
+	// RemovedEntries 本机「移除」过的条目（entryId → 移除时间 Unix 秒）：服务端那次删除失败时，
+	// 靠它区分「用户真的移除了（可安全清理服务端残留）」与「本机清单丢了（必须建回来）」
+	// ——两者都表现为「来源设备=本机、本机没有该条目」（2026-10-06 现场：清单丢失被误判成移除，
+	// 云端条目连同数据被删掉）。
+	RemovedEntries map[string]int64 `json:"removedEntries,omitempty"`
+}
+
+// removedEntryAt 该条目在本机的移除时间（0 = 没有移除记录）。
+func (s fileSyncState) removedEntryAt(entryID string) int64 {
+	if s.RemovedEntries == nil {
+		return 0
+	}
+	return s.RemovedEntries[entryID]
+}
+
+// noteEntryRemoved 记录一次本机移除（供后续判断服务端残留是否可安全清理）。
+func (s *fileSyncState) noteEntryRemoved(entryID string, at int64) {
+	if entryID == "" {
+		return
+	}
+	if s.RemovedEntries == nil {
+		s.RemovedEntries = map[string]int64{}
+	}
+	s.RemovedEntries[entryID] = at
+}
+
+// clearEntryRemoved 服务端删除已确认后清掉移除记录。
+func (s *fileSyncState) clearEntryRemoved(entryID string) {
+	if s.RemovedEntries == nil {
+		return
+	}
+	delete(s.RemovedEntries, entryID)
+	if len(s.RemovedEntries) == 0 {
+		s.RemovedEntries = nil
+	}
 }
 
 // ==================== 状态视图（前端列表渲染的数据源） ====================
@@ -274,12 +313,40 @@ func loadFileSyncState() fileSyncState {
 	}
 	data, err := os.ReadFile(p)
 	if err != nil {
+		// 主文件没了（被删/被半途中断的写入清掉）：尝试备份，避免整份清单静默消失
+		if bak, ok := loadFileSyncStateBackup(); ok {
+			log.Printf("[files] 状态文件不可用（%v），已从备份恢复 %d 个条目", err, len(bak.Entries))
+			return bak
+		}
 		return st
 	}
 	if json.Unmarshal(data, &st) != nil {
+		log.Printf("[files] 状态文件解析失败（%s）：尝试用备份恢复", p)
+		if bak, ok := loadFileSyncStateBackup(); ok {
+			log.Printf("[files] 已从备份恢复 %d 个条目、%d 项待应用", len(bak.Entries), len(bak.PendingApply))
+			return bak
+		}
+		log.Printf("[files] 备份也不可用：本轮按空清单启动（远端条目会重新建回本机，不会删除云端数据）")
 		return fileSyncState{}
 	}
 	return st
+}
+
+// loadFileSyncStateBackup 读取状态文件备份（每次保存后同步写一份）。
+func loadFileSyncStateBackup() (fileSyncState, bool) {
+	p := fileSyncStatePath()
+	if p == "" {
+		return fileSyncState{}, false
+	}
+	data, err := os.ReadFile(p + ".bak")
+	if err != nil {
+		return fileSyncState{}, false
+	}
+	var st fileSyncState
+	if json.Unmarshal(data, &st) != nil {
+		return fileSyncState{}, false
+	}
+	return st, true
 }
 
 // saveFileSyncStateLocked 原子写入（临时文件 + rename），权限 0600（调用方须持有 fileSyncMu）。
@@ -303,6 +370,8 @@ func saveFileSyncStateLocked(st fileSyncState) error {
 		_ = os.Remove(tmp)
 		return err
 	}
+	// 备份（best-effort）：主文件被误删/写坏时还能把清单找回来
+	_ = os.WriteFile(p+".bak", data, 0o600)
 	return nil
 }
 

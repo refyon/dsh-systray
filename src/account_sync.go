@@ -209,7 +209,13 @@ func accountKeyTargetSatisfiedAt(key string, value json.RawMessage, updatedAt in
 			return want.Spec == "" || normalizeSpecText(cur.Spec) == normalizeSpecText(want.Spec)
 		}
 		if want.Version != "" && !versionTargetSatisfied(cur.Version, want.Version) {
-			return false
+			// 本机版本**更高**也算已满足：账号记录是「该装哪个版本」，本机已经装了更新的版本
+			// （例如 harness 自己装了 1.5.0，账号记录还停在 1.4.3）——此时该记录不该再进待生效集合，
+			// 本地更新的版本由对账 accountReconcileLocalPlugins 反过来补报上行。
+			// 否则界面会常驻「1 项改动待生效 / 重启生效」，点下去还会把插件降级（2026-10-06 现场）。
+			if compareVersions(cur.Version, want.Version) <= 0 {
+				return false
+			}
 		}
 		if want.Spec != "" && !pluginSpecSatisfied(cur, want.Spec) {
 			// 记录自身的 spec 与它声明的 Version 矛盾（如 spec=1.7.44 / version=1.7.45）时以 Version
@@ -683,6 +689,13 @@ func accountSyncCheck(ctx context.Context, client *accountClient) (accountSyncRe
 	// 3) 拉取 + 合并 → 待生效集合（不应用）
 	pending, pulled, err := accountSyncPull(ctx, client)
 	if err != nil {
+		// 拉取失败（超时/断网）不阻断本机改动的补报：先做一次插件对账并上报，
+		// 否则「harness 自己装了新版插件」在本轮永远进不了账号记录（2026-10-06 现场）。
+		accountReconcileHarnessVersion(ctx, client)
+		res.PluginsReported = accountReconcileLocalPlugins(ctx, client)
+		if _, ferr := accountFlushOps(ctx, client); ferr != nil && accountErrorCode(ferr) != accErrUnauthorized {
+			logWarn("account", "拉取失败后的补报也失败（留待下次同步）: %v", ferr)
+		}
 		accountSetSyncError(accountErrorText(err))
 		return res, err
 	}
@@ -701,9 +714,14 @@ func accountSyncCheck(ctx context.Context, client *accountClient) (accountSyncRe
 
 	// 4) 对账本机 Harness 版本与本地在线插件：服务器上还没有该记录（或版本在应用外变过）时补报，
 	//    保证「初始化时一并上报」不因基线时刻版本未知而落空（插件对账另见 accountReconcileLocalPlugins：
-	//    用 npm / pnpm 直接装的插件不会经过托盘，不补报就永远进不了账号记录）。
+	//    用 npm / pnpm 直接装的插件、或 harness 自己装的版本不会经过托盘，不补报就永远进不了账号记录）。
+	//    放在拉取之后：本轮拉到的待生效项已在集合里，对账会跳过这些 key，不会反向覆盖远端改动。
 	accountReconcileHarnessVersion(ctx, client)
 	res.PluginsReported = accountReconcileLocalPlugins(ctx, client)
+	// 收尾再推一次，把刚补报的项送出去。
+	if _, ferr := accountFlushOps(ctx, client); ferr != nil && accountErrorCode(ferr) != accErrUnauthorized {
+		logWarn("account", "收尾上报失败（留待下次同步）: %v", ferr)
+	}
 	return res, nil
 }
 

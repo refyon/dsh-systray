@@ -178,7 +178,7 @@ func initFileSyncState() {
 	if entries > 0 {
 		fileSyncScanAllLocked()
 	}
-	kept, dropped, _ := fileSyncFilterActionsLocked(fileSyncCur.PendingApply)
+	kept, dropped, _ := fileSyncFilterActionsLocked(fileSyncCur.PendingApply, nil)
 	fileSyncCur.PendingApply = kept
 	if dropped > 0 {
 		_ = saveFileSyncStateLocked(fileSyncCur)
@@ -713,7 +713,7 @@ func fileSyncBuildRequestLocked() fileSyncRequest {
 }
 
 // fileSyncFilterActionsLocked 过滤「本机已经满足」的动作，其余进待应用集合（调用方须持有 fileSyncMu）。
-func fileSyncFilterActionsLocked(actions []fileSyncAction) ([]fileSyncAction, int, []string) {
+func fileSyncFilterActionsLocked(actions []fileSyncAction, remoteIDs map[string]bool) ([]fileSyncAction, int, []string) {
 	out := make([]fileSyncAction, 0, len(actions))
 	orphans := make([]string, 0, 2)
 	skipped := 0
@@ -728,6 +728,12 @@ func fileSyncFilterActionsLocked(actions []fileSyncAction) ([]fileSyncAction, in
 				}
 			}
 		case "download":
+			if idx < 0 && remoteIDs != nil && !remoteIDs[a.EntryID] {
+				// 本机没有这个条目、远端条目列表里也没有它（服务端条目已删 / 动作过期）：
+				// 这条动作永远无法应用，直接丢弃——否则界面会常驻「有远端改动未能应用」。
+				skipped++
+				continue
+			}
 			if idx >= 0 {
 				// 内容一致就跳过。注意「已在本机移除」的文件 Sha256 仍是服务端那份摘要，
 				// 因此不会被自动拉回；用户点「重新同步」会清掉摘要，下一轮才会真正下载。
@@ -748,12 +754,19 @@ func fileSyncFilterActionsLocked(actions []fileSyncAction) ([]fileSyncAction, in
 				skipped++
 				continue
 			}
-			// 来源设备就是本机、而本机已无该条目 → 这是自家残留（本机删除时服务端没删干净），
-			// 不该提示「来自其它设备的改动」，交给调用方去清理服务端（2026-10-05 现场）。
+			// 来源设备就是本机、而本机已无该条目：
+			//   - 本机**有移除记录**（用户在界面点过「移除」，只是服务端那次删除没成功）→ 自家残留，
+			//     交给调用方清理服务端；
+			//   - 没有移除记录 → 只是本机清单丢了（重登/重装/状态文件损坏）：必须当作新条目建回来
+			//     （来源路径由 fileSyncApplyEntryAction 自动认回），**绝不能顺手删云端条目**
+			//     ——2026-10-06 现场：清单被清空后，这台机器把账号上两个条目连同服务端数据一起删了。
 			if a.OriginDevice != "" && a.OriginDevice == accountDeviceID() {
-				orphans = append(orphans, a.EntryID)
-				skipped++
-				continue
+				if fileSyncCur.removedEntryAt(a.EntryID) > 0 {
+					orphans = append(orphans, a.EntryID)
+					skipped++
+					continue
+				}
+				log.Printf("[files] 条目 %s（%s）本机无记录、也无移除记录：按新条目建回本机（疑似清单丢失）", a.Name, a.EntryID)
 			}
 		case "rename_entry":
 			if idx >= 0 && fileSyncCur.Entries[idx].Name == a.Name {
@@ -836,18 +849,33 @@ func fileSyncCheck(ctx context.Context, client *accountClient) (fileSyncResult, 
 		fileSyncMu.Unlock()
 		return res, err
 	}
-	apply, _, orphans := fileSyncFilterActionsLocked(resp.Actions)
+	remoteIDs := make(map[string]bool, len(resp.Entries))
+	for _, e := range resp.Entries {
+		remoteIDs[e.ID] = true
+	}
+	// 本轮要新建的条目也算「存在」（否则紧随其后的 download 会被当成过期动作丢掉）
+	for _, a := range resp.Actions {
+		if a.Kind == "create_entry" {
+			remoteIDs[a.EntryID] = true
+		}
+	}
+	apply, _, orphans := fileSyncFilterActionsLocked(resp.Actions, remoteIDs)
 	fileSyncCur.PendingApply = apply
 	// 自愈：服务端记着「本机创建 + 原路径」，而本机这条却是接收端（老数据 / 曾经丢过清单）
 	// → 这里直接回源路径（用户要求：源设备自动同步回源路径，不靠人工指定）。
 	fileSyncReattachOwnEntriesLocked(resp.Entries)
-	// 自家孤儿条目（来源设备=本机、本机已删除）：不提示应用，直接清理服务端残留
+	// 自家残留条目：**只清理本机有移除记录的**（用户在界面点过「移除」、服务端那次删除没成功）。
+	// 没有移除记录的条目在上面已按新条目建回本机——清单丢失绝不能导致云端数据被删
+	// （2026-10-06 现场：清单被清空后，这台机器把账号上两个条目连同服务端数据一起删了）。
 	for _, id := range orphans {
 		if derr := client.FilesDeleteEntry(ctx, token, id); derr != nil && accountErrorCode(derr) != accErrNotFound {
-			log.Printf("[files] 清理孤儿条目 %s 失败（下轮重试）: %v", id, derr)
+			log.Printf("[files] 清理残留条目 %s 失败（下轮重试）: %v", id, derr)
 			continue
 		}
-		logUI("清理孤儿同步条目", id)
+		fileSyncMu.Lock()
+		fileSyncCur.clearEntryRemoved(id)
+		fileSyncMu.Unlock()
+		logUI("清理残留同步条目", id)
 	}
 	if resp.Quota.Limit > 0 {
 		fileSyncCur.QuotaUsed, fileSyncCur.QuotaLimit, fileSyncCur.QuotaTier = resp.Quota.Used, resp.Quota.Limit, resp.Quota.Tier
@@ -995,6 +1023,8 @@ func fileSyncApplyEntryAction(a fileSyncAction) error {
 			Name:  a.Name,
 			Kind:  firstNonEmpty(a.EntryKind, "dir"),
 			Files: map[string]fileSyncLocalFile{},
+			// 记下创建设备：等于本机时本机是来源设备（「移动」要同步登记到账号）
+			OriginDevice: a.OriginDevice,
 		}
 		// 先校验设备：如果这个条目本来就是**本机**创建的（来源设备 id = 本机），说明本机是源设备
 		// （可能只是本机清单丢了）。此时用服务端记下的原路径自动同步回原位置，
@@ -1051,6 +1081,20 @@ func fileSyncApplyDownload(a fileSyncAction, client *accountClient, ctx context.
 	if target == "" {
 		return errors.New(T("本机路径不可用"))
 	}
+	// 目标文件内容已经与服务端一致（例如本机换个位置放着同一份文件）：直接记为已同步，
+	// 不重复下载写盘。
+	if st, serr := os.Stat(target); serr == nil && !st.IsDir() {
+		if sha, herr := fileSyncHashFile(target); herr == nil && sha == a.Sha256 {
+			fileSyncMu.Lock()
+			if i := fileSyncFindEntryLocked(a.EntryID); i >= 0 {
+				fileSyncCur.Entries[i].Files[a.RelPath] = fileSyncLocalFile{
+					Sha256: a.Sha256, SyncedSha: a.Sha256, Size: st.Size(), Mtime: st.ModTime().Unix(),
+				}
+			}
+			fileSyncMu.Unlock()
+			return nil
+		}
+	}
 	data, err := client.FilesDownload(ctx, token, a.EntryID, a.RelPath)
 	if err != nil {
 		return err
@@ -1059,15 +1103,17 @@ func fileSyncApplyDownload(a fileSyncAction, client *accountClient, ctx context.
 		return err
 	}
 	// 冲突副本：本机文件内容与服务端不同，且本机有尚未上传的改动 → 先留副本再覆盖
-	if st, serr := os.Stat(target); serr == nil && !st.IsDir() {
-		localSha := meta.Sha256
-		if localSha == "" {
-			localSha, _ = fileSyncHashFile(target)
-		}
-		pendingLocal := meta.SyncedSha != "" && meta.Sha256 != meta.SyncedSha
-		if localSha != a.Sha256 && pendingLocal {
-			if _, cerr := fileSyncCopyFile(target, fileSyncConflictPath(target)); cerr != nil {
-				return errors.New(T("保留冲突副本失败：") + cerr.Error())
+	{
+		if st, serr := os.Stat(target); serr == nil && !st.IsDir() {
+			localSha := meta.Sha256
+			if localSha == "" {
+				localSha, _ = fileSyncHashFile(target)
+			}
+			pendingLocal := meta.SyncedSha != "" && meta.Sha256 != meta.SyncedSha
+			if localSha != a.Sha256 && pendingLocal {
+				if _, cerr := fileSyncCopyFile(target, fileSyncConflictPath(target)); cerr != nil {
+					return errors.New(T("保留冲突副本失败：") + cerr.Error())
+				}
 			}
 		}
 	}

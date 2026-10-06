@@ -1573,9 +1573,25 @@ func shotTokenURL() string {
 // captureStartedTokenURL 启动服务后定点捕获本次打印的访问链接：每 300ms 扫一次日志新增
 // 部分，最多 30s（首次启动打印较慢）——命中即写入缓存。捕获不到不报错：取用时回退全量
 // 日志扫描，前端据 TokenFound 显示警告与解除指引。
+//
+// 服务输出先落 server.log、再由托盘 tail 并回统一日志（见 server_log.go），因此优先直接读
+// server.log（权威来源、不依赖 tail 时序），读不到再回退统一日志。
 func captureStartedTokenURL(from int64) {
 	deadline := time.Now().Add(30 * time.Second)
+	serverFrom := int64(0)
+	if p := serverLogPath(); p != "" {
+		if fi, err := os.Stat(p); err == nil {
+			serverFrom = fi.Size()
+		}
+	}
 	for time.Now().Before(deadline) {
+		if p := serverLogPath(); p != "" {
+			if u, ok := findLatestTokenURL(p, serverFrom); ok {
+				setServerTokenURL(u)
+				persistTokenURL(u)
+				return
+			}
+		}
 		if u, ok := findLatestTokenURL(unifiedLogPath(), from); ok {
 			setServerTokenURL(u)
 			persistTokenURL(u) // 记到配置目录：下次若沿用已在运行的服务，可直接复用

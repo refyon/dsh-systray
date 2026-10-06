@@ -337,17 +337,30 @@ func startServer() (bool, <-chan error) {
 			pnpmCmd(), port, strings.Join(trustedHostArgs, " ")))
 	}
 	cmd.Dir = harnessDir
-	// 输出经统一日志句柄落盘（勿提前 Close，见 platform_windows startServer 注释）
-	w := newModuleLogWriter("server")
-	cmd.Stdout = w
-	cmd.Stderr = w
+	// 输出直接落到 server.log 的**真实文件句柄**（不是管道，见 server_log.go 头部说明）：
+	// 句柄由服务进程自己持有，托盘自更新/退出（保留服务）都不会让它拿到 EPIPE 而静默退出。
+	rotateServerLogIfLarge()
+	logFile, lerr := openServerLogForChild()
+	if lerr != nil {
+		log.Printf("打开服务日志文件失败（服务输出将丢弃）: %v", lerr)
+	} else {
+		cmd.Stdout = logFile
+		cmd.Stderr = logFile
+	}
 	cmd.Stdin = nil
 
-	from := logSizeOrZero() // 本次启动前的日志长度：捕获访问链接时只解析此后写入的输出
+	from := logSizeOrZero() // 本次启动前的日志长度（访问链接优先从 server.log 捕获，见 captureStartedTokenURL）
 	if err := cmd.Start(); err != nil {
+		if logFile != nil {
+			_ = logFile.Close()
+		}
 		log.Printf("failed to start server: %v", err)
 		return false, nil
 	}
+	if logFile != nil {
+		_ = logFile.Close() // 子进程已持有自己的副本
+	}
+	startServerLogTail(false) // 把服务输出并回统一日志（行前缀 [server]）
 	serverCmd = cmd
 	serverStartGen.Add(1) // 新代次：仍在观察旧进程的启动校验据此让位
 	gen := serverStartGen.Load()
@@ -357,7 +370,7 @@ func startServer() (bool, <-chan error) {
 	exitCh := make(chan error, 1)
 	go func() {
 		err := cmd.Wait()
-		w.Flush() // 进程退出后补出崩溃末行（无换行残留）
+		stopServerLogTail() // 进程退出：停机前把残留半行补进统一日志
 		exitCh <- err
 		noteServerExit(gen, err) // 意外退出（含 DSH 自请求重启）交给守护快速拉起，见 service_supervisor.go
 	}()

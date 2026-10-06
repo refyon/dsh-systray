@@ -404,6 +404,13 @@ const I18N_DYN = {
   "已在本机移除": "Removed locally",
   "重新同步": "Sync again",
   "选择打开方式": "Choose an app",
+  "移动": "Move",
+  "移动到本机其它位置": "Move to another location on this device",
+  "已移动同步位置；本机文件已搬到新位置": "Location updated — local files were moved to the new location.",
+  "该条目同步的是文件夹，请选择文件夹": "This item syncs a folder — please pick a folder",
+  "该条目同步的是单个文件，请选择文件": "This item syncs a single file — please pick a file",
+  "接收目录本身不能作为同步位置": "The receive folder itself cannot be used as a sync location",
+  "源设备原路径 {0} 在本机已不存在，内容已保存为接收目录副本": "The original path {0} no longer exists on this device — the content is kept as a copy under the receive folder.",
   "已重新纳入同步，稍后可从账号拉回": "Back in sync — it will be pulled from your account shortly",
   "展开或折叠": "Expand or collapse",
   "打开": "Open",
@@ -2721,6 +2728,8 @@ async function refreshSync() {
   accCard.classList.toggle("hidden", !loggedIn);
 
   if (loggedIn) {
+    // 登录态由状态快照决定：清掉上一次登出/失败留下的常驻文案，避免「已登录却写着已退出登录」
+    syncHint("sync-account-hint", "");
     $("sync-account-email").textContent = st.email || "—";
     const view = syncStatusView(st);
     const line = $("sync-status-line");
@@ -2804,6 +2813,7 @@ async function doSyncLogin() {
     await g.AccountVerify(email, code);
     $("sync-code").value = "";
     syncHint("sync-login-hint", "");
+    syncHint("sync-account-hint", ""); // 清掉登出时留下的「已退出登录」
     // 登录后立即做一次同步检查（首次同步的「重启生效」提示由 Go 侧给出）
     if (typeof g.AccountSyncNow === "function") {
       try { await g.AccountSyncNow(); } catch (e) { console.error("AccountSyncNow", e); }
@@ -2911,17 +2921,21 @@ function filesTreeInteractive() {
 // 排序键的中文标签：渲染时再 tr()，语言切换后标签跟着走（不用缓存译文）。
 const FILES_SORT_LABEL = { name: "名称", size: "大小", mtime: "修改时间" };
 
-/** filesFmtSize 容量友好格式（换算后数值保持 1000 以内）。 */
+/** filesFmtSize 容量友好格式（换算后数值保持 1024 以内）。
+ *
+ * 用 1024 进制（Windows 资源管理器口径：同样标 KB/MB）：配额是产品约定的 10 MiB
+ * （10485760 字节），按 1000 进制显示会变成「10.5 MB」，看起来像配额写错了
+ * ——2026-10-06 用户反馈。改 1024 进制后同一份数据稳定显示「10.0 MB」。 */
 function filesFmtSize(n) {
   const v = Math.max(0, Number(n) || 0);
-  if (v < 1000) return v + " B";
+  if (v < 1024) return v + " B";
   const units = ["KB", "MB", "GB", "TB"];
-  let x = v / 1000;
+  let x = v / 1024;
   let i = 0;
   let shown = x >= 100 ? Math.round(x) : Math.round(x * 10) / 10;
-  // 进位保护：999950 → 999.95 KB 四舍五入成 1000，要再进一级（否则显示「1000 KB」而不是「1 MB」）
-  while (shown >= 1000 && i < units.length - 1) {
-    x /= 1000;
+  // 进位保护：1023.95 KB 四舍五入成 1024，要再进一级（否则显示「1024 KB」而不是「1 MB」）
+  while (shown >= 1024 && i < units.length - 1) {
+    x /= 1024;
     i += 1;
     shown = x >= 100 ? Math.round(x) : Math.round(x * 10) / 10;
   }
@@ -3030,6 +3044,23 @@ function filesSortTree(node) {
   return node;
 }
 
+/** filesSortEntries 顶层条目列表排序：文件夹在前，再按当前键（名称/大小/修改时间）与方向。
+ *  这是「排序按钮」对列表最直观的那一层——只排展开后的树内文件，用户点按钮会觉得没反应。 */
+function filesSortEntries(list) {
+  const cmp = (a, b) => {
+    const ad = a.kind === "dir" ? 0 : 1;
+    const bd = b.kind === "dir" ? 0 : 1;
+    if (ad !== bd) return ad - bd;
+    let r;
+    if (filesSort.key === "size") r = (Number(a.size) || 0) - (Number(b.size) || 0);
+    else if (filesSort.key === "mtime") r = (Number(a.mtime) || 0) - (Number(b.mtime) || 0);
+    else r = String(a.name || "").localeCompare(String(b.name || ""), "zh-Hans-CN");
+    if (r === 0) r = String(a.name || "").localeCompare(String(b.name || ""), "zh-Hans-CN");
+    return r * filesSort.dir;
+  };
+  return (list || []).slice().sort(cmp);
+}
+
 /** filesRowHtml 一行（文件夹或文件）；depth 控制缩进。 */
 function filesRowHtml(o) {
   const view = filesStatusView(o.status);
@@ -3105,15 +3136,21 @@ function filesEntryHtml(e) {
   // 条目行：有文件「已在本机移除」时给一个整条目「重新同步」；打开照旧
   const removedCount = (e.files || []).filter((f) => f.status === "removed-local").length;
   actions.push(`<button type="button" class="btn btn-ghost btn-xs" data-fact="open" data-entry="${esc(e.id)}" data-rel="">${tr("打开")}</button>`);
+  // 把该条目移动到本机的其它位置（系统式移动；文件条目用系统保存对话框，覆盖由系统询问）
+  actions.push(`<button type="button" class="btn btn-ghost btn-xs" data-fact="relocate" data-entry="${esc(e.id)}" title="${esc(tr("移动到本机其它位置"))}">${tr("移动")}</button>`);
   if (removedCount > 0) {
     actions.push(`<button type="button" class="btn btn-ghost btn-xs" data-fact="restore" data-entry="${esc(e.id)}" data-rel="">${tr("重新同步")}</button>`);
   }
   const entryActions = actions.join("");
+  // 本机曾是来源设备、但原路径已不存在（文件被删/移走）：说明为什么这里出现的是副本
+  const adoptHint = e.sourcePathMissing
+    ? `<div class="files-err">${esc(fmt("源设备原路径 {0} 在本机已不存在，内容已保存为接收目录副本", e.originPath || ""))}</div>`
+    : "";
   return (
     `<div class="files-entry">` +
     `<div class="files-row files-row-entry" style="--depth:0">` + caret +
     `<div class="files-main"><div class="files-name">${isDir ? "📁" : "📄"} ${esc(e.name)}</div>` +
-    `<div class="files-meta">${esc(meta.filter(Boolean).join(" · "))}</div>${err}</div>` +
+    `<div class="files-meta">${esc(meta.filter(Boolean).join(" · "))}</div>${err}${adoptHint}</div>` +
     (view.text ? `<span class="files-badge ${view.cls}">${view.text}</span>` : "") +
     `<div class="files-actions">${entryActions}` +
     `<button type="button" class="btn btn-ghost btn-xs files-danger" data-fact="remove" data-entry="${esc(e.id)}" data-rel="" data-dir="${isDir ? "1" : "0"}">${tr("移除")}</button>` +
@@ -3174,7 +3211,7 @@ function renderFilesCard(st, opts) {
   }
 
   // 列表 / 空态（上传中只更新提示与容量，避免频繁重建 DOM 吞掉点击）
-  const entries = st.entries || [];
+  const entries = filesSortEntries(st.entries || []); // 顶层条目也按当前排序键排列
   state.filesEntries = entries; // 供行内操作按 id 取条目
   const toolbar = $("files-toolbar");
   toolbar.classList.toggle("hidden", entries.length === 0);
@@ -3342,6 +3379,19 @@ async function filesDoRestore(entryId, rel) {
   }
 }
 
+/** filesDoRelocate 把条目移动到本机其它位置（系统式移动：搬文件、清理源；覆盖由系统对话框询问）。 */
+async function filesDoRelocate(entryId) {
+  const g = bindings();
+  if (!g || typeof g.FilesSetLocalPath !== "function") return;
+  try {
+    const st = await g.FilesSetLocalPath(entryId);
+    renderFilesCard(st, { forceTree: true });
+    filesHint(tr("已移动同步位置；本机文件已搬到新位置"), false);
+  } catch (err) {
+    filesHint(String(err), true);
+  }
+}
+
 async function filesDoRemove(entryId, rel, isDir) {
   const g = bindings();
   if (!g) return;
@@ -3396,7 +3446,7 @@ function wireFiles() {
       const key = btn.dataset.sort;
       if (filesSort.key === key) filesSort.dir = -filesSort.dir;
       else filesSort = { key, dir: 1 };
-      refreshFiles();
+      refreshFiles(true); // 排序必须立即重建列表（不带 force 会被 400ms 节流吞掉 → 点击看起来没反应）
     });
   });
   $("files-tree").addEventListener("click", (ev) => {
@@ -3408,6 +3458,7 @@ function wireFiles() {
       case "toggle": filesToggle(entryId, rel); break;
       case "open": filesDoOpen(entryId, rel); break;
       case "restore": filesDoRestore(entryId, rel); break;
+      case "relocate": filesDoRelocate(entryId); break;
       case "remove": filesDoRemove(entryId, rel, btn.dataset.dir === "1"); break;
       default: break;
     }

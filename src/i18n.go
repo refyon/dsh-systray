@@ -251,6 +251,11 @@ var i18nEnMap = map[string]string{
 	"服务端返回异常，请稍后重试":       "The server returned an error — please retry later",
 	"选择打开方式":              "Choose an app",
 	"当前系统暂不支持选择打开方式":      "Choosing an app is not supported on this system yet",
+	"该条目同步的是文件夹，请选择文件夹":   "This sync item is a folder — please pick a folder",
+	"移动到哪个文件夹":            "Move into which folder",
+	"移动到哪里":               "Move to",
+	"该条目同步的是单个文件，请选择文件":   "This sync item is a single file — please pick a file",
+	"接收目录本身不能作为同步位置":      "The receive folder itself cannot be used as a sync location",
 
 	// 后台服务端口不可用（Windows 排除端口段 / 被其它程序占用，见 portcheck.go 与 askPortBlocked）
 	"被系统保留（Windows 排除端口段）": "is reserved by Windows (excluded port range)",
