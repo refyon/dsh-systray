@@ -1206,7 +1206,7 @@ func fileSyncConflictPath(target string) string {
 	return cand
 }
 
-// fileSyncCopyFile 复制文件（冲突副本用；上限 10 MiB，直接整读）。
+// fileSyncCopyFile 复制文件（跨卷移动、同步冲突副本用；上限 10 MiB，直接整读）。
 func fileSyncCopyFile(src, dst string) (int64, error) {
 	data, err := os.ReadFile(src)
 	if err != nil {

@@ -1969,9 +1969,9 @@ func TestFileSyncRelocateBackToOriginal(t *testing.T) {
 	}
 }
 
-// TestFileSyncRelocateConflictKeepsReplacedCopy 目标已有同名但内容不同：用搬过来的覆盖，
-// 被覆盖的那份留「(冲突-本机)」副本（不静默丢用户数据）。
-func TestFileSyncRelocateConflictKeepsReplacedCopy(t *testing.T) {
+// TestFileSyncRelocateConflictOverwritesWithoutCopy 目标已有同名但内容不同：用搬过来的直接覆盖，
+// **不再留「(冲突-本机)」副本**（用户决策 2026-10-06：用户决定覆盖就不必重命名保留原件）。
+func TestFileSyncRelocateConflictOverwritesWithoutCopy(t *testing.T) {
 	dir := setupFileSyncTest(t)
 	setAccountState(loggedInState())
 
@@ -1987,20 +1987,77 @@ func TestFileSyncRelocateConflictKeepsReplacedCopy(t *testing.T) {
 	}}}
 	fileSyncMu.Unlock()
 
+	// 覆盖前会用它问用户一次：这里确认会覆盖（数量应为 1）
+	if n := fileSyncMoveConflictCount(oldRoot, newRoot); n != 1 {
+		t.Fatalf("应统计出 1 个会被覆盖的同名文件：%d", n)
+	}
 	moved, conflicts, _ := fileSyncMoveLocalContent("dir", oldRoot, newRoot)
 	if moved != 1 || conflicts != 1 {
-		t.Fatalf("应移动 1 个并替换 1 个冲突：moved=%d conflicts=%d", moved, conflicts)
+		t.Fatalf("应移动 1 个并覆盖 1 个冲突：moved=%d conflicts=%d", moved, conflicts)
 	}
 	if b, err := os.ReadFile(filepath.Join(newRoot, "a.txt")); err != nil || string(b) != "newer-local" {
 		t.Fatalf("目标应被搬过来的文件覆盖：%v %q", err, string(b))
 	}
-	// 被覆盖的那份留「(冲突-本机)」副本（生成器会给下一个可用名，勿再用它推算期望路径）
-	copies, _ := filepath.Glob(filepath.Join(newRoot, "a (冲突-本机)*.txt"))
-	if len(copies) != 1 {
-		t.Fatalf("应留下 1 个冲突副本，实际 %v", copies)
+	if copies, _ := filepath.Glob(filepath.Join(newRoot, "a (冲突-本机)*.txt")); len(copies) != 0 {
+		t.Fatalf("覆盖后不该再留「(冲突-本机)」副本：%v", copies)
 	}
-	if b, err := os.ReadFile(copies[0]); err != nil || string(b) != "existing-other" {
-		t.Fatalf("冲突副本应是被覆盖的那份内容：%v %q", err, string(b))
+}
+
+// TestFileSyncRelocateAsksBeforeOverwrite 文件夹条目覆盖前先问一次：
+// 用户确认 → 覆盖且不留副本；用户取消 → 一个文件都不动（源与目标都保持原样）。
+func TestFileSyncRelocateAsksBeforeOverwrite(t *testing.T) {
+	dir := setupFileSyncTest(t)
+	setAccountState(loggedInState())
+
+	oldRoot := filepath.Join(dir, "old")
+	fsWriteFile(t, filepath.Join(oldRoot, "a.txt"), "newer-local")
+	newRoot := filepath.Join(dir, "new")
+	fsWriteFile(t, filepath.Join(newRoot, "a.txt"), "existing-other")
+	sha := fileSyncHashBytes([]byte("newer-local"))
+
+	reset := func() {
+		fileSyncMu.Lock()
+		fileSyncCur = fileSyncState{Entries: []fileSyncEntry{{
+			ID: "e1", Name: "notes", Kind: "dir", SourcePath: oldRoot, OriginDevice: "dev-peer",
+			Files: map[string]fileSyncLocalFile{"a.txt": {Sha256: sha, SyncedSha: sha}},
+		}}}
+		fileSyncMu.Unlock()
+		fsWriteFile(t, filepath.Join(oldRoot, "a.txt"), "newer-local")
+		fsWriteFile(t, filepath.Join(newRoot, "a.txt"), "existing-other")
+	}
+
+	// 用户取消：报「已取消移动」，源文件仍在原处、目标内容不变
+	reset()
+	asked := 0
+	askMoveOverwriteFn = func(n int) bool { asked = n; return false }
+	t.Cleanup(func() { askMoveOverwriteFn = askMoveOverwriteLocal })
+	if _, err := fileSyncRelocateEntry("e1", newRoot); err == nil {
+		t.Fatal("用户取消覆盖时应返回「已取消移动」")
+	}
+	if asked != 1 {
+		t.Fatalf("应带着冲突数量问一次，实际 n=%d", asked)
+	}
+	if b, err := os.ReadFile(filepath.Join(oldRoot, "a.txt")); err != nil || string(b) != "newer-local" {
+		t.Fatalf("取消后源文件应原地不动：%v %q", err, string(b))
+	}
+	if b, err := os.ReadFile(filepath.Join(newRoot, "a.txt")); err != nil || string(b) != "existing-other" {
+		t.Fatalf("取消后目标内容应保持原样：%v %q", err, string(b))
+	}
+
+	// 用户确认：移动完成、覆盖生效、不留副本
+	reset()
+	askMoveOverwriteFn = func(int) bool { return true }
+	if _, err := fileSyncRelocateEntry("e1", newRoot); err != nil {
+		t.Fatalf("确认覆盖后移动应成功：%v", err)
+	}
+	if b, err := os.ReadFile(filepath.Join(newRoot, "a.txt")); err != nil || string(b) != "newer-local" {
+		t.Fatalf("确认后目标应被覆盖：%v %q", err, string(b))
+	}
+	if _, err := os.Stat(filepath.Join(oldRoot, "a.txt")); !os.IsNotExist(err) {
+		t.Fatalf("移动后源文件应被清理：%v", err)
+	}
+	if copies, _ := filepath.Glob(filepath.Join(newRoot, "a (冲突-本机)*.txt")); len(copies) != 0 {
+		t.Fatalf("确认覆盖后不该留副本：%v", copies)
 	}
 }
 

@@ -771,6 +771,23 @@ func askApplyPendingPlugins(n int) bool {
 	return strings.Contains(out, applyLabel)
 }
 
+// askMoveOverwriteLocal 文件同步「移动」时目标已有同名且内容不同的文件：true=覆盖。
+// 覆盖后目标原内容不再保留副本，因此默认按钮放在「取消」上（误点不会丢数据）。
+func askMoveOverwriteLocal(n int) bool {
+	if shotMode {
+		return true // 截图/演示模式不弹窗
+	}
+	msg := TF("目标位置已有 %d 个同名文件，内容与本机不同。覆盖后这些文件将被替换，不再保留副本。是否继续移动？", n)
+	overwriteLabel := T("覆盖")
+	script := fmt.Sprintf(`display dialog "%s" with title "%s" buttons {%q, %q} default button %q`,
+		escapeAppleScript(msg), appName, T("取消"), overwriteLabel, T("取消"))
+	out, err := runAppleScript(script)
+	if err != nil {
+		return false
+	}
+	return strings.Contains(out, overwriteLabel)
+}
+
 // askRestartServiceMac 重启后台服务前确认（macOS）：true=确认重新启动。
 func askRestartServiceMac() bool {
 	msg := escapeAppleScript(T("是否重启后台 Web 服务？\n重启期间 Web UI 会短暂不可用。"))

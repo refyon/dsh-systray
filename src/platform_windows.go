@@ -968,6 +968,16 @@ func askApplyPendingPlugins(n int) bool {
 	return runModernDialog(appName, msg, []string{T("立即应用并重启"), T("稍后")}, 0) == 0
 }
 
+// askMoveOverwriteLocal 文件同步「移动」时目标已有同名且内容不同的文件：true=覆盖。
+// 覆盖后目标原内容不再保留副本，因此默认按钮放在「取消」上（误点不会丢数据）。
+func askMoveOverwriteLocal(n int) bool {
+	if shotMode {
+		return true // 截图/演示模式不弹窗
+	}
+	msg := TF("目标位置已有 %d 个同名文件，内容与本机不同。\n覆盖后这些文件将被替换，不再保留副本。\n\n是否继续移动？", n)
+	return runModernDialog(appName, msg, []string{T("取消"), T("覆盖")}, 0) == 1
+}
+
 // replaceAndRelaunch 替换当前 exe 并重启。Windows 不允许覆盖正在运行的 exe，
 // 采用「改名旧程序 → 换入新程序 → 重启」方案（minio/selfupdate 同款思路）。
 // 新 exe 可能位于其他盘符（临时目录在 C:、程序在 D:），os.Rename 无法跨盘移动，

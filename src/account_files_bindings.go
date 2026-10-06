@@ -139,9 +139,9 @@ func fileSyncAddPath(kind, path string) (FileSyncStatusInfo, error) {
 // FilesSetLocalPath 把条目移动到本机其它位置（「移动」）：
 //
 //   - 文件夹条目：选一个**文件夹**，条目内容按原文件名铺进去；
-//   - 文件条目：选**文件夹** → 文件放进该文件夹并保留文件名；选**文件** → 用服务器内容覆盖它；
-//   - **旧位置的文件保持不动**（App 从不替用户删本机文件）；
-//   - 换位置后以**服务器内容为准**（铺数据阶段，见 fileSyncRelocateEntry）；
+//   - 文件条目：选**文件夹** → 文件放进该文件夹并保留文件名；选**文件** → 覆盖它（系统对话框已问过替换）；
+//   - **旧位置的文件搬走**（系统移动语义：搬完清理源文件与空目录）；
+//   - 目标已有同名且内容不同的文件时先问一次（覆盖后不留副本，见 fileSyncRelocateEntry）；
 //   - 若本机正是该条目的创建者，同时把新路径登记到账号（日后清单丢失能回到新位置），
 //     否则只改本机（创建者的路径不该被我们覆盖）。
 func (a *App) FilesSetLocalPath(id string) (FileSyncStatusInfo, error) {
@@ -178,7 +178,8 @@ func (a *App) FilesSetLocalPath(id string) (FileSyncStatusInfo, error) {
 // pickRelocateTarget 选移动目标，全部借用**系统对话框**：
 //   - 文件夹条目：系统「选择文件夹」；
 //   - 文件条目：系统「保存文件」对话框（预填条目文件名）——放进某个文件夹并沿用该名字，
-//     或改名/换位置都由用户决定；目标已存在时由**系统自己**弹「是否替换」，App 不再多问一次。
+//     或改名/换位置都由用户决定；目标已存在时由**系统自己**弹「是否替换」，App 不再多问一次
+//     （所以文件条目覆盖时不再确认；文件夹条目没有这一问，覆盖前由 fileSyncRelocateEntry 补问）。
 func pickRelocateTarget(kind, entryName string) (string, error) {
 	if kind == "dir" {
 		p, err := wruntime.OpenDirectoryDialog(appCtx, wruntime.OpenDialogOptions{Title: T("移动到哪个文件夹")})
@@ -227,7 +228,8 @@ func sanitizeRelName(name string) string {
 // 语义（用户要求，按操作系统"移动"的行为）：
 //   - 旧位置存在的文件搬到新位置（保留相对结构/文件名），**搬完源头即清理**（含留空的目录）；
 //   - 目标已有同名文件：内容相同视为同一份（丢掉源那份）；内容不同则用搬过来的覆盖，
-//     被覆盖的那份留一个「(冲突-本机)」副本（不静默丢用户数据）；
+//     覆盖前**问一次**（文件夹条目；文件条目的「另存为」系统对话框已经问过替换），
+//     确认后直接覆盖、**不再留「(冲突-本机)」副本**（用户决策：决定覆盖就不必保留原件）；
 //   - 旧位置本来就没有的文件（未同步/已删除）不动，由服务器按正常同步补下来；
 //   - 因此"改过去再改回来"也只是再移动一次，不会卡住。
 func fileSyncRelocateEntry(id, newRoot string) (FileSyncStatusInfo, error) {
@@ -245,9 +247,14 @@ func fileSyncRelocateEntry(id, newRoot string) (FileSyncStatusInfo, error) {
 	isOrigin := dev != "" && e.OriginDevice == dev
 	fileSyncMu.Unlock()
 
-	moved, conflicts, skipped := fileSyncMoveLocalContent(kind, oldRoot, newRoot)
-	if samePath(oldRoot, newRoot) {
-		moved, conflicts, skipped = 0, 0, 0
+	moved, conflicts, skipped := 0, 0, 0
+	if !samePath(oldRoot, newRoot) {
+		// 会覆盖目标同名文件（内容不同）时先确认：文件夹条目选的是目录，系统对话框不会替我们问，
+		// 而覆盖后目标原内容不再保留副本——用户不确认就整体不动。
+		if n := fileSyncMoveConflictCount(oldRoot, newRoot); n > 0 && !askMoveOverwriteFn(n) {
+			return fileSyncStatusSnapshot(), errors.New(T("已取消移动（目标位置有同名文件，未改动任何文件）"))
+		}
+		moved, conflicts, skipped = fileSyncMoveLocalContent(kind, oldRoot, newRoot)
 	}
 
 	fileSyncMu.Lock()
@@ -285,7 +292,7 @@ func fileSyncRelocateEntry(id, newRoot string) (FileSyncStatusInfo, error) {
 		}
 	}
 
-	logUI("移动同步位置", fmt.Sprintf("%s（%s）：%s → %s，移动 %d 个文件、冲突替换 %d、跳过 %d",
+	logUI("移动同步位置", fmt.Sprintf("%s（%s）：%s → %s，移动 %d 个文件、覆盖 %d、跳过 %d",
 		name, kind, oldRoot, newRoot, moved, conflicts, skipped))
 	emitFilesChanged()
 	fileSyncKick()
@@ -295,8 +302,10 @@ func fileSyncRelocateEntry(id, newRoot string) (FileSyncStatusInfo, error) {
 // fileSyncMoveLocalContent 把 oldRoot 下的内容移动到 newRoot（同卷 rename，跨卷复制后删除），
 // 返回 (移动的文件数, 内容不同被覆盖的冲突数, 内容相同直接去重的跳过数)。
 //
-// 冲突规则按操作系统"移动"：目标同名且内容相同 = 同一份（丢源）；内容不同 = 搬过来的覆盖目标，
-// 目标原内容留「(冲突-本机)」副本。文件条目 oldRoot 就是那个文件本身。
+// 冲突规则按操作系统"移动"：目标同名且内容相同 = 同一份（丢源）；内容不同 = 搬过来的覆盖目标。
+// 覆盖前已由调用方（fileSyncRelocateEntry）问过用户，因此这里**不再留「(冲突-本机)」副本**
+// （用户决策 2026-10-06：用户决定覆盖就不必重命名保留原件）。
+// 文件条目 oldRoot 就是那个文件本身。
 func fileSyncMoveLocalContent(kind, oldRoot, newRoot string) (int, int, int) {
 	if oldRoot == "" || newRoot == "" || samePath(oldRoot, newRoot) {
 		return 0, 0, 0
@@ -323,10 +332,8 @@ func fileSyncMoveLocalContent(kind, oldRoot, newRoot string) (int, int, int) {
 				}
 				return
 			}
-			// 内容不同：先留副本再覆盖（不静默丢数据）
-			if _, cerr := fileSyncCopyFile(dst, fileSyncConflictPath(dst)); cerr == nil {
-				conflicts++
-			}
+			// 内容不同：覆盖目标（用户已确认；不留副本）
+			conflicts++
 		}
 		if err := os.Rename(src, dst); err == nil {
 			moved++
@@ -391,6 +398,53 @@ func fileSyncPruneTreeEmpty(root string) {
 		_ = os.Remove(root)
 	}
 }
+
+// fileSyncMoveConflictCount 统计移动会覆盖掉的目标同名文件数（同名且内容不同）。
+// 覆盖后目标原内容不再保留副本，因此覆盖前要用它问用户一次。
+// 内容相同的不计（那是同一份，直接去重）；目标不存在的也不计（新增落点）。
+func fileSyncMoveConflictCount(oldRoot, newRoot string) int {
+	if oldRoot == "" || newRoot == "" || samePath(oldRoot, newRoot) {
+		return 0
+	}
+	n := 0
+	check := func(src, dst string) {
+		if samePath(src, dst) {
+			return
+		}
+		st, err := os.Stat(src)
+		if err != nil || st.IsDir() {
+			return
+		}
+		dstInfo, derr := os.Stat(dst)
+		if derr != nil || dstInfo.IsDir() {
+			return
+		}
+		if same, herr := fileSyncSameContent(src, dst); herr != nil || !same {
+			n++
+		}
+	}
+	// 文件条目：oldRoot 就是那个文件本身
+	if st, err := os.Stat(oldRoot); err == nil && !st.IsDir() {
+		check(oldRoot, newRoot)
+		return n
+	}
+	// 目录条目：与移动同一套遍历（含未纳入同步的本地文件）
+	_ = filepath.WalkDir(oldRoot, func(path string, d os.DirEntry, err error) error {
+		if err != nil || d.IsDir() {
+			return nil
+		}
+		rel, rerr := filepath.Rel(oldRoot, path)
+		if rerr != nil {
+			return nil
+		}
+		check(path, filepath.Join(newRoot, rel))
+		return nil
+	})
+	return n
+}
+
+// askMoveOverwriteFn 移动前询问「目标已有同名不同内容的文件，是否覆盖」（平台弹窗；测试可替换）。
+var askMoveOverwriteFn = askMoveOverwriteLocal
 
 // fileSyncSameContent 两个文件内容是否一致（大小不同直接判定不同）。
 func fileSyncSameContent(a, b string) (bool, error) {
