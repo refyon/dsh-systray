@@ -1,16 +1,16 @@
 #!/usr/bin/env python3
 """合成 README 主图（docs/screenshot-hero.png，再由 convert_webp.py 转 webp）：
-- 背景：设置页「常规」真实渲染截图（docs/shots/general.webp）
-- 前景：真实渲染的启动进度卡片（docs/.shots-parts/splash-card.png，由 render_shots.mjs 产出）
+- 背景：设置页「常规」真实渲染截图（docs/.shots-parts/hero-bg[-en].png）
+- 前景：真实渲染的启动进度卡片（docs/.shots-parts/splash-card[-en].png）
 - 两个窗口四边带柔和阴影
 
-前景卡片来自渲染器而不是这里手绘：文案、字号、进度条尺寸都跟 App 里一模一样，
+背景与前景卡片都来自渲染器而不是这里手绘：文案、字号、进度条尺寸都跟 App 里一模一样，
 以后界面改了只重跑渲染即可，不必在这里同步改绘制代码。
 
 用法:
-  node scripts/render_shots.mjs          # 先出 shots + .shots-parts/splash-card.png
-  python scripts/make_hero.py            # 再合成主图
-  python scripts/convert_webp.py         # 最后转 webp
+  node scripts/render_shots.mjs          # 先出 .shots-parts/hero-bg*.png 与 splash-card*.png
+  python scripts/make_hero.py --lang zh  # 再合成中/英主图
+  python scripts/convert_webp.py         # 最后 PNG 转 webp（并删掉中间 PNG）
 """
 import argparse
 import os
@@ -29,11 +29,11 @@ ap = argparse.ArgumentParser(description="合成 README 主图")
 ap.add_argument("--lang", choices=["zh", "en"], default="zh", help="主图语言（决定进度卡文案）")
 a = ap.parse_args()
 
-shots_dir = os.path.join(docs, "shots-en" if a.lang == "en" else "shots")
-general = os.path.join(shots_dir, "general.webp")
-general_png = os.path.join(shots_dir, "general.png")
-splash = os.path.join(docs, ".shots-parts", "splash-card-en.png" if a.lang == "en" else "splash-card.png")
-out = os.path.join(docs, "screenshot-hero-en.png" if a.lang == "en" else "screenshot-hero.png")
+parts = os.path.join(docs, ".shots-parts")
+suffix = "-en" if a.lang == "en" else ""
+base_png = os.path.join(parts, f"hero-bg{suffix}.png")
+splash = os.path.join(parts, f"splash-card{suffix}.png")
+out = os.path.join(docs, f"screenshot-hero{suffix}.png")
 
 
 def window_shadow(img, blur, alpha):
@@ -69,12 +69,11 @@ def load_splash_card():
 
 
 def main():
-    src = general if os.path.isfile(general) else general_png
-    if not os.path.isfile(src):
-        sys.exit(f"缺少 {src}——请先运行 node scripts/render_shots.mjs + python scripts/convert_webp.py")
+    if not os.path.isfile(base_png):
+        sys.exit(f"缺少 {base_png}——请先运行 node scripts/render_shots.mjs")
 
     # ---------- 底图：常规页真实截图 ----------
-    base = Image.open(src).convert("RGBA")
+    base = Image.open(base_png).convert("RGBA")
     H = round(base.height * W / base.width)
     base = base.resize((W, H), Image.LANCZOS)
     base = rounded(base, RADIUS)

@@ -13,5 +13,7 @@
   直接双击 `index.html`（file://）也能看：此时浏览器不允许父页面操作 iframe 文档，
   轮播改用 URL 参数逐页重载（预览页内置 `?auth=1` 的授权弹层），效果与线上一致。
   本地更贴近线上：`python -m http.server --directory docs` 后访问 `http://127.0.0.1:8000/index.html`。
-- `shots/`、`shots-en/`：发布物料用的真实界面截图（`scripts/render_shots.mjs` 渲染）
-- `screenshot-hero*.webp`：README 主图（`scripts/make_hero.py` 合成，3 倍图）
+- `screenshot-hero*.webp`：README 主图。背景与前景都来自真实渲染：
+  `node scripts/render_shots.mjs` 出素材（`docs/.shots-parts/`，常规页整窗 + 真实启动卡）
+  → `python scripts/make_hero.py --lang zh|en` 合成 → `python scripts/convert_webp.py` 转 webp。
+  一条命令重跑全部物料：`scripts\recapture.cmd`。

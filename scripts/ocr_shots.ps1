@@ -1,9 +1,9 @@
-# 用 Windows 内置 OCR（zh-CN 语言包）把截图里的文字读出来，用于核对「脱敏 + 内容完整」：
+# 用 Windows 内置 OCR（zh-CN 语言包）把渲染素材里的文字读出来，用于核对「脱敏 + 内容完整」：
 #   - 读出的文字里不应出现本机真实路径 / 用户名 / 主机名；
-#   - 每张图都应能读出预期关键词（页标题等），据此判断没有被裁掉、不是空白图。
-# 用法: powershell -NoProfile -File scripts\ocr_shots.ps1 -Dir docs\shots -Out docs\.shots-tmp\ocr-zh.txt
+#   - 画面应能读出预期关键词（页标题等），据此判断没有被裁掉、不是空白图。
+# 用法: powershell -NoProfile -File scripts\ocr_shots.ps1 -Dir docs\.shots-parts -Out docs\.shots-parts\ocr-zh.txt
 param(
-    [string]$Dir = "docs\shots",
+    [string]$Dir = "docs\.shots-parts",
     [string]$Out = ""
 )
 
