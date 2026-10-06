@@ -56,7 +56,12 @@ export const DEMO = {
     "2026-08-11 09:12:10 [INFO] export finished: dsh-systray-export-20260811-091210-1a2b3c4d.zip",
     "2026-08-11 09:12:12 [INFO] already up to date (current v1.1.0)",
   ],
-  // 文件同步（数据同步页的文件卡）：虚构条目与演示路径；容量取 10 MB 免费档的中间值。
+  // 文件同步（数据同步页的文件卡）：演示的是"把 harness 配置与记忆同步到多台设备"这件事——
+  //   · .dsh（harness 数据目录：settings.yaml、profile 的 package.json、会话记录）
+  //   · MEMORY.md（记忆）、SKILL.md（技能）
+  //   · 接收目录里的条目（另一台设备同步过来的文件）
+  // 全部是**中性示例**：路径统一 C:\Users\demo\…，不含任何真实账号、凭据、项目或插件名
+  // （尤其不放 .credentials.yaml 之类凭据文件）。
   // 时间戳与 FROZEN_NOW 同口径（不泄露拍摄时间）。
   files: {
     syncedAt: Math.floor(new Date("2026-01-01T09:30:00").getTime() / 1000),
@@ -66,19 +71,26 @@ export const DEMO = {
     quotaLimit: 10 * 1024 * 1024,
     entries: [
       {
-        id: "demo-entry-1", name: "项目资料", kind: "dir", isSource: true,
-        path: "C:\\Users\\demo\\Documents\\项目资料", size: 1056789, status: "uploading", error: "",
+        id: "demo-entry-1", name: ".dsh", kind: "dir", isSource: true,
+        path: "C:\\Users\\demo\\.dsh", size: 1184280, status: "synced", error: "",
         files: [
-          { relPath: "README.md", name: "README.md", size: 4821, mtime: 0, status: "synced", error: "", blocked: false },
-          { relPath: "会议记录.md", name: "会议记录.md", size: 53390, mtime: 0, status: "synced", error: "", blocked: false },
-          { relPath: "设计/流程.png", name: "流程.png", size: 486233, mtime: 0, status: "synced", error: "", blocked: false },
-          { relPath: "设计/规范.pdf", name: "规范.pdf", size: 512345, mtime: 0, status: "uploading", error: "", blocked: false, speedBps: 1310720 },
-          { relPath: "草稿/大纲.md", name: "大纲.md", size: 4096, mtime: 0, status: "pending-upload", error: "", blocked: false },
-          { relPath: "旧版/备份.zip", name: "备份.zip", size: 20480, mtime: 0, status: "removed-local", error: "", blocked: false },
+          { relPath: "settings.yaml", name: "settings.yaml", size: 1843, mtime: 0, status: "synced", error: "", blocked: false },
+          { relPath: "profiles/web/package.json", name: "package.json", size: 2458, mtime: 0, status: "synced", error: "", blocked: false },
+          { relPath: "sessions/2026-08-11.jsonl", name: "2026-08-11.jsonl", size: 1179979, mtime: 0, status: "synced", error: "", blocked: false },
         ],
       },
       {
-        id: "demo-entry-2", name: "notes.txt", kind: "file", isSource: false,
+        id: "demo-entry-2", name: "MEMORY.md", kind: "file", isSource: true,
+        path: "C:\\Users\\demo\\dsh-workspace\\memory\\MEMORY.md", size: 6144, status: "synced", error: "",
+        files: [{ relPath: "MEMORY.md", name: "MEMORY.md", size: 6144, mtime: 0, status: "synced", error: "", blocked: false }],
+      },
+      {
+        id: "demo-entry-3", name: "SKILL.md", kind: "file", isSource: true,
+        path: "C:\\Users\\demo\\dsh-workspace\\skills\\doc-export\\SKILL.md", size: 2048, status: "uploading", error: "",
+        files: [{ relPath: "SKILL.md", name: "SKILL.md", size: 2048, mtime: 0, status: "uploading", error: "", blocked: false, speedBps: 1310720 }],
+      },
+      {
+        id: "demo-entry-4", name: "notes.txt", kind: "file", isSource: false,
         path: "C:\\Users\\demo\\Documents\\DeepSeekSync\\notes.txt", size: 2048, status: "synced", error: "",
         files: [{ relPath: "notes.txt", name: "notes.txt", size: 2048, mtime: 0, status: "synced", error: "", blocked: false }],
       },

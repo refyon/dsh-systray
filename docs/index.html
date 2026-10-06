@@ -282,7 +282,7 @@ footer .sep{margin:0 8px;color:var(--border)}
       fTag: "dsh-systray · DeepSeek Harness 桌面托盘",
       fLinkRel: "更新日志", fLinkSha: "SHA256 校验和", fLinkSrc: "源码 ↗",
       prevAria: "上一张", nextAria: "下一张", dotAria: "第 %d 张",
-      carCap: ["常规 — 自启与服务状态，一眼掌握", "关于（上）— 版本与各模块检查更新", "关于（下）— 已安装插件逐个管理", "日志 — 实时跟随，随看随清", "导出 — 会话插件，一键打包", "导入 — 无缝迁移，逐项恢复", "数据同步 — 邮箱验证码登录，设置随账号走", "私有仓库插件 — 检查更新时的 GitHub 设备流授权"]
+      carCap: ["常规 — 自启与服务状态，一眼掌握", "关于（上）— 版本与各模块检查更新", "关于（下）— 已安装插件逐个管理", "日志 — 实时跟随，随看随清", "导出 — 会话插件，一键打包", "导入 — 无缝迁移，逐项恢复", "数据同步 — 设置随账号走，harness 配置与记忆也同步到多台设备", "私有仓库插件 — 检查更新时的 GitHub 设备流授权"]
     },
     en: {
       title: "dsh-systray · Desktop tray, silent startup",
@@ -317,7 +317,7 @@ footer .sep{margin:0 8px;color:var(--border)}
       fTag: "dsh-systray · Desktop tray for DeepSeek Harness",
       fLinkRel: "Release Notes", fLinkSha: "SHA256 checksums", fLinkSrc: "Source ↗",
       prevAria: "Previous", nextAria: "Next", dotAria: "Slide %d",
-      carCap: ["General — autostart & service status at a glance", "About (top) — version & per-module update checks", "About (bottom) — manage installed plugins", "Logs — live view, clear with one click", "Export — sessions & plugins, one-click bundle", "Import — seamless migration, itemized restore", "Data sync — sign in with an email code, settings follow your account", "Private-repo plugins — GitHub device-flow auth on update checks"]
+      carCap: ["General — autostart & service status at a glance", "About (top) — version & per-module update checks", "About (bottom) — manage installed plugins", "Logs — live view, clear with one click", "Export — sessions & plugins, one-click bundle", "Import — seamless migration, itemized restore", "Data sync — settings follow your account; Harness config & memory sync across devices", "Private-repo plugins — GitHub device-flow auth on update checks"]
     }
   };
 
@@ -528,6 +528,14 @@ footer .sep{margin:0 8px;color:var(--border)}
       }
       var btn = doc.querySelector('.nav-item[data-page="' + (NAV_OF[page] || page) + '"]');
       if (btn) btn.click();
+      if (page === 'sync') {
+        // 数据同步页：账号卡在上、文件同步卡在下——默认视口只看得到账号卡，访客看不到
+        // 「同步 harness 配置与记忆」那一块。滚到底，把文件同步卡（.dsh / MEMORY.md /
+        // SKILL.md / 接收目录…）整块带进画面；条目与容量是异步渲染的，稍后再落一次位置。
+        if (content) content.scrollTop = content.scrollHeight;
+        setTimeout(function () { if (content) content.scrollTop = content.scrollHeight; }, 400);
+        return;
+      }
       if (content) content.scrollTop = 0;
       if (page === 'github-auth') openAuthDialog(doc);
     };
@@ -544,6 +552,7 @@ footer .sep{margin:0 8px;color:var(--border)}
     wantPage = null;
     var url = 'mock/index.html?page=' + encodeURIComponent(NAV_OF[page] || page) + '&lang=' + encodeURIComponent(lang);
     if (page === 'about-bottom') url += '&scroll=bottom';
+    if (page === 'sync') url += '&scroll=bottom';   // 同 applyPage：数据同步页要看文件同步卡
     if (page === 'github-auth') url += '&auth=1';   // 预览页内置的授权弹层（见 build_mock.mjs）
     carFrame.src = url;
   }
