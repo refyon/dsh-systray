@@ -66,6 +66,8 @@ Windows / macOS 系统托盘应用。三个核心特性：**轻量**（单文件
 **可迁移**
 
 - 账号同步（邮箱验证码登录）：开机自启动、最后选用的 Harness 版本（含预发布通道）、所有在线插件；本机配置与本地插件不上传
+- 文件 / 文件夹同步：自选文件与目录随账号走；列表为浏览器式导航（双击进入文件夹、上方路径导航、每行显示本机完整路径）
+- 容量不足只提示一次并暂停本轮同步，清理空间后点「立即同步」继续
 - 拉到的改动需点「重启生效」应用；多端按最新合并，单项失败可续做
 - 导出 / 导入：会话记录、已安装插件、自选文件目录打包为 zip；导入时罗列可恢复项，冲突询问并备份
 - 配置存于 `config.json`，数据存于 `~/.dsh`
@@ -119,12 +121,26 @@ Windows / macOS 系统托盘应用。三个核心特性：**轻量**（单文件
 
 | 平台 | 构建命令（在 `src/` 下执行） |
 | --- | --- |
-| Windows | `wails build -s -clean -platform windows/amd64 -ldflags "-X main.appVersion=v1.3.3"` |
-| macOS | `wails build -s -clean -platform darwin/universal -ldflags "-X main.appVersion=v1.3.3"` |
+| Windows | `wails build -s -clean -platform windows/amd64 -ldflags "-X main.appVersion=v1.3.4"` |
+| macOS | `wails build -s -clean -platform darwin/universal -ldflags "-X main.appVersion=v1.3.4"` |
 
 - 产物：`src/build/bin/dsh-systray.exe` / `dsh-systray.app`
 - `-X main.appVersion=`：版本号（CI 按 tag 注入；省略时为 `dev`，跳过更新检查）
 - Windows 可加 `-webview2 download`（为未预装 WebView2 的机器兜底）
+
+## 测试
+
+```bash
+cd src && go test ./...                    # Go：文件同步 / 账号 / 更新 / 服务守护等回归
+node scripts/check-frontend-i18n.mjs       # 文案键齐全：静态 data-i18n ↔ I18N_EN、tr/fmt/msg 字面量 ↔ I18N_DYN
+node scripts/check-frontend-files-card.mjs # 文件列表：容量换算、目录树聚合、排序、行渲染、导航与路径行规则
+node scripts/check-frontend-lang.mjs       # 真实浏览器：7 个页面 × 中英基线 + 运行中切换语言 + 交互场景（需本机 Edge/Chrome）
+```
+
+界面文案改动请至少跑后三条：前两条是静态/纯函数检查，第三条会用同一份界面比对
+「以目标语言直接启动」与「切换语言后」的逐元素文案，漏刷新的按钮/提示会被直接列出
+（`--shot 目录/` 可顺带截图复核，`--page sync` 只查指定页）。真实安装包层面的操作
+（安装位置、开机自启、系统对话框取消等）仍需在真机走一遍。
 
 ## 开发
 

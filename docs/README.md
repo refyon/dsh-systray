@@ -17,3 +17,12 @@
   `node scripts/render_shots.mjs` 出素材（`docs/.shots-parts/`，常规页整窗 + 真实启动卡）
   → `python scripts/make_hero.py --lang zh|en` 合成 → `python scripts/convert_webp.py` 转 webp。
   一条命令重跑全部物料：`scripts\recapture.cmd`。
+- `评估-*.md` / `验证指引-*.md`：需求评估与真机验收步骤（结论与遗留问题都在里面）。
+
+## 检查脚本（改前端后必跑）
+
+- `node scripts/check-frontend-i18n.mjs`：文案键齐全（静态层 + `tr/fmt/msg` 动态层）。
+- `node scripts/check-frontend-files-card.mjs`：文件列表的纯函数与交互规则（含导航、路径行）。
+- `node scripts/check-frontend-lang.mjs`：真实浏览器里逐页比对「以目标语言启动」与
+  「切换语言后」的逐元素文案，并覆盖交互场景（插件检查结论、重置弹层、双击进文件夹）；
+  `--shot 目录/` 顺带截图、`--page sync` 只查一页、`--height 1100` 加高视口看全整页。

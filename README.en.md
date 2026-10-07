@@ -66,6 +66,8 @@ Unzip and run: the first launch deploys the runtime and harness with progress sh
 **Portable**
 
 - Account sync (email code sign-in): start-at-login, the selected Harness version (including the prerelease channel) and every online plugin; machine-specific settings and local plugins are never uploaded
+- File / folder sync: pick files and folders to follow your account; the list uses browser-style navigation (double-click to enter a folder, a path bar on top, each row shows its full local path)
+- Running out of space warns once and suspends the current sync run; free up space and press "Sync now" to continue
 - Pulled changes apply via "restart to apply"; machines merge by newest, and failed items can be retried
 - Export / Import: sessions, installed plugins and chosen folders are bundled into a zip; import lists restorable items and prompts on conflicts with backups
 - Config lives in `config.json`, data in `~/.dsh`
@@ -119,12 +121,28 @@ Run the commands inside `src/`; on Windows you can also use `scripts\build.ps1`.
 
 | Platform | Build command (run inside `src/`) |
 | --- | --- |
-| Windows | `wails build -s -clean -platform windows/amd64 -ldflags "-X main.appVersion=v1.2.4"` |
-| macOS | `wails build -s -clean -platform darwin/universal -ldflags "-X main.appVersion=v1.2.4"` |
+| Windows | `wails build -s -clean -platform windows/amd64 -ldflags "-X main.appVersion=v1.3.4"` |
+| macOS | `wails build -s -clean -platform darwin/universal -ldflags "-X main.appVersion=v1.3.4"` |
 
 - Output: `src/build/bin/dsh-systray.exe` / `dsh-systray.app`
 - `-X main.appVersion=`: version used for update comparison (injected from the CI tag; `dev` when omitted, which skips update checks)
 - Windows: add `-webview2 download` to cover machines without WebView2
+
+## Testing
+
+```bash
+cd src && go test ./...                    # Go: file sync / account / update / service watchdog regressions
+node scripts/check-frontend-i18n.mjs       # Translation keys: data-i18n ↔ I18N_EN, tr/fmt/msg literals ↔ I18N_DYN
+node scripts/check-frontend-files-card.mjs # File list: size formatting, tree aggregation, sorting, rows, navigation
+node scripts/check-frontend-lang.mjs       # Real browser: 7 pages × zh/en baselines + live language switch + scenarios
+```
+
+For any UI or wording change run at least the last three. The first two are static/pure-function
+checks; the third renders the same UI twice — started in the target language vs switched to it —
+and reports every element whose text did not follow (`--shot dir/` also saves screenshots,
+`--page sync` limits the run to one page). It needs a local Edge/Chrome. Behaviour that only
+exists in the packaged app (install location, start-at-login, cancelling system dialogs) still
+has to be verified on a real machine.
 
 ## Development
 
