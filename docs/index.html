@@ -82,7 +82,24 @@ a{color:inherit;text-decoration:none}
 .features .head{text-align:center;margin-bottom:40px}
 .features .head h2{font-size:31px;margin:12px 0 8px;letter-spacing:-.02em}
 .features .head p{color:var(--muted);margin:0}
-/* 三组特性：「横排货架」而非等高立柱——每组按自身条目数量决定高度，宽屏下条目两列铺开 */
+/* 特性区主视觉：一组一个焦点，只讲一句承诺；15 条细目收进下方折叠区，首屏不铺开 */
+.pillars{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:20px}
+.pillar{background:var(--surface);border:1px solid var(--border);border-radius:var(--rad);box-shadow:var(--shadow);padding:26px 28px}
+.pillar .ico{width:46px;height:46px;border-radius:13px;background:var(--soft);display:grid;place-items:center;margin-bottom:16px}
+.pillar .ico svg{width:23px;height:23px;fill:var(--primary)}
+.pillar h3{margin:0 0 8px;font-size:19px;letter-spacing:-.01em}
+.pillar p{margin:0;font-size:14px;color:var(--muted);line-height:1.6}
+@media(max-width:980px){.pillars{grid-template-columns:1fr}}
+.more{margin-top:22px}
+.more>summary{display:flex;width:max-content;margin:0 auto;align-items:center;gap:9px;cursor:pointer;list-style:none;padding:11px 22px;border:1px solid var(--border);border-radius:999px;background:var(--surface);font-size:14px;font-weight:600;box-shadow:0 4px 14px rgba(16,24,40,.06);transition:border-color .15s,color .15s}
+.more>summary::-webkit-details-marker{display:none}
+.more>summary::after{content:"";width:8px;height:8px;border:0 solid currentColor;border-width:0 2px 2px 0;transform:rotate(45deg);transition:transform .2s;margin-top:-4px}
+.more[open]>summary::after{transform:rotate(-135deg);margin-top:4px}
+.more>summary:hover{border-color:var(--primary);color:var(--primary)}
+.more>summary:focus-visible{outline:2px solid var(--primary);outline-offset:2px}
+.more .feat-groups{margin-top:22px}
+
+/* 细节分层：「横排货架」而非等高立柱——每组按自身条目数量决定高度，宽屏下条目两列铺开 */
 .feat-groups{display:grid;gap:16px}
 .fgroup{background:var(--surface);border:1px solid var(--border);border-radius:var(--rad);box-shadow:var(--shadow);padding:22px 28px 24px}
 .fgroup .fgh{display:flex;align-items:baseline;gap:12px;margin:0 0 18px;padding-bottom:12px;border-bottom:1px solid var(--border)}
@@ -153,83 +170,104 @@ footer .sep{margin:0 8px;color:var(--border)}
       <h2 data-i18n="featTitle">轻量、可靠、可迁移</h2>
       <p data-i18n="featLead">单文件、自愈、随身带。像系统原生的一部分。</p>
     </div>
-    <div class="feat-groups">
-      <div class="fgroup" data-reveal>
-        <div class="fgh"><span class="no">01</span><h3 data-i18n="fg1T">轻量 — 双击即用</h3></div>
-        <ul>
-          <li>
-            <div class="ico"><svg viewBox="0 0 24 24"><path d="M6 3l14 9-14 9V3z"/></svg></div>
-            <div><b data-i18n="f1T">双击即启</b><span data-i18n="f1D">服务在后台安静就绪，不用记端口，不用开终端。</span></div>
-          </li>
-          <li>
-            <div class="ico"><svg viewBox="0 0 24 24"><path d="M21 8l-9-5-9 5v8l9 5 9-5V8zM3.3 8.5L12 13.3l8.7-4.8M12 22V13.3"/></svg></div>
-            <div><b data-i18n="f2T">单文件免安装</b><span data-i18n="f2D">Windows 单 exe / macOS 单 app，免管理员权限，解压即用。</span></div>
-          </li>
-          <li>
-            <div class="ico"><svg viewBox="0 0 24 24"><path d="M12 2a10 10 0 1 0 0 20 10 10 0 0 0 0-20zm0 18a8 8 0 1 1 0-16 8 8 0 0 1 0 16zm4-8a4 4 0 1 1-8 0 4 4 0 0 1 8 0z"/></svg></div>
-            <div><b data-i18n="f3T">常驻托盘</b><span data-i18n="f3D">一望即知服务状态，深浅色随系统自动切换。</span></div>
-          </li>
-          <li>
-            <div class="ico"><svg viewBox="0 0 24 24"><path d="M12 22a10 10 0 0 1-10-10A10 10 0 0 1 12 2a10 10 0 0 1 8.4 4.6L17 10h5V5l-1.8 1.8A8 8 0 1 0 20 12h-2a6 6 0 1 1-8.2-5.8L11.4 5A8 8 0 0 0 4 12a8 8 0 0 0 8 8v2z"/></svg></div>
-            <div><b data-i18n="f4T">始终唯一</b><span data-i18n="f4D">不会重复启动，托盘里永远只有一个它。</span></div>
-          </li>
-        </ul>
-      </div>
-      <div class="fgroup" data-reveal>
-        <div class="fgh"><span class="no">02</span><h3 data-i18n="fg2T">可靠 — 自动自愈</h3></div>
-        <ul>
-          <li>
-            <div class="ico"><svg viewBox="0 0 24 24"><path d="M12 2l9 5v5c0 5.5-3.8 9.4-9 10-5.2-.6-9-4.5-9-10V7l9-5zm0 2.2L5 8.6v3.5c0 4.3 2.9 7.5 7 8 4.1-.5 7-3.7 7-8V8.6l-7-4.4zM8.6 12.4l2.1 2.1 4.7-4.7 1.4 1.4-6.1 6.1-3.5-3.5 1.4-1.4z"/></svg></div>
-            <div><b data-i18n="f5T">启动看得见</b><span data-i18n="f5D">每一步进度清晰呈现，就绪后贴心提醒。</span></div>
-          </li>
-          <li>
-            <div class="ico"><svg viewBox="0 0 24 24"><path d="M12 22a10 10 0 0 1-10-10A10 10 0 0 1 12 2a10 10 0 0 1 8.4 4.6L17 10h5V5l-1.8 1.8A8 8 0 1 0 20 12h-2a6 6 0 1 1-8.2-5.8L11.4 5A8 8 0 0 0 4 12a8 8 0 0 0 8 8v2z"/></svg></div>
-            <div><b data-i18n="f6T">启动失败自动回退</b><span data-i18n="f6D">启动异常时自动回退到上次正常运行的 harness 与插件状态。</span></div>
-          </li>
-          <li>
-            <div class="ico"><svg viewBox="0 0 24 24"><path d="M12 2l9 5v5c0 5.5-3.8 9.4-9 10-5.2-.6-9-4.5-9-10V7l9-5zm0 2.2L5 8.6v3.5c0 4.3 2.9 7.5 7 8 4.1-.5 7-3.7 7-8V8.6l-7-4.4zM8.6 12.4l2.1 2.1 4.7-4.7 1.4 1.4-6.1 6.1-3.5-3.5 1.4-1.4z"/></svg></div>
-            <div><b data-i18n="f7T">更新失败自动回滚</b><span data-i18n="f7D">harness 与插件更新前自动快照，失败自动还原并重启校验。</span></div>
-          </li>
-          <li>
-            <div class="ico"><svg viewBox="0 0 24 24"><path d="M4 4h16a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2zm4 6l3 3-3 3m5 0h4"/></svg></div>
-            <div><b data-i18n="f8T">日志实时跟随</b><span data-i18n="f8D">最新记录自动呈现，需要时一键清空。</span></div>
-          </li>
-          <li>
-            <div class="ico"><svg viewBox="0 0 24 24"><path d="M7 11V7a5 5 0 0 1 10 0v4M5 11h14v10H5V11zm7 4v3"/></svg></div>
-            <div><b data-i18n="f13T">私有仓库插件</b><span data-i18n="f13D">来自私有仓库的插件，检查更新时引导 GitHub 设备流授权；一次性代码直接显示在进度窗口，凭据交给系统凭据库保存。</span></div>
-          </li>
-        </ul>
-      </div>
-      <div class="fgroup" data-reveal>
-        <div class="fgh"><span class="no">03</span><h3 data-i18n="fg3T">可迁移 — 数据随身带</h3></div>
-        <ul>
-          <li>
-            <div class="ico"><svg viewBox="0 0 24 24"><path d="M19.35 10.04A7.49 7.49 0 0 0 12 4C9.11 4 6.6 5.64 5.35 8.04A5.99 5.99 0 0 0 0 14c0 3.31 2.69 6 6 6h13c2.76 0 5-2.24 5-5 0-2.64-1.78-4.88-4.65-5.96z"/></svg></div>
-            <div><b data-i18n="f14T">账号同步</b><span data-i18n="f14D">邮箱验证码登录后，开机自启、Harness 版本与在线插件在多台机器间同步；拉到的改动显示为「待生效」，由你点「重启生效」进进度视图后落地。</span></div>
-          </li>
-          <li>
-            <div class="ico"><svg viewBox="0 0 24 24"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7zm6 6h6m-3-3v6"/></svg></div>
-            <div><b data-i18n="f15T">文件同步</b><span data-i18n="f15D">自选文件与文件夹随账号走：列表是浏览器式导航（双击进入、上方路径导航、每行显示本机完整路径）；容量不足只提示一次并暂停本轮同步。</span></div>
-          </li>
-          <li>
-            <div class="ico"><svg viewBox="0 0 24 24"><path d="M7 7h10M13 3l4 4-4 4M17 17H7m-4 4l4-4-4-4"/></svg></div>
-            <div><b data-i18n="f9T">数据随身带</b><span data-i18n="f9D">会话与插件一键打包，换台机器也能无缝恢复。</span></div>
-          </li>
-          <li>
-            <div class="ico"><svg viewBox="0 0 24 24"><path d="M12 22a10 10 0 0 1-10-10A10 10 0 0 1 12 2a10 10 0 0 1 8.4 4.6L17 10h5V5l-1.8 1.8A8 8 0 1 0 20 12h-2a6 6 0 1 1-8.2-5.8L11.4 5A8 8 0 0 0 4 12a8 8 0 0 0 8 8v2z"/></svg></div>
-            <div><b data-i18n="f10T">冲突智能处理</b><span data-i18n="f10D">导入时逐项恢复、冲突询问，自动备份现有内容。</span></div>
-          </li>
-          <li>
-            <div class="ico"><svg viewBox="0 0 24 24"><path d="M4 21v-7M4 10V3M12 21v-9M12 8V3M20 21v-5M20 12V3M1 14h6M9 8h6M17 16h6"/></svg></div>
-            <div><b data-i18n="f11T">配置即数据</b><span data-i18n="f11D">配置与数据都在用户目录，随导出包完整迁移。</span></div>
-          </li>
-          <li>
-            <div class="ico"><svg viewBox="0 0 24 24"><path d="M12 22a10 10 0 1 0 0-20 10 10 0 0 0 0 20zM2 12h20M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg></div>
-            <div><b data-i18n="f12T">跨平台一致</b><span data-i18n="f12D">Windows / macOS 同一套界面、同一份数据格式。</span></div>
-          </li>
-        </ul>
-      </div>
+    <div class="pillars">
+      <article class="pillar" data-reveal>
+        <div class="ico"><svg viewBox="0 0 24 24"><path d="M6 3l14 9-14 9V3z"/></svg></div>
+        <h3 data-i18n="p1T">双击即用</h3>
+        <p data-i18n="p1D">单文件免安装，双击即启，托盘常驻。</p>
+      </article>
+      <article class="pillar" data-reveal>
+        <div class="ico"><svg viewBox="0 0 24 24"><path d="M12 2l9 5v5c0 5.5-3.8 9.4-9 10-5.2-.6-9-4.5-9-10V7l9-5zm0 2.2L5 8.6v3.5c0 4.3 2.9 7.5 7 8 4.1-.5 7-3.7 7-8V8.6l-7-4.4zM8.6 12.4l2.1 2.1 4.7-4.7 1.4 1.4-6.1 6.1-3.5-3.5 1.4-1.4z"/></svg></div>
+        <h3 data-i18n="p2T">自动自愈</h3>
+        <p data-i18n="p2D">启动与更新失败自动回退，日志实时跟随。</p>
+      </article>
+      <article class="pillar" data-reveal>
+        <div class="ico"><svg viewBox="0 0 24 24"><path d="M19.35 10.04A7.49 7.49 0 0 0 12 4C9.11 4 6.6 5.64 5.35 8.04A5.99 5.99 0 0 0 0 14c0 3.31 2.69 6 6 6h13c2.76 0 5-2.24 5-5 0-2.64-1.78-4.88-4.65-5.96z"/></svg></div>
+        <h3 data-i18n="p3T">数据随身带</h3>
+        <p data-i18n="p3D">会话、插件与文件随账号走，换机无缝恢复。</p>
+      </article>
     </div>
+
+    <details class="more" data-reveal>
+      <summary data-i18n="moreT">查看全部特性</summary>
+      <div class="feat-groups">
+        <div class="fgroup">
+          <div class="fgh"><span class="no">01</span><h3 data-i18n="fg1T">轻量 — 双击即用</h3></div>
+          <ul>
+            <li>
+              <div class="ico"><svg viewBox="0 0 24 24"><path d="M6 3l14 9-14 9V3z"/></svg></div>
+              <div><b data-i18n="f1T">双击即启</b><span data-i18n="f1D">服务在后台安静就绪，不用记端口，不用开终端。</span></div>
+            </li>
+            <li>
+              <div class="ico"><svg viewBox="0 0 24 24"><path d="M21 8l-9-5-9 5v8l9 5 9-5V8zM3.3 8.5L12 13.3l8.7-4.8M12 22V13.3"/></svg></div>
+              <div><b data-i18n="f2T">单文件免安装</b><span data-i18n="f2D">Windows 单 exe / macOS 单 app，免管理员权限，解压即用。</span></div>
+            </li>
+            <li>
+              <div class="ico"><svg viewBox="0 0 24 24"><path d="M12 2a10 10 0 1 0 0 20 10 10 0 0 0 0-20zm0 18a8 8 0 1 1 0-16 8 8 0 0 1 0 16zm4-8a4 4 0 1 1-8 0 4 4 0 0 1 8 0z"/></svg></div>
+              <div><b data-i18n="f3T">常驻托盘</b><span data-i18n="f3D">一望即知服务状态，深浅色随系统自动切换。</span></div>
+            </li>
+            <li>
+              <div class="ico"><svg viewBox="0 0 24 24"><path d="M12 22a10 10 0 0 1-10-10A10 10 0 0 1 12 2a10 10 0 0 1 8.4 4.6L17 10h5V5l-1.8 1.8A8 8 0 1 0 20 12h-2a6 6 0 1 1-8.2-5.8L11.4 5A8 8 0 0 0 4 12a8 8 0 0 0 8 8v2z"/></svg></div>
+              <div><b data-i18n="f4T">始终唯一</b><span data-i18n="f4D">不会重复启动，托盘里永远只有一个它。</span></div>
+            </li>
+          </ul>
+        </div>
+        <div class="fgroup">
+          <div class="fgh"><span class="no">02</span><h3 data-i18n="fg2T">可靠 — 自动自愈</h3></div>
+          <ul>
+            <li>
+              <div class="ico"><svg viewBox="0 0 24 24"><path d="M12 2l9 5v5c0 5.5-3.8 9.4-9 10-5.2-.6-9-4.5-9-10V7l9-5zm0 2.2L5 8.6v3.5c0 4.3 2.9 7.5 7 8 4.1-.5 7-3.7 7-8V8.6l-7-4.4zM8.6 12.4l2.1 2.1 4.7-4.7 1.4 1.4-6.1 6.1-3.5-3.5 1.4-1.4z"/></svg></div>
+              <div><b data-i18n="f5T">启动看得见</b><span data-i18n="f5D">每一步进度清晰呈现，就绪后贴心提醒。</span></div>
+            </li>
+            <li>
+              <div class="ico"><svg viewBox="0 0 24 24"><path d="M12 22a10 10 0 0 1-10-10A10 10 0 0 1 12 2a10 10 0 0 1 8.4 4.6L17 10h5V5l-1.8 1.8A8 8 0 1 0 20 12h-2a6 6 0 1 1-8.2-5.8L11.4 5A8 8 0 0 0 4 12a8 8 0 0 0 8 8v2z"/></svg></div>
+              <div><b data-i18n="f6T">启动失败自动回退</b><span data-i18n="f6D">启动异常时自动回退到上次正常运行的 harness 与插件状态。</span></div>
+            </li>
+            <li>
+              <div class="ico"><svg viewBox="0 0 24 24"><path d="M12 2l9 5v5c0 5.5-3.8 9.4-9 10-5.2-.6-9-4.5-9-10V7l9-5zm0 2.2L5 8.6v3.5c0 4.3 2.9 7.5 7 8 4.1-.5 7-3.7 7-8V8.6l-7-4.4zM8.6 12.4l2.1 2.1 4.7-4.7 1.4 1.4-6.1 6.1-3.5-3.5 1.4-1.4z"/></svg></div>
+              <div><b data-i18n="f7T">更新失败自动回滚</b><span data-i18n="f7D">harness 与插件更新前自动快照，失败自动还原并重启校验。</span></div>
+            </li>
+            <li>
+              <div class="ico"><svg viewBox="0 0 24 24"><path d="M4 4h16a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2zm4 6l3 3-3 3m5 0h4"/></svg></div>
+              <div><b data-i18n="f8T">日志实时跟随</b><span data-i18n="f8D">最新记录自动呈现，需要时一键清空。</span></div>
+            </li>
+            <li>
+              <div class="ico"><svg viewBox="0 0 24 24"><path d="M7 11V7a5 5 0 0 1 10 0v4M5 11h14v10H5V11zm7 4v3"/></svg></div>
+              <div><b data-i18n="f13T">私有仓库插件</b><span data-i18n="f13D">来自私有仓库的插件，检查更新时引导 GitHub 设备流授权；一次性代码直接显示在进度窗口，凭据交给系统凭据库保存。</span></div>
+            </li>
+          </ul>
+        </div>
+        <div class="fgroup">
+          <div class="fgh"><span class="no">03</span><h3 data-i18n="fg3T">可迁移 — 数据随身带</h3></div>
+          <ul>
+            <li>
+              <div class="ico"><svg viewBox="0 0 24 24"><path d="M19.35 10.04A7.49 7.49 0 0 0 12 4C9.11 4 6.6 5.64 5.35 8.04A5.99 5.99 0 0 0 0 14c0 3.31 2.69 6 6 6h13c2.76 0 5-2.24 5-5 0-2.64-1.78-4.88-4.65-5.96z"/></svg></div>
+              <div><b data-i18n="f14T">账号同步</b><span data-i18n="f14D">邮箱验证码登录后，开机自启、Harness 版本与在线插件在多台机器间同步；拉到的改动显示为「待生效」，由你点「重启生效」进进度视图后落地。</span></div>
+            </li>
+            <li>
+              <div class="ico"><svg viewBox="0 0 24 24"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7zm6 6h6m-3-3v6"/></svg></div>
+              <div><b data-i18n="f15T">文件同步</b><span data-i18n="f15D">自选文件与文件夹随账号走：列表是浏览器式导航（双击进入、上方路径导航、每行显示本机完整路径）；容量不足只提示一次并暂停本轮同步。</span></div>
+            </li>
+            <li>
+              <div class="ico"><svg viewBox="0 0 24 24"><path d="M7 7h10M13 3l4 4-4 4M17 17H7m-4 4l4-4-4-4"/></svg></div>
+              <div><b data-i18n="f9T">数据随身带</b><span data-i18n="f9D">会话与插件一键打包，换台机器也能无缝恢复。</span></div>
+            </li>
+            <li>
+              <div class="ico"><svg viewBox="0 0 24 24"><path d="M12 22a10 10 0 0 1-10-10A10 10 0 0 1 12 2a10 10 0 0 1 8.4 4.6L17 10h5V5l-1.8 1.8A8 8 0 1 0 20 12h-2a6 6 0 1 1-8.2-5.8L11.4 5A8 8 0 0 0 4 12a8 8 0 0 0 8 8v2z"/></svg></div>
+              <div><b data-i18n="f10T">冲突智能处理</b><span data-i18n="f10D">导入时逐项恢复、冲突询问，自动备份现有内容。</span></div>
+            </li>
+            <li>
+              <div class="ico"><svg viewBox="0 0 24 24"><path d="M4 21v-7M4 10V3M12 21v-9M12 8V3M20 21v-5M20 12V3M1 14h6M9 8h6M17 16h6"/></svg></div>
+              <div><b data-i18n="f11T">配置即数据</b><span data-i18n="f11D">配置与数据都在用户目录，随导出包完整迁移。</span></div>
+            </li>
+            <li>
+              <div class="ico"><svg viewBox="0 0 24 24"><path d="M12 22a10 10 0 1 0 0-20 10 10 0 0 0 0 20zM2 12h20M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg></div>
+              <div><b data-i18n="f12T">跨平台一致</b><span data-i18n="f12D">Windows / macOS 同一套界面、同一份数据格式。</span></div>
+            </li>
+          </ul>
+        </div>
+      </div>
+    </details>
   </section>
 
   <section class="notes" data-reveal>
@@ -267,6 +305,10 @@ footer .sep{margin:0 8px;color:var(--border)}
       featTitle: "轻量、可靠、可迁移",
       featLead: "单文件、自愈、随身带。像系统原生的一部分。",
       fg1T: "轻量 — 双击即用", fg2T: "可靠 — 自动自愈", fg3T: "可迁移 — 数据随身带",
+      p1T: "双击即用", p1D: "单文件免安装，双击即启，托盘常驻。",
+      p2T: "自动自愈", p2D: "启动与更新失败自动回退，日志实时跟随。",
+      p3T: "数据随身带", p3D: "会话、插件与文件随账号走，换机无缝恢复。",
+      moreT: "查看全部特性",
       f1T: "双击即启", f1D: "服务在后台安静就绪，不用记端口，不用开终端。",
       f2T: "单文件免安装", f2D: "Windows 单 exe / macOS 单 app，免管理员权限，解压即用。",
       f3T: "常驻托盘", f3D: "一望即知服务状态，深浅色随系统自动切换。",
@@ -303,6 +345,10 @@ footer .sep{margin:0 8px;color:var(--border)}
       featTitle: "Lightweight, Reliable, Portable",
       featLead: "Single file, self-healing, take it anywhere. Feels native.",
       fg1T: "Lightweight — double-click to use", fg2T: "Reliable — self-healing", fg3T: "Portable — data travels with you",
+      p1T: "Double-click to use", p1D: "One file, no install, no admin rights — it sits quietly in your tray.",
+      p2T: "Self-healing", p2D: "Failed startups and updates roll back automatically, with live logs.",
+      p3T: "Data travels with you", p3D: "Sessions, plugins and files follow your account to any machine.",
+      moreT: "See all features",
       f1T: "Start with a double-click", f1D: "The service is quietly ready in the background — no ports to remember, no terminal to open.",
       f2T: "Single-file, no install", f2D: "One exe on Windows / one app on macOS, no admin rights needed, unzip and run.",
       f3T: "Always in the tray", f3D: "Service status at a glance; light & dark theme follow the system.",
