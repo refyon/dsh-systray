@@ -1,0 +1,24 @@
+name: build-status
+
+# 用途：README 的构建徽章只能按「默认分支」取状态——GitHub 徽章接口按 ref 精确匹配，
+#      ?branch=* 这类通配无效（已实测：返回 no status），没有任何参数可以表达“任意 ref 的最近一次运行”。
+#      而真正的构建只在推 v* 标签或手动触发时发生。
+# 做法：每次 build-release 跑完，在默认分支上镜像记一笔相同结论；徽章指向本 workflow，
+#      即可反映「最近一次构建（含每次发版构建）」的成败，且不会被 tag 的 ref 限制住。
+on:
+  workflow_run:
+    workflows: ["build-release"]
+    types: [completed]
+
+permissions: {}
+
+jobs:
+  mirror:
+    # 手动取消的运行不该把徽章刷红：跳过，徽章保持上一次结论
+    if: github.event.workflow_run.conclusion != 'cancelled'
+    runs-on: ubuntu-latest
+    steps:
+      - name: 镜像 build-release 的结论
+        run: |
+          echo "build-release: ref=${{ github.event.workflow_run.head_branch }} sha=${{ github.event.workflow_run.head_sha }} => ${{ github.event.workflow_run.conclusion }}"
+          test "${{ github.event.workflow_run.conclusion }}" = "success"
