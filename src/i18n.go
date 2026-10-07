@@ -264,6 +264,22 @@ var i18nEnMap = map[string]string{
 	"重试":                   "Retry",
 	"打开日志":                 "Show logs",
 	"后台服务需要监听 127.0.0.1:%d，但该端口%s，服务无法启动。\n\n改用端口 %d 可立即恢复；若手机等设备按旧端口访问过，请同步更新地址。": "The background service needs to listen on 127.0.0.1:%d, but that port %s, so the service cannot start.\n\nSwitching to port %d restores it right away; if a phone or another device used the old port, update its address too.",
+
+	// 关于页插件行说明（plugin_update.go 出口统一 T()，见插件行 Reason/DisabledReason/SkippedReason）。
+	// 启动日志摘要这类诊断文本不在字典里，T() 会原样保留。
+	"依赖声明为空，无法检查更新":              "No dependency spec — cannot check for updates",
+	"本地路径安装，无远程来源，无法更新":          "Installed from a local path — no remote source, cannot update",
+	"npm 别名安装（npm:…），请先卸载后重新安装以获取更新": "Installed via npm alias (npm:…) — uninstall and reinstall to get updates",
+	"以固定压缩包地址安装，无法判断更新":          "Installed from a fixed tarball URL — cannot tell whether an update exists",
+	"以外部链接安装，无法检查更新":             "Installed from an external URL — cannot check for updates",
+	"非 GitHub 的 git 来源，无法检查更新":    "Non-GitHub git source — cannot check for updates",
+	"原依赖路径在本机不可用（已隐藏），请点「更新…」重新选择本地目录": "The original dependency path is unavailable on this machine (hidden) — click “Update…” to pick a local folder",
+	"已自动禁用：其依赖的组件版本不满足该插件所需 API": "Automatically disabled: its dependencies do not satisfy the API this plugin requires",
+	"与当前 harness 版本不兼容（启动日志存在加载错误）":  "Incompatible with the current harness version (load error in the startup log)",
+	"与当前 harness 版本不兼容（依赖组件不满足所需 API）": "Incompatible with the current harness version (dependencies do not satisfy the required API)",
+	"与当前 harness 版本不兼容（启用后服务启动失败）":    "Incompatible with the current harness version (the service failed to start after enabling)",
+	"与当前 harness 版本不兼容或存在启动冲突（已自动禁用以保证服务启动，可在关于页重新启用）": "Incompatible with the current harness version or conflicting at startup (disabled automatically so the service starts; re-enable it on the About page)",
+	"重新启用后启动校验未通过（已自动还原为禁用）": "Startup check failed after re-enabling (reverted to disabled automatically)",
 }
 
 // ghAuthPromptMsg 私有仓库插件的 GitHub 授权询问文案（gh.go 与测试共用）。

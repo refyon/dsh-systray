@@ -122,6 +122,14 @@ export function shimSource(lang) {
   const noop = () => {};
   const emptyLog = () => ({ lines: [], nextOffset: 0, reset: false });
 
+  // Go 侧文案由 Go 按当前语言生成（src/i18n.go 的 T()）：垫片在**返回数据时**同样按 CFG.lang 出文案，
+  // 于是「切换语言后有没有重新向 Go 拉数据」这件事就能被 check-frontend-lang.mjs 直接照出来。
+  const EN_MAP = {
+    "本地路径安装，无远程来源，无法更新": "Installed from a local path — no remote source, cannot update",
+    "以固定压缩包地址安装，无法判断更新": "Installed from a fixed tarball URL — cannot tell whether an update exists",
+  };
+  const T = (s) => (CFG.lang === "en" ? (EN_MAP[s] || s) : s);
+
   const api = {
     // ---- 截图模式开关（真实程序由 DSH_SYSTRAY_SHOT_PAGE 提供）----
     GetShotPage: async () => window.__shotPage || "",
@@ -141,10 +149,20 @@ export function shimSource(lang) {
     GetServiceState: async () => ({ state: "running", reason: "", webURL: D.webURL, runningPort: D.port, tokenFound: true }),
     GetVersions: async () => ({ app: D.appVersion, harness: D.harnessVersion, engine: "web" }),
     SetPort: noop, SetAutostart: noop, SetHarnessPrerelease: noop, SetUpdateMirror: noop,
-    SetLanguage: noop, SetLaunchTarget: noop, SetHarnessDir: noop, SetStartupTimeoutSec: noop,
+    // 与 Go 侧 SetLanguage 同语义：解析偏好 → 生效语言，广播 lang:changed，其后各绑定按新语言返回数据。
+    // 垫片里 auto 一律解析为 zh（真实程序按系统语言）；本机约定供 check-frontend-lang.mjs 模拟运行中切换。
+    SetLanguage: (l) => {
+      const pref = (l === "zh" || l === "en") ? l : "auto";
+      CFG.lang = pref === "auto" ? "zh" : pref;
+      window.runtime.EventsEmit("lang:changed", { pref, curLang: CFG.lang });
+    },
+    SetLaunchTarget: noop, SetHarnessDir: noop, SetStartupTimeoutSec: noop,
 
     // ---- 关于 ----
-    GetInstalledPlugins: async () => D.plugins,
+    GetInstalledPlugins: async () => D.plugins.map((p) => ({
+      ...p,
+      reason: T(p.reason), disabledReason: T(p.disabledReason), skippedReason: T(p.skippedReason),
+    })),
     GetPendingPluginChanges: async () => [],
     CheckPluginUpdate: async (id) => {
       const p = D.plugins.find((x) => x.id === id || x.name === id) || { name: id };
@@ -179,21 +197,15 @@ export function shimSource(lang) {
     ]),
     PickExportDir: async () => "", PickSavePath: async () => "", StartExport: noop, OpenExportDir: noop,
     ImportPick: async () => ({
-      // 与 Go 侧截图模式的 ImportPick 同口径（演示包名 + i18n 后的条目标签）
-      path: CFG.lang === "en"
-        ? "C:\\\\Users\\\\demo\\\\Downloads\\\\dsh-systray-export-20260903-091210-1a2b3c4d.zip"
-        : "dsh-systray-export-20260903-091210-1a2b3c4d.zip",
-      items: CFG.lang === "en"
-        ? [
-            { kind: "sessions", label: "Session history", size: 2482124 },
-            { kind: "plugins", label: "Installed plugins", size: 1892356 },
-            { kind: "files", label: "Selected folders", size: 128512000 },
-          ]
-        : [
-            { kind: "sessions", label: "历史会话记录", size: 2482124 },
-            { kind: "plugins", label: "已安装插件", size: 1892356 },
-            { kind: "files", label: "自选文件目录", size: 128512000 },
-          ],
+      // 与 Go 侧截图模式的 ImportPick 同口径（演示包名 + 条目标签）；
+      // 路径是**真实数据**（与界面语言无关，Go 侧也不会按语言改路径），中英必须一致，
+      // 否则 check-frontend-lang.mjs 会把「切换语言后路径没跟着变」误判成缺陷。
+      path: "C:\\\\Users\\\\demo\\\\Downloads\\\\dsh-systray-export-20260903-091210-1a2b3c4d.zip",
+      items: [
+        { kind: "sessions", label: T("历史会话记录"), size: 2482124 },
+        { kind: "plugins", label: T("已安装插件"), size: 1892356 },
+        { kind: "files", label: T("自选文件目录"), size: 128512000 },
+      ],
     }),
     GetImportItems: async () => [],
     PreviewRestore: async () => ({ canceled: true, conflict: false, conflicts: 0, tops: [], error: "" }),
@@ -221,7 +233,11 @@ export function shimSource(lang) {
         loggedIn: true, syncing: false, applying: false, lastError: "",
         lastSyncedAt: F.syncedAt, quotaUsed: F.quotaUsed, quotaLimit: F.quotaLimit, quotaTier: "free",
         receiveDir: F.receiveDir,
-        entries: F.entries.map((e) => ({ ...e, files: e.files.map((f) => ({ ...f, mtime: stamp(f.mtime) })) })),
+        // 条目 mtime 与 Go 侧同口径：取条目内文件的最新修改时间（列表行小字要显示它）
+        entries: F.entries.map((e) => {
+          const files = e.files.map((f) => ({ ...f, mtime: stamp(f.mtime) }));
+          return { ...e, mtime: Math.max(0, ...files.map((f) => f.mtime || 0)), files };
+        }),
         pendingCount: F.pendingCount, pendingFiles: F.pendingFiles, blockedCount: 0,
         remoteAppliedAt: F.remoteAppliedAt, remoteAppliedCount: F.remoteAppliedCount,
       };

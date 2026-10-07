@@ -69,8 +69,12 @@ for (const id of ids) {
 }
 
 // ---- 动态文案（仅告警）----
+// 三类来源都要覆盖：
+//   tr("…")/fmt("…")：当场渲染的文案；
+//   msg("…")：**模板**——语言切换靠重渲染，长期留在界面上的文案必须走 msg()（见 main.js 注释），
+//              漏登记的模板在英文界面会回退中文，且比当场渲染的更难发现（切语言才暴露）。
 const zhLiterals = new Set();
-for (const m of js.matchAll(/\b(?:tr|fmt)\("([^"]*[\u4e00-\u9fa5][^"]*)"/g)) zhLiterals.add(m[1]);
+for (const m of js.matchAll(/\b(?:tr|fmt|msg)\("([^"]*[\u4e00-\u9fa5][^"]*)"/g)) zhLiterals.add(m[1]);
 for (const s of zhLiterals) {
   if (!dynKeys.has(s)) warnings.push(`动态文案未在 I18N_DYN 中登记（英文界面将回退中文）：${s}`);
 }

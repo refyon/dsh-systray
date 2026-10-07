@@ -23,6 +23,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	wruntime "github.com/wailsapp/wails/v2/pkg/runtime"
@@ -538,9 +539,16 @@ func fileSyncMarkInFlight(entryID, rel string, on bool) {
 
 // fileSyncBuildUploadTasksLocked 收集本轮需要上传的文件并做容量预检（调用方须持有 fileSyncMu）。
 // 返回（任务列表, 预检拦下的文件数）。
+//
+// 容量不足的处理（用户要求 2026-10-07：一旦容量不足就中止后续同步）：
+//   - 单个文件**本身超过总容量**（`Size > Limit`，永远放不下）：标记「可用容量不足」后继续看别的文件
+//     ——否则一个超大文件会让整份清单永远同步不了；
+//   - **账号剩余空间不够**（`projected > Limit`）：本轮到此为止，一个文件都不上传（返回空任务表），
+//     等用户清理空间后再同步；已标记的文件参与「容量不足」计数。
 func fileSyncBuildUploadTasksLocked(q *fileQuota) ([]fileSyncUploadTask, int) {
 	tasks := make([]fileSyncUploadTask, 0, 16)
 	blocked := 0
+	full := false
 	if fileSyncProg.InFlight == nil {
 		fileSyncProg.InFlight = map[string]bool{}
 	}
@@ -556,13 +564,19 @@ func fileSyncBuildUploadTasksLocked(q *fileQuota) ([]fileSyncUploadTask, int) {
 			if m.Sha256 == "" || m.Sha256 == m.SyncedSha {
 				continue // 读不到内容，或已同步
 			}
-			// 容量预检：替换文件时扣除它上次的占用（服务端闸门仍是权威，这里只是省一次 10 MiB 往返）
-			projected := q.Used - m.SyncedSize + m.Size
-			if m.Size > q.Limit || projected > q.Limit {
+			if m.Size > q.Limit {
 				m.Blocked, m.Error = true, T("可用容量不足")
 				e.Files[rel] = m
 				blocked++
-				continue
+				continue // 这一个永远放不下，但不该拖住其余文件
+			}
+			// 容量预检：替换文件时扣除它上次的占用（服务端闸门仍是权威，这里只是省一次 10 MiB 往返）
+			if q.Used-m.SyncedSize+m.Size > q.Limit {
+				m.Blocked, m.Error = true, T("可用容量不足")
+				e.Files[rel] = m
+				blocked++
+				full = true
+				break
 			}
 			tasks = append(tasks, fileSyncUploadTask{
 				entryID: e.ID, entryName: e.Name, rel: rel,
@@ -570,6 +584,12 @@ func fileSyncBuildUploadTasksLocked(q *fileQuota) ([]fileSyncUploadTask, int) {
 				sha:  m.Sha256, size: m.Size, mtime: m.Mtime, syncedSize: m.SyncedSize,
 			})
 		}
+		if full {
+			break
+		}
+	}
+	if full {
+		return nil, blocked // 账号已满：本轮一个文件都不上传
 	}
 	return tasks, blocked
 }
@@ -585,7 +605,10 @@ func fileSyncSortedEntryIndexesLocked() []int {
 }
 
 // fileSyncRunUploads 并发执行上传（最多 fileSyncUploadConcurrency 个线程），结果按完成顺序送回。
-func fileSyncRunUploads(ctx context.Context, client *accountClient, token string, tasks []fileSyncUploadTask) <-chan fileSyncUploadOutcome {
+// quotaStop 为「容量不足」中止标志：服务端一旦判定容量不足（某次上传返回 quota_exceeded），
+// 调用方置 1，**尚未开始**的上传随即按「已取消」收场（不改状态，保持待同步），不再继续搬运
+// ——用户要求（2026-10-07）：容量不足就直接中止后续同步。
+func fileSyncRunUploads(ctx context.Context, client *accountClient, token string, tasks []fileSyncUploadTask, quotaStop *int32) <-chan fileSyncUploadOutcome {
 	out := make(chan fileSyncUploadOutcome, len(tasks))
 	sem := make(chan struct{}, fileSyncUploadConcurrency)
 	var wg sync.WaitGroup
@@ -596,6 +619,11 @@ func fileSyncRunUploads(ctx context.Context, client *accountClient, token string
 			sem <- struct{}{}
 			defer func() { <-sem }()
 			item := fileSyncUploadOutcome{task: t}
+			if quotaStop != nil && atomic.LoadInt32(quotaStop) == 1 {
+				item.canceled = true // 容量不足中止：本文件不改状态、留待清理空间后再同步
+				out <- item
+				return
+			}
 			if fileSyncUploadCanceled(t.entryID, t.rel) {
 				item.canceled = true
 				out <- item
@@ -828,10 +856,18 @@ func fileSyncCheck(ctx context.Context, client *accountClient) (fileSyncResult, 
 	fileSyncMu.Unlock()
 
 	if len(tasks) > 0 {
-		for o := range fileSyncRunUploads(ctx, client, token, tasks) {
+		// 容量不足即中止：服务端第一次回 quota_exceeded 后，剩余未开始的上传直接收场
+		var quotaStop int32
+		for o := range fileSyncRunUploads(ctx, client, token, tasks, &quotaStop) {
 			fileSyncMu.Lock()
 			fileSyncApplyUploadOutcomeLocked(&res, &q, o)
+			if o.blocked {
+				atomic.StoreInt32(&quotaStop, 1)
+			}
 			fileSyncMu.Unlock()
+		}
+		if atomic.LoadInt32(&quotaStop) == 1 {
+			log.Printf("[files] 容量不足：已中止本轮剩余上传（清理空间后重新同步）")
 		}
 	}
 

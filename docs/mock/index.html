@@ -407,6 +407,9 @@
               <div class="row-sub" id="files-empty" data-i18n="filesEmpty">
                 还没有同步的文件或文件夹，点上方「添加文件」或「添加文件夹」开始。
               </div>
+              <!-- 当前同步路径（服务器侧命名空间）：默认只显示「根目录」，进入文件夹后逐级追加，
+                   每一级可点（含根目录）跳级返回 -->
+              <nav class="files-crumbs" id="files-crumbs"></nav>
               <div class="files-tree" id="files-tree"></div>
             </div>
           </div>

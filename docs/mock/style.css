@@ -773,49 +773,75 @@ input { font-family: inherit; }
   background: var(--primary-soft);
   color: var(--primary);
 }
+/* 路径导航（服务器侧命名空间）：根目录 → 条目名 → 条目内相对路径；每一级可点越级跳转 */
+.files-crumbs {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 2px;
+  margin: var(--sp-2) 0 0;
+  font-size: var(--fs-xs);
+  color: var(--muted);
+}
+.files-crumb {
+  border: none;
+  background: transparent;
+  padding: 2px 4px;
+  border-radius: var(--radius-sm);
+  color: var(--primary);
+  font: inherit;
+  cursor: pointer;
+  max-width: 220px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.files-crumb:hover { background: var(--primary-soft); }
+.files-crumb.is-current { color: var(--text); cursor: default; }
+.files-crumb-sep { color: var(--muted); }
 .files-tree { margin-top: var(--sp-2); }
-.files-entry + .files-entry { margin-top: var(--sp-1); }
+/* 列表行：**根层条目行与目录内行同款**（同字号、同字重、同行高、无额外间距）。
+ * 大量文件时可读性靠两件事维持：每行只有「名称」+「小字（大小/数量/时间 + 本机路径）」两行，
+ * 以及悬停高亮；不再用加粗/加大间距区分层级（层级由路径导航表达）。 */
 .files-row {
   display: flex;
   align-items: center;
   gap: var(--sp-2);
-  min-height: 34px;
-  padding: var(--sp-1) var(--sp-2);
-  padding-left: calc(var(--sp-2) + var(--depth, 0) * 16px);
+  padding: 4px var(--sp-2);
   border-radius: var(--radius-sm);
+  cursor: default;
 }
+.files-row + .files-row { margin-top: 1px; }
 .files-row:hover { background: var(--surface-2); }
-.files-row-entry { font-weight: 600; }
-.files-caret {
-  flex: 0 0 auto;
-  width: 20px;
-  height: 20px;
-  line-height: 1;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  border: none;
-  background: transparent;
-  color: var(--muted);
-  cursor: pointer;
-  border-radius: var(--radius-sm);
-}
-.files-caret:hover { background: var(--surface-2); color: var(--text); }
-.files-caret-empty { cursor: default; }
+.files-row[data-row="dir"] { cursor: pointer; } /* 文件夹：双击进入 */
 .files-main { flex: 1 1 0; min-width: 0; }
 .files-name {
   font-size: var(--fs-base);
+  line-height: 1.4;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+/* 小字行：左侧「大小 · 文件数 · 修改时间」永不省略，右侧本机路径占满剩余宽度、超出末尾省略 */
 .files-meta {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  min-width: 0;
+  margin-top: 1px;
   color: var(--muted);
   font-size: var(--fs-xs);
-  margin-top: 2px;
+}
+.files-meta-text { flex: 0 0 auto; white-space: nowrap; }
+/* 行内本机完整路径：不换行、超出末尾省略；完整路径靠 title 原生气泡（悬停即显示）。
+ * 不做悬停文字滚动（2026-10-07 用户反馈效果不好）。 */
+.files-path {
+  flex: 1 1 auto;
+  min-width: 0;
+  color: var(--muted);
   overflow: hidden;
-  text-overflow: ellipsis;
   white-space: nowrap;
+  text-overflow: ellipsis;
 }
 .files-err { color: var(--danger); font-size: var(--fs-xs); margin-top: 2px; }
 .files-badge {

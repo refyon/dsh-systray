@@ -97,15 +97,21 @@ type fakeFilesServer struct {
 	uploadDelay time.Duration
 	// failUploads 按 relPath 注入上传失败（验证「单文件失败不拖垮整批、下次重试」）。
 	failUploads map[string]bool
+	// quotaFailUploads 按 relPath 注入「服务端判定容量不足」（409 quota_exceeded）：
+	// 用于验证「服务端闸门拦下后中止本轮剩余上传」（本机预检放行、由服务端说了算的场景）。
+	quotaFailUploads map[string]bool
+	// attempts 记录服务端**收到**的上传请求（含被拒的），用于断言「剩余上传没有再发起」。
+	attempts []string
 }
 
 func newFakeFilesServer() *fakeFilesServer {
 	return &fakeFilesServer{
-		limit:       10 * 1024 * 1024,
-		entries:     map[string]fileSyncRemoteEntry{},
-		objects:     map[string][]byte{},
-		meta:        map[string]fileSyncLocalMeta{},
-		failUploads: map[string]bool{},
+		limit:            10 * 1024 * 1024,
+		entries:          map[string]fileSyncRemoteEntry{},
+		objects:          map[string][]byte{},
+		meta:             map[string]fileSyncLocalMeta{},
+		failUploads:      map[string]bool{},
+		quotaFailUploads: map[string]bool{},
 	}
 }
 
@@ -201,8 +207,13 @@ func (f *fakeFilesServer) handler(t *testing.T) http.HandlerFunc {
 					fsWriteErr(t, w, 400, "checksum_mismatch")
 					return
 				}
+				f.attempts = append(f.attempts, rel)
 				if f.failUploads[rel] {
 					fsWriteErr(t, w, 500, "server_error")
+					return
+				}
+				if f.quotaFailUploads[rel] {
+					fsWriteErr(t, w, 409, "quota_exceeded")
 					return
 				}
 				if old, ok := f.meta[key]; ok {
@@ -504,6 +515,153 @@ func TestFileSyncCheckBlocksWhenOverQuota(t *testing.T) {
 	}
 	if m := fsEntry(t, 0).Files["big.bin"]; !m.Blocked || m.Error == "" {
 		t.Fatalf("文件状态未标记容量不足: %+v", m)
+	}
+}
+
+// TestFileSyncCheckAbortsWholeRunWhenQuotaInsufficient 账号剩余空间不够即**中止本轮同步**
+// （用户要求 2026-10-07）：不再出现「容量已满还在搬其余文件 + 反复提示」。
+// 放得下的文件保持「待同步」（不误标容量不足），等清理空间后再同步。
+func TestFileSyncCheckAbortsWholeRunWhenQuotaInsufficient(t *testing.T) {
+	dir := setupFileSyncTest(t)
+	setAccountState(loggedInState())
+	src := filepath.Join(dir, "src")
+	fsWriteFile(t, filepath.Join(src, "a.txt"), "abc") // 剩余空间不够（8+3 > 10）
+	fsWriteFile(t, filepath.Join(src, "b.txt"), "z")   // 本来放得下（8+1 ≤ 10）：中止后也不该传
+	fsSetEntry(t, fileSyncEntry{ID: "e1", Name: "full", Kind: "dir", SourcePath: src})
+
+	fake := newFakeFilesServer()
+	fake.limit, fake.used = 10, 8
+	client, _ := newTestClient(t, fake.handler(t))
+
+	res, err := fileSyncCheck(context.Background(), client)
+	if err != nil {
+		t.Fatalf("同步失败: %v", err)
+	}
+	if res.Blocked != 1 || res.Uploaded != 0 {
+		t.Fatalf("账号已满应拦下 1 个、上传 0 个：res=%+v", res)
+	}
+	fake.mu.Lock()
+	attempts := len(fake.attempts)
+	fake.mu.Unlock()
+	if attempts != 0 {
+		t.Fatalf("账号已满时本轮应中止全部上传（服务端收到 %d 次）", attempts)
+	}
+	e := fsEntry(t, 0)
+	if m := e.Files["a.txt"]; !m.Blocked || m.Error == "" {
+		t.Fatalf("放不下的文件应标记容量不足: %+v", m)
+	}
+	if m := e.Files["b.txt"]; m.Blocked || m.SyncedSha != "" {
+		t.Fatalf("被中止的文件应保持待同步、不标容量不足: %+v", m)
+	}
+}
+
+// TestFileSyncCheckKeepsSyncingWhenSingleFileTooLarge 单个文件超过总容量（永远放不下）：
+// 只标记它自己，其余文件照常上传——否则一个超大文件会让整份清单永远同步不了。
+func TestFileSyncCheckKeepsSyncingWhenSingleFileTooLarge(t *testing.T) {
+	dir := setupFileSyncTest(t)
+	setAccountState(loggedInState())
+	src := filepath.Join(dir, "src")
+	fsWriteFile(t, filepath.Join(src, "big.bin"), "0123456789") // 10 字节 > limit 4
+	fsWriteFile(t, filepath.Join(src, "small.txt"), "abc")      // 3 字节，放得下
+	fsSetEntry(t, fileSyncEntry{ID: "e1", Name: "mix", Kind: "dir", SourcePath: src})
+
+	fake := newFakeFilesServer()
+	fake.limit = 4
+	client, _ := newTestClient(t, fake.handler(t))
+
+	res, err := fileSyncCheck(context.Background(), client)
+	if err != nil {
+		t.Fatalf("同步失败: %v", err)
+	}
+	if res.Blocked != 1 || res.Uploaded != 1 {
+		t.Fatalf("超大文件应只拦下它自己、其余照常上传：res=%+v", res)
+	}
+	e := fsEntry(t, 0)
+	if m := e.Files["big.bin"]; !m.Blocked || m.Error == "" {
+		t.Fatalf("超大文件应标记容量不足: %+v", m)
+	}
+	if m := e.Files["small.txt"]; m.SyncedSha == "" || m.Error != "" {
+		t.Fatalf("其余文件应正常同步: %+v", m)
+	}
+}
+
+// TestFileSyncCheckBlocksOnServerQuotaError 服务端闸门判定容量不足（本机预检放行）：
+// 该文件标记「可用容量不足」并计入拦下数（中止逻辑的触发点）。
+func TestFileSyncCheckBlocksOnServerQuotaError(t *testing.T) {
+	dir := setupFileSyncTest(t)
+	setAccountState(loggedInState())
+	src := filepath.Join(dir, "src")
+	fsWriteFile(t, filepath.Join(src, "a.txt"), "abc")
+	fsSetEntry(t, fileSyncEntry{ID: "e1", Name: "one", Kind: "dir", SourcePath: src})
+
+	fake := newFakeFilesServer()
+	fake.quotaFailUploads["a.txt"] = true
+	client, _ := newTestClient(t, fake.handler(t))
+
+	res, err := fileSyncCheck(context.Background(), client)
+	if err != nil {
+		t.Fatalf("同步失败: %v", err)
+	}
+	if res.Blocked != 1 || res.Uploaded != 0 {
+		t.Fatalf("服务端容量不足应拦下 1 个：res=%+v", res)
+	}
+	if m := fsEntry(t, 0).Files["a.txt"]; !m.Blocked || m.Error == "" {
+		t.Fatalf("文件应标记容量不足: %+v", m)
+	}
+}
+
+// TestFileSyncRunUploadsStopsWhenQuotaStopSet 中止标志已置位（服务端已判定容量不足）时，
+// 剩余任务不再发起任何上传（保持「待同步」）——用户要求 2026-10-07：容量不足直接中止后续同步。
+func TestFileSyncRunUploadsStopsWhenQuotaStopSet(t *testing.T) {
+	dir := setupFileSyncTest(t)
+	src := filepath.Join(dir, "src")
+	fsWriteFile(t, filepath.Join(src, "a.txt"), "abc")
+	fsWriteFile(t, filepath.Join(src, "b.txt"), "def")
+	fake := newFakeFilesServer()
+	client, _ := newTestClient(t, fake.handler(t))
+
+	mk := func(rel string) fileSyncUploadTask {
+		p := filepath.Join(src, rel)
+		data, _ := os.ReadFile(p)
+		return fileSyncUploadTask{entryID: "e1", rel: rel, path: p, sha: fileSyncHashBytes(data), size: int64(len(data))}
+	}
+	var stop int32 = 1 // 已中止
+	canceled := 0
+	for o := range fileSyncRunUploads(context.Background(), client, "tok", []fileSyncUploadTask{mk("a.txt"), mk("b.txt")}, &stop) {
+		if o.canceled {
+			canceled++
+		}
+	}
+	if canceled != 2 {
+		t.Fatalf("中止后剩余任务都应按取消收场，实际 %d", canceled)
+	}
+	fake.mu.Lock()
+	attempts := len(fake.attempts)
+	fake.mu.Unlock()
+	if attempts != 0 {
+		t.Fatalf("中止后不该再发起上传（服务端收到 %d 次）", attempts)
+	}
+}
+
+// TestFileSyncRunUploadsUploadsWhenQuotaStopClear 对照：标志未置位时照常上传（确认上面的用例测的是标志，不是别的原因）。
+func TestFileSyncRunUploadsUploadsWhenQuotaStopClear(t *testing.T) {
+	dir := setupFileSyncTest(t)
+	src := filepath.Join(dir, "src")
+	fsWriteFile(t, filepath.Join(src, "a.txt"), "abc")
+	fake := newFakeFilesServer()
+	client, _ := newTestClient(t, fake.handler(t))
+	p := filepath.Join(src, "a.txt")
+	data, _ := os.ReadFile(p)
+	var stop int32
+	for range fileSyncRunUploads(context.Background(), client, "tok", []fileSyncUploadTask{
+		{entryID: "e1", rel: "a.txt", path: p, sha: fileSyncHashBytes(data), size: int64(len(data))},
+	}, &stop) {
+	}
+	fake.mu.Lock()
+	attempts := len(fake.attempts)
+	fake.mu.Unlock()
+	if attempts != 1 {
+		t.Fatalf("未中止时应正常上传（服务端收到 %d 次）", attempts)
 	}
 }
 
@@ -2215,6 +2373,41 @@ func TestFileSyncRelocateRegistersSourcePathForOrigin(t *testing.T) {
 	case got := <-patched:
 		t.Fatalf("其它设备的条目不该登记到账号，却收到了 %q", got)
 	case <-time.After(300 * time.Millisecond):
+	}
+}
+
+// TestFilesSetLocalPathCanceledNoMove 用户在系统对话框里取消「移动」：
+// 什么都不动，且返回 Canceled=true——前端据此不再提示「已移动同步位置」（2026-10-07 用户反馈）。
+func TestFilesSetLocalPathCanceledNoMove(t *testing.T) {
+	dir := setupFileSyncTest(t)
+	setAccountState(loggedInState())
+
+	oldRoot := filepath.Join(dir, "old")
+	fsWriteFile(t, filepath.Join(oldRoot, "keep.txt"), "keep")
+	fileSyncMu.Lock()
+	fileSyncCur = fileSyncState{Entries: []fileSyncEntry{{
+		ID: "e1", Name: "notes", Kind: "dir", SourcePath: oldRoot, OriginDevice: "dev-self",
+		Files: map[string]fileSyncLocalFile{},
+	}}}
+	fileSyncMu.Unlock()
+
+	old := pickRelocateTargetFn
+	pickRelocateTargetFn = func(kind, entryName string) (string, error) { return "", nil } // 用户取消
+	t.Cleanup(func() { pickRelocateTargetFn = old })
+
+	res, err := (&App{}).FilesSetLocalPath("e1")
+	if err != nil {
+		t.Fatalf("取消移动不该报错: %v", err)
+	}
+	if !res.Canceled {
+		t.Fatalf("用户取消时必须标记 canceled=true（否则前端会误报「已移动」）：%+v", res)
+	}
+	// 文件与条目位置都必须保持原样
+	if b, err := os.ReadFile(filepath.Join(oldRoot, "keep.txt")); err != nil || string(b) != "keep" {
+		t.Fatalf("取消后本机文件不该被搬动：%v %q", err, string(b))
+	}
+	if got := res.Status.Entries[0].Path; !samePath(got, oldRoot) && got != "" && !strings.HasPrefix(got, oldRoot) {
+		t.Fatalf("取消后条目位置不该变化：%q", got)
 	}
 }
 

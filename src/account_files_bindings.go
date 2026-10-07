@@ -136,44 +136,58 @@ func fileSyncAddPath(kind, path string) (FileSyncStatusInfo, error) {
 	return snap, nil
 }
 
+// FileSyncRelocateResult 「移动」的结果：Canceled=true 表示用户在选择对话框里取消了，
+// 一个文件都没动——前端据此不再提示「已移动同步位置」（2026-10-07 用户反馈：
+// 点「移动」后在系统对话框点取消，界面仍报「已移动」）。
+type FileSyncRelocateResult struct {
+	Status   FileSyncStatusInfo `json:"status"`
+	Canceled bool               `json:"canceled"`
+}
+
 // FilesSetLocalPath 把条目移动到本机其它位置（「移动」）：
 //
 //   - 文件夹条目：选一个**文件夹**，条目内容按原文件名铺进去；
 //   - 文件条目：选**文件夹** → 文件放进该文件夹并保留文件名；选**文件** → 覆盖它（系统对话框已问过替换）；
 //   - **旧位置的文件搬走**（系统移动语义：搬完清理源文件与空目录）；
 //   - 目标已有同名且内容不同的文件时先问一次（覆盖后不留副本，见 fileSyncRelocateEntry）；
+//   - 用户取消对话框 → Canceled=true、未改动任何文件；
 //   - 若本机正是该条目的创建者，同时把新路径登记到账号（日后清单丢失能回到新位置），
 //     否则只改本机（创建者的路径不该被我们覆盖）。
-func (a *App) FilesSetLocalPath(id string) (FileSyncStatusInfo, error) {
+func (a *App) FilesSetLocalPath(id string) (FileSyncRelocateResult, error) {
 	if !accountLoggedIn() {
-		return fileSyncStatusSnapshot(), errors.New(T("请先登录账号"))
+		return FileSyncRelocateResult{Status: fileSyncStatusSnapshot()}, errors.New(T("请先登录账号"))
 	}
 	fileSyncMu.Lock()
 	idx := fileSyncFindEntryLocked(id)
 	if idx < 0 {
 		snap := fileSyncSnapshotLocked()
 		fileSyncMu.Unlock()
-		return snap, errors.New(T("条目不存在"))
+		return FileSyncRelocateResult{Status: snap}, errors.New(T("条目不存在"))
 	}
 	entry := fileSyncCur.Entries[idx]
 	kind, entryName := entry.Kind, entry.Name
 	fileSyncMu.Unlock()
 
 	if shotMode {
-		return fileSyncStatusSnapshot(), nil // 截图模式不弹系统对话框
+		// 截图模式不弹系统对话框：没有移动即成，按「取消」处理
+		return FileSyncRelocateResult{Status: fileSyncStatusSnapshot(), Canceled: true}, nil
 	}
-	abs, err := pickRelocateTarget(kind, entryName)
+	abs, err := pickRelocateTargetFn(kind, entryName)
 	if err != nil {
-		return fileSyncStatusSnapshot(), err
+		return FileSyncRelocateResult{Status: fileSyncStatusSnapshot()}, err
 	}
-	if abs == "" {
-		return fileSyncStatusSnapshot(), nil // 用户取消
+	if abs == "" { // 用户在系统对话框里取消
+		return FileSyncRelocateResult{Status: fileSyncStatusSnapshot(), Canceled: true}, nil
 	}
 	if err := fileSyncCheckAdoptTarget(abs, kind); err != nil {
-		return fileSyncStatusSnapshot(), err
+		return FileSyncRelocateResult{Status: fileSyncStatusSnapshot()}, err
 	}
-	return fileSyncRelocateEntry(id, abs)
+	st, err := fileSyncRelocateEntry(id, abs)
+	return FileSyncRelocateResult{Status: st}, err
 }
+
+// pickRelocateTargetFn 选移动目标（可替换：测试里模拟用户取消/选定目录，见 account_files_test.go）。
+var pickRelocateTargetFn = pickRelocateTarget
 
 // pickRelocateTarget 选移动目标，全部借用**系统对话框**：
 //   - 文件夹条目：系统「选择文件夹」；

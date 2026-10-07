@@ -36,8 +36,13 @@ const state = {
   plugFilter: "",       // 插件过滤关键字（输入防抖后）
   plugState: {},        // name → {note,noteTone,upLatest,upShow}：滚动/过滤重渲染后恢复行内状态
   plugPending: [],      // [{id,name,op}]：已登记待应用的插件变更（需重启服务才生效）
+  moduleCheck: { systray: null, harness: null }, // {key,args,tone}：检查更新结论，语言切换后按新语言重画
   plugTimer: null,      // 过滤防抖计时器
   updateProgress: null, // {text, pct} 更新进度
+  modal: null,          // {title,msg,okLabel,skipLabel}：确认弹层文案（模板），语言切换时重画
+  resetStats: null,     // {sessions,plugins}：重置弹层的清除数量（语言切换时重画文案）
+  resetInfo: null,      // GetResetVersions 结果：目标版本下拉的来源（语言切换时重画，不重查）
+  resetNote: "",        // 重置弹层说明行的**源文案**（渲染时 tr()，语言切换后仍可重译）
   splashMode: "startup", // startup | update
   shotPage: "",         // 截图模式当前页（GetShotPage 返回；空=正常模式）
   shotScroll: "",       // 截图模式内容区滚动量（bottom/像素/空）
@@ -420,14 +425,13 @@ const I18N_DYN = {
   "展开或折叠": "Expand or collapse",
   "打开": "Open",
   "重命名": "Rename",
-  "本机原位置": "Original location",
-  "接收目录": "Receive folder",
   "{0} 个文件": "{0} file(s)",
   "已用 {0} / 共 {1} · 剩余 {2}": "Using {0} of {1} · {2} left",
   "正在读取容量…": "Reading capacity…",
   "共 {0} 项：{1}{2}": "{0} item(s): {1}{2}",
   "可用容量不足": "Not enough space",
-  "有 {0} 个文件因容量不足未同步。请删除部分已同步文件或移除条目后重试；已同步的内容不受影响。": "{0} file(s) could not be synced because the account is out of space. Delete some synced files or remove an entry and try again; already-synced content is unaffected.",
+  "有 {0} 个文件因容量不足未能同步。请删除部分已同步文件或移除条目后点「立即同步」重试；已同步的内容不受影响。": "{0} file(s) could not be synced because the account is out of space. Delete some synced files or remove an entry, then press “Sync now”; already-synced content is unaffected.",
+  "有 {0} 个文件因容量不足未同步；清理空间后点「立即同步」重试": "{0} file(s) are waiting because the account is out of space — free up space, then press “Sync now”.",
   "知道了": "Got it",
   "正在读取所选内容…": "Reading the selection…",
   "正在上传 {0}/{1}{2}": "Uploading {0}/{1}{2}",
@@ -441,12 +445,60 @@ const I18N_DYN = {
   "移除该文件的同步内容？": "Remove this file from sync?",
   "「{0}」将从账号同步中移除（其它设备上的同一条目也会移除），本机文件保持不动。": "“{0}” will be removed from account sync (the same entry is removed on your other devices); local files stay untouched.",
   "「{0}」会从账号同步中删除（其它设备上的副本也会删除），本机文件保持不动。": "“{0}” will be deleted from account sync (copies on your other devices are deleted too); local files stay untouched.",
+  // 插件行结论（模板 + 参数，见 msg()/msgText()）：切换语言后重渲染即得新语言
+  "无法检查更新：{0}": "Cannot check for updates: {0}",
+  "有新版本 {0}，可更新": "Version {0} is available",
+  "已删除": "Removed",
+  "已启用": "Enabled",
+  "已更新": "Updated",
+  "已删除 {0}": "Removed {0}",
+  "已启用 {0}": "Enabled {0}",
+  "已更新 {0}": "Updated {0}",
+  "已删除（{0}）": "Removed ({0})",
+  "已启用（{0}）": "Enabled ({0})",
+  "已更新（{0}）": "Updated ({0})",
+  "已删除 {0}（{1}）": "Removed {0} ({1})",
+  "已启用 {0}（{1}）": "Enabled {0} ({1})",
+  "已更新 {0}（{1}）": "Updated {0} ({1})",
+  "删除失败：{0}": "Remove failed: {0}",
+  "启用失败：{0}": "Enable failed: {0}",
+  // 导入项类目名（见 impLabel）：清单里的标签是**写包时的语言**，只能按类目重新出名字
+  "历史会话记录": "Session history",
+  "已安装插件": "Installed plugins",
+  "自选文件目录": "Selected folders",
+  // 重置弹层（目标版本下拉/说明行；数量行已有译文）
+  "{0}（当前）": "{0} (current)",
+  "{0}（预发布）": "{0} (prerelease)",
+  "官方默认目标 {0}": "Official default target {0}",
+  "查询可用版本失败：{0}，请检查网络后重试。": "Failed to list available versions: {0}. Check your network and try again.",
+  "当前为源码 checkout 形态，不支持自动重置。": "This is a source checkout — automatic reset is not supported.",
+  "获取重置统计失败：{0}": "Failed to read reset statistics: {0}",
+  "正在重置 DeepSeek Harness 到 {0}…": "Resetting DeepSeek Harness to {0}…",
+  "正在重置 DeepSeek Harness…": "Resetting DeepSeek Harness…",
+  // 文件列表导航（路径导航/双击进入、空目录、未同步完成的文件不可打开）
+  "根目录": "Root",
+  "这个文件夹里还没有内容": "This folder is empty",
+  "该文件尚未同步完成，本机还没有内容可打开": "This file has not finished syncing — there is nothing to open locally yet",
 };
 function tr(s) { return (curLangCode() === "en" && I18N_DYN[s]) || s; }
 function fmt(s) {
   let t = tr(s);
   for (let i = 1; i < arguments.length; i++) t = t.split("{" + (i - 1) + "}").join(String(arguments[i]));
   return t;
+}
+
+/** msg/msgText：**可重译**的动态文案。
+ *
+ * 语言切换靠「重渲染」实现，所以凡是会长期留在界面上的动态文案（插件行结论、检查更新提示、
+ * 模态按钮…）都不能存**已渲染的文本**——那串文本已经定型在旧语言里；要存**模板 + 参数**，
+ * 渲染时再用 tr()/fmt() 生成。2026-10-07 用户报「切换语言后部分按钮没立即更新」即此类：
+ * 已渲染文本被缓存，重渲染时原样贴回。
+ *
+ * 参数里的用户数据（版本号、错误原因、文件名…）保持原样，不参与翻译。 */
+function msg(key, ...args) { return { key, args }; }
+function msgText(m) {
+  if (!m) return "";
+  return m.args && m.args.length ? fmt(m.key, ...m.args) : tr(m.key);
 }
 
 // 静态层：zh↔en 就地双向切换。index.html 默认 DOM 为中文文案，首次应用语言前对其快照
@@ -490,11 +542,18 @@ function applyStaticI18n() {
   rerenderDynamicText(); // 服务状态/插件/导出/导入等动态区块按当前语言重渲染（en 与 zh 恢复都执行）
 }
 
-// 动态区块统一重渲染（EN 生效后调用；各函数内部以 curLangCode() 决定语言）
+// 动态区块统一重渲染（语言生效后调用；各函数内部以 curLangCode() 决定语言）。
+// 分两批：先重画纯前端文案（数据在 state 里），再重拉 Go 侧文案——插件行原因、待应用条、
+// 服务/账号/文件快照里的说明文字都是 Go 按**当前语言**生成的，只重渲染缓存只会贴回旧语言
+// （2026-10-07：关于页「以固定压缩包地址安装…」在英文界面仍是中文，即此坑）。
 function rerenderDynamicText() {
-  // applyLaunchMode 排在其后：它写入的是动态文案（「打开 Desktop UI」「更新桌面端」等），
+  // applyLaunchMode 排在后面：它写入的是动态文案（「打开 Desktop UI」「更新桌面端」等），
   // 必须在静态层用 ZH_SNAP/I18N_EN 覆盖过 DOM 之后再按当前启动方式重刷一次。
-  [refreshService, renderPlugins, renderExportRows, renderImportRows, refreshSync,
+  [renderExportRows, renderImportRows, renderModalTexts, renderResetModal,
+    () => renderModuleCheck("systray"), () => renderModuleCheck("harness")].forEach((fn) => {
+    if (typeof fn === "function") { try { fn(); } catch (e) { console.error("rerenderDynamicText", fn && fn.name, e); } }
+  });
+  [refreshService, loadPlugins, refreshSync,
     // 文件卡（条目名/状态徽标/容量行/按钮）也是动态文案，且首屏渲染早于语言就绪——
     // 不在这里重刷，英文界面会留下中文行（2026-10-06 截图里发现）。
     () => refreshFiles(true),
@@ -1006,15 +1065,16 @@ function wireGeneral() {
       const stats = await bindings().GetResetStats();
       const sc = (stats && stats.sessionCount) || 0;
       const pc = (stats && stats.pluginCount) || 0;
-      $("reset-sessions-sub").textContent = fmt("将清除 {0} 条会话记录", sc);
-      $("reset-plugins-sub").textContent = fmt("将清除 {0} 个已安装插件", pc);
+      // 数量存起来（不是渲染好的文本）：弹层开着时切换语言由 renderResetModal 按新语言重画
+      state.resetStats = { sessions: sc, plugins: pc };
+      renderResetStats();
       // 默认勾选插件（重置将物理删除已装插件，谨慎起见默认勾选）；会话默认不勾选（数据谨慎）
       $("reset-c-sessions").checked = false;
       $("reset-c-plugins").checked = pc > 0;
       loadResetVersions(); // 异步填充目标版本（不阻塞弹窗打开：下拉先显示 loading 态）
       $("reset-modal").classList.remove("hidden");
     } catch (e) {
-      $("svc-sub").textContent = "获取重置统计失败：" + (e && e.message ? e.message : e);
+      $("svc-sub").textContent = fmt("获取重置统计失败：{0}", e && e.message ? e.message : e);
     } finally {
       setTimeout(() => { btn.disabled = false; }, 800);
     }
@@ -1025,12 +1085,30 @@ function wireGeneral() {
     const clearSessions = $("reset-c-sessions").checked;
     const clearPlugins = $("reset-c-plugins").checked;
     const target = $("reset-target").value || "";
-    showSplash("startup", target ? "正在重置 DeepSeek Harness 到 " + vtag(target) + "…" : "正在重置 DeepSeek Harness…");
+    showSplash("startup", target
+      ? fmt("正在重置 DeepSeek Harness 到 {0}…", vtag(target))
+      : tr("正在重置 DeepSeek Harness…"));
     await bindings().ResetHarness(clearSessions, clearPlugins, target);
   });
   $("reset-target").addEventListener("change", updateResetTargetWarn);
   // 点遮罩等同取消
   $("reset-modal").querySelector(".modal-mask").addEventListener("click", () => $("reset-modal").classList.add("hidden"));
+}
+
+/** renderResetStats 重置弹层的「将清除 N 条会话记录 / N 个已安装插件」（按当前语言）。 */
+function renderResetStats() {
+  const st = state.resetStats;
+  if (!st) return;
+  $("reset-sessions-sub").textContent = fmt("将清除 {0} 条会话记录", st.sessions);
+  $("reset-plugins-sub").textContent = fmt("将清除 {0} 个已安装插件", st.plugins);
+}
+
+/** renderResetModal 重置弹层的动态文案（数量、目标版本下拉、说明行）按当前语言重画。
+ *  数据在打开弹层时已取回，这里只重渲染，不重新查询。 */
+function renderResetModal() {
+  renderResetStats();
+  renderResetVersions();
+  if (state.resetNote) showResetTargetNote(state.resetNote);
 }
 
 /**
@@ -1043,65 +1121,78 @@ function wireGeneral() {
 async function loadResetVersions() {
   const tok = (state.resetVersionToken = (state.resetVersionToken || 0) + 1); // 防连点/快速重开时的过期响应覆盖
   const sel = $("reset-target");
-  const note = $("reset-target-note");
-  const curEl = $("reset-target-cur");
   const confirm = $("reset-confirm");
   sel.disabled = true;
   confirm.disabled = true;
-  note.textContent = "";
-  note.classList.add("hidden");
-  curEl.textContent = "";
+  showResetTargetNote("");
+  $("reset-target-cur").textContent = "";
   sel.innerHTML = '<option value="">' + tr("正在查询可用版本…") + '</option>';
   try {
     const info = await bindings().GetResetVersions();
     if (tok !== state.resetVersionToken) return; // 已有更新的查询在跑，丢弃本次结果
-    if (info && info.current) curEl.textContent = "当前版本 " + vtag(info.current);
-    if (info && info.form === "source") {
-      // 源码形态：Go 侧会拦截重置执行，直接禁用并说明
-      sel.innerHTML = "";
-      showResetTargetNote((info && info.note) || "当前为源码 checkout 形态，不支持自动重置。");
-      return;
-    }
-    if (info && info.note) showResetTargetNote(info.note);
-    const opts = (info && info.options) || [];
-    if (!opts.length) {
-      // 无「不高于当前版本」候选 → 降级放行：采用 Go 侧算好的具体默认目标
-      // （弹窗打开时已查证，避免确认后再触网查询最新版本）
-      sel.innerHTML = "";
-      const fb = (info && info.default) || "";
-      if (fb) {
-        sel.innerHTML = '<option value="' + fb + '" data-pre="0">官方默认目标 ' + vtag(fb) + "</option>";
-        sel.disabled = false;
-        confirm.disabled = false;
-      }
-      updateResetTargetWarn();
-      return;
-    }
-    let html = "";
-    let defIdx = 0;
-    opts.forEach((o, i) => {
-      if (o.version === (info && info.default)) defIdx = i;
-      const cur = o.version === (info && info.current) ? "（当前）" : "";
-      const label = vtag(o.version) + cur + (o.prerelease ? "（预发布）" : "");
-      html += '<option value="' + o.version + '" data-pre="' + (o.prerelease ? "1" : "0") + '"' +
-        (o.prerelease ? ' class="opt-pre"' : "") + ">" + label + "</option>";
-    });
-    sel.innerHTML = html;
-    sel.selectedIndex = defIdx;
-    sel.disabled = false;
-    confirm.disabled = false;
-    updateResetTargetWarn();
+    state.resetInfo = info || null;
+    renderResetVersions();
   } catch (e) {
     if (tok !== state.resetVersionToken) return; // 过期响应的失败同样丢弃
+    state.resetInfo = null;
     sel.innerHTML = "";
-    showResetTargetNote("查询可用版本失败：" + (e && e.message ? e.message : e) + "，请检查网络后重试。");
+    showResetTargetNote(fmt("查询可用版本失败：{0}，请检查网络后重试。", e && e.message ? e.message : e));
   }
 }
 
-/** 弹窗内说明行（警示色；空文本隐藏）。loadResetVersions 专用。 */
+/** renderResetVersions 按 state.resetInfo 画「重置目标版本」下拉（语言切换时重画，不重新查询）。
+ *  边界语义：源码形态 → 说明并禁用（Go 侧会拦截执行）；无候选 → 按 Go 侧 Default 放行。 */
+function renderResetVersions() {
+  const info = state.resetInfo;
+  if (!info) return;
+  const sel = $("reset-target");
+  const confirm = $("reset-confirm");
+  const keep = sel.value; // 语言切换重画时保留用户已选目标
+  if (info.current) $("reset-target-cur").textContent = fmt("当前版本 {0}", vtag(info.current));
+  if (info.form === "source") {
+    // 源码形态：Go 侧会拦截重置执行，直接禁用并说明
+    sel.innerHTML = "";
+    showResetTargetNote(info.note || "当前为源码 checkout 形态，不支持自动重置。");
+    return;
+  }
+  if (info.note) showResetTargetNote(info.note);
+  const opts = info.options || [];
+  if (!opts.length) {
+    // 无「不高于当前版本」候选 → 降级放行：采用 Go 侧算好的具体默认目标
+    // （弹窗打开时已查证，避免确认后再触网查询最新版本）
+    sel.innerHTML = "";
+    const fb = info.default || "";
+    if (fb) {
+      sel.innerHTML = '<option value="' + fb + '" data-pre="0">' + fmt("官方默认目标 {0}", vtag(fb)) + "</option>";
+      sel.disabled = false;
+      confirm.disabled = false;
+    }
+    updateResetTargetWarn();
+    return;
+  }
+  let html = "";
+  let defIdx = 0;
+  opts.forEach((o, i) => {
+    if (o.version === info.default) defIdx = i;
+    let label = vtag(o.version);
+    if (o.version === info.current) label = fmt("{0}（当前）", label);
+    if (o.prerelease) label = fmt("{0}（预发布）", label);
+    html += '<option value="' + o.version + '" data-pre="' + (o.prerelease ? "1" : "0") + '"' +
+      (o.prerelease ? ' class="opt-pre"' : "") + ">" + label + "</option>";
+  });
+  const keepIdx = keep ? opts.findIndex((o) => o.version === keep) : -1;
+  sel.innerHTML = html;
+  sel.selectedIndex = keepIdx >= 0 ? keepIdx : defIdx;
+  sel.disabled = false;
+  confirm.disabled = false;
+  updateResetTargetWarn();
+}
+
+/** 弹窗内说明行（警示色；空文本隐藏）。loadResetVersions / 语言切换重画共用。 */
 function showResetTargetNote(text) {
   const note = $("reset-target-note");
-  note.textContent = tr(text || "");
+  state.resetNote = text || ""; // 存源文案（不是渲染结果）：语言切换时按新语言重画
+  note.textContent = tr(state.resetNote);
   note.classList.toggle("hidden", !note.textContent);
 }
 
@@ -1110,10 +1201,8 @@ function updateResetTargetWarn() {
   const sel = $("reset-target");
   const opt = sel && sel.options[sel.selectedIndex];
   const isPre = opt && opt.dataset && opt.dataset.pre === "1";
-  if (!isPre) return; // 保留 loadResetVersions 写入的边界/降级说明
-  const note = $("reset-target-note");
-  note.textContent = tr("注意：所选为预发布版本，可能与已安装插件不兼容；若重置后服务无法启动，请查看日志。");
-  note.classList.remove("hidden");
+  if (!isPre) return; // 保留 loadResetVersions/renderResetVersions 写入的边界/降级说明
+  showResetTargetNote("注意：所选为预发布版本，可能与已安装插件不兼容；若重置后服务无法启动，请查看日志。");
 }
 
 // ==================== 关于页（按模块单独检查更新 + 插件列表） ====================
@@ -1137,6 +1226,9 @@ async function refreshVersions() {
 /**
  * 单模块「检查更新」（dsh-systray / harness）。
  * which: "systray" | "harness" —— 按钮/提示/更新按钮按此约定命名。
+ *
+ * 结论存成模板（state.moduleCheck[which]）而不是渲染好的文本：语言切换后由 renderModuleCheck
+ * 按新语言重画，不重新发请求。
  */
 async function runModuleCheck(which) {
   const a = bindings();
@@ -1144,43 +1236,52 @@ async function runModuleCheck(which) {
   const tok = (state.checkToken = state.checkToken || {});
   const myTok = (tok[which] = (tok[which] || 0) + 1); // 防竞态：开关切换/连点后过期响应不覆盖新状态
   const checkBtn = $("btn-check-" + which);
-  const hintEl = $("hint-" + which);
   const upBtn = $(which === "systray" ? "btn-systray-update" : "btn-harness-update");
   checkBtn.disabled = true;
-  hintEl.className = "update-note";
-  hintEl.textContent = tr("正在检查更新…");
+  setModuleCheck(which, msg("正在检查更新…"), "");
   upBtn.classList.add("hidden");
   try {
     const m = which === "systray" ? await a.CheckSystrayUpdate() : await a.CheckHarnessUpdate();
     if (myTok !== tok[which]) return; // 已有更新的检查/开关复位，丢弃本次过期结果
     if (m.error) {
-      hintEl.classList.add("err");
-      hintEl.textContent = fmt("检查失败：{0}", m.error);
+      setModuleCheck(which, msg("检查失败：{0}", m.error), "err");
       return;
     }
     // 检查结果只给结论（不再附详细说明），细节看下方版本号与日志
     if (m.hasUpdate) {
-      hintEl.classList.add("ok");
-      hintEl.textContent = fmt("有新版本 {0}", vtag(m.latest));
+      setModuleCheck(which, msg("有新版本 {0}", vtag(m.latest)), "ok");
       upBtn.classList.remove("hidden");
     } else {
-      hintEl.textContent = fmt("已是最新（当前 {0}）", vtag(m.current || m.latest) || "—");
+      setModuleCheck(which, msg("已是最新（当前 {0}）", vtag(m.current || m.latest) || "—"), "");
     }
   } catch (e) {
     if (myTok !== tok[which]) return;
-    hintEl.classList.add("err");
-    hintEl.textContent = fmt("检查失败：{0}", e && e.message ? e.message : e);
+    setModuleCheck(which, msg("检查失败：{0}", e && e.message ? e.message : e), "err");
   } finally {
     if (myTok === tok[which]) checkBtn.disabled = false;
   }
+}
+
+/** setModuleCheck 记录一条提示（模板 + 语气）并立即渲染：检查结论与预发布通道说明共用这一格。 */
+function setModuleCheck(which, m, tone) {
+  state.moduleCheck[which] = Object.assign({ tone: tone || "" }, m);
+  renderModuleCheck(which);
+}
+
+/** renderModuleCheck 按当前语言重画某模块的提示行（无提示时清空）。 */
+function renderModuleCheck(which) {
+  const hintEl = $("hint-" + which);
+  if (!hintEl) return;
+  const m = state.moduleCheck[which];
+  hintEl.className = "update-note" + (m && m.tone ? " " + m.tone : "");
+  hintEl.textContent = m ? msgText(m) : "";
 }
 
 /** 复位单模块检查结果（通道开关切换后调用，避免残留过期状态误导）。systray 与 harness 各自独立。 */
 function resetModuleCheck(which) {
   const tok = (state.checkToken = state.checkToken || {});
   tok[which] = (tok[which] || 0) + 1; // 使在途检查响应失效
-  const hintEl = $("hint-" + which);
-  if (hintEl) { hintEl.className = "update-note"; hintEl.textContent = ""; }
+  setModuleCheck(which, msg(""), "");
   const upBtn = $(which === "systray" ? "btn-systray-update" : "btn-harness-update");
   if (upBtn) upBtn.classList.add("hidden");
 }
@@ -1201,10 +1302,9 @@ function wireAbout() {
     $("sw-prerelease").setAttribute("aria-checked", String(on));
     // 通道语义变化后必须复位 harness 检查结果：残留的「发现新版本（预发布）」提示与已关闭的通道矛盾
     resetModuleCheck("harness");
-    const hint = $("hint-harness");
-    hint.textContent = tr(on
+    setModuleCheck("harness", msg(on
       ? "已开启预发布通道，可重新检查更新（含预发布版）"
-      : "已关闭预发布通道，检查更新将仅显示稳定版本");
+      : "已关闭预发布通道，检查更新将仅显示稳定版本"), "");
     if (on) runModuleCheck("harness"); // 开启后按新通道自动重查一次（关闭则留给用户手动复查）
   });
   // dsh-systray / Harness：各自的检查按钮
@@ -1287,7 +1387,9 @@ function setNote(item, text, tone) {
   if (!note) return;
   const toned = tone === "ok" || tone === "err" || tone === "warn";
   note.className = "plug-note" + (toned ? " " + tone : "");
-  note.textContent = text || "";
+  // 统一在这里过一遍 tr()：调用方传 zh 字面量（含 Go 侧原因）都能按当前语言显示；
+  // 已由 msgText()/运行时数据拼好的整串无字典命中，原样保留（用户数据不参与翻译）。
+  note.textContent = tr(text || "");
 }
 
 async function loadPlugins() {
@@ -1547,7 +1649,7 @@ function applyPlugState(item, st, p) {
     st = null;
   }
   if (!st) return null;
-  if (st.note) setNote(item, st.note, st.noteTone || "muted");
+  if (st.note) setNote(item, msgText(st.note), st.noteTone || "muted");
   const upBtn = item.querySelector("button[data-update]");
   if (upBtn) {
     if (st.upShow) {
@@ -1572,17 +1674,17 @@ async function doPluginCheck(p, item, btn) {
   try {
     const r = await a.CheckPluginUpdate(p.name);
     if (r.error) {
-      st.note = "无法检查更新：" + r.error; st.noteTone = "err";
+      st.note = msg("无法检查更新：{0}", r.error); st.noteTone = "err";
       st.upShow = false; st.upLatest = "";
     } else if (r.hasUpdate) {
-      st.note = "有新版本 " + vtag(r.latest) + "，可更新"; st.noteTone = "ok";
+      st.note = msg("有新版本 {0}，可更新", vtag(r.latest)); st.noteTone = "ok";
       st.upLatest = r.latest || ""; st.upShow = true;
     } else {
-      st.note = fmt("已是最新版本（{0}）", vtag(r.latest)); st.noteTone = "muted";
+      st.note = msg("已是最新版本（{0}）", vtag(r.latest)); st.noteTone = "muted";
       st.upShow = false; st.upLatest = "";
     }
   } catch (e) {
-    st.note = fmt("检查失败：{0}", e && e.message ? e.message : e); st.noteTone = "err";
+    st.note = msg("检查失败：{0}", e && e.message ? e.message : e); st.noteTone = "err";
   }
   // 检查完成后刷新插件列表：版本列以实读 node_modules 为准（本地开发目录改动 / 导入副本 /
   // 外部更新都可能让行内「当前版本」过期）；行内状态（提示语、更新按钮）由 plugState 恢复，不丢失。
@@ -1689,13 +1791,13 @@ async function doPluginRiskRepair(p, item, btn) {
   st.atVersion = p.version || ""; // 结论对应「当时版本」：版本变化即过期（与 applyPlugState 同口径）
   st.fromRiskFix = true;
   if (!r || !r.ok) {
-    st.note = fmt("修复失败：{0}", (r && r.reason) || tr("未知原因"));
+    st.note = msg("修复失败：{0}", (r && r.reason) || tr("未知原因"));
     st.noteTone = "err";
   } else if ((r.remainingSessions || 0) > 0) {
-    st.note = fmt("已修复 {0} 条记录；该插件仍在写入，还有 {1} 个会话存在风险", r.events, r.remainingSessions);
+    st.note = msg("已修复 {0} 条记录；该插件仍在写入，还有 {1} 个会话存在风险", r.events, r.remainingSessions);
     st.noteTone = "warn";
   } else {
-    st.note = fmt("已修复 {0} 个会话（{1} 条记录），删除后不再影响历史会话", r.files, r.events);
+    st.note = msg("已修复 {0} 个会话（{1} 条记录），删除后不再影响历史会话", r.files, r.events);
     st.noteTone = "ok";
   }
   await loadPlugins();
@@ -2082,6 +2184,14 @@ function syncImpHealUI(on) {
   }
 }
 
+/** impLabel 导入项显示名：类目固定为 sessions/plugins/files，按当前语言出名字。
+ *  不能直接用 Go 返回的 label——它来自**压缩包清单**（写包那台机器的语言），切语言也重译不了；
+ *  未知类目才回退清单标签（如第三方工具打的包）。 */
+const IMP_KIND_LABEL = { sessions: "历史会话记录", plugins: "已安装插件", files: "自选文件目录" };
+function impLabel(it) {
+  return tr(IMP_KIND_LABEL[it && it.kind] || (it && it.label) || (it && it.kind) || "");
+}
+
 function renderImportRows() {
   const wrap = $("imp-rows");
   wrap.innerHTML = "";
@@ -2096,7 +2206,7 @@ function renderImportRows() {
     div.dataset.ikind = it.kind;
     div.innerHTML =
       '<div class="imp-head">' +
-      '<div class="imp-intro-main"><div class="exp-label">' + esc(it.label) + "</div>" +
+      '<div class="imp-intro-main"><div class="exp-label">' + esc(impLabel(it)) + "</div>" +
       (it.size ? '<div class="exp-sub">' + fmtSize(it.size) + "</div>" : "") + "</div>" +
       '<div class="imp-actions">' +
       '<span data-okbadge class="imp-done hidden">' + tr("✓ 已完成") + '</span>' +
@@ -2141,7 +2251,7 @@ async function impRestore(it) {
       const detail = (preview.tops || []).slice(0, 3).join("、");
       const choice = await confirmDialog3(
         "检测到数据冲突",
-        "「" + it.label + "」与现有内容存在 " + preview.conflicts + " 项冲突" +
+        "「" + impLabel(it) + "」与现有内容存在 " + preview.conflicts + " 项冲突" +
           (detail ? "（" + detail + (preview.conflicts > 3 ? " 等" : "") + "）" : "") +
           "。\n\n「跳过」将保留现有文件、只补缺失项；「覆盖并恢复」会备份并替换现有内容。",
         "覆盖并恢复",
@@ -2576,17 +2686,21 @@ function wireEvents() {
     // 删除类结论只有「该行不存在」时才成立 → atVersion 记 ""（行被重新装回/导入即过期）
     st.atVersion = d.op === "remove" ? "" : (d.version || (row && row.version) || "");
     if (d.ok) {
-      let label = d.op === "remove" ? "已删除" : (d.op === "enable" ? "已启用" : "已更新");
-      if (d.version) label += " " + vtag(d.version);
-      if (d.reason) label += "（" + d.reason + "）";
-      st.note = label;
+      // 结论同样存模板（"已删除 {0}"/"已更新 {0}"…）：语言切换后行内结论跟着换语言
+      const base = d.op === "remove" ? "已删除" : (d.op === "enable" ? "已启用" : "已更新");
+      const ver = d.version ? vtag(d.version) : "";
+      if (ver && d.reason) st.note = msg(base + " {0}（{1}）", ver, d.reason);
+      else if (ver) st.note = msg(base + " {0}", ver);
+      else if (d.reason) st.note = msg(base + "（{0}）", d.reason);
+      else st.note = msg(base);
       st.noteTone = "ok";
       st.upShow = false;
       st.upLatest = "";
     } else {
       const verb = d.op === "remove" ? "删除失败" : (d.op === "enable" ? "启用失败" : "更新失败");
-      st.note = verb + "：" + (d.reason || "");
-      if (st.note.length > 140) st.note = st.note.slice(0, 137) + "…";
+      let reason = d.reason || "";
+      if ((verb + "：" + reason).length > 140) reason = reason.slice(0, 120) + "…";
+      st.note = msg(verb + "：{0}", reason);
       st.noteTone = "err";
       st.upShow = true; // 保留「更新」按钮便于修复后重试
     }
@@ -2619,15 +2733,13 @@ function wireSplashCancel() {
  */
 function confirmDialog3(title, msg, okLabel, skipLabel) {
   return new Promise((resolve) => {
-    $("modal-title").textContent = tr(title) || tr("确认操作");
-    $("modal-msg").textContent = tr(msg) || "";
-    $("modal-ok").textContent = tr(okLabel) || tr("确定");
-    const skipBtn = $("modal-skip");
-    skipBtn.classList.toggle("hidden", !skipLabel);
-    if (skipLabel) skipBtn.textContent = tr(skipLabel);
+    // 文案存模板：弹层开着时切换语言，renderModalTexts 能把标题/正文/按钮一起换成新语言
+    state.modal = { title, msg, okLabel, skipLabel: skipLabel || "" };
+    renderModalTexts();
     $("modal").classList.remove("hidden");
     const done = (val) => {
       $("modal").classList.add("hidden");
+      state.modal = null;
       $("modal-cancel").removeEventListener("click", onCancel);
       $("modal-skip").removeEventListener("click", onSkip);
       $("modal-ok").removeEventListener("click", onOk);
@@ -2643,9 +2755,42 @@ function confirmDialog3(title, msg, okLabel, skipLabel) {
   });
 }
 
+/** renderModalTexts 按当前语言重画确认弹层的标题/正文/按钮（弹层未打开时为空操作）。 */
+function renderModalTexts() {
+  const m = state.modal;
+  if (!m) return;
+  $("modal-title").textContent = tr(m.title) || tr("确认操作");
+  $("modal-msg").textContent = tr(m.msg) || "";
+  $("modal-ok").textContent = tr(m.okLabel) || tr("确定");
+  // 纯告知弹层隐藏「取消」（否则用户会以为能取消掉这次提示）
+  $("modal-cancel").classList.toggle("hidden", !!m.hideCancel);
+  const skipBtn = $("modal-skip");
+  skipBtn.classList.toggle("hidden", !m.skipLabel);
+  if (m.skipLabel) skipBtn.textContent = tr(m.skipLabel);
+}
+
 /** 显示双按钮确认弹层（兼容既有调用），返回 Promise<boolean>（确定 true / 取消 false）。 */
 function confirmDialog(title, msg, okLabel) {
   return confirmDialog3(title, msg, okLabel, null).then((v) => v === "ok");
+}
+
+/** infoDialog 单按钮提示弹层（纯告知：没有「取消」这个选择，避免用户以为可以取消掉什么）。 */
+function infoDialog(title, msg, okLabel) {
+  return new Promise((resolve) => {
+    state.modal = { title, msg, okLabel, skipLabel: "", hideCancel: true };
+    renderModalTexts();
+    $("modal").classList.remove("hidden");
+    const done = () => {
+      $("modal").classList.add("hidden");
+      state.modal = null;
+      $("modal-ok").removeEventListener("click", done);
+      $("modal-cancel").removeEventListener("click", done);
+      resolve(true);
+    };
+    $("modal-ok").addEventListener("click", done);
+    $("modal-cancel").addEventListener("click", done); // 遮罩/Esc 之外的兜底，正常不可见
+    $("modal-ok").focus();
+  });
 }
 
 // ==================== 启动 ====================
@@ -2906,25 +3051,34 @@ function wireSync() {
 
 // ==================== 数据同步：文件/文件夹 ====================
 //
-// 列表口径：行 = 用户添加的条目（文件夹/文件）。文件夹条目可展开显示内部文件树（子目录 → 文件）。
+// 列表口径（2026-10-07 用户要求改为「浏览器式导航」）：
+//   · 根层显示用户添加的条目（文件夹/文件）；
+//   · **双击文件夹进入**、**双击文件用系统默认方式打开**（不再是展开/折叠三角形）；
+//   · 列表上方是当前路径导航（**服务器侧命名空间**：条目名 + 条目内相对路径），
+//     每一级都可点，含根目录，用于越级返回；
+//   · 每一行都显示该文件的**本机完整路径**（不换行、超出用省略号、悬停横向滚动看全）。
 // 排序：文件夹优先，组内按 名称/大小/修改时间 升/降序（再次点同一键切换方向）。
-// 删除一律二次确认；条目删除提供「同时删除本机文件 / 仅移出同步」两档。
+// 删除一律二次确认。
 
 let filesSort = { key: "name", dir: 1 };
-const filesExpanded = {}; // 展开态：条目 id 或 `id/子路径` → true
-let filesQuotaWarned = 0; // 已提示过的容量不足文件数（避免每次刷新重复弹窗）
+// 当前所在位置：entryId 为空 = 根层（条目列表）；rel 为空 = 条目根目录
+let filesNav = { entryId: "", rel: "" };
+// 容量不足弹窗本运行期是否已提示过（用户要求：一次就够，不再随数量变化反复弹）
+let filesQuotaPrompted = false;
 // 列表重建节流/保护：上传期间状态变化要尽快反映，但绝不能在「按下~抬起」之间换掉 DOM，
-// 否则 click 落空——表现为点三角形折叠不回去（2026-10-05 现场）。
+// 否则 click 落空；双击进入文件夹还需要 DOM 跨两次点击保持稳定，故保护窗口取 600ms
+// （大于系统默认双击间隔，避免第二次点击落在重建后的新节点上而被判成两次单击）。
 let filesTreeRenderedAt = 0;
 let filesPointerHeld = false;
-// 初值必须是 -Infinity：用 0 的话，页面加载后的前 400ms 会被误判成「刚松开鼠标」，
+// 初值必须是 -Infinity：用 0 的话，页面加载后的前 600ms 会被误判成「刚松开鼠标」，
 // 首次列表渲染直接被跳过（列表空白，要等下一次事件才出现）。
 let filesPointerReleasedAt = Number.NEGATIVE_INFINITY;
-const FILES_TREE_MIN_INTERVAL = 400; // ms：上传期间最快 400ms 重建一次列表
+const FILES_TREE_MIN_INTERVAL = 400;   // ms：上传期间最快 400ms 重建一次列表
+const FILES_CLICK_GUARD = 600;         // ms：指针抬起后的 DOM 保护窗口（覆盖双击间隔）
 
 /** filesTreeInteractive 是否处于指针交互中（含抬起后的短暂保护窗口）。 */
 function filesTreeInteractive() {
-  return filesPointerHeld || performance.now() - filesPointerReleasedAt < 400;
+  return filesPointerHeld || performance.now() - filesPointerReleasedAt < FILES_CLICK_GUARD;
 }
 // 排序键的中文标签：渲染时再 tr()，语言切换后标签跟着走（不用缓存译文）。
 const FILES_SORT_LABEL = { name: "名称", size: "大小", mtime: "修改时间" };
@@ -3069,17 +3223,33 @@ function filesSortEntries(list) {
   return (list || []).slice().sort(cmp);
 }
 
-/** filesRowHtml 一行（文件夹或文件）；depth 控制缩进。 */
-function filesRowHtml(o) {
-  const view = filesStatusView(o.status);
-  const caret = o.isDir
-    ? `<button type="button" class="files-caret" data-fact="toggle" data-entry="${esc(o.entryId)}" data-rel="${esc(o.rel)}" aria-expanded="${o.expanded ? "true" : "false"}" aria-label="${tr("展开或折叠")}">${o.expanded ? "▾" : "▸"}</button>`
-    : '<span class="files-caret files-caret-empty"></span>';
-  const meta = [];
-  meta.push(filesFmtSize(o.size));
+/** filesJoinPath 本机路径拼接（分隔符沿用 root 的写法：Windows 反斜杠 / 其它正斜杠）。 */
+function filesJoinPath(root, rel) {
+  const r = String(root || "");
+  const p = String(rel || "").replace(/^[/\\]+/, "");
+  if (!r) return p;
+  if (!p) return r;
+  const sep = r.includes("\\") ? "\\" : "/";
+  return r.replace(/[/\\]+$/, "") + sep + p.replace(/[/\\]/g, sep);
+}
+
+/** filesMetaHtml 行内小字行：左侧「大小 · 文件数 · 速度 · 修改时间」不省略，右侧本机完整路径
+ *  占满剩余宽度、超出末尾省略（完整路径靠 title 气泡）。根层条目行与目录内行共用同一函数，
+ *  两处风格完全一致（2026-10-07 用户要求；每行两行文字，大量文件时依然紧凑）。 */
+function filesMetaHtml(o) {
+  const meta = [filesFmtSize(o.size)];
   if (o.isDir) meta.push(fmt("{0} 个文件", o.count || 0));
   if (o.speedBps > 0) meta.push(fmt("{0}/s", filesFmtSize(o.speedBps)));
   if (o.mtime) meta.push(syncFmtTime(o.mtime));
+  const p = String(o.localPath || "");
+  const path = p ? `<span class="files-path" title="${escAttr(p)}">${esc(p)}</span>` : "";
+  return `<div class="files-meta"><span class="files-meta-text">${esc(meta.join(" · "))}</span>${path}</div>`;
+}
+
+/** filesRowHtml 一个文件/文件夹行（导航式列表中的一行）。
+ *  行本身带 data-row-* 供双击（进入文件夹/打开文件）与面包屑定位使用。 */
+function filesRowHtml(o) {
+  const view = filesStatusView(o.status);
   const err = o.error ? `<div class="files-err">${esc(o.error)}</div>` : "";
   const actions = [];
   // 未同步完成的文件只允许移除（本机可能还没有内容，打开无意义）；同步完成的才可打开
@@ -3091,55 +3261,24 @@ function filesRowHtml(o) {
   }
   actions.push(`<button type="button" class="btn btn-ghost btn-xs files-danger" data-fact="remove" data-entry="${esc(o.entryId)}" data-rel="${esc(o.rel)}" data-dir="${o.isDir ? "1" : "0"}">${tr("移除")}</button>`);
   return (
-    `<div class="files-row" style="--depth:${o.depth}">` +
-    caret +
+    `<div class="files-row" data-row="${o.isDir ? "dir" : "file"}" ` +
+    `data-entry="${esc(o.entryId)}" data-rel="${esc(o.rel)}" data-status="${esc(o.status || "")}">` +
     `<div class="files-main"><div class="files-name">${o.isDir ? "📁" : "📄"} ${esc(o.name)}</div>` +
-    `<div class="files-meta">${esc(meta.join(" · "))}</div>${err}</div>` +
+    filesMetaHtml(o) + err + `</div>` +
     (view.text ? `<span class="files-badge ${view.cls}">${view.text}</span>` : "") +
     `<div class="files-actions">${actions.join("")}</div></div>`
   );
 }
 
-/** filesNodeHtml 递归渲染树（展开的目录才渲染子行）。 */
-function filesNodeHtml(node, entryId, depth) {
-  let html = "";
-  for (const d of node.dirs) {
-    const key = entryId + "/" + d.path;
-    const expanded = !!filesExpanded[key];
-    html += filesRowHtml({
-      entryId, rel: d.path, name: d.name, isDir: true, size: d.size, mtime: d.mtime,
-      count: d.count, status: d.status, error: "", depth, expanded,
-    });
-    if (expanded) html += filesNodeHtml(d, entryId, depth + 1);
-  }
-  for (const f of node.files) {
-    html += filesRowHtml({
-      entryId, rel: f.relPath, name: f.name, isDir: false, size: f.size, mtime: f.mtime,
-      count: 1, status: f.status, error: f.error || "", depth, speedBps: f.speedBps || 0,
-    });
-  }
-  return html;
-}
-
-/** filesEntryHtml 一个条目行（+ 展开的文件树）。 */
+/** filesEntryHtml 根层的一个条目行（点进文件夹条目即进入其内部浏览器）。
+ *  与目录内行**完全同款**（同标记、同小字行），只多一个「移动」按钮——层级由上方路径导航表达。 */
 function filesEntryHtml(e) {
   const isDir = e.kind === "dir";
-  const expanded = !!filesExpanded[e.id];
   const view = filesStatusView(e.status);
-  const meta = [filesFmtSize(e.size)];
-  if (isDir) meta.push(fmt("{0} 个文件", (e.files || []).length));
-  meta.push(e.isSource ? tr("本机原位置") : tr("接收目录"));
-  if (e.path) meta.push(e.path);
-  const caret = isDir
-    ? `<button type="button" class="files-caret" data-fact="toggle" data-entry="${esc(e.id)}" data-rel="" aria-expanded="${expanded ? "true" : "false"}" aria-label="${tr("展开或折叠")}">${expanded ? "▾" : "▸"}</button>`
-    : '<span class="files-caret files-caret-empty"></span>';
-  // 错误文本：条目级错误优先，否则取第一个失败文件（行内可见，不必展开才知道为什么失败）
+  // 错误文本：条目级错误优先，否则取第一个失败文件（行内可见，点进去也能看到原因）
   const failed = (e.files || []).find((f) => f.error);
   const errText = e.error || (failed ? fmt("{0}：{1}", failed.name, failed.error) : "");
   const err = errText ? `<div class="files-err">${esc(errText)}</div>` : "";
-  const tree = isDir && expanded
-    ? filesNodeHtml(filesSortTree(filesBuildTree(e.files || [])), e.id, 1)
-    : "";
   const actions = [];
   // 条目行：有文件「已在本机移除」时给一个整条目「重新同步」；打开照旧
   const removedCount = (e.files || []).filter((f) => f.status === "removed-local").length;
@@ -3155,15 +3294,71 @@ function filesEntryHtml(e) {
     ? `<div class="files-err">${esc(fmt("源设备原路径 {0} 在本机已不存在，内容已保存为接收目录副本", e.originPath || ""))}</div>`
     : "";
   return (
-    `<div class="files-entry">` +
-    `<div class="files-row files-row-entry" style="--depth:0">` + caret +
+    `<div class="files-row" data-row="${isDir ? "dir" : "file"}" ` +
+    `data-entry="${esc(e.id)}" data-rel="" data-status="${esc(e.status || "")}">` +
     `<div class="files-main"><div class="files-name">${isDir ? "📁" : "📄"} ${esc(e.name)}</div>` +
-    `<div class="files-meta">${esc(meta.filter(Boolean).join(" · "))}</div>${err}${adoptHint}</div>` +
+    filesMetaHtml({
+      size: e.size, isDir, count: (e.files || []).length, mtime: e.mtime, localPath: e.path,
+    }) + err + adoptHint + `</div>` +
     (view.text ? `<span class="files-badge ${view.cls}">${view.text}</span>` : "") +
     `<div class="files-actions">${entryActions}` +
     `<button type="button" class="btn btn-ghost btn-xs files-danger" data-fact="remove" data-entry="${esc(e.id)}" data-rel="" data-dir="${isDir ? "1" : "0"}">${tr("移除")}</button>` +
-    `</div></div>` + tree + `</div>`
+    `</div></div>`
   );
+}
+
+/** filesCrumbHtml 当前路径导航（服务器侧命名空间：根目录 → 条目名 → 条目内相对路径逐级）。
+ *  每一级都是按钮（含根目录），点击即跳转到该级；末级为当前位置，不可点。 */
+function filesCrumbHtml(entry, relParts) {
+  const segs = [{ name: tr("根目录"), entry: "", rel: "" }];
+  if (entry) {
+    segs.push({ name: entry.name, entry: entry.id, rel: "" });
+    let acc = "";
+    for (const p of relParts) {
+      acc = acc ? acc + "/" + p : p;
+      segs.push({ name: p, entry: entry.id, rel: acc });
+    }
+  }
+  return segs.map((s, i) => {
+    const last = i === segs.length - 1;
+    const label = esc(s.name);
+    if (last) return `<span class="files-crumb is-current" aria-current="page">${label}</span>`;
+    return `<button type="button" class="files-crumb" data-crumb-entry="${esc(s.entry)}" data-crumb-rel="${esc(s.rel)}">${label}</button>`;
+  }).join('<span class="files-crumb-sep" aria-hidden="true">/</span>');
+}
+
+/** filesLevelRowsHtml 当前目录下的一层行（文件夹在前，再按当前排序键）——
+ *  这是导航式列表的核心：只渲染当前层，不再递归展开子目录。 */
+function filesLevelRowsHtml(entry, node, relParts) {
+  const rows = [];
+  for (const d of node.dirs) {
+    rows.push({
+      kind: "dir", entryId: entry.id, rel: d.path, name: d.name, isDir: true,
+      size: d.size, mtime: d.mtime, count: d.count, status: d.status, error: "",
+      localPath: filesJoinPath(entry.path, d.path),
+    });
+  }
+  for (const f of node.files) {
+    rows.push({
+      kind: "file", entryId: entry.id, rel: f.relPath, name: f.name, isDir: false,
+      size: f.size, mtime: f.mtime, count: 1, status: f.status, error: f.error || "",
+      speedBps: f.speedBps || 0, localPath: filesJoinPath(entry.path, f.relPath),
+    });
+  }
+  return filesSortEntries(rows).map(filesRowHtml).join("");
+}
+
+/** filesFindLevel 按当前导航位置取出「要渲染的那一层」：条目根节点或某个子目录节点。 */
+function filesFindLevel(entry, rel) {
+  const root = filesSortTree(filesBuildTree(entry.files || []));
+  if (!rel) return root;
+  let node = root;
+  for (const part of String(rel).split("/")) {
+    const next = node.dirMap && node.dirMap.get(part);
+    if (!next) return null; // 目录已不存在（被远端删除/改名）：回落到条目根
+    node = next;
+  }
+  return node;
 }
 
 /** renderFilesCard 渲染文件卡（容量、待应用、列表、空态）。
@@ -3184,7 +3379,6 @@ function renderFilesCard(st, opts) {
   $("files-list-row").classList.toggle("hidden", !loggedIn);
   $("files-hint-row").classList.toggle("hidden", !loggedIn);
   if (!loggedIn) {
-    filesQuotaWarned = 0;
     $("files-pending").classList.add("hidden");
     for (const id of ["btn-files-add-file", "btn-files-add-dir", "btn-files-sync"]) {
       const b = $(id);
@@ -3221,6 +3415,13 @@ function renderFilesCard(st, opts) {
   // 列表 / 空态（上传中只更新提示与容量，避免频繁重建 DOM 吞掉点击）
   const entries = filesSortEntries(st.entries || []); // 顶层条目也按当前排序键排列
   state.filesEntries = entries; // 供行内操作按 id 取条目
+  // 当前导航位置：条目不存在（被移除/远端删除）时回落到根层，避免停在空目录出不来
+  let navEntry = filesNav.entryId ? entries.find((e) => e.id === filesNav.entryId) : null;
+  if (filesNav.entryId && !navEntry) { filesNav = { entryId: "", rel: "" }; navEntry = null; }
+  const navNode = navEntry ? filesFindLevel(navEntry, filesNav.rel) : null;
+  if (navEntry && !navNode) { filesNav = { entryId: navEntry.id, rel: "" }; } // 目录没了：退到条目根
+  const levelNode = navEntry ? (navNode || filesFindLevel(navEntry, "")) : null;
+
   const toolbar = $("files-toolbar");
   toolbar.classList.toggle("hidden", entries.length === 0);
   document.querySelectorAll(".files-sort").forEach((b) => {
@@ -3230,28 +3431,42 @@ function renderFilesCard(st, opts) {
     b.textContent = tr(FILES_SORT_LABEL[key] || key) + (active ? (filesSort.dir < 0 ? " ↓" : " ↑") : "");
   });
   $("files-empty").classList.toggle("hidden", entries.length > 0);
-  // 状态一变就重建列表（上传期间最多 400ms 一次）；指针交互中先不换 DOM，避免吞掉点击。
+  // 路径导航（服务器侧命名空间）：始终显示——根层就一行「根目录」，用户随时知道自己在哪
+  const crumbs = $("files-crumbs");
+  if (crumbs) {
+    const relParts = navEntry && filesNav.rel ? String(filesNav.rel).split("/") : [];
+    crumbs.innerHTML = filesCrumbHtml(navEntry, relParts);
+    crumbs.classList.toggle("hidden", entries.length === 0);
+  }
+  // 状态一变就重建列表（上传期间最多 400ms 一次）；指针交互中先不换 DOM，避免吞掉点击与双击。
   // 首次渲染（filesTreeRenderedAt 还是 0）必须无条件执行——performance.now() 从 0 起算，
   // 加载后 400ms 内到达的首个快照否则会被节流掉，列表一直空着。
   const now = performance.now();
   const treeDue = filesTreeRenderedAt === 0 || now - filesTreeRenderedAt >= FILES_TREE_MIN_INTERVAL;
   if (forceTree || (!filesTreeInteractive() && treeDue)) {
-    $("files-tree").innerHTML = entries.map(filesEntryHtml).join("");
+    $("files-tree").innerHTML = navEntry
+      ? (filesLevelRowsHtml(navEntry, levelNode, filesNav.rel ? String(filesNav.rel).split("/") : []) ||
+         `<div class="row-sub">${esc(tr("这个文件夹里还没有内容"))}</div>`)
+      : entries.map(filesEntryHtml).join("");
     filesTreeRenderedAt = now;
   }
 
   // 按钮可用性
   const busy = !!st.syncing || !!st.applying;
+  const blocked = Number(st.blockedCount) || 0; // 容量不足被拦下的文件数（提示行与一次性弹窗共用）
   $("btn-files-add-file").disabled = busy;
   $("btn-files-add-dir").disabled = busy;
   $("btn-files-sync").disabled = busy;
   $("btn-files-apply").disabled = busy;
-  // 提示行：上传进度（带实时速度）优先，其次是应用/同步中、失败、最后同步时间
+  // 提示行：上传进度（带实时速度）优先，其次是应用/同步中、容量不足、失败、最后同步时间
   if (st.uploading && st.uploadTotal > 0) {
     const speed = st.uploadSpeedBps > 0 ? fmt(" · {0}/s", filesFmtSize(st.uploadSpeedBps)) : "";
     filesHint(fmt("正在上传 {0}/{1}{2}", st.uploadDone, st.uploadTotal, speed));
   } else if (busy) {
     filesHint(st.applying ? tr("正在应用同步改动…") : tr("正在同步…"));
+  } else if (blocked > 0) {
+    // 容量不足已中止同步：常驻说明下一步（弹窗只出现一次，这里保证用户随时知道原因与出路）
+    filesHint(fmt("有 {0} 个文件因容量不足未同步；清理空间后点「立即同步」重试", blocked), true);
   } else if (st.lastError) {
     filesHint(fmt("同步失败：{0}", st.lastError), true);
   } else if (st.lastSyncedAt) {
@@ -3265,17 +3480,15 @@ function renderFilesCard(st, opts) {
     filesHint("");
   }
 
-  // 容量不足：首次出现（或数量变化）时弹窗提示
-  const blocked = Number(st.blockedCount) || 0;
-  if (blocked > 0 && blocked !== filesQuotaWarned) {
-    filesQuotaWarned = blocked;
-    confirmDialog(
+  // 容量不足：**整个运行期只弹一次**（用户要求 2026-10-07：一次就够，别反复弹）。
+  // 常驻提醒交给上方提示行（数量 + 下一步动作），不再随数量变化重复弹窗。
+  if (blocked > 0 && !filesQuotaPrompted) {
+    filesQuotaPrompted = true;
+    infoDialog(
       "可用容量不足",
-      fmt("有 {0} 个文件因容量不足未同步。请删除部分已同步文件或移除条目后重试；已同步的内容不受影响。", blocked),
+      fmt("有 {0} 个文件因容量不足未能同步。请删除部分已同步文件或移除条目后点「立即同步」重试；已同步的内容不受影响。", blocked),
       "知道了",
     );
-  } else if (blocked === 0) {
-    filesQuotaWarned = 0;
   }
 }
 
@@ -3387,13 +3600,17 @@ async function filesDoRestore(entryId, rel) {
   }
 }
 
-/** filesDoRelocate 把条目移动到本机其它位置（系统式移动：搬文件、清理源；覆盖由系统对话框询问）。 */
+/** filesDoRelocate 把条目移动到本机其它位置（系统式移动：搬文件、清理源；覆盖由系统对话框询问）。
+ *  Go 侧返回 {status, canceled}：用户在系统对话框点取消时 canceled=true（未改动任何文件）——
+ *  此时只刷新界面，不提示「已移动」（2026-10-07 用户反馈）。 */
 async function filesDoRelocate(entryId) {
   const g = bindings();
   if (!g || typeof g.FilesSetLocalPath !== "function") return;
   try {
-    const st = await g.FilesSetLocalPath(entryId);
+    const res = await g.FilesSetLocalPath(entryId);
+    const st = (res && res.status) || res; // 兼容直接返回快照的旧绑定形态
     renderFilesCard(st, { forceTree: true });
+    if (res && res.canceled) return; // 取消：什么都没动，不报「已移动」
     filesHint(tr("已移动同步位置；本机文件已搬到新位置"), false);
   } catch (err) {
     filesHint(String(err), true);
@@ -3415,6 +3632,8 @@ async function filesDoRemove(entryId, rel, isDir) {
     if (!ok) return;
     try {
       renderFilesCard(await g.FilesRemoveEntry(entryId), { forceTree: true });
+      // 正在浏览这个条目时移除它：退回根层，否则会停在已不存在的路径上
+      if (filesNav.entryId === entryId) filesNavRoot();
     } catch (err) {
       filesHint(String(err), true);
     }
@@ -3433,11 +3652,32 @@ async function filesDoRemove(entryId, rel, isDir) {
   }
 }
 
-/** filesToggle 展开/折叠（条目或子目录）：本地状态立即翻转并强制重建列表。 */
-function filesToggle(entryId, rel) {
-  const key = rel ? entryId + "/" + rel : entryId;
-  filesExpanded[key] = !filesExpanded[key];
+/** filesEnter 进入某个文件夹（导航式列表：只渲染当前层，位置写入 filesNav）。 */
+function filesEnter(entryId, rel) {
+  if (!entryId) return;
+  filesNav = { entryId, rel: rel || "" };
   refreshFiles(true);
+}
+
+/** filesNavRoot 回到根层（条目列表）。 */
+function filesNavRoot() {
+  filesNav = { entryId: "", rel: "" };
+  refreshFiles(true);
+}
+
+/** filesRowActivate 双击一行的行为：文件夹 → 进入；文件 → 用系统默认方式打开
+ *  （本机还没有内容的文件不可打开，只提示——与行内「打开」按钮同一判据）。 */
+function filesRowActivate(entryId, rel, isDir) {
+  if (isDir) { filesEnter(entryId, rel); return; }
+  const row = (state.filesEntries || []).find((e) => e.id === entryId);
+  const st = !rel
+    ? (row && row.status)
+    : ((row && (row.files || []).find((f) => f.relPath === rel)) || {}).status;
+  if (st && st !== "synced") {
+    filesHint(tr("该文件尚未同步完成，本机还没有内容可打开"), true);
+    return;
+  }
+  filesDoOpen(entryId, rel);
 }
 
 function wireFiles() {
@@ -3457,19 +3697,34 @@ function wireFiles() {
       refreshFiles(true); // 排序必须立即重建列表（不带 force 会被 400ms 节流吞掉 → 点击看起来没反应）
     });
   });
+  // 路径导航：每一级可点（含根目录）越级跳转
+  $("files-crumbs").addEventListener("click", (ev) => {
+    const btn = ev.target.closest("[data-crumb-entry]");
+    if (!btn) return;
+    const entryId = btn.dataset.crumbEntry || "";
+    if (!entryId) { filesNavRoot(); return; }
+    filesEnter(entryId, btn.dataset.crumbRel || "");
+  });
   $("files-tree").addEventListener("click", (ev) => {
     const btn = ev.target.closest("[data-fact]");
     if (!btn) return;
     const entryId = btn.dataset.entry || "";
     const rel = btn.dataset.rel || "";
     switch (btn.dataset.fact) {
-      case "toggle": filesToggle(entryId, rel); break;
       case "open": filesDoOpen(entryId, rel); break;
       case "restore": filesDoRestore(entryId, rel); break;
       case "relocate": filesDoRelocate(entryId); break;
       case "remove": filesDoRemove(entryId, rel, btn.dataset.dir === "1"); break;
       default: break;
     }
+  });
+  // 双击：文件夹进入、文件打开（替代原展开/折叠三角形；行内按钮仍保留单击行为）
+  $("files-tree").addEventListener("dblclick", (ev) => {
+    if (ev.target.closest("[data-fact]")) return; // 双击按钮不算行激活
+    const row = ev.target.closest("[data-row]");
+    if (!row) return;
+    ev.preventDefault();
+    filesRowActivate(row.dataset.entry || "", row.dataset.rel || "", row.dataset.row === "dir");
   });
   // 指针按下期间不重建列表（避免点击因节点被替换而丢失）
   document.addEventListener("pointerdown", () => { filesPointerHeld = true; }, true);

@@ -531,6 +531,13 @@ func buildPluginRows() []PluginRow {
 			})
 		}
 	}
+	// 行内说明文字（来源原因/禁用原因/被跳过原因）统一在**出口**按当前语言翻译：
+	// T() 无命中即回退原文，所以启动日志摘要这类诊断文本保持原样；前端切换语言后会重新拉取本列表。
+	for i := range rows {
+		rows[i].Reason = T(rows[i].Reason)
+		rows[i].DisabledReason = T(rows[i].DisabledReason)
+		rows[i].SkippedReason = T(rows[i].SkippedReason)
+	}
 	sort.Slice(rows, func(a, b int) bool { return rows[a].Name < rows[b].Name })
 	return rows
 }
