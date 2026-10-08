@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Security vulnerability
+    url: https://github.com/refyon/dsh-systray/security/advisories/new
+    about: Report privately — please do not open a public issue for security problems.
+  - name: Question or usage help
+    url: https://github.com/refyon/dsh-systray/issues/new?template=bug_report.yml
+    about: For "how do I ..." questions, check the README first, then open an issue with your version and platform.

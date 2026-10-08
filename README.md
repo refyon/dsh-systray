@@ -19,6 +19,7 @@
   <img alt="Windows x64" src="https://img.shields.io/badge/Windows-x64-2563eb.svg?style=flat-square" />
   <img alt="macOS" src="https://img.shields.io/badge/macOS-Universal-2563eb.svg?style=flat-square" />
   <a href="https://github.com/refyon/dsh-systray/actions/workflows/build-status.yml"><img alt="Release build" src="https://github.com/refyon/dsh-systray/actions/workflows/build-status.yml/badge.svg" /></a>
+  <a href="LICENSE"><img alt="License: MIT" src="https://img.shields.io/badge/license-MIT-2563eb.svg?style=flat-square" /></a>
 </p>
 
 <img src="docs/screenshot-hero.webp" alt="dsh-systray 设置窗口" />
@@ -151,6 +152,24 @@ wails dev
 
 调试环境变量：`DSH_SYSTRAY_PORT`、`DSH_SYSTRAY_HARNESS_DIR`、`DSH_SYSTRAY_STARTUP_TIMEOUT`、`DSH_SYSTRAY_LOG_DIR`、`DSH_SYSTRAY_LANG`、`DSH_SYSTRAY_PROXY`。
 
-## 链接
+## 贡献
 
-[网站](https://refyon.github.io/dsh-systray/) · [更新日志](https://github.com/refyon/dsh-systray/releases) · [Issues](https://github.com/refyon/dsh-systray/issues) · 相关项目：[DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness)
+欢迎 issue 与 pull request。动手前请先读 [CONTRIBUTING.md](CONTRIBUTING.md)：里面有开发环境、提交前必须跑的四条检查，以及本项目「代码注释与提交信息用中文、界面文案走 i18n」的约定。
+
+- 缺陷 / 功能建议：[新建 issue](https://github.com/refyon/dsh-systray/issues/new/choose)（已提供模板）
+- 安全漏洞：**不要**开公开 issue，走 [SECURITY.md](SECURITY.md) 的私密报告渠道
+- 界面设计改动须遵循 [DESIGN.md](DESIGN.md)（颜色与间距走 token、弹窗必须前台）
+
+## 安全
+
+构建未签名：macOS 版未经公证、Windows 版未签名，首次运行需手动放行；应用会把数据写入 `~/.dsh` 与自身配置目录，开启自启动时会写注册表 / 启动项。漏洞报告方式与范围界定见 [SECURITY.md](SECURITY.md)。
+
+## 许可
+
+[MIT](LICENSE) © 2026 emonyr
+
+仓库自身的代码按 MIT 授权；运行时会按需下载并在本机部署 Node.js、pnpm 与 DeepSeek Harness，这些组件各自遵循其上游许可。
+
+## 相关链接
+
+[网站](https://refyon.github.io/dsh-systray/) · [更新日志](https://github.com/refyon/dsh-systray/releases) · 相关项目：[DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness)

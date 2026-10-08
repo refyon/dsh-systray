@@ -1,0 +1,66 @@
+name: Bug report
+description: Something does not work — startup, update, sync, tray, UI
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for the report. Logs make the difference between a guess and a fix, so please
+        attach them if you can. For security problems use [SECURITY.md](../blob/main/SECURITY.md)
+        instead — not this form.
+  - type: input
+    id: version
+    attributes:
+      label: App version
+      description: Shown on the About page. Use the exact string (`v1.3.4`, or `dev` for a local build).
+      placeholder: v1.3.4
+    validations:
+      required: true
+  - type: dropdown
+    id: os
+    attributes:
+      label: Platform
+      options:
+        - Windows 11
+        - Windows 10
+        - macOS (Apple Silicon)
+        - macOS (Intel)
+        - Other / not listed
+    validations:
+      required: true
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: What you did, what you expected, what happened instead. Mention the settings involved (port, launch method, proxy, mirror) if relevant.
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. Start dsh-systray
+        2. Open Settings → ...
+        3. ...
+    validations:
+      required: false
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs
+      description: |
+        Paste the relevant part of `dsh-systray.log` (Settings → Logs shows the full path).
+        Redact tokens, e-mail addresses and personal paths before pasting.
+      render: text
+    validations:
+      required: false
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Before submitting
+      options:
+        - label: I searched existing issues for the same problem
+          required: true
+        - label: This is not a security issue (those go through SECURITY.md)
+          required: true

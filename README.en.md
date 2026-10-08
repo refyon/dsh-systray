@@ -19,6 +19,7 @@
   <img alt="Windows x64" src="https://img.shields.io/badge/Windows-x64-2563eb.svg?style=flat-square" />
   <img alt="macOS" src="https://img.shields.io/badge/macOS-Universal-2563eb.svg?style=flat-square" />
   <a href="https://github.com/refyon/dsh-systray/actions/workflows/build-status.yml"><img alt="Release build" src="https://github.com/refyon/dsh-systray/actions/workflows/build-status.yml/badge.svg" /></a>
+  <a href="LICENSE"><img alt="License: MIT" src="https://img.shields.io/badge/license-MIT-2563eb.svg?style=flat-square" /></a>
 </p>
 
 <img src="docs/screenshot-hero-en.webp" alt="dsh-systray settings window" />
@@ -153,6 +154,30 @@ wails dev
 
 Debug environment variables: `DSH_SYSTRAY_PORT`, `DSH_SYSTRAY_HARNESS_DIR`, `DSH_SYSTRAY_STARTUP_TIMEOUT`, `DSH_SYSTRAY_LOG_DIR`, `DSH_SYSTRAY_LANG`, `DSH_SYSTRAY_PROXY`.
 
-## Links
+## Contributing
 
-[Website](https://refyon.github.io/dsh-systray/) · [Release notes](https://github.com/refyon/dsh-systray/releases) · [Issues](https://github.com/refyon/dsh-systray/issues) · Related: [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness)
+Issues and pull requests are welcome. Read [CONTRIBUTING.md](CONTRIBUTING.md) first: it covers the
+development setup, the four checks to run before opening a pull request, and the house rules
+(comments and commit subjects are in Chinese; user-facing strings go through the i18n layer).
+
+- Bugs and feature requests: [open an issue](https://github.com/refyon/dsh-systray/issues/new/choose) (templates provided)
+- Security problems: **do not** open a public issue — use the private channel in [SECURITY.md](SECURITY.md)
+- UI changes must follow [DESIGN.md](DESIGN.md) (colours and spacing from tokens, dialogs come to the front)
+
+## Security
+
+The builds are unsigned: the macOS build is not notarized and the Windows build is not code-signed,
+so the first run needs a manual allow. The app writes to `~/.dsh` and to its own config directory,
+and adds a registry / login item when start-at-login is enabled. Reporting channels and scope are in
+[SECURITY.md](SECURITY.md).
+
+## License
+
+[MIT](LICENSE) © 2026 emonyr
+
+The code in this repository is MIT-licensed. At runtime it downloads and provisions Node.js, pnpm
+and DeepSeek Harness on your machine; those components keep their own upstream licences.
+
+## Related links
+
+[Website](https://refyon.github.io/dsh-systray/) · [Release notes](https://github.com/refyon/dsh-systray/releases) · Related: [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness)
