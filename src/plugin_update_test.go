@@ -107,6 +107,40 @@ func TestGetWithMirrorsNotVisibleOnlyFromDirect(t *testing.T) {
 	}
 }
 
+// TestGetWithMirrorsAuthRejectedFromDirect 直连候选带着凭据被 GitHub 拒绝（401）时，
+// 结论必须保留给调用方引导重新授权：镜像候选的 404 只是通道失败，若让它覆盖，界面上
+// 「凭据被拒」就会变成一句无从下手的「HTTP 404」（2026-10-08 复盘）。
+func TestGetWithMirrorsAuthRejectedFromDirect(t *testing.T) {
+	unauthorized := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+	}))
+	defer unauthorized.Close()
+	notFound := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer notFound.Close()
+
+	var rejected *githubAuthRejectedError
+	var notVisible *githubNotVisibleError
+
+	_, err := getWithMirrors([]string{unauthorized.URL, notFound.URL}, 5*time.Second)
+	if !errors.As(err, &rejected) {
+		t.Fatalf("直连 401 + 镜像 404: err = %v, want githubAuthRejectedError", err)
+	}
+	if errors.As(err, &notVisible) {
+		t.Errorf("直连 401 被误判为仓库不可见: %v", err)
+	}
+
+	// 直连 403（凭据被拒的另一种形态）同样保留结论。
+	forbidden := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusForbidden)
+	}))
+	defer forbidden.Close()
+	if _, err := getWithMirrors([]string{forbidden.URL, notFound.URL}, 5*time.Second); !errors.As(err, &notVisible) {
+		t.Errorf("直连 403 + 镜像 404: err = %v, want githubNotVisibleError", err)
+	}
+}
+
 // writeTestProfile 构造临时 DSH_HOME 下的命名 profile（含依赖声明与已装 node_modules 版本）。
 func writeTestProfile(t *testing.T, home, profile string, deps map[string]string, versions map[string]string) {
 	t.Helper()

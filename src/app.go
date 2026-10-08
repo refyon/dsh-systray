@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -740,14 +741,7 @@ func (a *App) CheckPluginUpdate(id string) PluginCheckResult {
 	if !ok {
 		return PluginCheckResult{Name: id, Error: T("未找到该插件，可能已被移除。")}
 	}
-	res := checkPluginUpdateByRow(row)
-	// 私有仓库（GitHub 来源）报「仓库不可见」时，引导 gh 设备流授权后重试一次：
-	// 未认证访问私有仓库必然 404，这一步把「查不到」变成「授权后能查到」。
-	if res.Error != "" && row.Source == "github" && strings.Contains(res.Error, repoNotVisibleMsg) {
-		if owner, repo, ok := githubRepoFromSpec(row.Spec); ok && promptGitHubAuth(row.Name, owner+"/"+repo) {
-			res = checkPluginUpdateByRow(row)
-		}
-	}
+	res := a.checkGithubPluginRetryingAuth(row)
 	state := "已是最新"
 	if res.Error != "" {
 		state = "失败：" + res.Error
@@ -755,6 +749,30 @@ func (a *App) CheckPluginUpdate(id string) PluginCheckResult {
 		state = fmt.Sprintf("有新版本 %s", withV(res.Latest))
 	}
 	logUI("检查插件更新", fmt.Sprintf("%s（当前 %s）| %s", res.Name, orDash(res.Current), state))
+	return res
+}
+
+// checkGithubPluginRetryingAuth 私有仓库插件的检查更新：GitHub 来源的凭据结论只由直连通道给出
+// （404=看不到仓库，401=带的凭据被拒）。凭据被拒时说明本进程缓存的是上一条 token
+// （用户重新授权后 token 已换新），丢弃缓存重查一次即可自愈；其余「仓库不可见」引导 gh
+// 设备流授权后重试一次。两步之后仍失败才把错误交给界面。
+func (a *App) checkGithubPluginRetryingAuth(row PluginRow) PluginCheckResult {
+	res := checkPluginUpdateByRow(row)
+	if row.Source != "github" {
+		return res
+	}
+	if _, err := fetchPluginLatest(row); err != nil {
+		var rejected *githubAuthRejectedError
+		if errors.As(err, &rejected) {
+			invalidateGHToken()
+			res = checkPluginUpdateByRow(row)
+		}
+	}
+	if res.Error != "" && strings.Contains(res.Error, repoNotVisibleMsg) {
+		if owner, repo, ok := githubRepoFromSpec(row.Spec); ok && promptGitHubAuth(row.Name, owner+"/"+repo) {
+			res = checkPluginUpdateByRow(row)
+		}
+	}
 	return res
 }
 

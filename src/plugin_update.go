@@ -578,6 +578,15 @@ type githubNotVisibleError struct{ code int }
 
 func (e *githubNotVisibleError) Error() string { return fmt.Sprintf("HTTP %d", e.code) }
 
+// githubAuthRejectedError 直连候选带着本机凭据仍被 GitHub 拒绝（401）。
+// 与 githubNotVisibleError 并列的第二种身份结论：404 是这条通道没带凭据/看不到，
+// 401 是带的凭据不被接受（token 已被重新签发或撤销）。它同样只由直连候选产生。
+type githubAuthRejectedError struct{ code int }
+
+func (e *githubAuthRejectedError) Error() string {
+	return fmt.Sprintf("GitHub 凭据无效（HTTP %d）", e.code)
+}
+
 // getWithMirrors 带多候选（直连 + 镜像前缀）的 GET，把候选 URL 依次请求直至成功。
 // deadline 为整体预算（上下文超时，逐候选共享），避免镜像全挂时长时间卡 UI；
 // 单候选另有 pluginCheckCandidateTimeout 上限（取剩余预算更小者），防止单个挂起候选独占预算。
@@ -586,6 +595,7 @@ func getWithMirrors(candidates []string, deadline time.Duration) ([]byte, error)
 	defer cancel()
 	client := newHTTPClient(0) // 超时由上方 ctx（deadline）控制；代理见 netproxy.go
 	var lastErr error
+	var authErr error
 	for i, u := range candidates {
 		candCtx, candCancel := context.WithTimeout(ctx, pluginCheckCandidateTimeout)
 		req, err := http.NewRequestWithContext(candCtx, "GET", u, nil)
@@ -606,6 +616,9 @@ func getWithMirrors(candidates []string, deadline time.Duration) ([]byte, error)
 		resp, err := client.Do(req)
 		if err != nil {
 			candCancel()
+			if authErr != nil {
+				break
+			}
 			lastErr = err
 			continue
 		}
@@ -613,11 +626,23 @@ func getWithMirrors(candidates []string, deadline time.Duration) ([]byte, error)
 			code := resp.StatusCode
 			resp.Body.Close()
 			candCancel()
-			// 直连候选（i==0）给出的 404/403 是确定性结论——仓库不存在或为私有仓库
-			// （未认证不可见），镜像不会改变可见性，立即收尾，避免把剩余预算耗在镜像回退上。
+			// 直连候选（i==0）给出的 401/403/404 是确定性结论——凭据不被接受，或仓库不存在
+			// / 为私有仓库（未认证不可见），镜像不会改变可见性，立即收尾，避免把剩余预算耗在
+			// 镜像回退上；同时候选后段的 404 也不再覆盖它（否则「凭据被拒」会被镜像的通道
+			// 失败掩盖成一句「HTTP 404」，见 2026-10-08 复盘）。
 			// 用带类型的错误把「身份判定」与「通道失败」区分开（镜像 404 不算判定）。
-			if i == 0 && (code == http.StatusNotFound || code == http.StatusForbidden) {
-				return nil, &githubNotVisibleError{code: code}
+			if i == 0 {
+				switch code {
+				case http.StatusNotFound:
+					return nil, &githubNotVisibleError{code: code}
+				case http.StatusForbidden:
+					authErr = &githubNotVisibleError{code: code}
+				case http.StatusUnauthorized:
+					authErr = &githubAuthRejectedError{code: code}
+				}
+				if authErr != nil {
+					break
+				}
 			}
 			lastErr = fmt.Errorf("HTTP %d", code)
 			continue
@@ -630,6 +655,9 @@ func getWithMirrors(candidates []string, deadline time.Duration) ([]byte, error)
 			continue
 		}
 		return body, nil
+	}
+	if authErr != nil {
+		return nil, authErr
 	}
 	return nil, lastErr
 }
@@ -907,10 +935,15 @@ func githubDefaultBranch(owner, repo string) (string, error) {
 		// 404 不是网络故障，而是「未认证看不到这个仓库」（私有仓库，或已改名/删除）。
 		// 单独说明，避免用户把它误判成镜像/网络问题（2026-09-13 复盘）。
 		// 只有直连通道的 404/403 算这个结论：镜像 404 只是通道失败，报授权引导会让
-		// 已授权的用户反复重登（见 githubNotVisibleError）。
+		// 已授权的用户反复重登（见 githubNotVisibleError）。直连 401 同理——本机凭据
+		// 被拒，同样要引导重新授权，而不是把它当成仓库不存在（见 githubAuthRejectedError）。
 		var notVisible *githubNotVisibleError
 		if errors.As(err, &notVisible) {
 			return "", fmt.Errorf("%s：%s/%s 不存在或为私有仓库（私有仓库需先完成 GitHub 授权）", repoNotVisibleMsg, owner, repo)
+		}
+		var authRejected *githubAuthRejectedError
+		if errors.As(err, &authRejected) {
+			return "", fmt.Errorf("%s：%s/%s（本机 GitHub 凭据已被拒绝，请重新完成 GitHub 授权）", repoNotVisibleMsg, owner, repo)
 		}
 		return "", fmt.Errorf("GitHub 仓库查询失败：%w", err)
 	}
