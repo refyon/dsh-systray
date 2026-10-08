@@ -103,6 +103,75 @@ func TestFindActivePluginRowScopesToEnv(t *testing.T) {
 	}
 }
 
+// TestFindActivePluginRowByIDOrNameSameNameTwoSpecs 同名插件在两套环境里 spec 不同（版本钉法不同）
+// 时清单会分成两行、行 ID 带 spec；行内操作传「行 ID」或旧的「裸包名」都必须落到当前环境那一行，
+// 不能因为裸包名解析先撞上另一环境的行而报「未找到该插件」（2026-10-08 现场：桌面端 → Web UI 后
+// dsh-ui-taste / restrict-discipline 检查更新报未找到，dsh-cost-meter 因两环境 spec 相同合并成一行而正常）。
+func TestFindActivePluginRowByIDOrNameSameNameTwoSpecs(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("DSH_HOME", home)
+	webSpec := "github:refyon/plugin-a"
+	deskSpec := "github:refyon/plugin-a#41ad0c9873e578ab950ba9eb74539fc043df2852"
+	writeTestProfile(t, home, "web", map[string]string{"plugin-a": webSpec},
+		map[string]string{"plugin-a": "0.3.0"})
+	writeTestProfile(t, home, "desktop", map[string]string{"plugin-a": deskSpec},
+		map[string]string{"plugin-a": "0.3.0"})
+
+	webDir := filepath.Join(home, "profiles", "web")
+	deskDir := filepath.Join(home, "profiles", "desktop")
+	webID := "plugin-a|" + webSpec
+	deskID := "plugin-a|" + deskSpec
+
+	stubDesktopPref(t, launchTargetWeb)
+	for _, id := range []string{webID, "plugin-a"} {
+		row, ok := findActivePluginRowByIDOrName(id)
+		if !ok {
+			t.Fatalf("Web 环境下 %q 应能解析到行", id)
+		}
+		if len(row.Locs) != 1 || !sameProfileDir(row.Locs[0], webDir) {
+			t.Fatalf("%q 应落在 Web 环境：locs=%v", id, row.Locs)
+		}
+		if row.ID != webID || row.Spec != webSpec {
+			t.Fatalf("%q 应解析到 Web 环境的行：id=%q spec=%q", id, row.ID, row.Spec)
+		}
+	}
+	if _, ok := findActivePluginRowByIDOrName(deskID); ok {
+		t.Fatal("Desktop 环境的行 ID 在 Web 启动方式下不应可操作")
+	}
+
+	stubDesktopPref(t, launchTargetDesktop)
+	row, ok := findActivePluginRowByIDOrName("plugin-a")
+	if !ok || !sameProfileDir(row.Locs[0], deskDir) || row.ID != deskID {
+		t.Fatalf("Desktop 环境下裸包名应解析到 Desktop 行：ok=%v row=%+v", ok, row)
+	}
+}
+
+// TestFindActivePluginRowByIDOrNameDisabledEnv 首行 ID 不以包名开头时（被自动禁用、无依赖声明而
+// 合成的行），裸包名仍需回退到当前环境里真正的依赖行。
+func TestFindActivePluginRowByIDOrNameDisabledEnv(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("DSH_HOME", home)
+	writeTestProfile(t, home, "web", map[string]string{"plugin-c": "^1.0.0"},
+		map[string]string{"plugin-c": "1.0.0"})
+	deskDir := filepath.Join(home, "profiles", "desktop")
+	writeTestProfile(t, home, "desktop", map[string]string{}, map[string]string{})
+	// Desktop 侧只有一条禁用记录：清单合成 ID 不带包名的行
+	body := `{"name":"dsh-profile-desktop","dependencies":{},` +
+		`"dsh":{"profile":{"bundles":[],"disabledPlugins":{"plugin-c":"与当前版本不兼容"}}}}`
+	if err := os.WriteFile(filepath.Join(deskDir, "package.json"), []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	stubDesktopPref(t, launchTargetWeb)
+	row, ok := findActivePluginRowByIDOrName("plugin-c")
+	if !ok {
+		t.Fatal("Web 环境下裸包名应解析到依赖行")
+	}
+	if row.Disabled || !sameProfileDir(row.Locs[0], filepath.Join(home, "profiles", "web")) {
+		t.Fatalf("应收窄到 Web 环境的启用行：%+v", row)
+	}
+}
+
 // TestExportCollectsAllProfiles 方案 B：导出一次带走**全部** harness 环境的插件——
 // manifest 的 plugins.profiles 按环境分组（web / desktop 各自一份清单），plugins.zip 内保留
 // 各环境自己的 profiles/<name>/node_modules/ 前缀；顶层 plugins 段留给旧版托盘（= 导出机当前

@@ -733,11 +733,13 @@ func markPendingPluginRows(rows []PluginRow) []PluginRow {
 
 // CheckPluginUpdate 检查单个插件是否有新版本（纯查询，结果交前端行内展示）：
 // npm registry 安装查 dist-tag latest；github 安装按默认分支 package.json 版本判定。
+// id 为行 ID（同名多 spec 时带 spec，见 PluginRow.ID）或包名；按包名解析时优先落在当前环境
+// 的那一行（同一插件在两套环境里 spec 可能不同、都能声明）。
 func (a *App) CheckPluginUpdate(id string) PluginCheckResult {
 	if shotMode {
 		return shotPluginCheck(id)
 	}
-	row, ok := findActivePluginRowByID(id)
+	row, ok := findActivePluginRowByIDOrName(id)
 	if !ok {
 		return PluginCheckResult{Name: id, Error: T("未找到该插件，可能已被移除。")}
 	}
@@ -794,7 +796,7 @@ func (a *App) PickLocalPluginPath(id string) PluginLocalPick {
 	if shotMode {
 		return PluginLocalPick{Canceled: true}
 	}
-	row, ok := findActivePluginRowByID(id)
+	row, ok := findActivePluginRowByIDOrName(id)
 	if !ok {
 		return PluginLocalPick{Error: T("未找到该插件，可能已被移除。")}
 	}
@@ -822,7 +824,7 @@ func (a *App) ApplyLocalPluginUpdate(id, dir string) {
 	if shotMode {
 		return
 	}
-	row, ok := findActivePluginRowByID(id)
+	row, ok := findActivePluginRowByIDOrName(id)
 	if !ok {
 		showMessageBox(T("未找到该插件，可能已被移除。"), appName)
 		return

@@ -274,7 +274,7 @@ func pluginOpStage(id, op string) (bool, string) {
 	if pluginBatchRunning() {
 		return reject("正在应用已登记的插件变更，请等待完成后再操作。")
 	}
-	row, ok := findActivePluginRowByID(id)
+	row, ok := findActivePluginRowByIDOrName(id)
 	if !ok {
 		return reject("未找到该插件，可能已被移除。")
 	}

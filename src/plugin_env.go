@@ -138,6 +138,46 @@ func findActivePluginRowByID(id string) (PluginRow, bool) {
 	return findPluginRowInEnv(id, activePluginProfile())
 }
 
+// envRowsByIDOrName 指定环境里匹配该标识的行（ID 或包名），已收窄到该环境；顺序同清单顺序。
+// 同名多 spec 时返回多行——调用方需按需选择，不能假定唯一。
+func envRowsByIDOrName(id, profile string) []PluginRow {
+	if id == "" {
+		return nil
+	}
+	dir, ok := profileDirForEnv(profile)
+	if !ok {
+		return nil
+	}
+	var out []PluginRow
+	for _, r := range buildPluginRows() {
+		if r.ID != id && r.Name != id {
+			continue
+		}
+		if scoped, ok := scopeRowToDir(r, dir); ok {
+			out = append(out, scoped)
+		}
+	}
+	return out
+}
+
+// findPluginRowInEnvByIDOrName 行内操作按「行 ID → 包名」两步解析：先认精确行 ID（同名多 spec
+// 时前端传的是带 spec 的 ID），再退回包名。同名多 spec 且目标环境里的那行不是全局首个匹配行时，
+// 按包名一步解析会落到另一环境的行上（findPluginRowInEnv），这里补上按环境优先的一步。
+func findPluginRowInEnvByIDOrName(id, profile string) (PluginRow, bool) {
+	if row, ok := findPluginRowInEnv(id, profile); ok {
+		return row, true
+	}
+	if rows := envRowsByIDOrName(id, profile); len(rows) > 0 {
+		return rows[0], true
+	}
+	return PluginRow{}, false
+}
+
+// findActivePluginRowByIDOrName 当前环境的行内操作解析（见 findPluginRowInEnvByIDOrName）。
+func findActivePluginRowByIDOrName(id string) (PluginRow, bool) {
+	return findPluginRowInEnvByIDOrName(id, activePluginProfile())
+}
+
 // sameProfileDir 两个目录是否指同一环境（Windows / macOS 文件系统大小写不敏感）。
 func sameProfileDir(a, b string) bool {
 	a, b = filepath.Clean(a), filepath.Clean(b)

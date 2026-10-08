@@ -1672,7 +1672,7 @@ async function doPluginCheck(p, item, btn) {
   const st = state.plugState[p.name] || (state.plugState[p.name] = {});
   st.atVersion = p.version || ""; // 检查结论对应「当时版本」：版本变化即过期（见 applyPlugState）
   try {
-    const r = await a.CheckPluginUpdate(p.name);
+    const r = await a.CheckPluginUpdate(p.id || p.name);
     if (r.error) {
       st.note = msg("无法检查更新：{0}", r.error); st.noteTone = "err";
       st.upShow = false; st.upLatest = "";
@@ -1701,7 +1701,7 @@ function doPluginUpdate(p, item, upBtn) {
   // 只登记、不执行：变更进入待应用区（多项合并为一次服务重启），由关闭设置窗口时确认或
   // 关于页「立即应用」统一执行。行状态由 Go 端 plugins:changed 重渲染（含「撤销」按钮）。
   setNote(item, ver ? fmt("已登记：更新到 {0}（{1}）", vtag(ver), pendingEffectText()) : fmt("已登记为待应用变更（{0}）", pendingEffectText()), "muted");
-  bindings().StartPluginUpdate(p.name);
+  bindings().StartPluginUpdate(p.id || p.name);
 }
 
 /**
