@@ -18,6 +18,9 @@
   → `python scripts/make_hero.py --lang zh|en` 合成 → `python scripts/convert_webp.py` 转 webp。
   一条命令重跑全部物料：`scripts\recapture.cmd`。
 - `评估-*.md` / `验证指引-*.md`：需求评估与真机验收步骤（结论与遗留问题都在里面）。
+- `DESIGN.md`：六节设计规范（Overview / Colors / Typography / Elevation / Components / Do's & Don'ts），
+  同时约束桌面应用前端与官网 `index.html`；两侧 design token 必须一致，改界面样式前先看它。
+- `RELEASE_NOTES.md`：各版本发布说明；打 `vX.Y.Z` tag 时 CI 按其中的「## vX.Y.Z」区块建 Release。
 
 ## 检查脚本（改前端后必跑）
 

@@ -162,7 +162,7 @@ development setup, the four checks to run before opening a pull request, and the
 
 - Bugs and feature requests: [open an issue](https://github.com/refyon/dsh-systray/issues/new/choose) (templates provided)
 - Security problems: **do not** open a public issue — use the private channel in [SECURITY.md](SECURITY.md)
-- UI changes must follow [DESIGN.md](DESIGN.md) (colours and spacing from tokens, dialogs come to the front)
+- UI changes must follow [DESIGN.md](docs/DESIGN.md) (colours and spacing from tokens, dialogs come to the front)
 
 ## Security
 

@@ -158,7 +158,7 @@ wails dev
 
 - 缺陷 / 功能建议：[新建 issue](https://github.com/refyon/dsh-systray/issues/new/choose)（已提供模板）
 - 安全漏洞：**不要**开公开 issue，走 [SECURITY.md](SECURITY.md) 的私密报告渠道
-- 界面设计改动须遵循 [DESIGN.md](DESIGN.md)（颜色与间距走 token、弹窗必须前台）
+- 界面设计改动须遵循 [DESIGN.md](docs/DESIGN.md)（颜色与间距走 token、弹窗必须前台）
 
 ## 安全
 

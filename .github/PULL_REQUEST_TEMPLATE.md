@@ -23,7 +23,7 @@ Platforms you tested on:
 ## Checklist
 
 - [ ] One concern per pull request (no unrelated refactors)
-- [ ] UI changes follow [DESIGN.md](../blob/main/DESIGN.md) (tokens, spacing, focus states, dialogs come to the front)
+- [ ] UI changes follow [DESIGN.md](../blob/main/docs/DESIGN.md) (tokens, spacing, focus states, dialogs come to the front)
 - [ ] New user-facing strings go through the i18n layer (both `zh` and `en`), not inline
 - [ ] Behaviour that is fixed or added is covered by a test
 - [ ] No machine-specific absolute paths, credentials or personal data in the diff

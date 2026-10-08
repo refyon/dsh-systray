@@ -46,7 +46,7 @@ machine — say so in the pull request if you could not do that part.
 
 - **Language**: code comments, log messages and commit subjects are written in Chinese in this
   repository; user-facing strings go through the i18n layer, never inline.
-- **Design**: UI work must follow [DESIGN.md](DESIGN.md) — colors, spacing and radii come from the
+- **Design**: UI work must follow [docs/DESIGN.md](docs/DESIGN.md) — colors, spacing and radii come from the
   CSS tokens there, and any new dialog has to come to the foreground (see the Do's & Don'ts).
 - **Scope**: keep a pull request to one concern. Unrelated refactors make a change hard to review
   and hard to roll back.

@@ -157,7 +157,7 @@ var (
 
 // ==================== 前台（自动置顶） ====================
 // 本文件全部自绘弹窗与平台层原生对话框（pickHarnessDir 等）都要求自动前台：
-// 任何新增弹窗必须经 forceForeground / 传入 hwndOwner，规则见 DESIGN.md 第 6 节。
+// 任何新增弹窗必须经 forceForeground / 传入 hwndOwner，规则见 docs/DESIGN.md 第 6 节。
 
 // forceForeground 把窗口可靠地带到前台：
 //  1. 置顶（HWND_TOPMOST）闪烁后撤销，确保 z 序跳到最前；
