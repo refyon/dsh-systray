@@ -166,10 +166,10 @@ wails dev
 
 ## 许可
 
-[MIT](LICENSE) © 2026 emonyr
+[MIT](LICENSE) © 2026 RefyonLab
 
 仓库自身的代码按 MIT 授权；运行时会按需下载并在本机部署 Node.js、pnpm 与 DeepSeek Harness，这些组件各自遵循其上游许可。
 
 ## 相关链接
 
-[网站](https://refyon.github.io/dsh-systray/) · [更新日志](https://github.com/refyon/dsh-systray/releases) · 相关项目：[DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness)
+[网站](https://refyon.github.io/dsh-systray/) · [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) · [Wails](https://wails.io/)

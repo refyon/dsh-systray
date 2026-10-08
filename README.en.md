@@ -173,11 +173,11 @@ and adds a registry / login item when start-at-login is enabled. Reporting chann
 
 ## License
 
-[MIT](LICENSE) © 2026 emonyr
+[MIT](LICENSE) © 2026 RefyonLab
 
 The code in this repository is MIT-licensed. At runtime it downloads and provisions Node.js, pnpm
 and DeepSeek Harness on your machine; those components keep their own upstream licences.
 
 ## Related links
 
-[Website](https://refyon.github.io/dsh-systray/) · [Release notes](https://github.com/refyon/dsh-systray/releases) · Related: [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness)
+[Website](https://refyon.github.io/dsh-systray/) · [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) · [Wails](https://wails.io/)
