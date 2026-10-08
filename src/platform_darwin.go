@@ -364,7 +364,6 @@ func startServer() (bool, <-chan error) {
 	serverCmd = cmd
 	serverStartGen.Add(1) // 新代次：仍在观察旧进程的启动校验据此让位
 	gen := serverStartGen.Load()
-	serverStopByTray.Store(false)
 	serverStartedPort = port // 记录实际启动端口（端口修改提示与状态展示依据）
 	trackChildProcess(cmd.Process)
 	exitCh := make(chan error, 1)

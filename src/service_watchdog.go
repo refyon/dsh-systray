@@ -10,6 +10,7 @@
 //
 // 让位规则（避免误判与打扰用户）：
 //   - 用户主动停服（serverStopByTray）不拉起；
+//   - 其它操作正在改服务（更新/重置/插件批处理/导入恢复/同步应用，见 watchdogSkip）不拉起；
 //   - 退出中（quitting）、更新收尾中（updateFinalizing）、截图模式不探查；
 //   - 两次重启之间有冷却，且每会话重启次数有上限（超过只告警，不无限重启）。
 package main
@@ -78,6 +79,23 @@ func (s *serviceWatchdogState) step(now time.Time, responding, skip bool) watchd
 
 var watchdogRestarting atomic.Bool // 拉起进行中：跳过本轮，避免与用户手动重启并发
 
+// watchdogLetAnotherOperationFinish 是否有别的操作正在接管服务生命周期。
+//
+// 更新 harness / 重置 / 插件批处理 / 导入恢复 / 同步应用都会「主动停服 → 改文件 → 自己拉起并做
+// 启动校验」；看门狗此时探测到的「无响应」是这些操作自己造成的，插手只会互相 kill
+//（2026-10-08 现场：插件同步应用 17:04:33 拉起服务，看门狗 17:05:06 判定无响应把它杀掉重启，
+// 同步应用的启动校验观察到进程被带走 → 误报「与当前服务不兼容」并回退，再点一次才成功）。
+// 与 service_supervisor.go 的让位规则一致：谁在改服务，谁负责把它拉回来。
+func watchdogLetAnotherOperationFinish() bool {
+	return harnessOpBusy.Load() || pluginBatchRunning() || importRestoreRunning() || accountApplyBusy()
+}
+
+// watchdogSkip 本轮不该管的判定（主动停服 / 退出中 / 自己正在拉起 / 别的操作在改服务）。
+func watchdogSkip() bool {
+	return quitting.Load() || serverStopByTray.Load() || watchdogRestarting.Load() ||
+		watchdogLetAnotherOperationFinish()
+}
+
 // startServiceWatchdog 启动存活看门狗（ctx 结束即退出；截图/演示模式不启动）。
 //
 // probe 与 restart 可注入，便于测试；生产分别用 serverResponding(webURL) 与 restartAndVerifyServer。
@@ -101,7 +119,7 @@ func startServiceWatchdog(ctx context.Context, probe func() bool, restart func()
 				return
 			case <-ticker.C:
 			}
-			skip := quitting.Load() || serverStopByTray.Load() || watchdogRestarting.Load()
+			skip := watchdogSkip()
 			switch st.step(time.Now(), probe(), skip) {
 			case watchdogRestart:
 				watchdogRestarting.Store(true)

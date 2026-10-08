@@ -738,8 +738,10 @@ func startAndVerifyOnceQuick() (bool, string) { return startAndVerifyOnceWithin(
 // startAndVerifyOnceWithin quick 选择健康校验门槛（见上）。
 func startAndVerifyOnceWithin(quick bool) (bool, string) {
 	if serverResponding(webURL) {
+		markServerResponsive()
 		return true, ""
 	}
+
 	// 端口预检（兜底）：调用方在更早处已做过询问，这里只保证端口在预检与 spawn 之间被抢走时
 	// 也不会把端口问题伪装成插件/版本问题（见 portcheck.go 文件头）。
 	if kind, err := probePort(port); kind != portOK {

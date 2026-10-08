@@ -129,8 +129,9 @@ func autoRestartService(cause error) {
 		log.Printf("auto restart #%d cancelled (stopped by tray or app quitting)", n)
 		return
 	}
-	// 其它操作（harness 更新/重置、插件批处理、导入恢复）在跑：它们自己负责把服务拉回来，守护让位。
-	if harnessOpBusy.Load() || pluginBatchRunning() || importRestoreRunning() {
+	// 其它操作（harness 更新/重置、插件批处理、导入恢复、同步应用）在跑：它们自己负责把服务
+	// 拉回来，守护让位（与看门狗同一套判据，见 service_watchdog.go 的 watchdogSkip）。
+	if watchdogLetAnotherOperationFinish() {
 		log.Printf("service exited (%s), but another operation is running; auto restart skipped", causeText)
 		return
 	}

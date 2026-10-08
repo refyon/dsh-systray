@@ -179,8 +179,8 @@ func installPluginIntoProfile(dir, profile, name, dep string) error {
 		notePluginInstalled(profile, name, wasInstalled)
 		return nil
 	}
-	if !restartAndVerifyServer() {
-		return rollback(fmt.Sprintf("%s 与当前服务不兼容，已回退", dep))
+	if ok, why := restartAndVerifyServerReason(); !ok {
+		return rollback(fmt.Sprintf("更新后服务未能通过启动校验，已回退：%s", why))
 	}
 	promoteProfileLkg(dir)
 	cleanupPluginProfileSnapshot(dir)
@@ -259,8 +259,8 @@ func removePluginFromProfile(dir, profile, name string) error {
 		pluginInstallTimeForget(profile, name)
 		return nil
 	}
-	if !restartAndVerifyServer() {
-		return rollback("卸载后服务启动失败，已回退")
+	if ok, why := restartAndVerifyServerReason(); !ok {
+		return rollback("卸载后服务未能通过启动校验，已回退：" + why)
 	}
 	clearLkgInDir(dir)
 	cleanupPluginProfileSnapshot(dir)

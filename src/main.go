@@ -94,11 +94,13 @@ var (
 // （用户修改端口后尚未重启的场景）则返回该端口。返回 (是否在运行, 运行端口, 实际 URL)。
 func resolveRunningService() (bool, int, string) {
 	if serverResponding(webURL) {
+		markServerResponsive()
 		return true, port, webURL
 	}
 	if serverStartedPort != 0 && serverStartedPort != port {
 		alt := fmt.Sprintf("http://127.0.0.1:%d/", serverStartedPort)
 		if serverResponding(alt) {
+			markServerResponsive()
 			return true, serverStartedPort, alt
 		}
 	}
@@ -2063,14 +2065,22 @@ func waitForServerReady(url string, serverExited <-chan error, timeout time.Dura
 	start := time.Now()
 	deadline := start.Add(timeout)
 	client := newHTTPClient(3 * time.Second)
+	var lastErr string
 	for {
 		if resp, err := client.Get(url); err == nil {
 			resp.Body.Close()
 			if resp.StatusCode < 500 {
+				markServerResponsive() // 已确认在响应：此刻才解除「停服意图」（见 markServerResponsive）
 				return true, ""
 			}
+			lastErr = fmt.Sprintf("HTTP %d", resp.StatusCode)
+		} else {
+			lastErr = err.Error()
 		}
 		if time.Now().After(deadline) {
+			// 失败原因落日志：此前被调用方丢弃，事后只剩「不兼容」这类与事实无关的文案
+			//（2026-10-08 现场：就绪探测失败的原因无从判断，只能靠拼时间线推断）。
+			log.Printf("[service] not ready within %s: %s (last probe: %s)", timeout, url, lastErr)
 			return false, "timeout"
 		}
 		step := readyProbeStepSlow
@@ -2081,6 +2091,7 @@ func waitForServerReady(url string, serverExited <-chan error, timeout time.Dura
 		select {
 		case <-serverExited:
 			timer.Stop()
+			log.Printf("[service] not ready: process exited before responding (%s, last probe: %s)", url, lastErr)
 			return false, "exited"
 		case <-timer.C:
 		}

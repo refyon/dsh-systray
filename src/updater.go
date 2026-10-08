@@ -1247,6 +1247,15 @@ var (
 	serverStartGen   atomic.Int64
 )
 
+// markServerResponsive 服务确认在响应（HTTP 探测通过 / 就绪等待通过）时调用：解除「停服意图」。
+//
+// 为什么不在 startServer 里解除：进程刚 spawn、还没监听的那段窗口里，看门狗探测失败会把它
+// 当成服务已死并自行停服重启，把正在做启动校验的那个进程一起带走（2026-10-08 现场：插件同步
+// 应用 17:04:33 拉起、17:05:06 被看门狗杀掉，同步应用据此误报「与当前服务不兼容」）。
+func markServerResponsive() {
+	serverStopByTray.Store(false)
+}
+
 // bootVerifyResult 启动健康校验结果三态：健康 / 失败 / 让位（被主动停服或新进程取代）。
 type bootVerifyResult int
 
@@ -1477,22 +1486,43 @@ func restartAndVerifyServerAfterChange() bool {
 	return restartAndVerifyServerWithin(bootVerifySettleAfterHarnessChange)
 }
 
+// restartAndVerifyServerReason 同 restartAndVerifyServer，另返回失败原因（调用方要把这个原因
+// 展示给用户时用它：「服务未就绪」与「启动日志存在加载错误」是两回事，不能都说成不兼容）。
+func restartAndVerifyServerReason() (bool, string) {
+	return restartAndVerifyServerDetailed(bootVerifySettle)
+}
+
 // restartAndVerifyServerWithin 重启并健康校验（窗口由调用方指定）。
 func restartAndVerifyServerWithin(settle time.Duration) bool {
+	ok, _ := restartAndVerifyServerDetailed(settle)
+	return ok
+}
+
+// restartAndVerifyServerDetailed 重启并健康校验的实现：失败时给出可展示的原因。
+func restartAndVerifyServerDetailed(settle time.Duration) (bool, string) {
 	killServer()
 	waitPortReleased(port, portReleaseTimeout)
 	if serverResponding(webURL) {
-		return true // 端口已有可用服务（异常残留场景），视为可用
+		markServerResponsive()
+		return true, "" // 端口已有可用服务（异常残留场景），视为可用
 	}
 	before := rotateServerLog()
 	started, exitCh := startServer()
 	if !started {
-		return false
+		return false, "无法启动后台服务进程"
 	}
-	if ok, _ := waitForServerReady(webURL, exitCh, startupTimeout); !ok {
-		return false
+	if ok, why := waitForServerReady(webURL, exitCh, startupTimeout); !ok {
+		reason := "服务未在预期时间内就绪"
+		if why == "exited" {
+			reason = "服务进程启动后即退出"
+		}
+		return false, reason
 	}
-	return verifyServerBootWithin(before, exitCh, settle)
+	markServerResponsive()
+	if !verifyServerBootWithin(before, exitCh, settle) {
+		return false, "服务已响应，但启动日志存在加载错误（版本/插件不兼容）"
+	}
+	return true, ""
 }
 
 // rollbackUpdate 更新失败处理：停止服务 → 回退快照 → 重启校验 → 返回给用户的提示文案。
