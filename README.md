@@ -45,6 +45,12 @@ Windows / macOS 系统托盘应用。三个核心特性：**轻量**（单文件
 
 解压后双击运行；首次启动自动部署运行环境与 harness，进度在窗口内显示，就绪后可一键打开 Web UI；此后随系统开机自启。
 
+macOS 首次运行要先清掉浏览器下载留下的隔离标记（构建未公证，带标记会被 Gatekeeper 拦下）；在解压目录执行一次，或走「系统设置 → 隐私与安全性 → 仍要打开」：
+
+```bash
+xattr -dr com.apple.quarantine dsh-systray.app
+```
+
 ## 功能
 
 **轻量**

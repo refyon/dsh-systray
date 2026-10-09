@@ -292,7 +292,7 @@ footer .sep{margin:0 8px;color:var(--border)}
     <ol>
       <li data-i18n="n1">下载对应平台 zip 并解压到任意目录</li>
       <li data-i18n="n2"><b>Windows</b>：双击 <code>dsh-systray.exe</code>（SmartScreen 提示时选「仍要运行」）</li>
-      <li data-i18n="n3"><b>macOS</b>：首次<b>右键 → 打开</b> <code>dsh-systray</code>，绕过 Gatekeeper</li>
+      <li data-i18n="n3"><b>macOS</b>：浏览器下载会给包打上隔离标记（未公证，带标记会被 Gatekeeper 拦下），在解压目录执行 <code>xattr -dr com.apple.quarantine dsh-systray.app</code>，或在「系统设置 → 隐私与安全性」点「仍要打开」</li>
       <li data-i18n="n4">首次启动约需 2-5 分钟完成环境部署，随后自动打开服务；配置保存在用户目录的 <code>config.json</code></li>
       <li data-i18n="n5">换机迁移：旧机器「导出」打包 zip，新机器「导入」逐项恢复会话、插件与文件目录</li>
     </ol>
@@ -347,7 +347,7 @@ footer .sep{margin:0 8px;color:var(--border)}
       notesTitle: "开始使用",
       n1: "下载对应平台 zip 并解压到任意目录",
       n2: "<b>Windows</b>：双击 <code>dsh-systray.exe</code>（SmartScreen 提示时选「仍要运行」）",
-      n3: "<b>macOS</b>：首次<b>右键 → 打开</b> <code>dsh-systray</code>，绕过 Gatekeeper",
+      n3: "<b>macOS</b>：浏览器下载会给包打上隔离标记（未公证，带标记会被 Gatekeeper 拦下），在解压目录执行 <code>xattr -dr com.apple.quarantine dsh-systray.app</code>，或在「系统设置 → 隐私与安全性」点「仍要打开」",
       n4: "首次启动约需 2-5 分钟完成环境部署，随后自动打开服务；配置保存在用户目录的 <code>config.json</code>",
       n5: "换机迁移：旧机器「导出」打包 zip，新机器「导入」逐项恢复会话、插件与文件目录",
       fTag: "dsh-systray · DeepSeek Harness 桌面托盘",
@@ -398,7 +398,7 @@ footer .sep{margin:0 8px;color:var(--border)}
       notesTitle: "Getting Started",
       n1: "Download the zip for your platform and extract it anywhere",
       n2: "<b>Windows</b>: double-click <code>dsh-systray.exe</code> (choose “More info → Run anyway” if SmartScreen appears)",
-      n3: "<b>macOS</b>: first time <b>right-click → Open</b> <code>dsh-systray</code> to bypass Gatekeeper",
+      n3: "<b>macOS</b>: a browser download flags the app with the quarantine attribute (the build is not notarized, so Gatekeeper blocks a flagged app). In the unzip directory run <code>xattr -dr com.apple.quarantine dsh-systray.app</code>, or click Open Anyway in System Settings → Privacy & Security",
       n4: "First launch takes about 2–5 min to deploy the environment, then opens the service automatically; config is stored in <code>config.json</code> under your user directory",
       n5: "Migrating machines: use Export on the old machine to bundle a zip, then Import on the new one to restore sessions, plugins and folders item by item",
       fTag: "dsh-systray · Desktop tray for DeepSeek Harness",

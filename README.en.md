@@ -45,6 +45,12 @@ A Windows / macOS system-tray app. Three core traits: **Lightweight** (single fi
 
 Unzip and run: the first launch deploys the runtime and harness with progress shown in the window, then offers a one-click "open Web UI"; afterwards it starts with the system.
 
+On macOS the first run needs the browser's quarantine flag cleared (the build is not notarized, so Gatekeeper blocks it while flagged); run this once in the unzip directory, or use System Settings → Privacy & Security → Open Anyway:
+
+```bash
+xattr -dr com.apple.quarantine dsh-systray.app
+```
+
 ## Features
 
 **Lightweight**

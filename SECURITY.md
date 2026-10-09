@@ -35,7 +35,10 @@ Things worth reporting:
 Not vulnerabilities by design — already documented in the README:
 
 - The macOS build is **not notarized** and the Windows build is **not code-signed**, so the OS warns
-  on first run and the user must explicitly allow it.
+  on first run and the user must explicitly allow it. macOS gates on the `com.apple.quarantine`
+  attribute: downloading through a browser sets it and Gatekeeper blocks the launch, while a copy
+  transferred through Windows (NTFS cannot store the attribute) runs without any check. The README
+  documents the one-time `xattr` command that clears it.
 - The app is not sandboxed: by design it writes to `~/.dsh`, to its own config directory, and to the
   autostart location when that setting is on.
 - Outdated bundled runtime (Node.js / pnpm) versions are not treated as vulnerabilities in this app;
