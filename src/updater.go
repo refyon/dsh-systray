@@ -713,15 +713,23 @@ func npmHarnessVersionAvailableOn(version, registry string) bool {
 	if registry != "" {
 		args = append(args, "--registry", registry)
 	}
-	cmd := exec.CommandContext(ctx, pnpmCmd(), args...)
-	cmd.Dir = harnessDir
-	cmd.Env = append(os.Environ(), pnpmTunedEnv()...)
-	hideCmdWindow(cmd)
+	cmd := newPnpmViewCmd(ctx, args...)
 	out, err := cmd.Output()
 	if err != nil {
 		return false
 	}
 	return strings.TrimSpace(string(out)) != ""
+}
+
+// newPnpmViewCmd 构造 pnpm view 子进程（harness 目录 + 版本查询环境）。
+// 版本查询一律走 pnpmVersionQueryEnv：关闭离线优先、强制回源校验，避免被旧缓存快照
+// 截断（见 pnpmVersionQueryEnv 注释与「重置服务候选版本缺失」的现场定位）。
+func newPnpmViewCmd(ctx context.Context, args ...string) *exec.Cmd {
+	cmd := exec.CommandContext(ctx, pnpmCmd(), args...)
+	cmd.Dir = harnessDir
+	cmd.Env = append(os.Environ(), pnpmVersionQueryEnv()...)
+	hideCmdWindow(cmd)
+	return cmd
 }
 
 // harnessRegistryForVersion 选定安装指定精确版本应使用的 registry，并报告该版本是否可见：
@@ -774,10 +782,7 @@ func npmVersionsOn(registry string) ([]string, error) {
 	if registry != "" {
 		args = append(args, "--registry", registry)
 	}
-	cmd := exec.CommandContext(ctx, pnpmCmd(), args...)
-	cmd.Dir = harnessDir
-	cmd.Env = append(os.Environ(), pnpmTunedEnv()...)
-	hideCmdWindow(cmd)
+	cmd := newPnpmViewCmd(ctx, args...)
 	out, err := cmd.Output()
 	if err != nil {
 		return nil, fmt.Errorf("查询 npm 已发布版本失败：%w", err)

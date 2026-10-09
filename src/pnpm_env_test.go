@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"strings"
 	"testing"
 )
@@ -127,6 +128,51 @@ func TestHarnessCmdEnvOnlyForPnpm(t *testing.T) {
 	for _, name := range []string{"git", "git.exe", `C:\Program Files\Git\cmd\git.exe`, ""} {
 		if env := harnessCmdEnv(name); env != nil {
 			t.Errorf("harnessCmdEnv(%q) 应返回 nil，got %v", name, env)
+		}
+	}
+}
+
+// TestPnpmVersionQueryEnvDisablesPreferOffline 版本查询必须回源校验：pnpmTunedEnv 为安装提速
+// 注入的 prefer_offline=true 在 npm 侧语义是「命中缓存即跳过新鲜度校验」，一旦命中就永不复验
+// ——2026-10-09 现场定位的「重置服务候选版本被旧快照截断」（官方 registry 缓存停在 22 个版本、
+// 最新 0.1.6-alpha.2 且无稳定版）即由此产生。此测试是该回归的防线。
+func TestPnpmVersionQueryEnvDisablesPreferOffline(t *testing.T) {
+	pinInstallRegistry(t, npmMirrorRegistry)
+	env := pnpmVersionQueryEnv()
+	for _, prefix := range []string{"npm_config_", "pnpm_config_"} {
+		if got := envValue(env, prefix+"prefer_offline"); got != "false" {
+			t.Errorf("%sprefer_offline = %q, want false（版本查询须回源校验）", prefix, got)
+		}
+	}
+	// 只改这一个开关：registry 与其余调优档保持原样
+	for _, prefix := range []string{"npm_config_registry", "pnpm_config_registry"} {
+		if got := envValue(env, prefix); got != npmMirrorRegistry {
+			t.Errorf("%s = %q, want %q（不应被改动）", prefix, got, npmMirrorRegistry)
+		}
+	}
+	for _, key := range []string{"fetch_retries", "fetch_timeout", "child_concurrency"} {
+		if got := envValue(env, "npm_config_"+key); got == "" {
+			t.Errorf("npm_config_%s 丢失（%v）", key, env)
+		}
+	}
+}
+
+// TestPnpmViewCmdUsesVersionQueryEnv pnpm view 子进程必须走版本查询环境（防回退到 pnpmTunedEnv：
+// 两个 view 调用点是重置下拉与更新预检共用的数据源）。
+func TestPnpmViewCmdUsesVersionQueryEnv(t *testing.T) {
+	pinInstallRegistry(t, npmMirrorRegistry)
+	cmd := newPnpmViewCmd(context.Background(), "view", "@deepseek-ai/dsh", "versions", "--json")
+	if cmd.Dir != harnessDir {
+		t.Errorf("cmd.Dir = %q, want %q", cmd.Dir, harnessDir)
+	}
+	for _, prefix := range []string{"npm_config_", "pnpm_config_"} {
+		if got := envValue(cmd.Env, prefix+"prefer_offline"); got != "false" {
+			t.Errorf("%sprefer_offline = %q, want false", prefix, got)
+		}
+	}
+	for _, kv := range cmd.Env {
+		if strings.HasSuffix(kv, "prefer_offline=true") {
+			t.Errorf("命令行环境残留 %q（会命中旧缓存）", kv)
 		}
 	}
 }

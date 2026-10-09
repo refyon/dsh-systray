@@ -1864,20 +1864,39 @@ func pnpmTunedEnv() []string {
 
 // pnpmTunedEnvWithRegistry 同 pnpmTunedEnv，但把 registry 换成 reg（空则保持首选 registry）。
 func pnpmTunedEnvWithRegistry(reg string) []string {
-	env := pnpmTunedEnv()
 	if reg == "" {
-		return env
+		return pnpmTunedEnv()
 	}
+	return replacePnpmEnvValue(pnpmTunedEnv(), "registry", reg)
+}
+
+// replacePnpmEnvValue 把 env 里 key 的值（npm_config_/pnpm_config_ 双前缀）替换为 val：
+// 同名键重复出现时谁生效取决于子进程实现，必须替换而非追加。
+func replacePnpmEnvValue(env []string, key, val string) []string {
 	out := make([]string, 0, len(env))
 	for _, kv := range env {
 		switch {
-		case strings.HasPrefix(kv, "npm_config_registry="), strings.HasPrefix(kv, "pnpm_config_registry="):
-			out = append(out, kv[:strings.IndexByte(kv, '=')+1]+reg)
+		case strings.HasPrefix(kv, "npm_config_"+key+"="), strings.HasPrefix(kv, "pnpm_config_"+key+"="):
+			out = append(out, kv[:strings.IndexByte(kv, '=')+1]+val)
 		default:
 			out = append(out, kv)
 		}
 	}
 	return out
+}
+
+// pnpmVersionQueryEnv 版本查询（pnpm view）专用环境：在 pnpmTunedEnv 基础上**关闭离线优先**。
+//
+// 依据（2026-10-09 本机现场定位）：pnpm 的 view 实际 fork 自带 npm 执行，而 npm 的
+// prefer-offline 语义是「命中缓存即跳过新鲜度校验」——缓存一旦写入就永不复验。pnpmTunedEnv 为
+// 安装提速全量注入 prefer_offline=true，于是 @deepseek-ai/dsh 的包元数据被钉死在旧快照上：
+// 「重置服务」候选版本列表与「检查 Harness 更新」同时被截断（实测官方 registry 快照停在
+// 22 个版本、最新 0.1.6-alpha.2 且无任何稳定版，界面据此把 0.2.0-rc.2 判为「不在 npm 已发布
+// 列表」；同一条命令关闭该开关后返回 31 个版本、最新 0.2.1-alpha.2）。
+// 版本查询必须看到真实已发布版本，故此处改为回源校验（命中 304 时开销极小）；
+// 安装/依赖解析路径继续沿用离线优先以保留提速。
+func pnpmVersionQueryEnv() []string {
+	return replacePnpmEnvValue(pnpmTunedEnv(), "prefer_offline", "false")
 }
 
 // harnessRegistryOverride 本次 harness 安装应使用的 registry（空 = 首选 installRegistry()）。
