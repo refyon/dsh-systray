@@ -1017,11 +1017,6 @@ func killDesktopAppProcesses(info desktopAppInfo) error {
 	return nil
 }
 
-// shellQuote 单引号包裹并转义（osascript 的 do shell script 里安全传参）。
-func shellQuote(s string) string {
-	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
-}
-
 // runDesktopInstallerSilent 用 DMG 覆盖安装到原 .app 路径（挂载 → 替换 → 卸载）：
 // 装过的设备重置时直接用所选版本覆盖原路径，不再从头走安装向导。macOS 没有 NSIS 那套
 // 「更新安装」开关，桌面端自带的更新器同样是「解包后原地替换 .app」（它用 zip，这里用带签名与
