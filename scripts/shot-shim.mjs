@@ -23,6 +23,12 @@ export const DEMO = {
   logPath: "C:\\Users\\demo\\AppData\\Roaming\\dsh-systray\\logs\\dsh-systray.log",
   appVersion: "1.1.0",
   harnessVersion: "0.1.1",  // 与已发布物料一致的中性演示版本（真实版本随环境变化，不进截图）
+  // 桌面端重置（?mode=desktop 预览）：演示用安装包名与体积（中性示例，非真实产物信息）
+  desktopPath: "C:\\Program Files\\DeepSeek Harness",
+  desktopPrevVersion: "0.1.0-rc.2",
+  desktopInstallerName: "deepseek-harness-0.1.1-win-x64.exe",
+  desktopInstallerPath: "C:\\Users\\demo\\Downloads\\deepseek-harness-0.1.1-win-x64.exe",
+  desktopInstallerSize: 289013760,
   port: 3080,
   webURL: "http://127.0.0.1:3080/",
   // 插件行 profile 留空：清单已按当前启动方式的环境过滤，行内不再标环境名（见 src/plugin_env.go）
@@ -116,7 +122,8 @@ export function shimSource(lang) {
   const Q = (() => { try { return new URLSearchParams(location.search); } catch { return new URLSearchParams(""); } })();
   if (Q.get("page") !== null) window.__shotPage = Q.get("page") || "";
   if (Q.get("scroll") !== null) window.__shotScroll = Q.get("scroll") || "";
-  const CFG = { demo: ${JSON.stringify(DEMO)}, lang: (Q.get("lang") || ${JSON.stringify(lang)}) };
+  const CFG = { demo: ${JSON.stringify(DEMO)}, lang: (Q.get("lang") || ${JSON.stringify(lang)}), mode: Q.get("mode") || "" };
+  const DESKTOP = CFG.mode === "desktop"; // ?mode=desktop：预览「启动方式 = Desktop UI」下的界面
   const D = CFG.demo;
   const listeners = new Map();
   const noop = () => {};
@@ -142,12 +149,12 @@ export function shimSource(lang) {
       autostart: true, autostartLaunch: false,
       language: CFG.lang, curLang: CFG.lang === "auto" ? "zh" : CFG.lang,
       proxy: "",
-      launchTarget: "auto", launchResolved: "web",
-      desktopInstalled: false, desktopVersion: "", desktopPath: "",
+      launchTarget: DESKTOP ? "desktop" : "auto", launchResolved: DESKTOP ? "desktop" : "web",
+      desktopInstalled: DESKTOP, desktopVersion: DESKTOP ? D.harnessVersion : "", desktopPath: DESKTOP ? D.desktopPath : "",
       desktopRunning: false, desktopChannel: "nightly", desktopFeedURL: "",
     }),
     GetServiceState: async () => ({ state: "running", reason: "", webURL: D.webURL, runningPort: D.port, tokenFound: true }),
-    GetVersions: async () => ({ app: D.appVersion, harness: D.harnessVersion, engine: "web" }),
+    GetVersions: async () => ({ app: D.appVersion, harness: D.harnessVersion, engine: DESKTOP ? "desktop" : "web" }),
     SetPort: noop, SetAutostart: noop, SetHarnessPrerelease: noop, SetUpdateMirror: noop,
     // 与 Go 侧 SetLanguage 同语义：解析偏好 → 生效语言，广播 lang:changed，其后各绑定按新语言返回数据。
     // 垫片里 auto 一律解析为 zh（真实程序按系统语言）；本机约定供 check-frontend-lang.mjs 模拟运行中切换。
@@ -254,8 +261,24 @@ export function shimSource(lang) {
     WebTokenURL: async () => D.webURL,
     OpenWebUI: noop, RestartService: async () => true,
     GetResetStats: async () => ({ sessionCount: 12, pluginCount: 5 }),
-    GetResetVersions: async () => ({ form: "list", current: D.harnessVersion, options: [], default: D.harnessVersion, note: "" }),
+    // web = The Reset target list comes from npm; desktop = official feed version + local installers
+    // (see src/desktop_reset.go). ?mode=desktop 的预览据此渲染桌面端重置弹层。
+    GetResetVersions: async () => (DESKTOP
+      ? {
+          form: "desktop", current: D.harnessVersion, default: D.harnessVersion, note: "",
+          options: [
+            { version: D.harnessVersion, localPath: D.desktopInstallerPath, size: D.desktopInstallerSize },
+            { version: D.desktopPrevVersion },
+          ],
+        }
+      : { form: "list", current: D.harnessVersion, options: [], default: D.harnessVersion, note: "" }),
     ResetHarness: noop, PickHarnessDir: async () => "", CopyToClipboard: noop, HideWindow: noop,
+    // 桌面端重置（预览：选择本地安装包返回同一份演示安装包）
+    ResetDesktopApp: noop,
+    PickDesktopInstaller: async () => ({
+      ok: true, canceled: false, path: D.desktopInstallerPath,
+      fileName: D.desktopInstallerName, version: D.harnessVersion, size: D.desktopInstallerSize, error: "",
+    }),
   };
 
   // 未列出的绑定：返回 resolved undefined，避免前端 await 报错。

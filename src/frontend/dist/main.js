@@ -43,6 +43,7 @@ const state = {
   resetStats: null,     // {sessions,plugins}：重置弹层的清除数量（语言切换时重画文案）
   resetInfo: null,      // GetResetVersions 结果：目标版本下拉的来源（语言切换时重画，不重查）
   resetNote: "",        // 重置弹层说明行的**源文案**（渲染时 tr()，语言切换后仍可重译）
+  resetLocal: null,     // desktop 重置：用户用「选择本地安装包」指定的本机安装包（选中即不再下载）
   splashMode: "startup", // startup | update
   shotPage: "",         // 截图模式当前页（GetShotPage 返回；空=正常模式）
   shotScroll: "",       // 截图模式内容区滚动量（bottom/像素/空）
@@ -125,6 +126,14 @@ const I18N_EN = {
   rstOptSessions: "Sessions", rstOptPlugins: "Installed plugins",
   rstSessionsSub: "Will clear 0 sessions", rstPluginsSub: "Will clear 0 plugins",
   btnStartReset: "Start reset",
+  // 重置桌面端（desktop 启动方式：重装的是官方桌面端，harness 随安装包内置）
+  stResetDesktopTitle: "Reset Desktop app",
+  stResetDesktopSub: "Clear the selected data and reinstall the official Desktop app at the selected version (an existing install is overwritten in place)",
+  btnResetDesktop: "Reset Desktop app",
+  rstTitleDesktop: "Reset the official Desktop app",
+  rstMsgDesktop: "Closes the running Desktop app, clears the selected data, then installs the selected version over the existing install path. Checked data is erased and cannot be recovered.",
+  rstOptHarnessDesktop: "Desktop app reinstall <em>(required)</em>",
+  btnResetPickLocal: "Choose a local installer…",
   helpWebAuthTitle: "Web UI asks for authentication",
   // 帮助页 · desktop 模式专用：桌面端异常时改用 Web UI
   helpFallbackTitle: "When the Desktop UI doesn't work",
@@ -475,6 +484,14 @@ const I18N_DYN = {
   "获取重置统计失败：{0}": "Failed to read reset statistics: {0}",
   "正在重置 DeepSeek Harness 到 {0}…": "Resetting DeepSeek Harness to {0}…",
   "正在重置 DeepSeek Harness…": "Resetting DeepSeek Harness…",
+  // 重置桌面端（desktop 形态的弹层与结果提示）
+  "正在重置官方桌面端到 {0}…": "Resetting the Desktop app to {0}…",
+  "正在重置官方桌面端…": "Resetting the Desktop app…",
+  "已选择：{0}": "Selected: {0}",
+  "安装包异常：{0}，建议从列表选择重新下载。": "Installer problem: {0}. Pick a version from the list to download it again.",
+  "选择安装包失败：{0}": "Failed to choose the installer: {0}",
+  "无法读取该文件": "the file could not be read",
+  "本机已有 {0} 个官方安装包：点这里直接选择使用；不选则从官方源重新下载所选版本": "This machine already has {0} official installer(s): pick one here to use it, or leave it unselected to download the selected version again",
   // 文件列表导航（路径导航/双击进入、空目录、未同步完成的文件不可打开）
   "根目录": "Root",
   "这个文件夹里还没有内容": "This folder is empty",
@@ -1056,10 +1073,10 @@ function wireGeneral() {
       }
     });
   }
-  // 重置：打开勾选弹层（harness 必选；会话/插件按需勾选，展示将清除的数量；
-  // 目标版本下拉异步填充——仅早于当前运行版本的官方版本）
-  $("btn-reset-harness").addEventListener("click", async () => {
-    const btn = $("btn-reset-harness");
+  // 重置：打开勾选弹层（重装必选；会话/插件按需勾选，展示将清除的数量；目标版本下拉异步填充）。
+  // web = 「重置服务」（harness 全新安装到所选 npm 版本）；desktop = 「重置桌面端」（清数据 +
+  // 所选版本的官方安装包交给安装向导），两个入口共用同一弹层，差异按 form 分支（见 renderResetVersions）。
+  const openResetModal = async (btn) => {
     btn.disabled = true;
     try {
       const stats = await bindings().GetResetStats();
@@ -1071,12 +1088,49 @@ function wireGeneral() {
       // 默认勾选插件（重置将物理删除已装插件，谨慎起见默认勾选）；会话默认不勾选（数据谨慎）
       $("reset-c-sessions").checked = false;
       $("reset-c-plugins").checked = pc > 0;
+      // 每次打开都清掉上一次选中的本地安装包（用户约定 2026-10-09）：否则目标一直沿用旧文件，
+      // 用户没有机会重新下载；不显式选择时一律从官方源下载所选版本。
+      state.resetLocal = null;
+      renderResetHeadSlot();
+      showResetLocalNote("");
       loadResetVersions(); // 异步填充目标版本（不阻塞弹窗打开：下拉先显示 loading 态）
       $("reset-modal").classList.remove("hidden");
     } catch (e) {
       $("svc-sub").textContent = fmt("获取重置统计失败：{0}", e && e.message ? e.message : e);
     } finally {
       setTimeout(() => { btn.disabled = false; }, 800);
+    }
+  };
+  $("btn-reset-harness").addEventListener("click", () => openResetModal($("btn-reset-harness")));
+  const btnResetDesktop = $("btn-reset-desktop");
+  if (btnResetDesktop) btnResetDesktop.addEventListener("click", () => openResetModal(btnResetDesktop));
+  // 选择本地安装包（仅 desktop）：选中即以该文件重装；无效文件给小字异常提示并回退到下拉选择
+  const btnResetLocal = $("btn-reset-local");
+  if (btnResetLocal) btnResetLocal.addEventListener("click", async () => {
+    btnResetLocal.disabled = true;
+    try {
+      const pick = await bindings().PickDesktopInstaller();
+      if (!pick || pick.canceled) return; // 用户取消：保持原选择，不提示
+      if (!pick.ok) {
+        state.resetLocal = null;
+        renderResetHeadSlot();
+        showResetLocalNote(fmt("安装包异常：{0}，建议从列表选择重新下载。", pick.error || tr("无法读取该文件")));
+        return;
+      }
+      state.resetLocal = pick;
+      renderResetHeadSlot();
+      showResetLocalNote("");
+      // 本地安装包本身就是目标：即使候选列表为空（更新源不可达）也可执行；下拉同步到该版本
+      $("reset-confirm").disabled = false;
+      const sel = $("reset-target");
+      if (sel && pick.version) {
+        const opt = Array.prototype.find.call(sel.options, (o) => o.value === pick.version);
+        if (opt) sel.value = pick.version;
+      }
+    } catch (e) {
+      showResetLocalNote(fmt("选择安装包失败：{0}", e && e.message ? e.message : e));
+    } finally {
+      setTimeout(() => { btnResetLocal.disabled = false; }, 400);
     }
   });
   $("reset-cancel").addEventListener("click", () => $("reset-modal").classList.add("hidden"));
@@ -1085,14 +1139,74 @@ function wireGeneral() {
     const clearSessions = $("reset-c-sessions").checked;
     const clearPlugins = $("reset-c-plugins").checked;
     const target = $("reset-target").value || "";
+    if (state.resetInfo && state.resetInfo.form === "desktop") {
+      // desktop：本地安装包优先（非空时后端按它重装，忽略下拉的版本）
+      const local = state.resetLocal && state.resetLocal.path ? state.resetLocal.path : "";
+      showSplash("startup", local
+        ? tr("正在重置官方桌面端…")
+        : (target ? fmt("正在重置官方桌面端到 {0}…", vtag(target)) : tr("正在重置官方桌面端…")));
+      await bindings().ResetDesktopApp(clearSessions, clearPlugins, target, local);
+      return;
+    }
     showSplash("startup", target
       ? fmt("正在重置 DeepSeek Harness 到 {0}…", vtag(target))
       : tr("正在重置 DeepSeek Harness…"));
     await bindings().ResetHarness(clearSessions, clearPlugins, target);
   });
-  $("reset-target").addEventListener("change", updateResetTargetWarn);
+  $("reset-target").addEventListener("change", () => {
+    // 手动改选下拉即放弃「本地安装包」（下拉才是本次目标的来源），并清掉相关提示
+    if (state.resetLocal) {
+      state.resetLocal = null;
+      renderResetHeadSlot();
+      showResetLocalNote("");
+    }
+    updateResetTargetWarn();
+  });
   // 点遮罩等同取消
   $("reset-modal").querySelector(".modal-mask").addEventListener("click", () => $("reset-modal").classList.add("hidden"));
+}
+
+/** renderResetHeadSlot 目标版本行的右侧槽位（web/desktop 共用同一行）：
+ *  默认显示当前已装版本；desktop 选了本地安装包时改显示该安装包（版本仍在选项里可见）。 */
+function renderResetHeadSlot() {
+  const el = $("reset-target-cur");
+  if (!el) return;
+  const p = state.resetLocal;
+  if (p && p.fileName) {
+    el.textContent = fmt("已选择：{0}", p.fileName);
+    el.title = p.path || "";
+    return;
+  }
+  el.removeAttribute("title");
+  const info = state.resetInfo;
+  el.textContent = info && info.current ? fmt("当前版本 {0}", vtag(info.current)) : "";
+}
+
+/** renderResetLocalHint 把「本机已有 N 个安装包」写进「选择本地安装包…」的悬停说明（不占布局）。
+ *  选择语义：不选 → 一律从官方源重新下载所选版本；选中 → 直接用该文件（不下载）。 */
+function renderResetLocalHint() {
+  const btn = $("btn-reset-local");
+  if (!btn) return;
+  const info = state.resetInfo;
+  const n = info && info.form === "desktop" ? (info.options || []).filter((o) => o.localPath).length : 0;
+  if (n > 0) btn.title = fmt("本机已有 {0} 个官方安装包：点这里直接选择使用；不选则从官方源重新下载所选版本", n);
+  else btn.removeAttribute("title");
+}
+
+/** showResetLocalNote 本地安装包异常提示（占用与 web 形态共用的说明槽位；空文本隐藏）。
+ *  优先级高于 Go 侧说明：用户刚做完选择，反馈必须立刻可见（列表加载完不得把它冲掉）。 */
+function showResetLocalNote(text) {
+  state.resetNoteLocal = text || "";
+  renderResetNote();
+}
+
+/** renderResetNote 说明槽位渲染：本地安装包异常优先，其次 Go 侧说明（如候选来源/查询失败）。 */
+function renderResetNote() {
+  const el = $("reset-target-note");
+  if (!el) return;
+  const text = state.resetNoteLocal || state.resetNote || "";
+  el.textContent = tr(text);
+  el.classList.toggle("hidden", !el.textContent);
 }
 
 /** renderResetStats 重置弹层的「将清除 N 条会话记录 / N 个已安装插件」（按当前语言）。 */
@@ -1108,7 +1222,7 @@ function renderResetStats() {
 function renderResetModal() {
   renderResetStats();
   renderResetVersions();
-  if (state.resetNote) showResetTargetNote(state.resetNote);
+  renderResetNote();
 }
 
 /**
@@ -1148,7 +1262,8 @@ function renderResetVersions() {
   const sel = $("reset-target");
   const confirm = $("reset-confirm");
   const keep = sel.value; // 语言切换重画时保留用户已选目标
-  if (info.current) $("reset-target-cur").textContent = fmt("当前版本 {0}", vtag(info.current));
+  renderResetHeadSlot(); // 右侧槽位：当前版本 / 已选本地安装包（两形态共用）
+  renderResetLocalHint(); // 本机已有安装包数量 → 「选择本地安装包…」的悬停说明（不占布局）
   if (info.form === "source") {
     // 源码形态：Go 侧会拦截重置执行，直接禁用并说明
     sel.innerHTML = "";
@@ -1172,6 +1287,8 @@ function renderResetVersions() {
   }
   let html = "";
   let defIdx = 0;
+  // 版本列表只表达「装哪个版本」：选中即从官方源下载（本机是否有同名安装包不影响动作，
+  // 因此不在这里标注「本机已有」——想用本机文件走「选择本地安装包…」，见 renderResetLocalHint）。
   opts.forEach((o, i) => {
     if (o.version === info.default) defIdx = i;
     let label = vtag(o.version);
@@ -1188,12 +1305,11 @@ function renderResetVersions() {
   updateResetTargetWarn();
 }
 
-/** 弹窗内说明行（警示色；空文本隐藏）。loadResetVersions / 语言切换重画共用。 */
+/** 弹窗内说明行（警示色；空文本隐藏）。loadResetVersions / 语言切换重画共用。
+ *  与本地安装包异常提示共用同一槽位（见 renderResetNote）。 */
 function showResetTargetNote(text) {
-  const note = $("reset-target-note");
   state.resetNote = text || ""; // 存源文案（不是渲染结果）：语言切换时按新语言重画
-  note.textContent = tr(state.resetNote);
-  note.classList.toggle("hidden", !note.textContent);
+  renderResetNote();
 }
 
 /** 所选目标为预发布时提示兼容性风险（下拉 change / 填充完成后调用；非预发布不改动既有说明）。 */

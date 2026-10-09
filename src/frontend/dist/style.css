@@ -928,8 +928,20 @@ input { font-family: inherit; }
   font-size: var(--fs-sm);
 }
 
-/* 重置勾选弹层（勾选区同样参与弹性布局，避免同患“按钮被挤出”问题） */
-#reset-modal .modal-card { width: 420px; }
+/* 重置勾选弹层（勾选区同样参与弹性布局，避免同患“按钮被挤出”问题）；
+   比通用弹窗宽一档：目标版本下拉 + 勾选项要一行放下，窄卡会把说明挤成多行 */
+#reset-modal .modal-card { width: 480px; }
+/* 滚动区：desktop 形态比 web 多「本机安装包」一行与候选来源说明，整体超出一屏时由此处内部
+   滚动，标题/说明/按钮行恒定可见（.modal-msg 不再吃剩余空间，避免把勾选区挤出卡片） */
+#reset-modal .reset-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  display: flex;
+  flex-direction: column;
+}
+#reset-modal .modal-msg { flex: 0 0 auto; min-height: 3.4em; } /* 固定两行：web/desktop 文案长短不一时行位置仍对齐 */
 
 .reset-opts {
   display: flex;
@@ -1005,6 +1017,24 @@ input { font-family: inherit; }
 .reset-target-select:disabled { opacity: 0.6; cursor: wait; }
 #reset-target option.opt-pre { color: var(--warn); } /* 展开列表内预发布候选着色（闭合态以文本“（预发布）”兜底） */
 #reset-target-note { margin: var(--sp-2) 0 0; display: block; }
+
+/* 下拉行：desktop 形态下右侧并排「选择本地安装包…」（web 形态该按钮隐藏，下拉独占整行；
+   两种形态行高一致，弹层布局不因此变化） */
+.reset-target-row {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+}
+.reset-target-row .reset-target-select { flex: 1 1 auto; min-width: 0; }
+.reset-target-row .btn { flex-shrink: 0; }
+
+/* 右侧槽位（当前版本 / 已选本地安装包）：过长时省略号，不撑破标题行 */
+#reset-target-cur {
+  max-width: 62%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 
 /* 常规页下拉（语言选择 / 默认启动方式；只在常规页用，宽度收着点以免挤压同行文字） */
 .input-select {

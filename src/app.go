@@ -931,9 +931,10 @@ func (a *App) GetResetStats() ResetStats {
 // 异步执行：进度走 splash 事件，完成/失败以弹窗提示。
 func (a *App) ResetHarness(clearSessions, clearPlugins bool, targetVersion string) {
 	if launchTargetIsDesktop() {
-		// 防御性拦截：桌面端形态下重置入口在设置页已隐藏，后端同样拒绝，
-		// 避免旧前端 / 直接调用把 npm 版 harness 装进 harnessDir 而与桌面端状态错位。
-		showMessageBox("当前启动方式为官方桌面端，重置只对「Web UI」启动方式的 harness 生效。\n如需重置桌面端数据，请在桌面端内操作。", appName)
+		// 防御性拦截：桌面端形态下走的是「重置桌面端」（ResetDesktopApp：清数据 + 官方安装包
+		// 交给安装向导），本入口只装 npm 版 harness——旧前端 / 直接调用会把 npm 版装进
+		// harnessDir 而与桌面端状态错位。
+		showMessageBox("当前启动方式为官方桌面端，请使用「重置桌面端」。\n（本入口只对「Web UI」启动方式的 harness 生效。）", appName)
 		return
 	}
 	if pluginBatchRunning() {
@@ -948,16 +949,40 @@ func (a *App) ResetHarness(clearSessions, clearPlugins bool, targetVersion strin
 }
 
 // GetResetVersions 返回重置弹窗「重置目标版本」下拉所需数据：当前已装版本、全部候选
-// （npm 已发布版本全量：含高于当前版本与预发布；按新→旧）、默认选中（优先当前版本=
-// 同版本重装，其次最近可用稳定版）与边界说明。
-// 无候选时 Default 仍给出具体降级目标（官方最新稳定版语义），保证执行期不再触网查版本。
-// 源码形态不支持重置；查询失败（网络/registry）时 Options 为空、Note 携带原因，前端据此禁用确认。
+// （web 形态 = npm 已发布版本全量：含高于当前版本与预发布；desktop 形态 = 官方更新源当前版本 +
+// 本机已有安装包；均按新→旧）、默认选中（优先当前版本=同版本重装）与边界说明。
+// web 形态无候选时 Default 仍给出具体降级目标（官方最新稳定版语义），保证执行期不再触网查版本。
+// 源码形态不支持重置；查询失败（网络/registry/CDN）时 Options 为空、Note 携带原因，前端据此禁用确认。
 func (a *App) GetResetVersions() ResetVersionInfo {
 	if launchTargetIsDesktop() {
-		// desktop 启动方式：桌面端不支持由本程序清空重装（其 harness 与数据目录由桌面端自己
-		// 管理），前端也会隐藏整张重置卡片；这里返回空候选 + 说明，作为旧前端的兜底。
-		return ResetVersionInfo{Form: "desktop",
-			Note: "官方桌面端不支持由本程序重置：其内置 harness 与数据目录由桌面端自己管理。"}
+		// desktop 启动方式：重装的是官方桌面端（harness 随安装包内置），候选来自官方更新源当前版本
+		// 与本机已有安装包；执行方式为「准备安装包 + 启动官方安装向导」（见 desktop_reset.go）。
+		info := desktopApp()
+		if shotMode {
+			// 截图模式：不触网、不扫本机，给出静态中性候选（与真实版本完全隔离）
+			return ResetVersionInfo{Form: "desktop", Current: "0.2.0-rc.2",
+				Options: []ResetVersionOption{{Version: "0.2.0-rc.2"}, {Version: "0.1.7-rc.2"}},
+				Default: "0.2.0-rc.2"}
+		}
+		locals := scanLocalDesktopInstallers()
+		feedVersion := ""
+		note := ""
+		if feed, err := fetchDesktopFeed(info.FeedURL); err == nil {
+			feedVersion = feed.Version
+		} else {
+			note = "无法获取官方更新源版本：" + err.Error()
+		}
+		opts, def := buildDesktopResetOptions(feedVersion, info.Version, locals)
+		out := ResetVersionInfo{Form: "desktop", Current: info.Version, Options: opts, Default: def}
+		switch {
+		case len(opts) == 0:
+			out.Note = "没有可用的重装版本：官方更新源不可达，且本机没有已下载的安装包。\n请检查网络，或用「选择本地安装包」指定本机已有的官方安装包。"
+		case note != "":
+			out.Note = note + "\n本机已有安装包的版本仍可离线重装。"
+		case def != "" && def != info.Version:
+			out.Note = "当前版本不在候选列表内，默认选中 " + withV(def) + "；可用「选择本地安装包」指定本机已有的安装包重装当前版本。"
+		}
+		return out
 	}
 	if isSourceHarnessDir() {
 		return ResetVersionInfo{Form: "source",

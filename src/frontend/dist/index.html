@@ -158,6 +158,17 @@
             <button id="btn-reset-harness" class="btn btn-danger" data-i18n="btnReset">重置服务</button>
           </div>
         </div>
+        <!-- 桌面端重置：desktop 启动方式下重装的是官方桌面端（harness 随安装包内置），
+             版本候选与本机安装包选择见下方弹层的 data-only-desktop 区块 -->
+        <div class="card" data-only-desktop="hide">
+          <div class="card-row">
+            <div class="row-text">
+              <div class="row-title" data-i18n="stResetDesktopTitle">重置桌面端</div>
+              <div class="row-sub" data-i18n="stResetDesktopSub">清除所选数据并按所选版本重装官方桌面端（已安装则覆盖原路径）</div>
+            </div>
+            <button id="btn-reset-desktop" class="btn btn-danger" data-i18n="btnResetDesktop">重置桌面端</button>
+          </div>
+        </div>
       </section>
 
       <!-- 关于 -->
@@ -512,43 +523,61 @@
     </div>
   </div>
 
-  <!-- ======== 重置 DeepSeek Harness：内容勾选弹层 ======== -->
+  <!-- ======== 重置：内容勾选弹层（web = 重置 Harness；desktop = 重置官方桌面端） ======== -->
   <div id="reset-modal" class="modal hidden">
     <div class="modal-mask"></div>
     <div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="reset-title">
-      <div class="modal-title" id="reset-title" data-i18n="rstTitle">重置 DeepSeek Harness</div>
-      <div class="modal-msg" data-i18n="rstMsg">将停止后台服务并清空 harness 目录，然后全新安装所选版本。勾选的数据将被清除且不可恢复。</div>
-      <div class="reset-target">
-        <div class="reset-target-head">
-          <label for="reset-target" class="reset-target-label" data-i18n="rstTargetLabel">重置目标版本</label>
-          <span class="row-sub" id="reset-target-cur"></span>
-        </div>
-        <select id="reset-target" class="reset-target-select" disabled>
-          <option value="" data-i18n="rstLoading">正在查询可用版本…</option>
-        </select>
-        <div id="reset-target-note" class="row-warn hidden"></div>
+      <div class="modal-title" id="reset-title">
+        <span data-only-web="hide" data-i18n="rstTitle">重置 DeepSeek Harness</span>
+        <span data-only-desktop="hide" data-i18n="rstTitleDesktop">重置官方桌面端</span>
       </div>
-      <div class="reset-opts">
-        <label class="reset-opt reset-opt-mandatory">
-          <input type="checkbox" id="reset-c-harness" checked disabled>
-          <span class="reset-opt-main">
-            <span class="reset-opt-title" data-i18n="rstOptHarness">Harness 服务 <em>（必选）</em></span>
-          </span>
-        </label>
-        <label class="reset-opt">
-          <input type="checkbox" id="reset-c-sessions">
-          <span class="reset-opt-main">
-            <span class="reset-opt-title" data-i18n="rstOptSessions">会话记录</span>
-            <span class="row-sub" id="reset-sessions-sub">将清除 0 条会话记录</span>
-          </span>
-        </label>
-        <label class="reset-opt">
-          <input type="checkbox" id="reset-c-plugins">
-          <span class="reset-opt-main">
-            <span class="reset-opt-title" data-i18n="rstOptPlugins">已安装插件</span>
-            <span class="row-sub" id="reset-plugins-sub">将清除 0 个已安装插件</span>
-          </span>
-        </label>
+      <div class="modal-msg">
+        <span data-only-web="hide" data-i18n="rstMsg">将停止后台服务并清空 harness 目录，然后全新安装所选版本。勾选的数据将被清除且不可恢复。</span>
+        <span data-only-desktop="hide" data-i18n="rstMsgDesktop">结束运行中的桌面端，清除所选数据，并把所选版本覆盖到原安装路径。勾选的数据不可恢复。</span>
+      </div>
+      <!-- 滚动区：内容超出一屏时由它内部滚动（桌面端多出「本地安装包」一行），按钮行恒定可见 -->
+      <div class="reset-body">
+        <div class="reset-target">
+          <div class="reset-target-head">
+            <label for="reset-target" class="reset-target-label" data-i18n="rstTargetLabel">重置目标版本</label>
+            <!-- 右侧槽位两种形态共用：web = 当前已装版本；desktop 选了本地安装包时 = 该安装包 -->
+            <span class="row-sub" id="reset-target-cur"></span>
+          </div>
+          <!-- desktop 形态下与「选择本地安装包…」同行（仅多一个按钮，行高与列位置不变） -->
+          <div class="reset-target-row">
+            <select id="reset-target" class="reset-target-select" disabled>
+              <option value="" data-i18n="rstLoading">正在查询可用版本…</option>
+            </select>
+            <button class="btn btn-outline btn-sm" id="btn-reset-local" data-only-desktop="hide" data-i18n="btnResetPickLocal">选择本地安装包…</button>
+          </div>
+          <!-- 说明/异常提示槽位两形态共用（候选来源、本地安装包异常等都在这里） -->
+          <div id="reset-target-note" class="row-warn hidden"></div>
+        </div>
+        <div class="reset-opts">
+          <label class="reset-opt reset-opt-mandatory">
+            <input type="checkbox" id="reset-c-harness" checked disabled>
+            <span class="reset-opt-main">
+              <span class="reset-opt-title">
+                <span data-only-web="hide" data-i18n="rstOptHarness">Harness 服务 <em>（必选）</em></span>
+                <span data-only-desktop="hide" data-i18n="rstOptHarnessDesktop">官方桌面端重装 <em>（必选）</em></span>
+              </span>
+            </span>
+          </label>
+          <label class="reset-opt">
+            <input type="checkbox" id="reset-c-sessions">
+            <span class="reset-opt-main">
+              <span class="reset-opt-title" data-i18n="rstOptSessions">会话记录</span>
+              <span class="row-sub" id="reset-sessions-sub">将清除 0 条会话记录</span>
+            </span>
+          </label>
+          <label class="reset-opt">
+            <input type="checkbox" id="reset-c-plugins">
+            <span class="reset-opt-main">
+              <span class="reset-opt-title" data-i18n="rstOptPlugins">已安装插件</span>
+              <span class="row-sub" id="reset-plugins-sub">将清除 0 个已安装插件</span>
+            </span>
+          </label>
+        </div>
       </div>
       <div class="modal-actions">
         <button class="btn btn-ghost" id="reset-cancel" data-i18n="btnCancel">取消</button>

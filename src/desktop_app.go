@@ -165,16 +165,29 @@ func resolvedLaunchTarget() string {
 // launchTargetIsDesktop 当前是否走桌面端（设置页/托盘分支判据）。
 func launchTargetIsDesktop() bool { return resolvedLaunchTarget() == launchTargetDesktop }
 
+// desktopExeBaseName 官方桌面端主进程的可执行文件名：检测到安装路径时取其文件名，
+// 否则退回官方产品名（Windows 安装目录内的主程序名），供进程存活判定与结束进程共用。
+func desktopExeBaseName(info desktopAppInfo) string {
+	want := strings.TrimSpace(info.Exe)
+	if want == "" {
+		want = desktopExeName
+	}
+	return filepath.Base(want)
+}
+
 // ==================== 更新源（app-update.yml + 清单） ====================
 
 // desktopUpdateConfig resources/app-update.yml 中本程序关心的字段。
 type desktopUpdateConfig struct {
 	BaseURL string
 	Channel string
+	// CacheDir electron-updater 的下载缓存目录名（updaterCacheDirName）：托盘据此找到桌面端
+	// 已下载的安装包（重置桌面端可直接用本机安装包重装，见 desktop_reset.go）。
+	CacheDir string
 }
 
 // parseDesktopUpdateConfig 解析 app-update.yml（electron-builder 生成的简单 YAML）：
-// 只取 `url:` 与 `channel:` 两个标量；publisherName 等其余字段（含列表）忽略。
+// 只取 `url:` / `channel:` / `updaterCacheDirName:` 三个标量；publisherName 等其余字段（含列表）忽略。
 func parseDesktopUpdateConfig(data string) desktopUpdateConfig {
 	var out desktopUpdateConfig
 	for _, raw := range strings.Split(data, "\n") {
@@ -200,6 +213,10 @@ func parseDesktopUpdateConfig(data string) desktopUpdateConfig {
 		case "channel":
 			if out.Channel == "" {
 				out.Channel = v
+			}
+		case "updaterCacheDirName":
+			if out.CacheDir == "" {
+				out.CacheDir = v
 			}
 		}
 	}

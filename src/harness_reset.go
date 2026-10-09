@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -9,6 +10,29 @@ import (
 	"sort"
 	"strings"
 )
+
+// refreshSyncAfterReset 重置收尾：把重置后的本机现状反映到同步状态（web 与 desktop 两个重置入口共用）。
+//
+// 用户决策（2026-10-09）：重置只清本机，**账号记录保持不变**——被清掉的插件仍以账号记录为目标状态，
+// 同步页会立刻显示它们「待生效」，在任意机器点「立即同步 → 重启生效」即可装回来。这里只保证状态
+// **立刻刷新**（而不是等下一轮后台同步的 20 分钟），并做两处本机侧处理：
+//  1. 清掉被重置删掉的插件的安装台账（plugin-install-times）：包已不在，旧时刻不该再参与
+//     「删除墓碑是否被更晚的安装盖过」的判定；
+//  2. 先把版本变更上报入队（同步检查是「先推后拉」，先推才能避免把账号里的旧版本列成待生效），
+//     再触发一次完整同步检查：重算待生效集合、对账本机插件现状，并广播 account:changed——
+//     状态页与左侧小字立刻按重置后的现状显示。
+//
+// prevHarnessVersion 传重置开始前的版本（与 reportHarnessVersionIfChanged 同口径）。
+func refreshSyncAfterReset(clearedPlugins bool, prevHarnessVersion string) {
+	if clearedPlugins {
+		pluginInstallTimeForgetAll()
+	}
+	if !accountLoggedIn() {
+		return
+	}
+	reportHarnessVersionIfChanged(prevHarnessVersion)
+	go accountBackgroundTickFn(context.Background())
+}
 
 // ==================== 重置 DeepSeek Harness ====================
 // 常规页「重置 DeepSeek Harness」：停服后全新安装到用户从「重置目标版本」下拉选择的、
@@ -217,13 +241,19 @@ func failResetFlow(splash *SplashState, msg string, popup func(string)) resetRes
 // harness 同步完进度窗口自动关闭、后半程进度无处可看）。
 // 返回 (进度视图, 是否由调用方负责收尾)。
 func resetFlowSplash(silent bool) (*SplashState, bool) {
+	return resetFlowSplashTitled(silent, T("正在重置 DeepSeek Harness…"))
+}
+
+// resetFlowSplashTitled 同 resetFlowSplash，但自建视图时用给定标题
+// （desktop 形态的重置重装的是官方桌面端，进度视图标题用对应的桌面端文案，见 desktop_reset.go）。
+func resetFlowSplashTitled(silent bool, title string) (*SplashState, bool) {
 	if silent && splashActive.Load() {
 		return &SplashState{
 			Update: func(text string, pct float64) { emitSplash(text, pct) },
 			Close:  func() {}, // 收尾交给外层应用流程：它才知道整批是否做完
 		}, false
 	}
-	return startSplash(T("正在重置 DeepSeek Harness…")), true
+	return startSplash(title), true
 }
 
 // runHarnessReset 重置 DeepSeek Harness（常规页「重置服务」按钮）：带原生对话框的 UI 入口。
@@ -389,6 +419,7 @@ func runHarnessResetFlow(clearSessions, clearPlugins bool, reqTarget string, pop
 		if popup != nil {
 			popup(detail + cleanupNotes)
 		}
+		refreshSyncAfterReset(clearPlugins, prevVer) // 重置后同步状态立刻按本机现状刷新
 		return resetResult{OK: true, Note: detail + cleanupNotes}
 	}
 	// 校验通过：备份不再需要，回退后的状态即新的良好基线，旧 LKG 不应再用于回退。
@@ -408,6 +439,7 @@ func runHarnessResetFlow(clearSessions, clearPlugins bool, reqTarget string, pop
 	if popup != nil {
 		popup(detail)
 	}
+	refreshSyncAfterReset(clearPlugins, prevVer) // 重置后同步状态立刻按本机现状刷新
 	return resetResult{OK: true, Note: detail}
 }
 
@@ -509,13 +541,17 @@ func removeSessions() error {
 type ResetVersionOption struct {
 	Version    string `json:"version"`
 	Prerelease bool   `json:"prerelease"` // 预发布通道版本（-alpha/-beta/-rc 等），界面以警示色标注
+	// LocalPath / Size 桌面端重置专用：本机已有该版本的官方安装包时给出路径与体积，选中即无需下载
+	// （npm 形态恒为空，见 desktop_reset.go）。
+	LocalPath string `json:"localPath,omitempty"`
+	Size      int64  `json:"size,omitempty"`
 }
 
 // ResetVersionInfo GetResetVersions 返回的重置目标信息：当前版本、可选目标、默认选中与说明。
 type ResetVersionInfo struct {
-	Form    string               `json:"form"`    // "npm" | "source"（源码形态不支持自动重置）
+	Form    string               `json:"form"`    // "npm" | "source" | "desktop"（官方桌面端）
 	Current string               `json:"current"` // 当前已装版本（识别失败为空）
-	Options []ResetVersionOption `json:"options"` // npm 全部已发布版本（按新→旧；含高于当前版本与预发布）
+	Options []ResetVersionOption `json:"options"` // npm 全部已发布版本 / 桌面端可选重装版本（按新→旧）
 	Default string               `json:"default"` // 默认选中版本（优先当前版本=同版本重装；其次最近可用稳定版）
 	Note    string               `json:"note"`    // 边界说明或错误原因（面向用户）
 }

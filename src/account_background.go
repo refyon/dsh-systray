@@ -99,6 +99,9 @@ func accountVerifySession(ctx context.Context) {
 	accountMu.Unlock()
 }
 
+// accountBackgroundTickFn 触发一次完整同步检查（测试可替换：避免真实联网与协程竞态）。
+var accountBackgroundTickFn = accountBackgroundTick
+
 // accountBackgroundTick 一次后台同步检查（不应用任何改动）。
 func accountBackgroundTick(ctx context.Context) {
 	// 应用流程进行中：两边都会改写待生效集合，本轮直接跳过（应用结束后的下次 tick 自然补上）

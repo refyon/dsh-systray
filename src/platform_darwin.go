@@ -994,6 +994,87 @@ func desktopAppProcessRunning(info desktopAppInfo) bool {
 	return exec.Command("pgrep", "-f", exe).Run() == nil
 }
 
+// killDesktopAppProcesses 结束官方桌面端进程（重置前主动退出：清数据不被文件占用、
+// 安装程序也要求桌面端已退出）。先按应用名请它优雅退出（应用自己保存状态），
+// 仍在运行则按可执行文件路径强杀（Electron 子进程同路径，一并退出）。
+func killDesktopAppProcesses(info desktopAppInfo) error {
+	name := strings.TrimSpace(desktopProductName)
+	if _, err := runAppleScript(fmt.Sprintf("tell application %q to quit", name)); err != nil {
+		log.Printf("desktop reset: quit %s via AppleScript failed: %v", name, err)
+	}
+	if waitDesktopAppStopped(info, desktopKillGraceTimeout) == nil {
+		return nil
+	}
+	target := strings.TrimSpace(info.Exe)
+	if target == "" {
+		target = name
+	}
+	out, err := exec.Command("pkill", "-f", target).CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("pkill 失败：%v（%s）", err, strings.TrimSpace(string(out)))
+	}
+	log.Printf("desktop reset: pkill -f %s", target)
+	return nil
+}
+
+// shellQuote 单引号包裹并转义（osascript 的 do shell script 里安全传参）。
+func shellQuote(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
+}
+
+// runDesktopInstallerSilent 用 DMG 覆盖安装到原 .app 路径（挂载 → 替换 → 卸载）：
+// 装过的设备重置时直接用所选版本覆盖原路径，不再从头走安装向导。macOS 没有 NSIS 那套
+// 「更新安装」开关，桌面端自带的更新器同样是「解包后原地替换 .app」（它用 zip，这里用带签名与
+// 公证的 DMG，落地结果一致）。
+// 先尝试直接替换（装在 ~/Applications 等可写位置时无需授权）；无写权限时（/Applications）
+// 借系统授权对话框以管理员身份完成同样的替换。替换前先改名备份，失败原样还原。
+func runDesktopInstallerSilent(installer, targetApp string, timeout time.Duration) error {
+	p := strings.TrimSpace(installer)
+	if p == "" || !fileExists(p) {
+		return errors.New("安装包不存在")
+	}
+	targetApp = strings.TrimSpace(targetApp)
+	if targetApp == "" || !strings.HasSuffix(targetApp, ".app") {
+		return errors.New("未确定原安装路径（.app）")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	mnt, err := os.MkdirTemp("", "dsh-desk-dmg-")
+	if err != nil {
+		return err
+	}
+	defer os.RemoveAll(mnt)
+	if out, aerr := exec.CommandContext(ctx, "hdiutil", "attach", "-nobrowse", "-quiet", "-mountpoint", mnt, p).CombinedOutput(); aerr != nil {
+		return fmt.Errorf("挂载 DMG 失败：%v（%s）", aerr, strings.TrimSpace(string(out)))
+	}
+	defer func() { _ = exec.Command("hdiutil", "detach", "-quiet", mnt).Run() }()
+
+	src := filepath.Join(mnt, filepath.Base(targetApp))
+	if !fileExists(src) {
+		return fmt.Errorf("DMG 内未找到 %s", filepath.Base(targetApp))
+	}
+	bak := targetApp + ".reset-bak"
+	_ = os.RemoveAll(bak)
+	if rerr := os.Rename(targetApp, bak); rerr != nil {
+		// 无写权限：改走一次管理员授权（rm -rf 原包 → ditto 新包；失败时不留半装目录）
+		script := fmt.Sprintf("do shell script \"rm -rf %s; ditto %s %s\" with administrator privileges",
+			shellQuote(targetApp), shellQuote(src), shellQuote(targetApp))
+		if _, aerr := runAppleScript(script); aerr != nil {
+			return fmt.Errorf("覆盖安装失败（需要管理员授权）：%v", aerr)
+		}
+		log.Printf("desktop reset: replaced %s with administrator privileges", targetApp)
+		return nil
+	}
+	if out, derr := exec.CommandContext(ctx, "ditto", src, targetApp).CombinedOutput(); derr != nil {
+		_ = os.RemoveAll(targetApp)
+		_ = os.Rename(bak, targetApp) // 还原原包，不留半装状态
+		return fmt.Errorf("复制新版本失败：%v（%s）", derr, strings.TrimSpace(string(out)))
+	}
+	removeAllAsync(bak)
+	log.Printf("desktop reset: replaced %s in place", targetApp)
+	return nil
+}
+
 // launchDesktopApp 打开官方桌面端：未运行则启动；已运行则激活既有实例
 // （open 对已运行应用即"激活"，不会产生第二个实例）。
 //

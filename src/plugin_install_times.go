@@ -159,6 +159,22 @@ func pluginInstallTimeForget(profile, name string) {
 	logInfo("plugin-installs", "清除安装时刻记录：%s", key)
 }
 
+// pluginInstallTimeForgetAll 清除全部安装时刻（重置清空插件后调用：包已不在，旧时刻不该再参与
+// 「删除墓碑是否被更晚的安装盖过」的判定）。返回被清除的条数。
+func pluginInstallTimeForgetAll() int {
+	pluginInstallTimesMu.Lock()
+	defer pluginInstallTimesMu.Unlock()
+	loadPluginInstallTimesLocked()
+	n := len(pluginInstallTimesCur.Times)
+	if n == 0 {
+		return 0
+	}
+	pluginInstallTimesCur.Times = map[string]int64{}
+	savePluginInstallTimesLocked()
+	logInfo("plugin-installs", "清除全部安装时刻记录（%d 条：重置清空了已装插件）", n)
+	return n
+}
+
 // pluginInstallTimeNow 当前时刻（Unix 秒），供安装动作写入台账。
 func pluginInstallTimeNow() int64 { return time.Now().Unix() }
 

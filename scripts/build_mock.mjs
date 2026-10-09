@@ -63,6 +63,23 @@ const AUTH_SNIPPET = `<script>
   })();
 </script>`;
 
+// 预览专用脚本：?modal=reset 时自动打开重置弹层（配合 ?mode=desktop 看桌面端重置界面）。
+// 与 preview-auth 同一套路：靠 URL 参数驱动，file:// 直接打开与站点 iframe 表现一致。
+const RESET_SNIPPET = `<script>
+  // preview-reset：?modal=reset 时点开重置弹层（desktop 形态走「重置桌面端」入口）
+  (function () {
+    var q = new URLSearchParams(location.search);
+    if (q.get('modal') !== 'reset') return;
+    var tries = 0;
+    (function open() {
+      var desktop = q.get('mode') === 'desktop';
+      var btn = document.getElementById(desktop ? 'btn-reset-desktop' : 'btn-reset-harness');
+      if (!btn || btn.offsetParent === null) { if (++tries < 60) return setTimeout(open, 100); return; }
+      btn.click();
+    })();
+  })();
+</script>`;
+
 for (const f of files) {
   const src = join(DIST, f);
   if (!existsSync(src)) throw new Error(`缺少 ${src}`);
@@ -77,6 +94,7 @@ for (const f of files) {
     // 为什么放在预览页而不是站点脚本里：file:// 直接打开 index.html 时父页面拿不到 iframe 文档，
     // 只能靠 URL 参数驱动——把这段放在被载入的页面内，两种打开方式表现一致。
     if (!body.includes("preview-auth")) body = body.replace(anchor, `${AUTH_SNIPPET}\n  ${anchor}`);
+    if (!body.includes("preview-reset")) body = body.replace(anchor, `${RESET_SNIPPET}\n  ${anchor}`);
     body = body.replace(
       "<title>dsh-systray · 设置</title>",
       '<title>dsh-systray · 界面预览</title>\n  <meta name="robots" content="noindex">'
@@ -95,3 +113,4 @@ written.push(`shim.js (${shimSource("zh").length} B)`);
 
 console.log(`docs/mock/ 已更新：${written.join("、")}`);
 console.log("预览：docs/mock/index.html?page=general|about|logs|export|import|sync&lang=zh|en&scroll=bottom&auth=1");
+console.log("桌面端界面预览：docs/mock/index.html?page=general&mode=desktop（弹层加 &modal=reset）");

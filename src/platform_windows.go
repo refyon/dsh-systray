@@ -1323,28 +1323,97 @@ func desktopCandidateDirs() []string {
 	return out
 }
 
-// desktopAppProcessRunning 官方桌面端主进程是否在运行：遍历进程快照按可执行文件名匹配
-// （比 tasklist 子进程更快，也不受控制台窗口影响；Electron 会派生多个同名子进程，
-// 命中任意一个即视为在运行）。
-func desktopAppProcessRunning(info desktopAppInfo) bool {
-	want := strings.TrimSpace(info.Exe)
-	if want == "" {
-		want = desktopExeName
-	}
-	want = filepath.Base(want)
+// desktopProcessIDs 按可执行文件名收集官方桌面端进程（Electron 的主进程与渲染/GPU 子进程同名，
+// 一并返回：结束它们才能让应用真正退出）。
+func desktopProcessIDs(info desktopAppInfo) []uint32 {
+	want := desktopExeBaseName(info)
 	snap, err := windows.CreateToolhelp32Snapshot(windows.TH32CS_SNAPPROCESS, 0)
 	if err != nil {
-		return false
+		return nil
 	}
 	defer windows.CloseHandle(snap)
+	var pids []uint32
 	var entry windows.ProcessEntry32
 	entry.Size = uint32(unsafe.Sizeof(entry))
 	for err := windows.Process32First(snap, &entry); err == nil; err = windows.Process32Next(snap, &entry) {
 		if strings.EqualFold(windows.UTF16ToString(entry.ExeFile[:]), want) {
-			return true
+			pids = append(pids, entry.ProcessID)
 		}
 	}
-	return false
+	return pids
+}
+
+// desktopAppProcessRunning 官方桌面端主进程是否在运行：遍历进程快照按可执行文件名匹配
+// （比 tasklist 子进程更快，也不受控制台窗口影响；Electron 会派生多个同名子进程，
+// 命中任意一个即视为在运行）。
+func desktopAppProcessRunning(info desktopAppInfo) bool {
+	return len(desktopProcessIDs(info)) > 0
+}
+
+// killDesktopAppProcesses 结束官方桌面端进程（重置前主动退出：清数据不被文件占用、
+// 安装程序也要求桌面端已退出）。Windows 无「礼貌退出」通道（Electron 收到关闭窗口通常只是
+// 收进托盘），按进程名逐个 TerminateProcess；同名子进程一并结束。
+func killDesktopAppProcesses(info desktopAppInfo) error {
+	pids := desktopProcessIDs(info)
+	if len(pids) == 0 {
+		return nil
+	}
+	var firstErr error
+	killed := 0
+	for _, pid := range pids {
+		h, oerr := windows.OpenProcess(windows.PROCESS_TERMINATE, false, pid)
+		if oerr != nil {
+			if firstErr == nil {
+				firstErr = oerr
+			}
+			continue
+		}
+		terr := windows.TerminateProcess(h, 1)
+		windows.CloseHandle(h)
+		if terr != nil {
+			if firstErr == nil {
+				firstErr = terr
+			}
+			continue
+		}
+		killed++
+	}
+	log.Printf("desktop reset: terminated %d/%d process(es) of %s", killed, len(pids), desktopExeBaseName(info))
+	return firstErr
+}
+
+// runDesktopInstallerSilent 覆盖安装到指定目录：参数与桌面端**自带的更新器**
+// （electron-updater 的 NsisUpdater）一致，见 desktopSilentInstallArgs：
+// `installer.exe --updated /S /D=<安装目录>` —— 装过的设备重置时直接用所选版本覆盖原路径。
+//
+// 非 0 退出**不直接判失败**（部分情形如「已是最新」也会返回非 0），真正判据是安装后的版本验收
+// （runDesktopResetFlow 调 waitDesktopInstalledVersion）；这里只记日志便于排障。
+// 安装器卡住（超时）才按失败处理并结束它，避免留下半装状态由用户面对。
+func runDesktopInstallerSilent(installer, dir string, timeout time.Duration) error {
+	p := strings.TrimSpace(installer)
+	if p == "" || !fileExists(p) {
+		return errors.New("安装包不存在")
+	}
+	if strings.TrimSpace(dir) == "" {
+		return errors.New("未确定原安装路径")
+	}
+	cmd := exec.Command(p, desktopSilentInstallArgs(dir)...)
+	cmd.Dir = filepath.Dir(p)
+	if err := cmd.Start(); err != nil {
+		return err
+	}
+	done := make(chan error, 1)
+	go func() { done <- cmd.Wait() }()
+	select {
+	case err := <-done:
+		if err != nil {
+			log.Printf("desktop reset: installer exited with %v (按版本验收判定是否生效)", err)
+		}
+		return nil
+	case <-time.After(timeout):
+		_ = cmd.Process.Kill()
+		return fmt.Errorf("安装程序超过 %s 未结束", timeout)
+	}
 }
 
 // launchDesktopApp 启动官方桌面端：未运行则拉起；已运行则重复启动即可把既有窗口唤到前台
