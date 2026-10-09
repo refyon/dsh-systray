@@ -162,3 +162,92 @@ func TestRemovePluginStripsBundleEntry(t *testing.T) {
 		t.Fatalf("卸载后不应再出现在激活清单：%v", names)
 	}
 }
+
+// stubProfilePnpm 让 profile 的 pnpm 命令变成 no-op（单测不真跑包管理器）。
+func stubProfilePnpm(t *testing.T) {
+	t.Helper()
+	old := runProfileCmdFn
+	runProfileCmdFn = func(string, string, ...string) error { return nil }
+	t.Cleanup(func() { runProfileCmdFn = old })
+}
+
+// stubServiceStop 替换改 profile 前的停服动作并计数（返回读取计数的函数）。
+func stubServiceStop(t *testing.T) func() int {
+	t.Helper()
+	old := stopServiceForProfileChange
+	stops := 0
+	stopServiceForProfileChange = func() { stops++ }
+	t.Cleanup(func() { stopServiceForProfileChange = old })
+	return func() int { return stops }
+}
+
+// TestInstallPluginSkipsServiceStopForDesktopProfile 回归 2026-10-09：同步 desktop profile 的
+// 插件不得停掉托盘自己的后台服务——该 profile 的变更不做重启校验，服务被停掉就再也没人拉起
+// （现场：点一次同步把 18080 的服务杀掉，用户只看到「跳过重启校验」，直到手动点「重启后台服务」）。
+func TestInstallPluginSkipsServiceStopForDesktopProfile(t *testing.T) {
+	oldPref := launchTargetPref
+	launchTargetPref = launchTargetWeb
+	t.Cleanup(func() { launchTargetPref = oldPref })
+
+	dir := writeProfileFixture(t, `"pkg-a":"^1.0.0"`, `"@deepseek-ai/dsh-base"`)
+	stubProfilePnpm(t)
+	stubPluginImportCheck(t, "", "")
+	stops := stubServiceStop(t)
+
+	if err := installPluginIntoProfile(dir, "desktop", "pkg-a", "pkg-a@1.0.0"); err != nil {
+		t.Fatalf("desktop profile 安装不应失败: %v", err)
+	}
+	if got := stops(); got != 0 {
+		t.Fatalf("改 desktop profile 不该停托盘服务，实际停了 %d 次", got)
+	}
+	name := "pkg-a"
+	if names := profileBundleNames(dir); len(names) != 1 || names[0] != name {
+		t.Fatalf("插件仍应登记进激活清单，实际 %v", names)
+	}
+}
+
+// TestInstallPluginStopsServiceForWebProfile web profile 变更仍按原语义停服 + 重启校验：
+// 服务加载的就是这个 profile，不停服会因文件占用改名失败、新配置也不会被加载。
+func TestInstallPluginStopsServiceForWebProfile(t *testing.T) {
+	oldPref := launchTargetPref
+	launchTargetPref = launchTargetWeb
+	t.Cleanup(func() { launchTargetPref = oldPref })
+
+	dir := writeProfileFixture(t, `"pkg-a":"^1.0.0"`, `"@deepseek-ai/dsh-base"`)
+	stubProfilePnpm(t)
+	stubPluginImportCheck(t, "", "")
+	stops := stubServiceStop(t)
+	oldVerify, oldReason := serverVerify, serverVerifyReason
+	serverVerify = func() bool { return true }
+	serverVerifyReason = func() (bool, string) { return true, "" }
+	t.Cleanup(func() { serverVerify, serverVerifyReason = oldVerify, oldReason })
+
+	if err := installPluginIntoProfile(dir, accountPluginProfile, "pkg-a", "pkg-a@1.0.0"); err != nil {
+		t.Fatalf("web profile 安装不应失败: %v", err)
+	}
+	if got := stops(); got != 1 {
+		t.Fatalf("改 web profile 应先停服一次，实际 %d 次", got)
+	}
+}
+
+// TestRemovePluginSkipsServiceStopForDesktopProfile 卸载路径同一判据：desktop profile
+// 的卸载同样不得停掉托盘服务。
+func TestRemovePluginSkipsServiceStopForDesktopProfile(t *testing.T) {
+	oldPref := launchTargetPref
+	launchTargetPref = launchTargetWeb
+	t.Cleanup(func() { launchTargetPref = oldPref })
+
+	dir := writeProfileFixture(t, `"pkg-a":"^1.0.0"`, `"@deepseek-ai/dsh-base","pkg-a"`)
+	stubProfilePnpm(t)
+	stops := stubServiceStop(t)
+
+	if err := removePluginFromProfile(dir, "desktop", "pkg-a"); err != nil {
+		t.Fatalf("desktop profile 卸载不应失败: %v", err)
+	}
+	if got := stops(); got != 0 {
+		t.Fatalf("卸载 desktop 插件不该停托盘服务，实际停了 %d 次", got)
+	}
+	if names := profileBundleNames(dir); len(names) != 0 {
+		t.Fatalf("卸载后激活声明应摘除，实际 %v", names)
+	}
+}

@@ -31,6 +31,17 @@ func pluginProfileDir(profile string) (string, bool) {
 	return "", false
 }
 
+// serviceHandlesProfile 改这个 profile 之前，是否需要先停掉托盘管理的后台服务。
+//
+// 与 profileNeedsServiceVerify 同一判据（同一环境），但用途不同：停服只对「服务自己加载的那个
+// profile」成立。desktop profile 的 node_modules 不在服务加载路径上、锁不了服务的文件，停服纯属
+// 副作用——而它的变更按设计不做重启校验，服务被停掉就再也没人拉起来（2026-10-09 现场：同步
+// 三个 desktop 插件时把 18080 的服务杀掉，用户只看到「跳过重启校验」，服务一直没起，直到手动
+// 点「重启后台服务」）。
+func serviceHandlesProfile(profile string) bool {
+	return profileNeedsServiceVerify(profile)
+}
+
 // profileNeedsServiceVerify 该 profile 的插件变更是否需要「重启后台服务并做启动校验」。
 //
 //   - desktop 启动方式：托盘自带的 Web 服务不在运行（其引擎属于官方桌面端），无从校验；
@@ -144,6 +155,12 @@ func verifyInstalledTargetVersion(dir, name, target string) error {
 	return fmt.Errorf("插件 %s 安装后版本为 %s，未达到账号目标 %s", name, orDash(got), target)
 }
 
+// stopServiceForProfileChange 改 profile 前的停服动作（测试可替换，见 installPluginIntoProfile）。
+var stopServiceForProfileChange = func() { killServer() }
+
+// restartServiceAfterProfileChange 失败回退后的重启动作（与 serverVerify 同一实现，单测可替换）。
+var restartServiceAfterProfileChange = func() { restartAndVerifyServer() }
+
 // installPluginIntoProfile 安装依赖到 profile：快照 → pnpm add → 登记激活清单 → 入口预检 →
 // 重启校验 → 失败回退。
 //
@@ -151,19 +168,22 @@ func verifyInstalledTargetVersion(dir, name, target string) error {
 // dependencies——只装不登记就会出现「关于页插件齐全、harness 会话设置→插件里找不到」
 // （2026-09-21 现场问题；用户靠手动导入备份才恢复，导入路径正是会合并 bundles 的那条）。
 //
-// verify=false（desktop profile / desktop 启动方式）时不重启服务、不做启动校验，也不提升 LKG
-// ——没有校验过就不能把当前状态当成新基线（见 profileNeedsServiceVerify）。
+// handlesService=false（desktop profile / desktop 启动方式）时不重启服务、不做启动校验，也不提升
+// LKG——没有校验过就不能把当前状态当成新基线（见 profileNeedsServiceVerify）；同样也不能停服务：
+// 停了不会再有人拉起（见 serviceHandlesProfile）。
 func installPluginIntoProfile(dir, profile, name, dep string) error {
-	killServer() // 运行中的 node 占用文件，快照改名会失败（服务未运行时为 no-op）
-	verify := profileNeedsServiceVerify(profile)
+	handlesService := serviceHandlesProfile(profile)
+	if handlesService {
+		stopServiceForProfileChange() // 运行中的 node 占用文件，快照改名会失败（服务未运行时为 no-op）
+	}
 	// 台账判据：安装前该包是否已在——只有「从无到有」才算新的安装事件（版本更新不刷新安装
 	// 时刻，与删除墓碑判定依赖的「重新安装」语义一致，见 plugin_install_times.go）。
 	wasInstalled := installedPluginVersion(dir, name) != ""
 	hadNM := snapshotPluginProfile(dir)
 	rollback := func(reason string) error {
 		restorePluginProfileSnapshot(dir, hadNM)
-		if verify {
-			restartAndVerifyServer()
+		if handlesService {
+			restartServiceAfterProfileChange()
 		}
 		return errors.New(reason)
 	}
@@ -173,13 +193,13 @@ func installPluginIntoProfile(dir, profile, name, dep string) error {
 	if err := activateSyncedPlugin(dir, name); err != nil {
 		return rollback(fmt.Sprintf("%s %v，已回退", name, err))
 	}
-	if !verify {
+	if !handlesService {
 		log.Printf("[sync] %s：跳过重启校验（该环境的加载由用户侧客户端负责），改动重启后生效", profile)
 		cleanupPluginProfileSnapshot(dir)
 		notePluginInstalled(profile, name, wasInstalled)
 		return nil
 	}
-	if ok, why := restartAndVerifyServerReason(); !ok {
+	if ok, why := serverVerifyReason(); !ok {
 		return rollback(fmt.Sprintf("更新后服务未能通过启动校验，已回退：%s", why))
 	}
 	promoteProfileLkg(dir)
@@ -231,15 +251,18 @@ func verifySyncedPluginLoadable(dir, name string) error {
 }
 
 // removePluginFromProfile 从 profile 卸载插件：快照 → pnpm remove → 摘除激活声明 →
-// 重启校验 → 失败回退（verify=false 时只做文件变更，见 profileNeedsServiceVerify）。
+// 重启校验 → 失败回退（handlesService=false 时只做文件变更、也不停服，
+// 见 profileNeedsServiceVerify 与 serviceHandlesProfile）。
 func removePluginFromProfile(dir, profile, name string) error {
-	killServer()
-	verify := profileNeedsServiceVerify(profile)
+	handlesService := serviceHandlesProfile(profile)
+	if handlesService {
+		stopServiceForProfileChange()
+	}
 	hadNM := snapshotPluginProfile(dir)
 	rollback := func(reason string) error {
 		restorePluginProfileSnapshot(dir, hadNM)
-		if verify {
-			restartAndVerifyServer()
+		if handlesService {
+			restartServiceAfterProfileChange()
 		}
 		return errors.New(reason)
 	}
@@ -252,14 +275,14 @@ func removePluginFromProfile(dir, profile, name string) error {
 		return rollback(fmt.Sprintf("摘除 %s 激活清单失败：%v", name, err))
 	}
 	_ = clearProfileDisabledRecord(dir, name)
-	if !verify {
+	if !handlesService {
 		log.Printf("[sync] %s：跳过卸载后的启动校验（该环境的加载由用户侧客户端负责），重启后生效", profile)
 		clearLkgInDir(dir) // 删除不会让启动变坏；旧基线与新状态不一致，直接清掉
 		cleanupPluginProfileSnapshot(dir)
 		pluginInstallTimeForget(profile, name)
 		return nil
 	}
-	if ok, why := restartAndVerifyServerReason(); !ok {
+	if ok, why := serverVerifyReason(); !ok {
 		return rollback("卸载后服务未能通过启动校验，已回退：" + why)
 	}
 	clearLkgInDir(dir)

@@ -549,6 +549,8 @@ var (
 	pluginEnableVerify = enablePluginAndVerify
 	// serverVerify 整体启动健康校验，默认 restartAndVerifyServer。
 	serverVerify = restartAndVerifyServer
+	// serverVerifyReason 同 serverVerify，另返回失败原因（同步插件安装路径要用它给出可展示的原因）。
+	serverVerifyReason = restartAndVerifyServerReason
 	// maximizeRestartBudget 最大化启用遍的重启次数上限（每个候选最多 2 次：启用校验 + 失败回禁校验）。
 	// 候选很多时（如兜底禁用全部后的数十个插件）「个数 × 15~30s」不可接受，超限的候选保持禁用，
 	// 由用户在关于页按需手动启用；<=0 表示按候选数放宽（2n+2）。单测会调小以覆盖超限分支。

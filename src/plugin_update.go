@@ -1117,8 +1117,9 @@ func cleanupPluginProfileSnapshotSuffix(dir, suffix string) {
 	_ = os.RemoveAll(filepath.Join(dir, "node_modules"+suffix))
 }
 
-// runProfileCmd 在指定目录执行命令，输出按行改写进统一日志（模块 profile）。
-func runProfileCmd(dir, name string, args ...string) error {
+// runProfileCmdFn 在指定目录执行命令，输出按行改写进统一日志（模块 profile）。
+// 变量而非函数：单测替换为替身（不真跑包管理器），生产路径保持默认实现。
+var runProfileCmdFn = func(dir, name string, args ...string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 6*time.Minute)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, name, args...)
@@ -1132,6 +1133,11 @@ func runProfileCmd(dir, name string, args ...string) error {
 	err := cmd.Run()
 	w.Flush()
 	return err
+}
+
+// runProfileCmd 调用当前的 profile 命令实现（单测可经 runProfileCmdFn 替身）。
+func runProfileCmd(dir, name string, args ...string) error {
+	return runProfileCmdFn(dir, name, args...)
 }
 
 // pluginUpdateArgs 根据来源生成 pnpm 安装参数：
