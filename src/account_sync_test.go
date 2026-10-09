@@ -351,6 +351,99 @@ func TestApplyPendingFailureKeepsOthersGoing(t *testing.T) {
 	}
 }
 
+// ---------- 本机缺少某环境时的同步范围（2026-10-09 现场：卸载官方桌面端后 desktop 插件恒报失败） ----------
+
+// TestPluginProfileAvailable 本机是否存在该 profile 环境：默认 profile（web）恒为可用——手工删掉
+// ~/.dsh 后正靠同步把插件恢复回来，判成「不适用」会让待生效项被静默丢弃；其余命名 profile 按目录实情。
+func TestPluginProfileAvailable(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("DSH_HOME", home)
+
+	if !pluginProfileAvailable("web") {
+		t.Fatal("web 恒为可用（目录缺失时靠同步恢复）")
+	}
+	if pluginProfileAvailable("desktop") {
+		t.Fatal("本机没有 desktop 环境时应判为不可用")
+	}
+	writeTestProfile(t, home, "desktop", nil, nil)
+	if !pluginProfileAvailable("desktop") {
+		t.Fatal("desktop 环境存在时应判为可用")
+	}
+}
+
+// TestSyncSkipsPluginRecordsOfAbsentProfile 本机没有该环境时，账号里该环境的插件记录不进待生效、
+// 也不执行安装：未安装官方桌面端的机器不该因为 desktop 环境的记录恒报「应用失败」（现象见现场截图）。
+func TestSyncSkipsPluginRecordsOfAbsentProfile(t *testing.T) {
+	setupAccountTest(t)
+	setAccountState(loggedInState())
+
+	home := t.TempDir()
+	t.Setenv("DSH_HOME", home)
+	writeTestProfile(t, home, "web", map[string]string{"pkg-web": "^1.0.0"}, map[string]string{"pkg-web": "1.0.0"})
+
+	opsJSON := `[` +
+		`{"seq":1,"opId":"p1","key":"plugin:desktop:pkg-desk","value":{"action":"install","spec":"^2.0.0","source":"npm","version":"2.0.0"},"deviceId":"d","updatedAt":1},` +
+		`{"seq":2,"opId":"p2","key":"plugin:desktop:pkg-gone","value":{"action":"remove"},"deviceId":"d","updatedAt":1}]`
+
+	installed := false
+	old := applyPluginOpFn
+	t.Cleanup(func() { applyPluginOpFn = old })
+	applyPluginOpFn = func(profile, name string, v pluginOpValue) error {
+		installed = true
+		return fmt.Errorf("本机没有 %s 环境，不该执行插件变更", profile)
+	}
+
+	client := syncTestServer(t, opsJSON)
+	if _, err := accountSyncNow(context.Background(), client); err != nil {
+		t.Fatalf("同步检查失败: %v", err)
+	}
+	if keys := accountPendingKeys(); len(keys) != 0 {
+		t.Fatalf("缺少该环境的插件记录不该进待生效集合，实际 %v", keys)
+	}
+	res, err := accountApplyPending(context.Background(), client, nil)
+	if err != nil {
+		t.Fatalf("应用失败: %v", err)
+	}
+	if installed || len(res.Failed) != 0 {
+		t.Fatalf("不该对缺失的环境执行变更：installed=%v failed=%+v", installed, res.Failed)
+	}
+	if st := accountSnapshot(); st.PendingApply || st.ApplyError != "" {
+		t.Fatalf("不该留下待生效/应用失败提示：%+v", st)
+	}
+}
+
+// TestAbsentProfileRecordReturnsWhenProfileAppears 「跳过」不等于丢弃：环境之后出现（重新装了官方
+// 桌面端）时，漂移重判把该环境的插件记录放回待生效集合，用户点「重启生效」即可装进新环境。
+func TestAbsentProfileRecordReturnsWhenProfileAppears(t *testing.T) {
+	setupAccountTest(t)
+	setAccountState(loggedInState())
+
+	home := t.TempDir()
+	t.Setenv("DSH_HOME", home)
+	writeTestProfile(t, home, "web", map[string]string{"pkg-web": "^1.0.0"}, map[string]string{"pkg-web": "1.0.0"})
+
+	key := accountPluginKeyFor("desktop", "pkg-desk")
+	opsJSON := `[{"seq":1,"opId":"p1","key":"` + key +
+		`","value":{"action":"install","spec":"^2.0.0","source":"npm","version":"2.0.0"},"deviceId":"d","updatedAt":1}]`
+
+	client := syncTestServer(t, opsJSON)
+	if _, err := accountSyncNow(context.Background(), client); err != nil {
+		t.Fatalf("同步检查失败: %v", err)
+	}
+	if keys := accountPendingKeys(); len(keys) != 0 {
+		t.Fatalf("环境不存在时不该有待生效项，实际 %v", keys)
+	}
+
+	// 桌面端装回来了（环境出现，但插件还没装）→ 记录重新入队
+	writeTestProfile(t, home, "desktop", nil, nil)
+	if n := accountReenqueueDriftedApplied(); n != 1 {
+		t.Fatalf("环境出现后应重新入队 1 项，实际 %d", n)
+	}
+	if keys := accountPendingKeys(); len(keys) != 1 || keys[0] != key {
+		t.Fatalf("待生效集合应为 %s，实际 %v", key, keys)
+	}
+}
+
 // ---------- 目标值形态容错（2026-09-21 现场问题：同一记录被反复重装） ----------
 
 func TestVersionTargetSatisfied(t *testing.T) {

@@ -178,6 +178,13 @@ func accountKeyTargetSatisfiedAt(key string, value json.RawMessage, updatedAt in
 		if !ok {
 			return true
 		}
+		if !pluginProfileAvailable(profile) {
+			// 本机没有这个环境（如未安装官方桌面端）：该环境的插件记录不适用本机，视为已满足——
+			// 既不进待生效集合，也不会以「未找到 desktop profile 目录」报应用失败
+			// （见 pluginProfileAvailable；环境出现后由漂移重判重新入队）。
+			logPluginProfileSkipped(key, profile)
+			return true
+		}
 		var want pluginOpValue
 		if json.Unmarshal(value, &want) != nil {
 			accountLogBadTarget(key, value)

@@ -14,6 +14,7 @@ import (
 	"fmt"
 	"log"
 	"strings"
+	"sync"
 )
 
 // webProfileDir 定位 web profile 目录。
@@ -40,6 +41,44 @@ func pluginProfileDir(profile string) (string, bool) {
 // 点「重启后台服务」）。
 func serviceHandlesProfile(profile string) bool {
 	return profileNeedsServiceVerify(profile)
+}
+
+// pluginProfileAvailable 本机是否存在该 profile 环境（口径同 enumeratePluginProfiles：目录下有
+// package.json）。
+//
+// 默认 profile（web）恒为可用：它由托盘自带的 Web 服务维护，目录缺失（手工删掉 ~/.dsh）时正是靠
+// 同步把插件恢复回来，判成「不适用」会让待生效项被静默丢弃（见 accountReenqueueDriftedApplied）。
+// 其余命名 profile（desktop = 官方桌面端环境）由对应客户端拥有：本机没有这个环境时，账号里该环境
+// 的插件记录**不适用本机**——既不进待生效集合，也不该以「未找到 desktop profile 目录」长期占住
+// 「重启生效」提示（2026-10-09 现场：卸载官方桌面端后，3 项 desktop 插件同步恒报应用失败）。
+// 之后环境出现时（例如重新装了桌面端），漂移重判会把记录重新入队（见 accountReenqueueDriftedApplied）。
+func pluginProfileAvailable(profile string) bool {
+	profile = strings.TrimSpace(profile)
+	if profile == "" || profile == accountPluginProfile {
+		return true
+	}
+	_, ok := pluginProfileDir(profile)
+	return ok
+}
+
+// accountProfileSkipLogged 本机缺少某环境的「跳过同步记录」日志已记过的 key（按 key 节流：每进程
+// 一次——判定在每轮同步与启动重校验里都会跑，不节流会把日志刷满）。
+var (
+	accountProfileSkipMu     sync.Mutex
+	accountProfileSkipLogged = map[string]bool{}
+)
+
+// logPluginProfileSkipped 记录一次「本机没有该环境，跳过其插件同步记录」（同一 key 只记一次）。
+func logPluginProfileSkipped(key, profile string) {
+	accountProfileSkipMu.Lock()
+	seen := accountProfileSkipLogged[key]
+	accountProfileSkipLogged[key] = true
+	accountProfileSkipMu.Unlock()
+	if seen {
+		return
+	}
+	logInfo("account", "本机没有 %s 环境，跳过该环境的插件同步记录（%s）；该环境出现后会自动重新纳入同步",
+		profile, key)
 }
 
 // profileNeedsServiceVerify 该 profile 的插件变更是否需要「重启后台服务并做启动校验」。
