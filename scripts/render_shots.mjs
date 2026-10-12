@@ -1,16 +1,17 @@
 #!/usr/bin/env node
 /**
- * dsh-systray 渲染器（无窗口 / DPI 无关）：渲染 README 主图素材
+ * dsh-systray 渲染器（无窗口 / DPI 无关）：渲染设置窗口整窗截图
  * ============================================================================
  * 用途：在**不启动 exe、不占用系统托盘、不依赖桌面会话**的前提下，把
- *       `src/frontend/dist` 的真实界面渲染成 README 主图的两块素材（docs/.shots-parts/）：
- *         · hero-bg[-en].png   设置页「常规」整窗（主图背景）
- *         · splash-card[-en].png 真实启动进度卡片（主图前景，带透明底）
- *       以及画面可见文字 hero-bg[-en].txt（供 scripts/verify_shots.py 核对脱敏与内容完整）。
+ *       `src/frontend/dist` 的真实界面渲染成 docs/.shots-parts/ 下的核对素材：
+ *         · hero-bg[-en].png   设置页「常规」整窗（840x560 = 窗口逻辑尺寸）
+ *         · hero-bg[-en].txt   画面可见文字（供 scripts/verify_shots.py 核对脱敏与内容完整）
  *
- * 历史：这里原来还出网站轮播用的 8 张设置页截图（docs/shots、docs/shots-en）。
+ * 历史：这里原来还出网站轮播用的 8 张设置页截图（docs/shots、docs/shots-en），
  *       官网已改为 iframe 载入 App 真实前端做实时预览（docs/mock，见 build_mock.mjs），
  *       位图截图不再被网站使用，2026-10-06 起这两个目录连同其渲染分支一并移除。
+ *       README 首屏 2026-10-12 改用设置界面演示动图；主图（screenshot-hero*.webp）
+ *       需要的「启动进度卡片」前景素材不再渲染。
  *
  * 为什么不用「跑真程序 + PrintWindow 抓窗口」的老路子：
  *   老办法把输出尺寸绑定在「窗口客户区像素」上，客户区尺寸又受 **显示器缩放**
@@ -193,7 +194,7 @@ async function shoot(cdp, file) {
 
 // ==================== 打开一个渲染页面 ====================
 /** 新开一个已注入 shim、已固定视口、已导航到界面的页面，等它停稳。 */
-async function openPage(port, { lang, page, viewport, evaluateOnLoad = [] }) {
+async function openPage(port, { lang, page, viewport }) {
   const cdp = await newPage(port);
   await cdp.send("Page.enable");
   await setViewport(cdp, viewport.width, viewport.height);
@@ -202,9 +203,6 @@ async function openPage(port, { lang, page, viewport, evaluateOnLoad = [] }) {
     await cdp.send("Page.addScriptToEvaluateOnNewDocument", {
       source: `window.__shotPage = ${JSON.stringify(page)}; window.__shotScroll = "";`,
     });
-  }
-  for (const src of evaluateOnLoad) {
-    await cdp.send("Page.addScriptToEvaluateOnNewDocument", { source: src });
   }
   await cdp.send("Page.navigate", { url: BASE_URL });
   if (page !== null) await waitStable(cdp, page);
@@ -263,7 +261,7 @@ async function main() {
       return;
     }
 
-    // ---- 主图背景：设置页「常规」整窗（按语言各出一张）----
+    // ---- 设置页「常规」整窗（按语言各出一张）----
     for (const lang of langs) {
       if (cdp) { cdp.close(); cdp = null; }
       cdp = await openPage(port, { lang, page: "general", viewport: { width, height } });
@@ -272,51 +270,13 @@ async function main() {
       await dumpText(cdp, join(PARTS, `${name}.txt`));
       console.log(`  parts/${name}.png  (${width}x${height})`);
     }
-
-    // ---- 主图前景件：真实的启动进度卡片（按语言各出一张）----
-    for (const lang of langs) {
-      if (cdp) { cdp.close(); cdp = null; }
-      const splashStatus = lang === "en"
-        ? "Installing DeepSeek Harness dependencies…"
-        : "正在安装 DeepSeek Harness 依赖…";
-      cdp = await openPage(port, {
-        lang, page: null, viewport: { width, height },
-        evaluateOnLoad: [`window.__splashShown = true;`],
-      });
-      // 截图带上 alpha：卡片是圆角 + 投影，必须透明底才能贴到主图上
-      await cdp.send("Emulation.setDefaultBackgroundColorOverride", { color: { r: 0, g: 0, b: 0, a: 0 } });
-      const box = await cdp.send("Runtime.evaluate", {
-        expression: `(async () => {
-          const splash = document.getElementById("splash");
-          const settings = document.getElementById("settings");
-          if (settings) settings.classList.add("hidden");
-          splash.classList.remove("hidden");
-          splash.style.background = "transparent";
-          document.getElementById("splash-status").textContent = ${JSON.stringify(splashStatus)};
-          document.getElementById("splash-cancel").classList.add("hidden");
-          document.getElementById("splash-fill").style.width = "68%";
-          await new Promise((r) => setTimeout(r, 600));
-          const b = document.querySelector(".splash-card").getBoundingClientRect();
-          return JSON.stringify({ x: b.x, y: b.y, width: b.width, height: b.height });
-        })()`,
-        awaitPromise: true, returnByValue: true,
-      });
-      const rect = JSON.parse(box.result.value);
-      const { data } = await cdp.send("Page.captureScreenshot", {
-        format: "png", fromSurface: true, captureBeyondViewport: true,
-        clip: { x: rect.x, y: rect.y, width: rect.width, height: rect.height, scale: 1 },
-      });
-      const name = lang === "en" ? "splash-card-en.png" : "splash-card.png";
-      writeFileSync(join(PARTS, name), Buffer.from(data, "base64"));
-      console.log(`  parts/${name}  (${Math.round(rect.width)}x${Math.round(rect.height)})`);
-    }
   } finally {
     if (cdp) cdp.close();
     try { proc.kill(); } catch { /* ignore */ }
     srv.close();
   }
 
-  console.log("done: 素材写入 docs/.shots-parts/（接着跑 python scripts/make_hero.py）");
+  console.log("done: 素材写入 docs/.shots-parts/（接着跑 python scripts/verify_shots.py --from-render docs/.shots-parts）");
 }
 
 let BASE_URL = "";

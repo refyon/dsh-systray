@@ -52,8 +52,6 @@
 
 ## Features
 
-<img src="docs/screenshot-hero-en.webp" alt="dsh-systray settings window (General page)" />
-
 Lightweight: double-click to start (a loopback-only harness Web service, with progress in the window); one exe on Windows, one .app on macOS, no install and no admin rights; tray residency (Open Web UI / Settings / Quit, light/dark follows the system); single instance — a second launch reports "already running".
 
 Reliable: startup self-checks node / pnpm / harness and installs what is missing; a failed start rolls back to the last known-good state and restarts; plugins incompatible with the current harness are marked "Skipped" with the reason on the About page; "Restart service" takes about 4–5 s and a service process that exits is relaunched within 5 minutes (at most 3 times); dsh-systray / Harness / plugins check for updates independently and roll back on failure; private-repo plugins use GitHub device-flow authorization; the Logs page follows `dsh-systray.log` (including rotated archives).

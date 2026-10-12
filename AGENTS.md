@@ -36,7 +36,8 @@ node scripts/check-frontend-lang.mjs         # 真实浏览器 7 页 × 中英�
 
 - `scripts/build.ps1` 是规范构建入口：先生成绑定再 `build -skipbindings`。
 - **前端改动后必须跑 `node scripts/build_mock.mjs`**：官网轮播是 `docs/mock/` 的 iframe 实时预览，不同步就会漂移，`python scripts/verify_shots.py`（28 项验收）会失败。
-- 发布物料链路：`build_mock.mjs` → `render_shots.mjs` → `make_hero.py` → `convert_webp.py` → `verify_shots.py`（见 `scripts/recapture.cmd`）。
+- 发布物料链路：`build_mock.mjs` → `render_shots.mjs` → `verify_shots.py`（见 `scripts/recapture.cmd`）。
+- README 首屏用 `docs/demo/settings-*.gif` 演示动图（无 hero 位图，主图合成/转换脚本已移除）；界面改动后动图需重录。
 
 ## 改动纪律
 

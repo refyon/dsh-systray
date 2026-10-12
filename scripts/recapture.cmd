@@ -7,12 +7,12 @@ REM 视口（840x560 = 设置窗口逻辑尺寸）渲染真实前端，尺寸恒
 REM 正在运行的托盘实例。
 REM
 REM 说明：网站轮播已是 iframe 实时预览（docs/mock），位图轮播截图（原 docs/shots[-en]）
-REM 2026-10-06 起不再产出；这里只维护 README 主图所需的两块素材。
+REM 2026-10-06 起不再产出；README 首屏 2026-10-12 改用设置界面演示动图
+REM （docs/demo/settings-*.gif），主图及其合成/转换脚本一并移除。
 REM
 REM 步骤：build_mock.mjs（把真实前端同步成站点实时界面预览 docs/mock/）
-REM       -> render_shots.mjs（渲染主图素材：常规页背景 + 真实启动卡 + 画面文字）
-REM       -> make_hero.py 中/英主图合成 -> convert_webp.py（主图转 webp）
-REM       -> verify_shots.py（主图/素材/裁切/脱敏/预览同步 验收）
+REM       -> render_shots.mjs（渲染设置窗口整窗截图 + 画面文字素材）
+REM       -> verify_shots.py（排版/裁切/脱敏/预览同步 验收）
 setlocal
 cd /d "%~dp0.."
 
@@ -21,11 +21,8 @@ where python >nul 2>nul || (echo [错误] 需要 Python 3 + Pillow& pause & exit
 
 node scripts\build_mock.mjs || (echo [失败] 站点预览生成出错 & pause & exit /b 1)
 node scripts\render_shots.mjs --lang zh,en || (echo [失败] 渲染阶段出错 & pause & exit /b 1)
-python scripts\make_hero.py --lang zh || (echo [失败] 中文主图合成出错 & pause & exit /b 1)
-python scripts\make_hero.py --lang en || (echo [失败] 英文主图合成出错 & pause & exit /b 1)
-python scripts\convert_webp.py || (echo [失败] 主图 webp 转换出错 & pause & exit /b 1)
 python scripts\verify_shots.py --from-render docs\.shots-parts || (echo [失败] 验收未通过 & pause & exit /b 1)
 
 echo.
-echo 完成：docs\mock（站点实时预览）、docs\screenshot-hero[-en].webp 已更新
+echo 完成：docs\mock（站点实时预览）+ docs\.shots-parts（核对素材）已更新
 pause

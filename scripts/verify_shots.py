@@ -1,17 +1,18 @@
-"""发布物料验收：README 主图 / 主图素材 / 脱敏 / 站点预览同步。
+"""发布物料验收：渲染素材排版 / 脱敏 / 站点预览同步。
 
 判定标准：
-1. 主图：docs/screenshot-hero[-en].webp 尺寸 900x634（合成画布固定尺寸）；
-2. 主图背景素材（--from-render 指定 docs/.shots-parts）：尺寸 840x560（= 设置窗口逻辑尺寸），
+1. 渲染素材（--from-render 指定 docs/.shots-parts）：尺寸 840x560（= 设置窗口逻辑尺寸），
    卡片右描边距图右缘 22~45px（CSS 是 32px）——本次事故的形态就是内容被裁到 3~5px，
    这一条专门盯它；画面文字必须含页标题与侧栏最后一项（证明不是空白/裁空的图），
    且不得出现本机真实用户名/主机名/真实路径，演示值必须在场；
-3. 脱敏：渲染与演示数据脚本里不得出现本机真实信息，演示值必须来自 shot-shim.mjs；
-4. 站点预览：docs/mock/ 必须与 src/frontend/dist 一致（官网轮播是 iframe 实时预览，
+2. 脱敏：渲染与演示数据脚本里不得出现本机真实信息，演示值必须来自 shot-shim.mjs；
+3. 站点预览：docs/mock/ 必须与 src/frontend/dist 一致（官网轮播是 iframe 实时预览，
    前端改动后不重跑 build_mock.mjs 就会漂移）。
 
-历史：这里原来还验收网站轮播用的 8 张位图截图（docs/shots、docs/shots-en）。官网已改为
-iframe 实时预览，位图截图 2026-10-06 起不再产出也不再验收。
+历史：这里原来还验收网站轮播用的 8 张位图截图（docs/shots、docs/shots-en）与两个 README
+主图（docs/screenshot-hero[-en].webp）。官网已改为 iframe 实时预览，位图截图 2026-10-06 起
+不再产出；README 首屏 2026-10-12 改用设置界面演示动图（docs/demo/settings-*.gif），
+主图及其合成/转换脚本（make_hero.py、convert_webp.py）一并移除。
 
 用法:
   node scripts/render_shots.mjs
@@ -60,17 +61,7 @@ def right_gap(img):
     return w - 1 - cands[len(cands) // 2]
 
 
-# ---------- 1. 主图 ----------
-for name in ("screenshot-hero.webp", "screenshot-hero-en.webp"):
-    p = os.path.join(DOCS, name)
-    if not os.path.isfile(p):
-        note(False, f"{name}: 缺失")
-        continue
-    im = Image.open(p)
-    note(im.size == (900, 634), f"{name}: 尺寸 {im.size}（应 900x634）")
-    note(os.path.getsize(p) > 10_000, f"{name}: 体积 {os.path.getsize(p)} B（过小疑似空白图）")
-
-# ---------- 2. 主图素材（渲染产物） ----------
+# ---------- 1. 渲染素材（渲染产物） ----------
 if a.from_render:
     parts = os.path.join(ROOT, a.from_render)
     EXPECT_TITLE = {"hero-bg": ("常规", "General")}
@@ -105,7 +96,7 @@ if a.from_render:
 else:
     lines.append("  --   跳过素材核对（未提供 --from-render）")
 
-# ---------- 3. 脱敏 ----------
+# ---------- 2. 脱敏 ----------
 # 演示值集中在 shot-shim.mjs（渲染器与站点实时预览共用），其余脚本只应引用它们。
 shim_path = os.path.join(ROOT, "scripts", "shot-shim.mjs")
 for p in (os.path.join(ROOT, "scripts", "render_shots.mjs"),
@@ -118,7 +109,7 @@ shim_src = open(shim_path, encoding="utf-8").read()
 for tok in DEMO_TOKENS:
     note(tok in shim_src, f"shot-shim.mjs: 应使用演示值 {tok!r}")
 
-# ---------- 4. 站点实时界面预览（docs/mock/）与前端保持同步 ----------
+# ---------- 3. 站点实时界面预览（docs/mock/）与前端保持同步 ----------
 # 官网轮播直接载入 App 真实前端（iframe），前端改动后必须重跑 scripts/build_mock.mjs，
 # 否则站点预览会停留在旧界面（这里挡住这种漂移）。
 for name in ("main.js", "style.css"):
@@ -131,7 +122,7 @@ mock_shim = open(os.path.join(DOCS, "mock", "shim.js"), encoding="utf-8").read()
 note("window.go" in mock_shim and "window.runtime" in mock_shim,
      "docs/mock/shim.js: 应提供 window.go / window.runtime")
 
-# ---------- 5. 已弃用的位图截图目录不应复活 ----------
+# ---------- 4. 已弃用的位图截图目录不应复活 ----------
 for folder in ("shots", "shots-en"):
     note(not os.path.isdir(os.path.join(DOCS, folder)),
          f"docs/{folder}/: 站点已改用实时预览，位图截图目录不应存在")
