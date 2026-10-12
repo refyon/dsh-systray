@@ -1,0 +1,63 @@
+name: Documentation problem
+description: Something in the README, SECURITY.md, CONTRIBUTING.md or the website is wrong or missing
+labels: [documentation]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Documentation fixes are welcome as pull requests too — this form is for when you would
+        rather report the problem than write the fix.
+  - type: dropdown
+    id: where
+    attributes:
+      label: Where
+      options:
+        - README.md (简体中文)
+        - README.en.md (English)
+        - SECURITY.md
+        - CONTRIBUTING.md
+        - DESIGN.md (docs/DESIGN.md)
+        - RELEASE_NOTES.md
+        - Website (refyon.github.io/dsh-systray)
+        - In-app text (settings pages, dialogs, tray menu)
+        - Other / not sure
+    validations:
+      required: true
+  - type: input
+    id: location
+    attributes:
+      label: Section or page
+      description: Heading, page name, or the exact sentence — a link is ideal.
+      placeholder: README.md → 配置 → trustedHosts
+    validations:
+      required: true
+  - type: textarea
+    id: problem
+    attributes:
+      label: What is wrong
+      description: What the text says, and what is actually true (or what is missing).
+    validations:
+      required: true
+  - type: textarea
+    id: suggestion
+    attributes:
+      label: Suggested wording
+      description: Optional — a concrete replacement sentence is the fastest path to a fix.
+    validations:
+      required: false
+  - type: textarea
+    id: context
+    attributes:
+      label: Context
+      description: App version and platform, if the doc is about behaviour that depends on them.
+    validations:
+      required: false
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Before submitting
+      options:
+        - label: I checked the current main branch (the website and the app may lag behind it)
+          required: true
+        - label: This is not a security issue (those go through SECURITY.md)
+          required: true

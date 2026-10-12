@@ -22,7 +22,7 @@
   <a href="LICENSE"><img alt="License: MIT" src="https://img.shields.io/badge/license-MIT-2563eb.svg?style=flat-square" /></a>
 </p>
 
-<img src="docs/screenshot-hero.webp" alt="dsh-systray 设置窗口" />
+<img src="docs/demo/settings-zh.gif" alt="dsh-systray 设置窗口：常规、关于、数据同步、导出、日志页" />
 
 **轻量**：单文件免安装、免管理员权限，Windows 为单个 exe、macOS 为单个 .app，托盘常驻。
 **可靠**：启动自检环境并按需安装，启动失败回退上次正常状态，更新失败自动回滚；服务进程意外退出会自动拉起。
@@ -47,12 +47,12 @@
    ```
 
 2. 窗口内显示环境部署进度，首次约 2–5 分钟（自动下载便携 Node.js / pnpm 与 harness，无需预装）。
-3. 出现托盘图标即已就绪；点「打开 Web UI」开始使用。
+3. 托盘出现图标即已就绪，菜单首行显示服务状态与端口；点「打开 Web UI」开始使用。
 4. 就绪后随系统开机自启；端口、Harness 目录、语言、代理等在设置窗口调整。
 
-**成功的样子**：托盘菜单首行显示服务状态、端口与耗时，菜单「打开 Web UI」可打开 harness 界面。
-
 ## 功能
+
+<img src="docs/screenshot-hero.webp" alt="dsh-systray 设置窗口（常规页）" />
 
 轻量：双击启动（仅监听本机的 harness Web 服务，进度在窗口内显示）；Windows 单 exe、macOS 单 .app，免安装、免管理员权限；托盘常驻（打开 Web UI / 设置 / 退出，深浅色随系统）；单实例，重复启动提示「已在运行中」。
 
@@ -182,6 +182,7 @@ node scripts/check-frontend-lang.mjs       # 真实浏览器：7 个页面 × �
 欢迎 issue 与 pull request。动手前请先读 [CONTRIBUTING.md](CONTRIBUTING.md)：里面有开发环境、提交前必须跑的四条检查，以及本项目「代码注释与提交信息用中文、界面文案走 i18n」的约定。
 
 - 缺陷 / 功能建议：[新建 issue](https://github.com/refyon/dsh-systray/issues/new/choose)（已提供模板）
+- 使用问题、想法与配置分享：[Discussions](https://github.com/refyon/dsh-systray/discussions)
 - 安全漏洞：**不要**开公开 issue，走 [SECURITY.md](SECURITY.md) 的私密报告渠道
 - 界面设计改动须遵循 [DESIGN.md](docs/DESIGN.md)（颜色与间距走 token、弹窗必须前台）
 

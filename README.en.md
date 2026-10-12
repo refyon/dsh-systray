@@ -22,7 +22,7 @@
   <a href="LICENSE"><img alt="License: MIT" src="https://img.shields.io/badge/license-MIT-2563eb.svg?style=flat-square" /></a>
 </p>
 
-<img src="docs/screenshot-hero-en.webp" alt="dsh-systray settings window" />
+<img src="docs/demo/settings-en.gif" alt="dsh-systray settings window: General, About, Data sync, Export and Logs pages" />
 
 **Lightweight**: one file, no install, no admin rights — a single exe on Windows, a single .app on macOS, resident in the tray.
 **Reliable**: the environment is checked and provisioned on first start, a failed start rolls back to the last working state, a failed update rolls back automatically, and a service that exits is relaunched.
@@ -47,12 +47,12 @@
    ```
 
 2. The window shows environment progress; the first run takes about 2–5 minutes (it downloads a portable Node.js / pnpm and harness on demand — nothing needs to be preinstalled).
-3. The tray icon appearing means it is ready: click "Open Web UI" to start working.
+3. The tray icon appearing means it is ready; the first menu line shows service state and port — click "Open Web UI" to start working.
 4. It then starts with the system. Port, harness directory, language and proxy are on the settings pages.
 
-**What success looks like**: the first tray menu line shows service state, port and timing, and "Open Web UI" opens the harness interface.
-
 ## Features
+
+<img src="docs/screenshot-hero-en.webp" alt="dsh-systray settings window (General page)" />
 
 Lightweight: double-click to start (a loopback-only harness Web service, with progress in the window); one exe on Windows, one .app on macOS, no install and no admin rights; tray residency (Open Web UI / Settings / Quit, light/dark follows the system); single instance — a second launch reports "already running".
 
@@ -182,6 +182,7 @@ Yes. This app is only a launcher: Harness lives in the harness directory and its
 Issues and pull requests are welcome. Read [CONTRIBUTING.md](CONTRIBUTING.md) first: it covers the development setup, the four checks to run before opening a pull request, and the house rules (comments and commit subjects are in Chinese; user-facing strings go through the i18n layer).
 
 - Bugs and feature requests: [open an issue](https://github.com/refyon/dsh-systray/issues/new/choose) (templates provided)
+- Setup questions, ideas and setups to show off: [Discussions](https://github.com/refyon/dsh-systray/discussions)
 - Security problems: **do not** open a public issue — use the private channel in [SECURITY.md](SECURITY.md)
 - UI changes must follow [DESIGN.md](docs/DESIGN.md) (colours and spacing from tokens, dialogs come to the front)
 

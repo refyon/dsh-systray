@@ -1,0 +1,66 @@
+name: Design discussion
+description: Propose a larger change in behaviour, architecture or UI before writing code
+labels: [question]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Use this form for changes that touch how the app behaves as a whole — launch methods,
+        service lifecycle, update/rollback, sync and export/import formats, or the settings
+        layout. Small fixes and wording changes can go straight to a pull request.
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What is hard, slow or confusing today? Describe the situation, not the fix.
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed change
+      description: What should happen instead. Mention the trade-offs you accept (more UI, extra downloads, slower first start, migration work).
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Other designs, settings, or workarounds — and why they are worse.
+    validations:
+      required: false
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - Startup / service lifecycle
+        - Tray and window behaviour
+        - Updates and rollback
+        - Account sync / file sync
+        - Export and import
+        - Plugins (manage, update, restore)
+        - Settings UI / accessibility
+        - Launch methods (Web UI / Desktop app)
+        - Other
+    validations:
+      required: true
+  - type: textarea
+    id: compatibility
+    attributes:
+      label: Compatibility impact
+      description: |
+        Does it change anything users already rely on — `config.json`, the log path, export zip
+        format, the autostart entry, the single-instance mutex, or the update package layout?
+        If yes, how would existing installations migrate?
+    validations:
+      required: true
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Before submitting
+      options:
+        - label: I searched existing issues and discussions for this change
+          required: true
+        - label: I understand this is a spare-time project and the design may change during review
+          required: false
