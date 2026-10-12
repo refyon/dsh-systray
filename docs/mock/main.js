@@ -103,6 +103,12 @@ const I18N_EN = {
   btnCheckUpdate: "Check for updates",
   btnUpdateApp: "Update dsh-systray", btnUpdateHarness: "Update Harness",
   abPluginsTitle: "Installed plugins",
+  abProjectTitle: "Project home",
+  abProjectSub: "dsh-systray is community-maintained; issues and releases live on GitHub.",
+  abStarHint: "A Star on GitHub is appreciated",
+  btnProjHome: "Website",
+  btnProjReleases: "Releases",
+  btnProjIssues: "Report an issue",
   plugFilterPh: "Filter plugins (name / source / version)…",
   plugEmpty: "No plugins installed",
   btnDiscardAllPending: "Undo all", btnApplyPending: "Apply now",
@@ -1426,6 +1432,14 @@ function wireAbout() {
   // dsh-systray / Harness：各自的检查按钮
   $("btn-check-systray").addEventListener("click", () => runModuleCheck("systray"));
   $("btn-check-harness").addEventListener("click", () => runModuleCheck("harness"));
+  // 关于页项目入口：URL 白名单在 Go 侧（OpenProjectPage），前端只传键名
+  ["home", "releases", "issues"].forEach((key) => {
+    const btn = $("btn-proj-" + key);
+    if (!btn) return;
+    btn.addEventListener("click", () => {
+      try { bindings().OpenProjectPage(key); } catch (e) { console.error("OpenProjectPage", key, e); }
+    });
+  });
   // dsh-systray 自身更新：确认后再下载（下载/安装/重启走 splash，窗口自动显示）
   $("btn-systray-update").addEventListener("click", async () => {
     const ok = await confirmDialog(

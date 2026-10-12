@@ -405,6 +405,10 @@ input { font-family: inherit; }
 .update-note.err { color: var(--danger); }
 .update-note.ok { color: var(--ok); }
 
+/* 关于页项目入口行：提示与按钮同排，不画分隔线（与卡片内其他行一致） */
+.about-links { display: flex; align-items: center; gap: var(--sp-3); margin-top: var(--sp-3); }
+.about-links .update-note { flex: 1; min-width: 0; }
+
 /* 插件列表：每行 = 名称/版本/来源徽标 + 行内状态说明 + 检查/更新按钮 */
 .plug-count { font-size: var(--fs-xs); color: var(--muted); flex-shrink: 0; }
 
