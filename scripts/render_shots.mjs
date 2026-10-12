@@ -4,8 +4,8 @@
  * ============================================================================
  * 用途：在**不启动 exe、不占用系统托盘、不依赖桌面会话**的前提下，把
  *       `src/frontend/dist` 的真实界面渲染成 docs/.shots-parts/ 下的核对素材：
- *         · hero-bg[-en].png   设置页「常规」整窗（840x560 = 窗口逻辑尺寸）
- *         · hero-bg[-en].txt   画面可见文字（供 scripts/verify_shots.py 核对脱敏与内容完整）
+ *         · settings-general[-en].png   设置页「常规」整窗（840x560 = 窗口逻辑尺寸）
+ *         · settings-general[-en].txt   画面可见文字（供 scripts/verify_shots.py 核对脱敏与内容完整）
  *
  * 历史：这里原来还出网站轮播用的 8 张设置页截图（docs/shots、docs/shots-en），
  *       官网已改为 iframe 载入 App 真实前端做实时预览（docs/mock，见 build_mock.mjs），
@@ -265,7 +265,7 @@ async function main() {
     for (const lang of langs) {
       if (cdp) { cdp.close(); cdp = null; }
       cdp = await openPage(port, { lang, page: "general", viewport: { width, height } });
-      const name = lang === "en" ? "hero-bg-en" : "hero-bg";
+      const name = lang === "en" ? "settings-general-en" : "settings-general";
       await shoot(cdp, join(PARTS, `${name}.png`));
       await dumpText(cdp, join(PARTS, `${name}.txt`));
       console.log(`  parts/${name}.png  (${width}x${height})`);

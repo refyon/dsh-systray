@@ -64,8 +64,8 @@ def right_gap(img):
 # ---------- 1. 渲染素材（渲染产物） ----------
 if a.from_render:
     parts = os.path.join(ROOT, a.from_render)
-    EXPECT_TITLE = {"hero-bg": ("常规", "General")}
-    for stem, lang in (("hero-bg", "zh"), ("hero-bg-en", "en")):
+    EXPECT_TITLE = {"settings-general": ("常规", "General")}
+    for stem, lang in (("settings-general", "zh"), ("settings-general-en", "en")):
         png = os.path.join(parts, f"{stem}.png")
         if not os.path.isfile(png):
             note(False, f"{stem}.png: 缺少渲染素材 {os.path.relpath(png, ROOT)}")
@@ -81,7 +81,7 @@ if a.from_render:
             note(False, f"{stem}.txt: 缺少文字导出（渲染器应同时导出画面文字）")
             continue
         text = open(tf, encoding="utf-8").read()
-        want = EXPECT_TITLE["hero-bg"][0 if lang == "zh" else 1]
+        want = EXPECT_TITLE["settings-general"][0 if lang == "zh" else 1]
         note(want in text, f"{stem}.txt: 画面文字应含页标题「{want}」")
         nav_last = ("帮助", "Help")[0 if lang == "zh" else 1]
         note(nav_last in text, f"{stem}.txt: 侧栏应含最后一项「{nav_last}」")
