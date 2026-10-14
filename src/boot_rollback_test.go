@@ -3,8 +3,52 @@ package main
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
+
+// TestRetryPlainStartBeforeDisable 回归 2026-10-14：启动日志没点名任何插件（慢启动/被看门狗误杀/
+// 瞬时故障）时必须先用原状态重试一次，避免把一次超时放大成「禁用全部用户插件 + 逐个复验重新启用」；
+// 日志点名了插件（真正的加载错误）则不做无谓重试，直接走「先禁用肇事插件」。
+func TestRetryPlainStartBeforeDisable(t *testing.T) {
+	calls := 0
+	ok := func() bool { calls++; return true }
+	fail := func() bool { calls++; return false }
+
+	if !retryPlainStartBeforeDisable(nil, ok) {
+		t.Fatal("无点名嫌疑且重试成功时应返回 true")
+	}
+	if calls != 1 {
+		t.Fatalf("重试校验应恰好执行一次，实际 %d", calls)
+	}
+	if retryPlainStartBeforeDisable([]string{"dsh-x"}, ok) {
+		t.Fatal("点名了插件时不该做无谓重试")
+	}
+	if calls != 1 {
+		t.Fatalf("点名插件时不应调用重试校验，实际 %d 次", calls)
+	}
+	if retryPlainStartBeforeDisable(nil, fail) {
+		t.Fatal("重试仍失败时应返回 false（交回禁用全部插件/LKG 回退）")
+	}
+	if retryPlainStartBeforeDisable(nil, nil) {
+		t.Fatal("校验缝未装配时应安全返回 false")
+	}
+}
+
+// TestBootKeptMessage 未禁用任何插件（原状态重试成功）时不出现空名单，文案与禁用路径可区分。
+func TestBootKeptMessage(t *testing.T) {
+	plain := bootKeptMessage(nil, "服务进程异常退出")
+	if strings.Contains(plain, "（）") || strings.Contains(plain, "禁用不兼容插件") {
+		t.Fatalf("无禁用名单时不该出现禁用措辞：%s", plain)
+	}
+	if !strings.Contains(plain, "重试") || !strings.Contains(plain, "服务进程异常退出") {
+		t.Fatalf("文案应说明重试成功与失败原因：%s", plain)
+	}
+	withNames := bootKeptMessage([]string{"dsh-a", "dsh-b"}, "启动日志存在加载错误")
+	if !strings.Contains(withNames, "dsh-a、dsh-b") || !strings.Contains(withNames, "禁用不兼容插件") {
+		t.Fatalf("有禁用名单时应点名列出的插件：%s", withNames)
+	}
+}
 
 // TestPromoteRestoreClearLkg LKG 状态机（目录级，不触达真实配置/网络）：
 // 更新快照(.dshbak) → 成功提升为 LKG(.lkgbak) → 冷启动失败恢复 → 验证通过后清理。

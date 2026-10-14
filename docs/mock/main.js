@@ -70,8 +70,6 @@ const I18N_EN = {
   syncScopeSub: "Start-at-login, the selected Harness version (including the prerelease channel) and every online plugin (one record per environment — Web and Desktop are kept separately). Directories, ports and local plugins are not synced.",
   btnSyncNow: "Sync now",
   btnSyncLogout: "Sign out",
-  syncRestartTitle: "Synced changes are waiting to take effect",
-  syncRestartSub: "To avoid interrupting your work the changes are saved but not applied yet. Click the button to merge and apply them.",
   btnSyncApply: "Restart to apply",
   filesTitle: "File sync",
   filesSub: "Sync the files and folders you pick with your account",
@@ -371,10 +369,9 @@ const I18N_DYN = {
   "待生效 {0} 项": "{0} waiting to apply",
   "待生效": "Waiting to apply",
   "有待生效的同步改动": "Changes waiting to apply",
-  "，点「重启生效」应用": " — click “Restart to apply”",
+  "，点右侧「重启生效」应用": " — click “Restart to apply” on the right",
+  "，改动已保留，可再次应用": " — the changes are kept, you can apply again",
   "上次应用失败：{0}": "Last apply failed: {0}",
-  "上次应用失败：{0}。剩余改动已保留，可再次点击应用续做。": "Last apply failed: {0}. The remaining changes are kept — click apply again to continue.",
-  "共 {0} 项改动已保存但尚未生效；点击右侧按钮后合并并生效。": "{0} change(s) saved but not applied yet; click the button to merge and apply them.",
   "正在应用…": "Applying…",
   "重启生效": "Restart to apply",
   "正在应用同步改动…": "Applying synced changes…",
@@ -2967,7 +2964,9 @@ function syncStatusView(st) {
 function applyPendingText(st) {
   const n = st.pendingApplyCount || 0;
   const base = n > 0 ? fmt("待生效 {0} 项", n) : tr("有待生效的同步改动");
-  return st.applyError ? base + " · " + fmt("上次应用失败：{0}", st.applyError) : base + tr("，点「重启生效」应用");
+  return st.applyError
+    ? base + " · " + fmt("上次应用失败：{0}", st.applyError) + tr("，改动已保留，可再次应用")
+    : base + tr("，点右侧「重启生效」应用");
 }
 
 /** renderSyncNavStatus 左侧导航小字状态：灰=未登录 / 蓝=同步中 / 黄=待同步·待生效 / 红=失败 / 绿=已同步。 */
@@ -3019,21 +3018,13 @@ async function refreshSync() {
     line.textContent = view.text;
     line.className = "row-sub " + view.cls;
     $("btn-sync-now").disabled = !!st.syncing || !!st.applying;
-    // 重启生效提示：Go 侧给出 pendingApply 标记；应用进行中禁用按钮避免重复触发
-    const restart = $("sync-restart");
-    if (restart) restart.classList.toggle("hidden", !st.pendingApply);
+    // 重启生效：按钮就在「服务同步」行右侧，Go 侧给出 pendingApply 标记控制显隐；
+    // 应用进行中禁用按钮避免重复触发（状态行同时显示「待生效 N 项 / 上次应用失败」）。
     const applyBtn = $("btn-sync-apply");
     if (applyBtn) {
+      applyBtn.classList.toggle("hidden", !st.pendingApply);
       applyBtn.disabled = !!st.applying;
       applyBtn.textContent = st.applying ? tr("正在应用…") : tr("重启生效");
-    }
-    if (st.pendingApply) {
-      const sub = $("sync-restart-sub");
-      if (sub) {
-        sub.textContent = st.applyError
-          ? fmt("上次应用失败：{0}。剩余改动已保留，可再次点击应用续做。", st.applyError)
-          : fmt("共 {0} 项改动已保存但尚未生效；点击右侧按钮后合并并生效。", st.pendingApplyCount || 0);
-      }
     }
   } else if (st && (st.expireReason === "session_expired" || st.expireReason === "token_expired")) {
     syncHint("sync-login-hint", tr("登录已过期，请重新登录"), true);

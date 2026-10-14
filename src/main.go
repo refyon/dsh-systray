@@ -1444,6 +1444,10 @@ func bootstrapService(interactive bool) {
 	closeSplash := splash.Close
 
 	go func() {
+		// 冷启动判定期间看门狗让位：就绪等待 → 启动健康校验 → 启动失败自愈这条链路独占服务的
+		// 生命周期（见 service_watchdog.go 的 bootReadyWaitBusy 说明）。
+		bootReadyWaitBusy.Store(true)
+		defer bootReadyWaitBusy.Store(false)
 		ready, why := waitForServerReady(webURL, serverExitCh, startupTimeout)
 		closeSplash()
 		if quitting.Load() {
@@ -1546,7 +1550,9 @@ func bootstrapService(interactive bool) {
 			log.Printf("autostart: service not ready yet (%s), continuing silently in background", why)
 			return
 		}
-		// 超时但服务进程仍在运行：慢机器/首次启动常见，继续后台等待，就绪后再次提示
+		// 超时但服务进程仍在运行：慢机器/首次启动常见，继续后台等待，就绪后再次提示。
+		// 判定收尾，交回看门狗：进程仍存活时由存活判据保护（阈值放宽），真正退出/卡死才拉起。
+		bootReadyWaitBusy.Store(false)
 		showMessageBox("DeepSeek Harness 服务启动较慢（首次启动或机器性能较低时属正常现象），已继续在后台启动，就绪后会再次提示。\n日志："+unifiedLogPath(), appName)
 		if ready2, _ := waitForServerReady(webURL, serverExitCh, 15*time.Minute); ready2 && !quitting.Load() {
 			serverReady.Store(true)

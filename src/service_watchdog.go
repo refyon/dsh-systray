@@ -10,8 +10,10 @@
 //
 // 让位规则（避免误判与打扰用户）：
 //   - 用户主动停服（serverStopByTray）不拉起；
+//   - 冷启动判定期间（bootReadyWaitBusy：就绪等待 → 启动健康校验 → 启动失败自愈）不拉起；
 //   - 其它操作正在改服务（更新/重置/插件批处理/导入恢复/同步应用，见 watchdogSkip）不拉起；
 //   - 退出中（quitting）、更新收尾中（updateFinalizing）、截图模式不探查；
+//   - 服务进程仍存活（本进程拉起的子进程未退出）时只观察、阈值放宽（见 serviceWatchdogAliveFailures）；
 //   - 两次重启之间有冷却，且每会话重启次数有上限（超过只告警，不无限重启）。
 package main
 
@@ -27,11 +29,41 @@ const (
 	serviceWatchdogInterval = 30 * time.Second
 	// serviceWatchdogFailures 连续多少次无响应才判定"已死"（吸收瞬时抖动/短暂 GC/端口争用）。
 	serviceWatchdogFailures = 2
+	// serviceWatchdogAliveFailures 服务进程**仍存活**（本进程拉起的子进程未退出）时的失败阈值：
+	// 进程活着说明是「还没就绪 / 卡住」而不是「静默死亡」，给慢启动留出容忍窗口
+	//（冷启动首分钟、装完插件首次加载都可能数十秒才监听端口）——6×30s≈3min 仍无响应才按卡死处理。
+	serviceWatchdogAliveFailures = 6
 	// serviceWatchdogCooldown 两次自动拉起之间的最小间隔（拉起本身要几十秒，避免叠加）。
 	serviceWatchdogCooldown = 3 * time.Minute
 	// serviceWatchdogMaxRestarts 单次运行最多自动拉起次数（超出后只记日志，避免重启风暴）。
 	serviceWatchdogMaxRestarts = 5
 )
+
+// bootReadyWaitBusy 冷启动判定（就绪等待 → 启动健康校验 → 启动失败自愈）期间占用：看门狗必须让位。
+//
+// 由来（2026-10-14 现场）：唤醒/登录后首分钟系统繁忙（虚拟交换机重建、服务启动、杀毒首扫），
+// harness 首次启动 51s 才加载完第一个插件、总量刚过 60s；看门狗按「30s×2 连败≈58s」判死把它
+// kill 掉，冷启动失败自愈随即禁用全部用户插件再逐个复验重新启用——一次慢启动被放大成七次进程
+// 启动。看门狗的本职是兜「静默死亡」，而这段窗口里服务的生死由冷启动判定自己负责
+//（与 watchdogLetAnotherOperationFinish 的让位规则同理：谁接管服务，谁负责把它拉回来）。
+var bootReadyWaitBusy atomic.Bool
+
+// serverProcAlive 当前服务进程是否由本进程拉起且仍未退出（startServer 置 true；cmd.Wait 收尾按
+// 服务代次清除）。沿用先前进程启动的服务、官方桌面端引擎都没有子进程句柄 → 恒为 false，
+// 那些场景保持原有「HTTP 连续无响应即拉起」判定（看门狗最初正是为它们加的）。
+var serverProcAlive atomic.Bool
+
+// serverProcessAlive 供看门狗区分「慢」与「死」：进程还活着时只观察（阈值放宽），不急着 kill。
+func serverProcessAlive() bool { return serverProcAlive.Load() }
+
+// aliveNote 判死日志里的存活说明：进程仍存活时点明是「长时间未就绪」而不是「静默死亡」，
+// 排障时一眼能看出这次拉起属于放宽阈值后的卡死兜底。
+func aliveNote(alive bool) string {
+	if alive {
+		return "，进程仍在运行但长时间未就绪"
+	}
+	return ""
+}
 
 // serviceWatchdogState 看门狗的判定状态（纯逻辑，便于单测）。
 type serviceWatchdogState struct {
@@ -51,14 +83,19 @@ const (
 )
 
 // step 根据本轮探测结果推进状态并给出动作。responding=false 表示服务无响应；
-// skip=true 表示本轮不该管（主动停服/退出中/更新中）。
-func (s *serviceWatchdogState) step(now time.Time, responding, skip bool) watchdogAction {
+// skip=true 表示本轮不该管（主动停服/退出中/冷启动判定中/别的操作在改服务）；
+// procAlive=true 表示服务进程仍活着（本进程拉起的子进程未退出）——阈值放宽，避免把慢启动当死亡。
+func (s *serviceWatchdogState) step(now time.Time, responding, skip, procAlive bool) watchdogAction {
 	if skip || responding {
 		s.fails = 0
 		return watchdogNone
 	}
 	s.fails++
-	if s.fails < serviceWatchdogFailures {
+	threshold := serviceWatchdogFailures
+	if procAlive {
+		threshold = serviceWatchdogAliveFailures
+	}
+	if s.fails < threshold {
 		return watchdogNone
 	}
 	if s.restarts >= serviceWatchdogMaxRestarts {
@@ -87,7 +124,8 @@ var watchdogRestarting atomic.Bool // 拉起进行中：跳过本轮，避免与
 // 同步应用的启动校验观察到进程被带走 → 误报「与当前服务不兼容」并回退，再点一次才成功）。
 // 与 service_supervisor.go 的让位规则一致：谁在改服务，谁负责把它拉回来。
 func watchdogLetAnotherOperationFinish() bool {
-	return harnessOpBusy.Load() || pluginBatchRunning() || importRestoreRunning() || accountApplyBusy()
+	return harnessOpBusy.Load() || bootReadyWaitBusy.Load() || pluginBatchRunning() ||
+		importRestoreRunning() || accountApplyBusy()
 }
 
 // watchdogSkip 本轮不该管的判定（主动停服 / 退出中 / 自己正在拉起 / 别的操作在改服务）。
@@ -120,10 +158,15 @@ func startServiceWatchdog(ctx context.Context, probe func() bool, restart func()
 			case <-ticker.C:
 			}
 			skip := watchdogSkip()
-			switch st.step(time.Now(), probe(), skip) {
+			alive := serverProcessAlive()
+			switch st.step(time.Now(), probe(), skip, alive) {
 			case watchdogRestart:
 				watchdogRestarting.Store(true)
-				log.Printf("[app] 后台服务无响应（连续 %d 次探测失败），正在自动拉起", serviceWatchdogFailures)
+				threshold := serviceWatchdogFailures
+				if alive {
+					threshold = serviceWatchdogAliveFailures
+				}
+				log.Printf("[app] 后台服务无响应（连续 %d 次探测失败%s），正在自动拉起", threshold, aliveNote(alive))
 				ok := restart()
 				watchdogRestarting.Store(false)
 				if ok {

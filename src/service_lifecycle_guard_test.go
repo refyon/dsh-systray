@@ -14,12 +14,14 @@ import (
 func TestWatchdogSkipWhileAnotherOperationRuns(t *testing.T) {
 	prevQuit, prevQuitting, prevStop, prevRestarting := quitRequested.Load(), quitting.Load(), serverStopByTray.Load(), watchdogRestarting.Load()
 	prevBusy := harnessOpBusy.Load()
+	prevBoot := bootReadyWaitBusy.Load()
 	t.Cleanup(func() {
 		quitRequested.Store(prevQuit)
 		quitting.Store(prevQuitting)
 		serverStopByTray.Store(prevStop)
 		watchdogRestarting.Store(prevRestarting)
 		harnessOpBusy.Store(prevBusy)
+		bootReadyWaitBusy.Store(prevBoot)
 	})
 	reset := func() {
 		quitRequested.Store(false)
@@ -27,6 +29,7 @@ func TestWatchdogSkipWhileAnotherOperationRuns(t *testing.T) {
 		serverStopByTray.Store(false)
 		watchdogRestarting.Store(false)
 		harnessOpBusy.Store(false)
+		bootReadyWaitBusy.Store(false)
 		accountSetApplying(false)
 	}
 	reset()
@@ -39,6 +42,12 @@ func TestWatchdogSkipWhileAnotherOperationRuns(t *testing.T) {
 		t.Fatal("harness 更新/重置/同步应用在跑时必须让位")
 	}
 	harnessOpBusy.Store(false)
+
+	bootReadyWaitBusy.Store(true)
+	if !watchdogSkip() {
+		t.Fatal("冷启动就绪等待/启动校验/自愈期间必须让位（2026-10-14 慢启动被误杀的根因）")
+	}
+	bootReadyWaitBusy.Store(false)
 
 	accountSetApplying(true)
 	if !watchdogSkip() {
@@ -63,12 +72,14 @@ func TestWatchdogSkipWhileAnotherOperationRuns(t *testing.T) {
 func TestWatchdogStepSkipsDuringSyncApply(t *testing.T) {
 	prevQuit, prevQuitting, prevStop, prevRestarting := quitRequested.Load(), quitting.Load(), serverStopByTray.Load(), watchdogRestarting.Load()
 	prevBusy := harnessOpBusy.Load()
+	prevBoot := bootReadyWaitBusy.Load()
 	t.Cleanup(func() {
 		quitRequested.Store(prevQuit)
 		quitting.Store(prevQuitting)
 		serverStopByTray.Store(prevStop)
 		watchdogRestarting.Store(prevRestarting)
 		harnessOpBusy.Store(prevBusy)
+		bootReadyWaitBusy.Store(prevBoot)
 		accountSetApplying(false)
 	})
 	quitRequested.Store(false)
@@ -80,7 +91,7 @@ func TestWatchdogStepSkipsDuringSyncApply(t *testing.T) {
 
 	var st serviceWatchdogState
 	for i := 0; i < 4; i++ {
-		if got := st.step(time.Now(), false, watchdogSkip()); got != watchdogNone {
+		if got := st.step(time.Now(), false, watchdogSkip(), false); got != watchdogNone {
 			t.Fatalf("操作进行中不该自动拉起（第 %d 次）：%v", i, got)
 		}
 	}

@@ -377,6 +377,11 @@
                 当前默认启动方式为官方桌面端：同步的 Harness 版本与预发布通道只作用于托盘自带的 Web 服务，不影响桌面端（其更新通道固定 Nightly）。
               </div>
             </div>
+            <!-- 从账号拉到本机改动后才出现：点按钮才合并生效（避免打断当前工作）。
+                 默认隐藏，无待生效改动时这行与静态说明行完全一致。 -->
+            <div class="row-actions">
+              <button id="btn-sync-apply" class="btn btn-primary btn-sm hidden" data-i18n="btnSyncApply">重启生效</button>
+            </div>
           </div>
           <div class="card-row">
             <div class="row-text">
@@ -448,20 +453,6 @@
           </div>
         </div>
 
-        <!-- 重启生效：从服务器拉到本机改动后常驻提示（点按钮才生效） -->
-        <div id="sync-restart" class="card sync-restart-card hidden">
-          <div class="card-row">
-            <div class="row-text">
-              <div class="row-title" data-i18n="syncRestartTitle">有来自账号的同步改动待生效</div>
-              <div class="row-sub" id="sync-restart-sub" data-i18n="syncRestartSub">
-                为避免打断当前工作，改动已保存但未应用；点击右侧按钮后合并并生效。
-              </div>
-            </div>
-            <div class="row-actions">
-              <button id="btn-sync-apply" class="btn btn-primary btn-sm" data-i18n="btnSyncApply">重启生效</button>
-            </div>
-          </div>
-        </div>
       </section>
 
       <!-- 帮助 -->

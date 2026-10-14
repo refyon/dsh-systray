@@ -1130,10 +1130,6 @@ input { font-family: inherit; }
 .sync-state-busy { color: var(--primary); }
 .sync-state-pending { color: var(--warn); }
 .sync-state-error { color: var(--danger); }
-/* 「重启生效」常驻提示 */
-.sync-restart-card {
-  border-left: 3px solid var(--warn);
-}
 
 /* ---------- 启动方式（Web UI / Desktop UI，见 main.js applyLaunchMode） ---------- */
 /* 说明行：默认中性色（仅陈述当前生效路径），未检测到桌面端时加 .warn 变警示色 */

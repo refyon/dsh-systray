@@ -670,11 +670,15 @@ func startServer() (bool, <-chan error) {
 	serverCmd = cmd
 	serverStartGen.Add(1) // 新代次：仍在观察旧进程的启动校验据此让位
 	gen := serverStartGen.Load()
-	serverStartedPort = port // 记录实际启动端口（端口修改提示与状态展示依据）
+	serverProcAlive.Store(true) // 看门狗据此区分「慢启动」与「静默死亡」（见 service_watchdog.go）
+	serverStartedPort = port    // 记录实际启动端口（端口修改提示与状态展示依据）
 	trackChildProcess(cmd.Process)
 	exitCh := make(chan error, 1)
 	go func() {
 		err := cmd.Wait()
+		if serverStartGen.Load() == gen {
+			serverProcAlive.Store(false) // 本代次进程已退出：后续探测按「死亡」判定（新代次不会被误清）
+		}
 		stopServerLogTail() // 进程退出：停机前把残留半行补进统一日志
 		exitCh <- err
 		noteServerExit(gen, err) // 意外退出（含 DSH 自请求重启）交给守护快速拉起，见 service_supervisor.go

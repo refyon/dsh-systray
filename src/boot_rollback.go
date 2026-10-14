@@ -273,12 +273,39 @@ func pathsToLkgBackups(dirs []string) []string {
 	return out
 }
 
+// retryPlainStartBeforeDisable 自愈第一步：启动日志**没有点名任何用户插件**时，先用当前状态重试
+// 一次再决定是否动用户插件树。
+//
+// 为什么需要（2026-10-14 现场）：慢启动/被看门狗误杀/瞬时故障这类失败没有任何插件加载错误特征，
+// 直接兜底「禁用全部用户插件」会把一次超时放大成「全部禁用 + 逐个复验重新启用」的多次重启；
+// 而这类失败重来一次通常几秒就就绪。日志点名了插件（真正的加载错误）则不做无谓重试，
+// 仍走「先禁用肇事插件」。
+//
+// verify 为可注入的启动校验（生产传 serverVerify = restartAndVerifyServer），返回 true 表示
+// 原状态已恢复健康，调用方按「保持当前版本、未禁用任何插件」收尾。
+func retryPlainStartBeforeDisable(namedSuspects []string, verify func() bool) bool {
+	if len(namedSuspects) > 0 || verify == nil {
+		return false
+	}
+	log.Printf("lkg: no plugin named in boot log, retrying current state before disabling plugins")
+	return verify()
+}
+
+// bootKeptMessage 「保持当前版本」自愈成功的用户文案：未禁用任何插件时用另一套措辞（无名单可列）。
+func bootKeptMessage(names []string, why string) string {
+	if len(names) == 0 {
+		return "DeepSeek Harness 启动失败（" + why + "），已自动重试并保持当前版本与插件状态，服务已重新启动。"
+	}
+	return "DeepSeek Harness 启动失败（" + why + "），已自动禁用不兼容插件（" + strings.Join(names, "、") +
+		"）并保持当前版本，服务已重新启动。\n\n可在「关于页 → 已安装插件」中检查更新后重新启用。"
+}
+
 // tryBootRollback 启动失败时优先自愈「保留当前版本 + 禁用肇事插件」，其次回退 LKG。
 // 用户决策：导入插件/更新 harness 后，尽可能以当前版本启动成功为目标，尽量不回退版本——
-// ①先按启动日志点名禁用肇事插件（disableBootSuspects），未奏效或无点名嫌疑时禁用全部
-// 已激活的用户插件（disableAllUserPlugins），任一成功即保留当前版本（kept=true）；
-// ②两者都失败才恢复 LKG（rolled=true）。
-// 返回 (kept, rolled, prev, disabledNames)：kept 时 disabledNames 为被禁用的插件；
+// ①先按启动日志点名禁用肇事插件（disableBootSuspects）；未点名任何插件时先用原状态重试一次
+// （retryPlainStartBeforeDisable），仍未奏效才禁用全部已激活的用户插件（disableAllUserPlugins），
+// 任一成功即保留当前版本（kept=true）；②两者都失败才恢复 LKG（rolled=true）。
+// 返回 (kept, rolled, prev, disabledNames)：kept 时 disabledNames 为被禁用的插件（重试成功时为空）；
 // rolled 时 prev 为回退到的 harness 版本描述；都失败时全零值，LKG 现场保留便于排查。
 func tryBootRollback(why string) (kept, rolled bool, prev string, disabledNames []string) {
 	log.Printf("lkg: boot failed (%s), attempting self-heal", why)
@@ -291,8 +318,18 @@ func tryBootRollback(why string) (kept, rolled bool, prev string, disabledNames 
 	for _, pf := range enumeratePluginProfiles() {
 		profileDirs = append(profileDirs, pf.dir)
 	}
+	namedSuspects := parseBootLogSuspects(0) // 启动日志点名的嫌疑（判据与 disableBootSuspects 同源）
 	disabled, ok := disableBootSuspects(profileDirs)
 	if !ok {
+		if retryPlainStartBeforeDisable(namedSuspects, serverVerify) {
+			// 原状态重试成功：当前版本与插件状态都验证可启动，成为新的良好基线（旧 LKG 不再需要）
+			clearAllLkg()
+			serverReady.Store(true)
+			serviceFailed.Store(false)
+			refreshServiceMenu()
+			logUI("启动失败已自愈", "保持当前版本与插件状态，重试启动成功")
+			return true, false, "", nil
+		}
 		disabled, ok = disableAllUserPlugins(profileDirs)
 	}
 	if ok {
@@ -375,12 +412,14 @@ func tryBootRollback(why string) (kept, rolled bool, prev string, disabledNames 
 }
 
 // reportBootKept 启动失败后「保留当前版本 + 禁用肇事插件」自愈成功的提示：
-// 交互场景弹窗，自启动静默场景仅记日志。
+// 交互场景弹窗，自启动静默场景仅记日志。names 为空 = 原状态重试成功（未禁用任何插件）。
 func reportBootKept(names []string, why string) {
-	list := strings.Join(names, "、")
-	msg := "DeepSeek Harness 启动失败（" + why + "），已自动禁用不兼容插件（" + list +
-		"）并保持当前版本，服务已重新启动。\n\n可在「关于页 → 已安装插件」中检查更新后重新启用。"
-	log.Printf("[UI] 启动失败自愈成功（禁用插件，保持当前版本）| %s", why)
+	msg := bootKeptMessage(names, why)
+	if len(names) == 0 {
+		log.Printf("[UI] 启动失败自愈成功（保持当前版本与插件状态）| %s", why)
+	} else {
+		log.Printf("[UI] 启动失败自愈成功（禁用插件，保持当前版本）| %s", why)
+	}
 	if !autostartLaunch {
 		showMessageBox(msg, appName)
 	}
