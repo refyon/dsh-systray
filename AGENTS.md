@@ -25,7 +25,7 @@
 
 ```bash
 # 构建（Windows 也可用 scripts\build.ps1；必须走 wails build，纯 go build 会命中 Wails 错误桩并丢失图标）
-cd src && wails build -s -clean -platform windows/amd64 -ldflags "-X main.appVersion=v1.3.6"
+cd src && wails build -s -clean -platform windows/amd64 -ldflags "-X main.appVersion=v1.3.7"
 
 # 测试
 cd src && go test ./...                      # Go 回归（服务守护 / 更新 / 同步 / 导入导出）

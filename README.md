@@ -105,8 +105,8 @@
 
 | 平台 | 构建命令（在 `src/` 下执行） |
 | --- | --- |
-| Windows | `wails build -s -clean -platform windows/amd64 -ldflags "-X main.appVersion=v1.3.6"` |
-| macOS | `wails build -s -clean -platform darwin/universal -ldflags "-X main.appVersion=v1.3.6"` |
+| Windows | `wails build -s -clean -platform windows/amd64 -ldflags "-X main.appVersion=v1.3.7"` |
+| macOS | `wails build -s -clean -platform darwin/universal -ldflags "-X main.appVersion=v1.3.7"` |
 
 产物：`src/build/bin/dsh-systray.exe` / `dsh-systray.app`。版本号由 CI 按 tag 注入，省略时为 `dev`（跳过更新检查）；Windows 可加 `-webview2 download` 为未预装 WebView2 的机器兜底。开发模式：`cd src && wails dev`。
 
