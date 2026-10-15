@@ -421,6 +421,7 @@ const I18N_DYN = {
   "已在本机移除": "Removed locally",
   "重新同步": "Sync again",
   "选择打开方式": "Choose an app",
+  "无法打开该文件": "Cannot open this file",
   "移动": "Move",
   "移动到本机其它位置": "Move to another location on this device",
   // 排序键标签：renderFilesCard 每次渲染都按 tr() 重写按钮文字，缺这三条动态译文时
@@ -3689,11 +3690,17 @@ async function filesDoOpen(entryId, rel) {
     await g.FilesOpenEntry(entryId, rel);
     filesHint("");
   } catch (err) {
-    // 默认方式启动失败：显示原因，并允许重新选择打开方式
-    filesHint(String(err), true, {
+    // 默认方式打不开（本机没有该类型的关联应用等）：必须用弹层打断——文件一多，列表底部
+    // 的小字提示落在可视区之外，用户只会觉得「点了没反应」（2026-10-15 现场）。
+    // 底部小字保留，作为用户在弹层上取消后的重试入口。
+    const reason = String(err);
+    filesHint(reason, true, {
       label: "选择打开方式",
       run: () => filesDoOpenWith(entryId, rel),
     });
+    if (await confirmDialog("无法打开该文件", reason, "选择打开方式")) {
+      await filesDoOpenWith(entryId, rel);
+    }
   }
 }
 

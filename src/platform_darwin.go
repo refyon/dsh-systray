@@ -3,6 +3,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	_ "embed"
 	"errors"
@@ -479,6 +480,11 @@ func revealFile(path string) {
 }
 
 // openFile macOS：用系统默认应用打开文件（open <path>）。
+//
+// macOS 的 open 只把请求转交 LaunchServices 就立即退出，退出码才是真实结果，
+// 因此必须等它退出后再判定：只 Start 不 Wait 时，「本机没有应用认领该类型」
+// （kLSApplicationNotFoundErr）会被当成成功，界面既不报错也不给回退入口，
+// 用户表现为「点击/双击毫无反应」（2026-10-15 现场）。
 func openFile(path string) error {
 	p := strings.TrimSpace(path)
 	if p == "" {
@@ -487,18 +493,100 @@ func openFile(path string) error {
 	if _, err := os.Stat(p); err != nil {
 		return err
 	}
-	cmd := exec.Command("open", p)
+	return openAndWait(p)
+}
+
+// openFileWith macOS：弹出系统原生「选择应用程序」面板（Standard Additions 的
+// choose application，与 Finder 的「打开方式 → 其他…」是同一个面板），再用所选应用打开。
+// 面板由 osascript 自己呈现，不需要「自动化」权限；打开动作仍由本进程 exec 完成，
+// 文件路径不拼进脚本，避免注入与转义问题。用户取消时静默（与 Windows ERROR_CANCELLED 同一语义）。
+func openFileWith(path string) error {
+	p := strings.TrimSpace(path)
+	if p == "" {
+		return errors.New("文件不存在")
+	}
+	if _, err := os.Stat(p); err != nil {
+		return err
+	}
+	app, err := chooseApplication()
+	if err != nil {
+		return err
+	}
+	if app == "" {
+		return errOpenCanceled
+	}
+	return openAndWait("-a", app, p)
+}
+
+// openWaitTimeout open 的等待上限：正常毫秒级返回；超时说明 LaunchServices 迟迟未回，
+// 此时请求已交给系统，不再继续阻塞界面（界面是同步等待本函数的）。
+const openWaitTimeout = 20 * time.Second
+
+// openAndWait 执行 open 并等它退出，失败时用 stderr 还原原因。
+func openAndWait(args ...string) error {
+	cmd := exec.Command("open", args...)
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
 	if err := cmd.Start(); err != nil {
 		return err
 	}
 	trackChildProcess(cmd.Process)
-	return nil
+	done := make(chan error, 1)
+	go func() { done <- cmd.Wait() }()
+	select {
+	case err := <-done:
+		if err != nil {
+			return openFailure(stderr.String(), err)
+		}
+		return nil
+	case <-time.After(openWaitTimeout):
+		return nil
+	}
 }
 
-// openFileWith macOS：暂不提供「选择打开方式」入口（macOS 无对应系统对话框封装），
-// 明确报错由界面提示，避免静默什么都不做。
-func openFileWith(path string) error {
-	return errors.New("当前系统暂不支持选择打开方式")
+// openFailure 把 LaunchServices 的报错转成用户可照着做的提示。
+// kLSApplicationNotFoundErr(-10814)：本机没有任何应用认领该文件类型（例如未装 Markdown
+// 应用时的 .md），界面见到本错误会显示「选择打开方式」入口。
+func openFailure(stderr string, err error) error {
+	s := strings.TrimSpace(stderr)
+	if strings.Contains(s, "kLSApplicationNotFoundErr") || strings.Contains(s, "No application knows how to open") {
+		return errors.New(T("本机没有可打开该文件的应用，请选择打开方式"))
+	}
+	if s != "" {
+		return errors.New(s)
+	}
+	return err
+}
+
+// chooseApplication 弹出系统原生「选择应用程序」面板，返回所选应用路径；用户取消返回空串。
+func chooseApplication() (string, error) {
+	// 弹窗前先把应用激活到前台：面板若落在后台，用户会以为「点了没反应」
+	// （docs/DESIGN.md 第 6 节：任何弹窗都必须自动前台）。
+	ensureMainWindowForeground()
+	script := fmt.Sprintf(`POSIX path of (choose application with title %s with prompt %s as alias)`,
+		asQuote(T("选择打开方式")), asQuote(T("选择用于打开该文件的应用：")))
+	cmd := exec.Command("osascript", "-e", script)
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	out, err := cmd.Output()
+	if err != nil {
+		s := strings.TrimSpace(stderr.String())
+		// 用户在面板上取消：AppleScript 报 "User canceled. (-128)"，不是故障
+		if strings.Contains(s, "User canceled") || strings.Contains(s, "(-128)") {
+			return "", nil
+		}
+		if s != "" {
+			return "", errors.New(s)
+		}
+		return "", fmt.Errorf("osascript: %w", err)
+	}
+	return strings.TrimSpace(string(out)), nil
+}
+
+// asQuote AppleScript 字符串字面量（内置固定文案，只需挡住引号与反斜杠）。
+func asQuote(s string) string {
+	s = strings.ReplaceAll(s, `\`, `\\`)
+	return `"` + strings.ReplaceAll(s, `"`, `\"`) + `"`
 }
 
 func launchAgentPlistPath() string {

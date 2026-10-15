@@ -757,8 +757,8 @@ func fileSyncDropEntryActionsLocked(entryID string) []fileSyncAction {
 	return out
 }
 
-// errOpenCanceled 「打开方式」对话框被用户取消（Windows ERROR_CANCELLED）：
-// 这不是失败，绑定层直接吞掉，界面不报错（2026-10-05 现场）。
+// errOpenCanceled 「打开方式」对话框被用户取消（Windows ERROR_CANCELLED、macOS
+// AppleScript 的 "User canceled"）：这不是失败，绑定层直接吞掉，界面不报错（2026-10-05 现场）。
 var errOpenCanceled = errors.New("open canceled by user")
 
 // 打开函数做成变量，便于用例注入（真实 ShellExecuteW 无法在单测里跑）。

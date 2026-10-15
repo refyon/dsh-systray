@@ -1479,19 +1479,37 @@ func shellExecutePath(verb, path string) error {
 	pShellExecuteW := modShell32.NewProc("ShellExecuteW")
 	op, _ := syscall.UTF16PtrFromString(verb)
 	f, _ := syscall.UTF16PtrFromString(p)
-	// ShellExecuteW 返回值 > 32 表示成功
-	r, _, callErr := pShellExecuteW.Call(0, uintptr(unsafe.Pointer(op)), uintptr(unsafe.Pointer(f)), 0, 0, 1 /* SW_SHOWNORMAL */)
-	if r <= 32 {
-		// ERROR_CANCELLED(1223)：用户在「打开方式」对话框点了取消 —— 不是失败，界面上不该报错
-		if errors.Is(callErr, syscall.Errno(1223)) {
-			return errOpenCanceled
-		}
-		if callErr != nil && callErr.Error() != "The operation completed successfully." {
-			return fmt.Errorf("ShellExecuteW 失败：%w", callErr)
-		}
-		return fmt.Errorf("ShellExecuteW 返回码 %d", r)
+	// owner 必须是主窗口：「打开方式」是模态对话框，无 owner 时它会落在后台、用户看不到；
+	// 弹前先把主窗口带到前台（docs/DESIGN.md 第 6 节）。默认打开则由目标应用自己接管前台。
+	hwnd := wailsMainHWND()
+	if verb == "openas" {
+		forceForeground(hwnd)
 	}
-	return nil
+	// ShellExecuteW 返回值 > 32 表示成功
+	r, _, callErr := pShellExecuteW.Call(hwnd, uintptr(unsafe.Pointer(op)), uintptr(unsafe.Pointer(f)), 0, 0, 1 /* SW_SHOWNORMAL */)
+	if r > 32 {
+		return nil
+	}
+	return shellExecuteFailure(r, callErr)
+}
+
+// shellExecuteFailure 把 ShellExecuteW 的失败转成用户能照着做的提示。
+// r 是 ShellExecute 的返回码（≤32 才有效），callErr 是 GetLastError。
+func shellExecuteFailure(r uintptr, callErr error) error {
+	// ERROR_CANCELLED(1223)：用户在「打开方式」对话框点了取消 —— 不是失败，界面上不该报错
+	if errors.Is(callErr, syscall.Errno(1223)) {
+		return errOpenCanceled
+	}
+	// SE_ERR_NOASSOC(31) / SE_ERR_ASSOCINCOMPLETE(27)：本机没有能打开该类型的应用，
+	// 与 macOS 的 kLSApplicationNotFoundErr 是同一情形，给同一句可操作提示
+	// （界面据此弹层引导选择打开方式，不再把返回码直接丢给用户）。
+	if r == 31 || r == 27 {
+		return errors.New(T("本机没有可打开该文件的应用，请选择打开方式"))
+	}
+	if callErr != nil && callErr.Error() != "The operation completed successfully." {
+		return fmt.Errorf("ShellExecuteW 失败：%w", callErr)
+	}
+	return fmt.Errorf("ShellExecuteW 返回码 %d", r)
 }
 
 // askLaunchDesktopInstaller 桌面端正在运行时的确认：安装程序会要求先退出桌面端。

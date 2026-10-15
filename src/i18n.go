@@ -284,7 +284,6 @@ var i18nEnMap = map[string]string{
 	"服务端存储不可用，请稍后重试":      "Server storage is unavailable — please retry later",
 	"服务端返回异常，请稍后重试":       "The server returned an error — please retry later",
 	"选择打开方式":              "Choose an app",
-	"当前系统暂不支持选择打开方式":      "Choosing an app is not supported on this system yet",
 	"该条目同步的是文件夹，请选择文件夹":   "This sync item is a folder — please pick a folder",
 	"移动到哪个文件夹":            "Move into which folder",
 	"移动到哪里":               "Move to",
@@ -314,6 +313,10 @@ var i18nEnMap = map[string]string{
 	"与当前 harness 版本不兼容（启用后服务启动失败）":    "Incompatible with the current harness version (the service failed to start after enabling)",
 	"与当前 harness 版本不兼容或存在启动冲突（已自动禁用以保证服务启动，可在关于页重新启用）": "Incompatible with the current harness version or conflicting at startup (disabled automatically so the service starts; re-enable it on the About page)",
 	"重新启用后启动校验未通过（已自动还原为禁用）": "Startup check failed after re-enabling (reverted to disabled automatically)",
+
+	// 文件同步：打开文件失败的提示与「选择打开方式」面板文案（platform_darwin.go / account_files_bindings.go）。
+	"选择用于打开该文件的应用：":            "Choose the app to open this file:",
+	"本机没有可打开该文件的应用，请选择打开方式": "No app on this Mac can open this file. Choose an app to open it.",
 }
 
 // ghAuthPromptMsg 私有仓库插件的 GitHub 授权询问文案（gh.go 与测试共用）。
