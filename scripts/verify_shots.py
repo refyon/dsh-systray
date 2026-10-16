@@ -14,8 +14,9 @@
 
 历史：这里原来还验收网站轮播用的 8 张位图截图（docs/shots、docs/shots-en）与两个 README
 主图（docs/screenshot-hero[-en].webp）。官网已改为 iframe 实时预览，位图截图 2026-10-06 起
-不再产出；README 首屏 2026-10-12 改用设置界面演示动图（docs/demo/settings-*.gif），
-主图及其合成/转换脚本（make_hero.py、convert_webp.py）一并移除。
+不再产出；README 首屏 2026-10-12 改用设置界面演示动图，2026-10-16 从 GIF 换成 APNG
+（docs/demo/settings-*.apng，深浅双主题），主图及其合成/转换脚本（make_hero.py、
+convert_webp.py）一并移除。
 
 用法:
   node scripts/render_shots.mjs
