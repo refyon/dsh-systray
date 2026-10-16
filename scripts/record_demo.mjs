@@ -14,10 +14,12 @@
  *   常规 → 数据同步（平滑滚到文件同步卡）→ 日志 → 关于（下滚看插件清单）
  *        → 导出 → 导入 → 帮助（滚到页末项目入口）→ 回常规（循环无缝）
  *
- * 「顺滑」来源：
- *   前端本身没有任何 @keyframes、切页是瞬时硬切（这是旧版 GIF 只能当幻灯片的根因），
- *   因此录制期间注入一条 380ms 的页面淡入（--fade 可调）——**只作用于本次录制会话**，
- *   产品代码与站点预览不受影响；抓帧间隔固定 120ms，淡入因此有 3 帧以上可播。
+ * 「顺滑」来源：2 倍图（README 用 width 属性缩回 1 倍，HiDPI 下清晰）+ 24 位色 + 页内平滑滚动。
+ *   为什么不做「页面淡入」：试过注入 CSS 动画与逐帧设 opacity 两种做法，都会留下半透明帧——
+ *   无头 Chromium 的动画时间轴不随抓图推进，动画会冻结在中途（实测"日志"页停在 opacity≈0.5
+ *   约 1 秒，页标题变成半透明的空心字）；显式设值虽然可控，但淡入帧本身仍是"看起来发虚"的
+ *   画面。界面本来就只做瞬时切页，录成实打实的切页最忠实、也最不容易出脏帧。
+ *   切页时统一把内容区滚回顶部：否则会继承上一页的滚动位置，标题被滚出画面。
  *
  * 用法：
  *   node scripts/record_demo.mjs                          # 中英 × 浅深 四套
@@ -50,7 +52,6 @@ const LANGS = arg("--lang", "zh,en").split(",").map((s) => s.trim()).filter(Bool
 const SCHEMES = arg("--scheme", "light,dark").split(",").map((s) => s.trim()).filter(Boolean);
 const VIEWPORT = { width: Number(arg("--width", 840)), height: Number(arg("--height", 560)) };
 const SCALE = Number(arg("--scale", 2));        // 2 = 2 倍图（README 用 width 属性缩回 1 倍，HiDPI 下清晰）
-const FADE_MS = Number(arg("--fade", 240));     // 注入的页面淡入时长（真实产品无此动画）
 const FRAME_MS = Number(arg("--frame-ms", 120));// 抓帧间隔目标值
 const OUT_ROOT = resolve(ROOT, arg("--out", join("docs", ".demo-frames")));
 const PORT = 9400 + (process.pid % 300);
@@ -221,15 +222,28 @@ const TOUR = [
   { type: "wait", ms: 600 },                         // 循环接缝
 ];
 
-/** 注入只作用于本次录制的淡入动画（产品无此动画，见文件头说明）。 */
-async function injectFade(cdp) {
-  const css = `@keyframes dshDemoFade{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:none}}` +
-    `.page:not(.hidden){animation:dshDemoFade ${Math.round(FADE_MS)}ms cubic-bezier(.2,0,0,1) both}`;
+/** 等目标页可见并把内容区滚回顶部；再等两帧 + 短暂静置，确保新页面真的画完。
+ *  不这么做会抓到「新页面尚未完成绘制」的画面（实测日志页整段发虚、标题像空心字）。 */
+async function enterPage(cdp, page) {
+  for (let i = 0; i < 40; i++) {
+    const r = await cdp.send("Runtime.evaluate", {
+      expression: `(() => {
+        const el = document.getElementById("page-${page}");
+        if (!el || el.classList.contains("hidden")) return "wait";
+        const c = document.querySelector(".content");
+        if (c) c.scrollTo({ top: 0, behavior: "auto" });
+        return "ok";
+      })()`,
+      returnByValue: true,
+    });
+    if (r.result.value === "ok") break;
+    await sleep(50);
+  }
   await cdp.send("Runtime.evaluate", {
-    expression: `(() => { const s = document.createElement("style"); s.id = "dsh-demo-fade";
-      s.textContent = ${JSON.stringify(css)}; document.head.appendChild(s); return s.id; })()`,
-    returnByValue: true,
+    expression: `new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(() => r("painted"))))`,
+    awaitPromise: true, returnByValue: true,
   });
+  await sleep(250);
 }
 
 async function act(cdp, step) {
@@ -239,6 +253,7 @@ async function act(cdp, step) {
         if (!b) return "no-nav"; b.click(); return b.dataset.page; })()`,
       returnByValue: true,
     });
+    await enterPage(cdp, step.page);
   } else if (step.type === "scroll") {
     await cdp.send("Runtime.evaluate", {
       expression: `(() => { const c = document.querySelector(".content"); if (!c) return "no-content";
@@ -265,7 +280,6 @@ async function recordVariant(cdp, baseURL, lang, scheme) {
   const nav = await cdp.send("Page.navigate", { url: `${baseURL}?page=general&lang=${lang}` });
   if (nav.errorText) throw new Error(`导航失败：${nav.errorText}`);
   await waitReady(cdp);
-  await injectFade(cdp);
   await sleep(600); // 让首屏异步数据（版本号 / 插件清单）落定，避免起帧是半成品
   const tRecord = Date.now();
 
@@ -277,26 +291,28 @@ async function recordVariant(cdp, baseURL, lang, scheme) {
   const frames = [];
   const seen = new Set();
 
+  /** 抓一帧：写盘 + 记录时间戳与内容 hash（hash 供编码阶段合并静止段）。 */
+  const capture = async () => {
+    const at = Date.now() - t0;
+    const shot = await cdp.send("Page.captureScreenshot", { format: "png", captureBeyondViewport: false, fromSurface: true });
+    const buf = Buffer.from(shot.data, "base64");
+    const file = `${String(frames.length + 1).padStart(4, "0")}.png`;
+    writeFileSync(join(dir, file), buf);
+    frames.push({ file, at, hash: createHash("md5").update(buf).digest("hex") });
+    seen.add(frames[frames.length - 1].hash);
+    const spent = Date.now() - t0 - at;
+    if (FRAME_MS - spent > 0) await sleep(FRAME_MS - spent);
+  };
+
   for (const step of TOUR) {
     await act(cdp, step);
     const until = Date.now() + step.ms;
-    do {
-      const at = Date.now() - t0;
-      const shot = await cdp.send("Page.captureScreenshot", { format: "png", captureBeyondViewport: false, fromSurface: true });
-      const buf = Buffer.from(shot.data, "base64");
-      const hash = createHash("md5").update(buf).digest("hex");
-      const file = `${String(frames.length + 1).padStart(4, "0")}.png`;
-      writeFileSync(join(dir, file), buf);
-      frames.push({ file, at, hash });
-      seen.add(hash);
-      const spent = Date.now() - t0 - at;
-      if (FRAME_MS - spent > 0) await sleep(FRAME_MS - spent);
-    } while (Date.now() < until);
+    do { await capture(); } while (Date.now() < until);
   }
 
   // 逐帧 delay：到下一帧的真实间隔（回放即实时）；末帧沿用前一帧的间隔
   const meta = {
-    lang, scheme, viewport: VIEWPORT, scale: SCALE, fade: FADE_MS,
+    lang, scheme, viewport: VIEWPORT, scale: SCALE,
     frames: frames.map((f, i) => {
       const next = frames[i + 1];
       const prev = frames[i - 1];
@@ -320,7 +336,7 @@ async function main() {
   const baseURL = `http://127.0.0.1:${srv.address().port}/index.html`;
   const { proc } = await launchBrowser(edge);
   console.log(`recorder: ${edge}`);
-  console.log(`视口 ${VIEWPORT.width}x${VIEWPORT.height} @${SCALE}x  淡入 ${FADE_MS}ms  抓帧 ${FRAME_MS}ms`);
+  console.log(`视口 ${VIEWPORT.width}x${VIEWPORT.height} @${SCALE}x  抓帧 ${FRAME_MS}ms`);
 
   let cdp = null;
   try {
