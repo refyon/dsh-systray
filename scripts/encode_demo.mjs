@@ -42,7 +42,7 @@ const LANGS = arg("--lang", "zh,en").split(",").map((s) => s.trim()).filter(Bool
 const SCHEMES = arg("--scheme", "light,dark").split(",").map((s) => s.trim()).filter(Boolean);
 const MODE = arg("--mode", "palette");            // palette | truecolor
 const COLORS = Number(arg("--colors", 256));
-const DITHER = arg("--dither", "sierra2_4a");
+const DITHER = arg("--dither", "none");           // 默认不抖动：实测同色数下比 sierra2_4a 更小且 PSNR 更高
 const STATS = arg("--stats", "diff");             // diff（偏向变化区域）| full（全画面等权，静止文字更准）
 const MAX_MB = Number(arg("--max-mb", 3));
 
@@ -211,6 +211,7 @@ function packApng(frameFiles, delaysMs, outPath) {
   if (MODE === "palette") {
     const pal = join(frameDir, "palette.png");
     run([...common, "-vf", `palettegen=max_colors=${COLORS}:stats_mode=${STATS}`, "-frames:v", "1", pal], "生成色板");
+    // 不加 -pred mixed：调色板 + 抖动的画面用默认预测更小（实测 490 KB vs 579 KB）
     run([...common, "-i", pal, "-lavfi", `[0:v][1:v]paletteuse=dither=${DITHER}:diff_mode=rectangle`,
          "-fps_mode", "passthrough", join(frameDir, "f%04d.png")], "按色板导出帧");
   } else {

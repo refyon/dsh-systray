@@ -22,8 +22,8 @@
   <a href="LICENSE"><img alt="License: MIT" src="https://img.shields.io/badge/license-MIT-2563eb.svg?style=flat-square" /></a>
 </p>
 
-<img src="docs/demo/settings-zh.apng#gh-light-mode-only" alt="dsh-systray 设置窗口：常规、关于、数据同步、导出、日志页" width="840" />
-<img src="docs/demo/settings-zh-dark.apng#gh-dark-mode-only" alt="dsh-systray 设置窗口：常规、关于、数据同步、导出、日志页" width="840" />
+<img src="docs/demo/settings-zh.apng#gh-light-mode-only" alt="dsh-systray 设置窗口：常规、关于、数据同步、导出、日志页" width="880" />
+<img src="docs/demo/settings-zh-dark.apng#gh-dark-mode-only" alt="dsh-systray 设置窗口：常规、关于、数据同步、导出、日志页" width="880" />
 
 **轻量**：单文件免安装、免管理员权限，Windows 为单个 exe、macOS 为单个 .app，托盘常驻。
 **可靠**：启动自检环境并按需安装，启动失败回退上次正常状态，更新失败自动回滚；服务进程意外退出会自动拉起。

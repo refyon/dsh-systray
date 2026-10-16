@@ -22,8 +22,8 @@
   <a href="LICENSE"><img alt="License: MIT" src="https://img.shields.io/badge/license-MIT-2563eb.svg?style=flat-square" /></a>
 </p>
 
-<img src="docs/demo/settings-en.apng#gh-light-mode-only" alt="dsh-systray settings window: General, About, Data sync, Export and Logs pages" width="840" />
-<img src="docs/demo/settings-en-dark.apng#gh-dark-mode-only" alt="dsh-systray settings window: General, About, Data sync, Export and Logs pages" width="840" />
+<img src="docs/demo/settings-en.apng#gh-light-mode-only" alt="dsh-systray settings window: General, About, Data sync, Export and Logs pages" width="880" />
+<img src="docs/demo/settings-en-dark.apng#gh-dark-mode-only" alt="dsh-systray settings window: General, About, Data sync, Export and Logs pages" width="880" />
 
 **Lightweight**: one file, no install, no admin rights — a single exe on Windows, a single .app on macOS, resident in the tray.
 **Reliable**: the environment is checked and provisioned on first start, a failed start rolls back to the last working state, a failed update rolls back automatically, and a service that exits is relaunched.

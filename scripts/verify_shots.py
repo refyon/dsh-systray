@@ -24,6 +24,7 @@ convert_webp.py）一并移除。
 """
 import argparse
 import os
+import re
 import struct
 import sys
 
@@ -190,7 +191,8 @@ for lang, light_name, dark_name in DEMO_VARIANTS:
         note(info is not None, f"docs/demo/{name}: 应是 APNG（PNG 容器含 acTL 块）")
         if info:
             w, h, frames, plays, odd = info
-            note((w, h) == (1680, 1120), f"docs/demo/{name}: 尺寸 {w}x{h}（应 1680x1120 = 窗口 840x560 的 2 倍图）")
+            note((w, h) == (1320, 900),
+                 f"docs/demo/{name}: 尺寸 {w}x{h}（应 1320x900 = 窗口 840x560 + 四周 20px 背景板，再 ×1.5）")
             note(frames >= 10, f"docs/demo/{name}: 帧数 {frames}（应 ≥ 10，过少说明退化成了幻灯片）")
             note(plays == 0, f"docs/demo/{name}: 循环次数 {plays}（应 0 = 无限循环）")
             note(odd == 0, f"docs/demo/{name}: {odd} 个非整画布帧（应全部为整画布 + dispose=NONE + blend=SOURCE，"
@@ -198,7 +200,12 @@ for lang, light_name, dark_name in DEMO_VARIANTS:
     readme = "README.md" if lang == "zh" else "README.en.md"
     src = open(os.path.join(ROOT, readme), encoding="utf-8").read()
     for name, suffix in ((light_name, "#gh-light-mode-only"), (dark_name, "#gh-dark-mode-only")):
-        note(f"docs/demo/{name}{suffix}" in src, f"{readme}: 应引用 docs/demo/{name}{suffix}")
+        tag = re.search(r"<img[^>]*" + re.escape(name) + re.escape(suffix) + r"[^>]*>", src)
+        note(tag is not None, f"{readme}: 应引用 docs/demo/{name}{suffix}")
+        # 显示宽度必须与 1 倍抓图宽度一致（840 + 2×20），否则浏览器会二次缩放、笔画发虚
+        if tag:
+            note('width="880"' in tag.group(0),
+                 f"{readme}: docs/demo/{name} 的 <img> 应带 width=\"880\"（= 1 倍抓图宽度，避免浏览器缩放）")
 
 print("\n".join(lines))
 print()

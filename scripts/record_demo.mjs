@@ -14,12 +14,16 @@
  *   常规 → 数据同步（平滑滚到文件同步卡）→ 日志 → 关于（下滚看插件清单）
  *        → 导出 → 导入 → 帮助（滚到页末项目入口）→ 回常规（循环无缝）
  *
- * 「顺滑」来源：2 倍图（README 用 width 属性缩回 1 倍，HiDPI 下清晰）+ 24 位色 + 页内平滑滚动。
+ * 「顺滑」来源：1.5 倍图（README 按 1 倍宽度显示）+ 256 色全局色板 + 页内平滑滚动。
  *   为什么不做「页面淡入」：试过注入 CSS 动画与逐帧设 opacity 两种做法，都会留下半透明帧——
  *   无头 Chromium 的动画时间轴不随抓图推进，动画会冻结在中途（实测"日志"页停在 opacity≈0.5
  *   约 1 秒，页标题变成半透明的空心字）；显式设值虽然可控，但淡入帧本身仍是"看起来发虚"的
  *   画面。界面本来就只做瞬时切页，录成实打实的切页最忠实、也最不容易出脏帧。
  *   切页时统一把内容区滚回顶部：否则会继承上一页的滚动位置，标题被滚出画面。
+ *
+ * 背景板（--mat，默认 20px）：视口比窗口大一圈，窗口固定 840x560 居中，四周是纯色底
+ *   （浅色 #DCE3EC / 深色 #1E293B）——浅色界面直接贴在白色 README 上时窗口边界看不出来。
+ *   只注入到本次录制会话，产品与站点预览不受影响。
  *
  * 用法：
  *   node scripts/record_demo.mjs                          # 中英 × 浅深 四套
@@ -51,10 +55,17 @@ const arg = (k, d) => { const i = argv.indexOf(k); return i >= 0 ? argv[i + 1] :
 const LANGS = arg("--lang", "zh,en").split(",").map((s) => s.trim()).filter(Boolean);
 const SCHEMES = arg("--scheme", "light,dark").split(",").map((s) => s.trim()).filter(Boolean);
 const VIEWPORT = { width: Number(arg("--width", 840)), height: Number(arg("--height", 560)) };
-const SCALE = Number(arg("--scale", 2));        // 2 = 2 倍图（README 用 width 属性缩回 1 倍，HiDPI 下清晰）
+// 背景板：窗口四周留出一圈纯色底，让截屏边缘在 README 的浅色/深色底上都看得清
+// （原先浅色界面直接贴在白色 README 上，窗口边界完全糊在一起）。
+const MAT = Number(arg("--mat", 20));
+const MAT_LIGHT = arg("--mat-light", "#DCE3EC");   // 浅色主题用的底：比界面底 #F8FAFC 明显更深一档
+const MAT_DARK = arg("--mat-dark", "#1E293B");     // 深色主题用的底：比界面底 #0B1220 明显更浅一档
+const SCALE = Number(arg("--scale", 1.5));       // 1.5 倍图：README 按 1 倍宽度显示，兼顾清晰度与体积
 const FRAME_MS = Number(arg("--frame-ms", 120));// 抓帧间隔目标值
 const OUT_ROOT = resolve(ROOT, arg("--out", join("docs", ".demo-frames")));
 const PORT = 9400 + (process.pid % 300);
+// 实际抓图尺寸 = 窗口 + 四周背景板
+const CAPTURE = { width: VIEWPORT.width + MAT * 2, height: VIEWPORT.height + MAT * 2 };
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -131,7 +142,7 @@ async function launchBrowser(edge) {
     "--no-first-run", "--no-default-browser-check", "--disable-extensions",
     "--disable-background-networking", "--disable-sync", "--disable-features=Translate",
     "--hide-scrollbars", "--force-device-scale-factor=1",
-    `--window-size=${VIEWPORT.width},${VIEWPORT.height}`,
+    `--window-size=${CAPTURE.width},${CAPTURE.height}`,
     "--allow-file-access-from-files",
     "about:blank",
   ], { stdio: "ignore" });
@@ -264,13 +275,28 @@ async function act(cdp, step) {
   }
 }
 
+/** 注入背景板：视口比窗口大一圈，窗口按 840x560 固定，四周留出纯色底（只影响本次录制）。
+ *  注意窗口自己要保留界面底色 var(--bg)——界面底色原本来自 body，若只改 body 会把窗口内部
+ *  也刷成背景色，边界反而更看不清。 */
+async function applyMat(cdp, scheme) {
+  const color = scheme === "dark" ? MAT_DARK : MAT_LIGHT;
+  const css = `html,body{background:${color}!important}` +
+    `.settings{width:${VIEWPORT.width}px!important;height:${VIEWPORT.height}px!important;` +
+    `margin:${MAT}px!important;background:var(--bg)!important}`;
+  await cdp.send("Runtime.evaluate", {
+    expression: `(() => { const s = document.createElement("style"); s.id = "dsh-demo-mat";
+      s.textContent = ${JSON.stringify(css)}; document.head.appendChild(s); return "mat"; })()`,
+    returnByValue: true,
+  });
+}
+
 /** 录制一套（lang × scheme）。 */
 async function recordVariant(cdp, baseURL, lang, scheme) {
   const tStart = Date.now();
   await cdp.send("Emulation.setDeviceMetricsOverride", {
-    width: VIEWPORT.width, height: VIEWPORT.height,
+    width: CAPTURE.width, height: CAPTURE.height,
     deviceScaleFactor: SCALE, mobile: false,
-    screenWidth: VIEWPORT.width, screenHeight: VIEWPORT.height,
+    screenWidth: CAPTURE.width, screenHeight: CAPTURE.height,
   });
   await cdp.send("Emulation.setEmulatedMedia", {
     features: [{ name: "prefers-color-scheme", value: scheme }],
@@ -280,6 +306,7 @@ async function recordVariant(cdp, baseURL, lang, scheme) {
   const nav = await cdp.send("Page.navigate", { url: `${baseURL}?page=general&lang=${lang}` });
   if (nav.errorText) throw new Error(`导航失败：${nav.errorText}`);
   await waitReady(cdp);
+  await applyMat(cdp, scheme);
   await sleep(600); // 让首屏异步数据（版本号 / 插件清单）落定，避免起帧是半成品
   const tRecord = Date.now();
 
@@ -312,7 +339,7 @@ async function recordVariant(cdp, baseURL, lang, scheme) {
 
   // 逐帧 delay：到下一帧的真实间隔（回放即实时）；末帧沿用前一帧的间隔
   const meta = {
-    lang, scheme, viewport: VIEWPORT, scale: SCALE,
+    lang, scheme, viewport: VIEWPORT, capture: CAPTURE, mat: MAT, scale: SCALE,
     frames: frames.map((f, i) => {
       const next = frames[i + 1];
       const prev = frames[i - 1];
@@ -336,7 +363,7 @@ async function main() {
   const baseURL = `http://127.0.0.1:${srv.address().port}/index.html`;
   const { proc } = await launchBrowser(edge);
   console.log(`recorder: ${edge}`);
-  console.log(`视口 ${VIEWPORT.width}x${VIEWPORT.height} @${SCALE}x  抓帧 ${FRAME_MS}ms`);
+  console.log(`窗口 ${VIEWPORT.width}x${VIEWPORT.height} + 背景板 ${MAT}px → 抓图 ${CAPTURE.width}x${CAPTURE.height} @${SCALE}x  抓帧 ${FRAME_MS}ms`);
 
   let cdp = null;
   try {
