@@ -275,14 +275,17 @@ async function act(cdp, step) {
   }
 }
 
-/** 注入背景板：视口比窗口大一圈，窗口按 840x560 固定，四周留出纯色底（只影响本次录制）。
+/** 注入背景板与窗口圆角：视口比窗口大一圈，窗口按 840x560 固定，四周留出纯色底（只影响本次录制）。
  *  注意窗口自己要保留界面底色 var(--bg)——界面底色原本来自 body，若只改 body 会把窗口内部
- *  也刷成背景色，边界反而更看不清。 */
+ *  也刷成背景色，边界反而更看不清。
+ *  圆角取工程 token var(--radius)=14px：与官网截图（docs/index.html 的 .frame）一致，也与真机一致
+ *  ——Windows 上设置窗口本身就设了 DWMWA_WINDOW_CORNER_PREFERENCE=ROUND（dialogs_windows.go）。 */
 async function applyMat(cdp, scheme) {
   const color = scheme === "dark" ? MAT_DARK : MAT_LIGHT;
   const css = `html,body{background:${color}!important}` +
     `.settings{width:${VIEWPORT.width}px!important;height:${VIEWPORT.height}px!important;` +
-    `margin:${MAT}px!important;background:var(--bg)!important}`;
+    `margin:${MAT}px!important;background:var(--bg)!important;` +
+    `border-radius:var(--radius)!important;overflow:hidden!important}`;
   await cdp.send("Runtime.evaluate", {
     expression: `(() => { const s = document.createElement("style"); s.id = "dsh-demo-mat";
       s.textContent = ${JSON.stringify(css)}; document.head.appendChild(s); return "mat"; })()`,

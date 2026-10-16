@@ -141,6 +141,12 @@ for folder in ("shots", "shots-en"):
 DEMO_DIR = os.path.join(DOCS, "demo")
 DEMO_VARIANTS = (("zh", "settings-zh.apng", "settings-zh-dark.apng"),
                  ("en", "settings-en.apng", "settings-en-dark.apng"))
+# 背景板颜色（record_demo.mjs 的 --mat-light / --mat-dark）：窗口四周的底，也是圆角四角露出的颜色
+MAT_RGB = {"light": (220, 227, 236), "dark": (30, 41, 59)}   # #DCE3EC / #1E293B
+
+
+def _near(rgb, want, tol=10):
+    return all(abs(a - b) <= tol for a, b in zip(rgb, want))
 
 
 def apng_info(path):
@@ -197,6 +203,18 @@ for lang, light_name, dark_name in DEMO_VARIANTS:
             note(plays == 0, f"docs/demo/{name}: 循环次数 {plays}（应 0 = 无限循环）")
             note(odd == 0, f"docs/demo/{name}: {odd} 个非整画布帧（应全部为整画布 + dispose=NONE + blend=SOURCE，"
                            f"局部帧会让渲染结果取决于浏览器的 APNG 合成实现）")
+            # 背景板 + 圆角：窗口四角应露出背景板颜色，边中点则仍是界面（否则说明圆角/背景板丢了）
+            mat = MAT_RGB["dark" if "-dark" in name else "light"]
+            frame = Image.open(path)
+            frame.seek(0)
+            rgb = frame.convert("RGB")
+            s = w / 880.0
+            corners = [rgb.getpixel((int(x * s), int(y * s))) for x, y in ((22, 22), (858, 22), (22, 578), (858, 578))]
+            note(all(_near(c, mat) for c in corners),
+                 f"docs/demo/{name}: 窗口四角应露出背景板颜色 {mat}（圆角 14px），实测 {corners}")
+            mid = rgb.getpixel((int(440 * s), int(22 * s)))
+            note(not _near(mid, mat),
+                 f"docs/demo/{name}: 窗口上边中点应是界面底色而非背景板（实测 {mid}）")
     readme = "README.md" if lang == "zh" else "README.en.md"
     src = open(os.path.join(ROOT, readme), encoding="utf-8").read()
     for name, suffix in ((light_name, "#gh-light-mode-only"), (dark_name, "#gh-dark-mode-only")):
