@@ -26,6 +26,9 @@ docs/preview*.png
 # 主图渲染素材（可随时重生成：node scripts/render_shots.mjs）
 docs/.shots-parts/
 
+# README 演示动图的帧序列（可随时重生成：node scripts/record_demo.mjs；只提交编码后的 APNG）
+docs/.demo-frames/
+
 # Wails 构建产物（src/build/bin）与自动生成的绑定（src/frontend/wailsjs）
 src/build/bin/
 src/frontend/wailsjs/
