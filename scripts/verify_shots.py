@@ -143,12 +143,19 @@ DEMO_VARIANTS = (("zh", "settings-zh.apng", "settings-zh-dark.apng"),
 
 
 def apng_info(path):
-    """返回 (宽, 高, 帧数, 循环次数)；不是 APNG 时返回 None。"""
+    """返回 (宽, 高, 帧数, 循环次数, 非整画布帧数)；不是 APNG 时返回 None。
+
+    「非整画布帧」统计 fcTL 里尺寸/偏移不是整画布、或 dispose/blend 不是
+    NONE/SOURCE 的帧：ffmpeg 直出 APNG 时会做帧差分，产出局部帧 + dispose=BACKGROUND
+    + blend=OVER（甚至 1x1@0,0 的怪帧），最终画面完全依赖浏览器的 APNG 合成实现，
+    不同解码器表现不一致（2026-10-16 用户反馈「标题空心」即出在这类帧上）。
+    本仓库改为全画布覆盖式写入，这里把它固化成不变量。
+    """
     with open(path, "rb") as fh:
         data = fh.read()
     if data[:8] != b"\x89PNG\r\n\x1a\n":
         return None
-    pos, size, frames, plays, animated = 8, (0, 0), 0, 0, False
+    pos, size, frames, plays, animated, odd = 8, (0, 0), 0, 0, False, 0
     while pos + 8 <= len(data):
         (length,) = struct.unpack(">I", data[pos:pos + 4])
         ctype = data[pos + 4:pos + 8]
@@ -158,10 +165,14 @@ def apng_info(path):
         elif ctype == b"acTL":
             frames, plays = struct.unpack(">II", body[:8])
             animated = True
+        elif ctype == b"fcTL":
+            fw, fh, fx, fy = struct.unpack(">IIII", body[4:20])
+            if (fw, fh, fx, fy) != (size[0], size[1], 0, 0) or body[24] != 0 or body[25] != 0:
+                odd += 1
         pos += 12 + length
         if ctype == b"IEND":
             break
-    return (size[0], size[1], frames, plays) if animated else None
+    return (size[0], size[1], frames, plays, odd) if animated else None
 
 
 leftover = sorted(f for f in os.listdir(DEMO_DIR) if f.lower().endswith(".gif")) if os.path.isdir(DEMO_DIR) else []
@@ -178,10 +189,12 @@ for lang, light_name, dark_name in DEMO_VARIANTS:
         info = apng_info(path)
         note(info is not None, f"docs/demo/{name}: 应是 APNG（PNG 容器含 acTL 块）")
         if info:
-            w, h, frames, plays = info
+            w, h, frames, plays, odd = info
             note((w, h) == (1680, 1120), f"docs/demo/{name}: 尺寸 {w}x{h}（应 1680x1120 = 窗口 840x560 的 2 倍图）")
             note(frames >= 10, f"docs/demo/{name}: 帧数 {frames}（应 ≥ 10，过少说明退化成了幻灯片）")
             note(plays == 0, f"docs/demo/{name}: 循环次数 {plays}（应 0 = 无限循环）")
+            note(odd == 0, f"docs/demo/{name}: {odd} 个非整画布帧（应全部为整画布 + dispose=NONE + blend=SOURCE，"
+                           f"局部帧会让渲染结果取决于浏览器的 APNG 合成实现）")
     readme = "README.md" if lang == "zh" else "README.en.md"
     src = open(os.path.join(ROOT, readme), encoding="utf-8").read()
     for name, suffix in ((light_name, "#gh-light-mode-only"), (dark_name, "#gh-dark-mode-only")):
