@@ -35,9 +35,9 @@ node scripts/check-frontend-lang.mjs         # 真实浏览器 7 页 × 中英�
 ```
 
 - `scripts/build.ps1` 是规范构建入口：先生成绑定再 `build -skipbindings`。
-- **前端改动后必须跑 `node scripts/build_mock.mjs`**：官网轮播是 `docs/mock/` 的 iframe 实时预览，不同步就会漂移，`python scripts/verify_shots.py`（28 项验收）会失败。
-- 发布物料链路：`build_mock.mjs` → `render_shots.mjs` → `verify_shots.py`（见 `scripts/recapture.cmd`）。
-- README 首屏用 `docs/demo/settings-*.gif` 演示动图（无 hero 位图，主图合成/转换脚本已移除）；界面改动后动图需重录。
+- **前端改动后必须跑 `node scripts/build_mock.mjs`**：官网轮播是 `docs/mock/` 的 iframe 实时预览，不同步就会漂移，`python scripts/verify_shots.py` 会失败（它同时验收站点预览同步与 README 动图）。
+- 发布物料链路：`build_mock.mjs` → `render_shots.mjs` → `record_demo.mjs` + `encode_demo.mjs` → `verify_shots.py`（见 `scripts/recapture.cmd`）。动图编码需要 ffmpeg（`DSH_FFMPEG`、`--ffmpeg` 或 PATH）；找不到时 `recapture.cmd` 只跳过动图重录。
+- README 首屏是 `docs/demo/settings-{zh,en}[-dark].apng` 演示动图，深浅两套按 GitHub 的 `#gh-light-mode-only` / `#gh-dark-mode-only` 分派（README 里的 `width="880"` 必须等于 1 倍抓图宽度，验收会比对）。录制=窗口 840×560 + 20px 背景板 + `var(--radius)` 圆角、1.5 倍图；**不做页面淡入**（无头 Chromium 的动画时间轴不随抓帧推进，会冻结成半透明脏帧），切页时把内容区滚回顶部。编码=256 色全局色板、不抖动、自行拼装**整画布**帧（ffmpeg 直出会做帧差分，产出局部帧 + dispose=BACKGROUND/blend=OVER，最终画面取决于浏览器的 APNG 合成实现）。界面改动后重跑这两个脚本。
 
 ## 改动纪律
 
