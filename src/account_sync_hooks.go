@@ -324,8 +324,8 @@ func accountLocalPluginsSnapshot() map[string]accountLocalPlugin {
 		if !isOnlinePluginSource(row.Source) {
 			continue
 		}
-		if row.Version == "" || row.Disabled || row.PendingLocal {
-			continue // 读不到版本 / 已禁用 / 待重指定：不是本机生效的插件
+		if row.Disabled || row.PendingLocal {
+			continue // 已禁用 / 待重指定：不是本机生效的插件
 		}
 		if _, ok := marks[row.Name]; ok {
 			continue // 托盘内已登记待应用变更（按插件名作用于全部环境）：等它执行完再由批处理埋点上报
@@ -338,12 +338,18 @@ func accountLocalPluginsSnapshot() map[string]accountLocalPlugin {
 			if pending[key] {
 				continue // 已是待生效改动：等用户点「重启生效」，此时不反向覆盖账号
 			}
+			// 版本按环境单独读：合并行的 Version 取的是第一个目录，同一插件在 web / desktop 可能
+			// 版本不同（见 pluginRowValueInProfile）；该环境读不到版本即未装，不算生效插件。
+			scoped := pluginRowValueInProfile(row, profile)
+			if scoped.Version == "" {
+				continue
+			}
 			out[key] = accountLocalPlugin{
 				Profile:     profile,
 				Name:        row.Name,
 				Spec:        strings.TrimSpace(row.Spec),
 				Source:      row.Source,
-				Version:     row.Version,
+				Version:     scoped.Version,
 				InstalledAt: accountLocalPluginInstallTimeFor(profile, row.Name),
 			}
 		}

@@ -175,6 +175,109 @@ func writeTestProfile(t *testing.T, home, profile string, deps map[string]string
 	}
 }
 
+// TestPluginInstalledGitRef 已装 git 依赖的解析结果读取：pnpm 只把 commit 写进 lockfile /
+// .modules.yaml（`pnpm add github:owner/repo#<sha>` 会把 package.json 的声明写回不带 commit 的
+// git+https 形态，2026-10-16 实测），固定 commit 的同步记录要靠它判满足。
+func TestPluginInstalledGitRef(t *testing.T) {
+	const (
+		name = "restrict-discipline"
+		sha  = "e40c568e37e74aee638f10f926b06929a5c6b5f4"
+	)
+	lockBody := "lockfileVersion: '9.0'\n\n" +
+		"importers:\n\n  .:\n    dependencies:\n      " + name + ":\n" +
+		"        specifier: git+https://github.com/refyon/" + name + ".git\n" +
+		"        version: git+https://github.com/refyon/" + name + ".git#" + sha + "\n\n" +
+		"packages:\n\n" +
+		"  " + name + "@git+https://github.com/refyon/" + name + ".git#" + sha + ":\n" +
+		"    resolution: {commit: " + sha + ", repo: https://github.com/refyon/" + name + ".git, type: git}\n"
+
+	t.Run("lockfile", func(t *testing.T) {
+		dir := t.TempDir()
+		if err := os.WriteFile(filepath.Join(dir, "pnpm-lock.yaml"), []byte(lockBody), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		repo, commit := pluginInstalledGitRef(dir, name)
+		if repo != "refyon/"+name || commit != sha {
+			t.Fatalf("lockfile 解析结果 = (%q, %q)，期望 (refyon/%s, %s)", repo, commit, name, sha)
+		}
+	})
+
+	t.Run("modules-yaml-兜底", func(t *testing.T) {
+		dir := t.TempDir()
+		nm := filepath.Join(dir, "node_modules")
+		if err := os.MkdirAll(nm, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		body := `{"nodeLinker":"hoisted","hoistedLocations":{` +
+			`"` + name + `@git+https://github.com/refyon/` + name + `.git#` + sha + `":["node_modules\\` + name + `"],` +
+			`"unrelated@1.2.3":["node_modules\\unrelated"]}}`
+		if err := os.WriteFile(filepath.Join(nm, ".modules.yaml"), []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		repo, commit := pluginInstalledGitRef(dir, name)
+		if repo != "refyon/"+name || commit != sha {
+			t.Fatalf(".modules.yaml 解析结果 = (%q, %q)，期望 (refyon/%s, %s)", repo, commit, name, sha)
+		}
+	})
+
+	t.Run("无解析结果", func(t *testing.T) {
+		if repo, commit := pluginInstalledGitRef(t.TempDir(), name); repo != "" || commit != "" {
+			t.Fatalf("既无 lockfile 也无 .modules.yaml 时应返回空，实际 (%q, %q)", repo, commit)
+		}
+	})
+
+	t.Run("分支名不算 commit", func(t *testing.T) {
+		dir := t.TempDir()
+		body := "packages:\n\n  " + name + "@git+https://github.com/refyon/" + name + ".git#main:\n"
+		if err := os.WriteFile(filepath.Join(dir, "pnpm-lock.yaml"), []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if repo, commit := pluginInstalledGitRef(dir, name); repo != "" || commit != "" {
+			t.Fatalf("分支名不应被当成 commit，实际 (%q, %q)", repo, commit)
+		}
+	})
+
+	t.Run("其它包不串味", func(t *testing.T) {
+		dir := t.TempDir()
+		if err := os.WriteFile(filepath.Join(dir, "pnpm-lock.yaml"), []byte(lockBody), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if repo, commit := pluginInstalledGitRef(dir, "other-pkg"); repo != "" || commit != "" {
+			t.Fatalf("别的包应读不到，实际 (%q, %q)", repo, commit)
+		}
+	})
+}
+
+// TestSplitGitPinSpec 记录的 spec → (仓库, 固定 commit)：只有 git 源 + 十六进制 ref 才算固定提交。
+func TestSplitGitPinSpec(t *testing.T) {
+	const sha = "41ad0c9873e578ab950ba9eb74539fc043df2852"
+	cases := []struct {
+		spec      string
+		wantRepo  string
+		wantPin   string
+		expectPin bool
+	}{
+		{"github:refyon/dsh-ui-taste#" + sha, "refyon/dsh-ui-taste", sha, true},
+		{"git+https://github.com/refyon/dsh-ui-taste.git#" + sha, "refyon/dsh-ui-taste", sha, true},
+		{"github:refyon/dsh-ui-taste#41ad0c9", "refyon/dsh-ui-taste", "41ad0c9", true},
+		{"github:refyon/dsh-ui-taste", "refyon/dsh-ui-taste", "", false},
+		{"github:refyon/dsh-ui-taste#main", "", "", false},
+		{"^1.2.3", "", "", false},
+	}
+	for _, c := range cases {
+		repo, pin := splitGitPinSpec(c.spec)
+		if !c.expectPin {
+			if repo != "" || pin != "" {
+				t.Fatalf("%s：不该判为固定 commit，实际 (%q, %q)", c.spec, repo, pin)
+			}
+			continue
+		}
+		if repo != c.wantRepo || pin != c.wantPin {
+			t.Fatalf("%s：(%q, %q)，期望 (%q, %q)", c.spec, repo, pin, c.wantRepo, c.wantPin)
+		}
+	}
+}
+
 // TestBuildPluginRows 插件清单：来源分类、已装版本读取、官方包排除、多 profile 同名合并。
 func TestBuildPluginRows(t *testing.T) {
 	home := t.TempDir()

@@ -629,6 +629,95 @@ func TestPluginTargetSatisfiedWhenLocalVersionNewer(t *testing.T) {
 	}
 }
 
+// TestPluginTargetSatisfiedPerProfile 版本次判定按 key 里的环境取：同一插件在 web / desktop 装了
+// 不同版本时，web 的记录只与 web 的版本比。合并行的 Version 取的是第一个目录（desktop 排在 web
+// 前），未收窄就会把 desktop 的版本当成 web 的 —— 2026-10-16 现场：web 已 1.6.1、判成 1.5.1，
+// 界面常驻「待生效 1 项」，点「重启生效」也清不掉。
+func TestPluginTargetSatisfiedPerProfile(t *testing.T) {
+	setupAccountTest(t)
+	home := t.TempDir()
+	t.Setenv("DSH_HOME", home)
+	spec := "git+https://github.com/refyon/restrict-discipline.git"
+	writeTestProfile(t, home, "web", map[string]string{"restrict-discipline": spec},
+		map[string]string{"restrict-discipline": "1.6.1"})
+	writeTestProfile(t, home, "desktop", map[string]string{"restrict-discipline": spec},
+		map[string]string{"restrict-discipline": "1.5.1"})
+
+	for _, c := range []struct{ profile, want string }{
+		{"web", "1.6.1"}, {"desktop", "1.5.1"},
+	} {
+		got, ok := accountLocalPluginValue(c.profile, "restrict-discipline")
+		if !ok || got.Version != c.want {
+			t.Fatalf("%s 环境的已装版本应读成 %s，实际 %+v（存在=%v）", c.profile, c.want, got, ok)
+		}
+	}
+	snap := accountLocalPluginsSnapshot()
+	for _, c := range []struct{ profile, want string }{
+		{"web", "1.6.1"}, {"desktop", "1.5.1"},
+	} {
+		lp, ok := snap[accountPluginKeyFor(c.profile, "restrict-discipline")]
+		if !ok || lp.Version != c.want {
+			t.Fatalf("对账快照里 %s 环境应是 %s，实际 %+v（存在=%v）", c.profile, c.want, lp, ok)
+		}
+	}
+
+	key := accountPluginKeyFor("web", "restrict-discipline")
+	for _, c := range []struct {
+		name  string
+		value string
+		want  bool
+	}{
+		{"web 已装 1.6.1 → 已满足", `{"action":"update","spec":"github:refyon/restrict-discipline","source":"github","version":"1.6.1"}`, true},
+		{"web 目标 1.7.0 → 未满足", `{"action":"update","spec":"github:refyon/restrict-discipline","source":"github","version":"1.7.0"}`, false},
+	} {
+		if got := accountKeyTargetSatisfiedAt(key, json.RawMessage(c.value), 1792136986); got != c.want {
+			t.Fatalf("%s：accountKeyTargetSatisfiedAt = %v，期望 %v", c.name, got, c.want)
+		}
+	}
+}
+
+// TestPluginTargetSatisfiedPinnedGitCommit 记录把 git 依赖固定在某个 commit 时，按「本机解析到的
+// 仓库与 commit」判满足（声明里的 commit 会被 pnpm 写掉，spec 串因此永远不等 —— 2026-10-16 现场：
+// desktop 两条记录每 20 分钟重新入队，点「重启生效」也清不掉）。
+func TestPluginTargetSatisfiedPinnedGitCommit(t *testing.T) {
+	setupAccountTest(t)
+	home := t.TempDir()
+	t.Setenv("DSH_HOME", home)
+	const (
+		name = "restrict-discipline"
+		sha  = "e40c568e37e74aee638f10f926b06929a5c6b5f4"
+	)
+	writeTestProfile(t, home, "desktop",
+		map[string]string{name: "git+https://github.com/refyon/" + name + ".git"},
+		map[string]string{name: "1.5.1"})
+	lock := "packages:\n\n  " + name + "@git+https://github.com/refyon/" + name + ".git#" + sha + ":\n" +
+		"    resolution: {commit: " + sha + ", repo: https://github.com/refyon/" + name + ".git, type: git}\n"
+	if err := os.WriteFile(filepath.Join(home, "profiles", "desktop", "pnpm-lock.yaml"), []byte(lock), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	key := accountPluginKeyFor("desktop", name)
+	cases := []struct {
+		name  string
+		value string
+		want  bool
+	}{
+		{"本机解析到的就是记录固定的 commit → 已满足",
+			`{"action":"install","spec":"github:refyon/` + name + `#` + sha + `","source":"github","version":"1.5.1"}`, true},
+		{"记录固定在别的 commit → 未满足",
+			`{"action":"install","spec":"github:refyon/` + name + `#1111111111111111111111111111111111111111","source":"github","version":"1.5.1"}`, false},
+		{"记录固定在别的仓库 → 未满足",
+			`{"action":"install","spec":"github:other/` + name + `#` + sha + `","source":"github","version":"1.5.1"}`, false},
+		{"记录固定分支而非 commit → 未满足（保守）",
+			`{"action":"install","spec":"github:refyon/` + name + `#main","source":"github","version":"1.5.1"}`, false},
+	}
+	for _, c := range cases {
+		if got := accountKeyTargetSatisfiedAt(key, json.RawMessage(c.value), 1791465530); got != c.want {
+			t.Fatalf("%s：accountKeyTargetSatisfiedAt = %v，期望 %v", c.name, got, c.want)
+		}
+	}
+}
+
 // TestSyncReportsPluginWhenPullFails 拉取失败也不该阻断本机插件改动的补报：账号侧
 // /v1/ops/since 超时（2026-10-06 现场）时，「harness 自己装了新版插件」仍要进账号记录。
 func TestSyncReportsPluginWhenPullFails(t *testing.T) {

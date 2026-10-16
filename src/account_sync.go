@@ -107,6 +107,11 @@ func accountLocalPluginValue(profile, name string) (pluginOpValue, bool) {
 		if !isOnlinePluginSource(row.Source) {
 			return pluginOpValue{}, false // 本地插件不参与同步
 		}
+		if profile != "" {
+			// 同名插件在两套环境里可能版本不同：合并行的 Version 取的是第一个目录，必须收窄到
+			// key 里的那个环境再读（见 pluginRowValueInProfile，2026-10-16 现场）。
+			row = pluginRowValueInProfile(row, profile)
+		}
 		action := "update"
 		if row.Version == "" {
 			action = "install"
@@ -227,7 +232,8 @@ func accountKeyTargetSatisfiedAt(key string, value json.RawMessage, updatedAt in
 		if want.Spec != "" && !pluginSpecSatisfied(cur, want.Spec) {
 			// 记录自身的 spec 与它声明的 Version 矛盾（如 spec=1.7.44 / version=1.7.45）时以 Version
 			// 为准：这种记录永远不可能被判为满足，界面会常驻「1 项待同步」（见 pluginRecordSpecStale）。
-			if !pluginRecordSpecStale(want) {
+			// 固定 commit 的 git 记录另走一条判据：本机声明不带 commit（见 pluginGitPinSatisfied）。
+			if !pluginRecordSpecStale(want) && !pluginGitPinSatisfied(profile, name, want.Spec) {
 				return false
 			}
 		}
@@ -291,6 +297,30 @@ func pluginSpecSatisfied(cur pluginOpValue, wantSpec string) bool {
 func specVersionLike(spec string) bool {
 	source, canUpdate, _ := classifyPluginSpec(spec)
 	return source == "npm" && canUpdate
+}
+
+// pluginGitPinSatisfied 账号记录把 git 依赖固定在某个 commit 时（spec 形如 github:owner/repo#<sha>），
+// 本机该环境装的是否就是它。
+//
+// 为什么需要单独一条判据：`pnpm add github:owner/repo#<sha>` **不**把 commit 写回 package.json
+// 声明（实测写回 git+https://github.com/owner/repo.git，commit 只落在 lockfile），spec 串比较因此
+// 永远不相等，而 pluginRecordSpecStale 只救 npm 形态的记录。本机表现是「每轮同步重新入队、点
+// 「重启生效」也清不掉」（2026-10-16 现场：desktop 两条固定 commit 的记录常驻待生效）。
+// 判据=本机解析到的仓库一致且 commit 相同（支持短 sha 前缀）；读不到解析结果时保守判不满足。
+func pluginGitPinSatisfied(profile, name, wantSpec string) bool {
+	repo, pin := splitGitPinSpec(wantSpec)
+	if repo == "" || pin == "" {
+		return false
+	}
+	dir, ok := profileDirForEnv(profile)
+	if !ok {
+		return false
+	}
+	gotRepo, gotCommit := pluginInstalledGitRef(dir, name)
+	if gotRepo != repo || gotCommit == "" {
+		return false
+	}
+	return strings.HasPrefix(gotCommit, pin) || strings.HasPrefix(pin, gotCommit)
 }
 
 // pluginRecordSpecStale 账号记录的 spec 与它自己声明的 Version 互相矛盾（spec 不接受该版本）。

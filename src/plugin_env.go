@@ -96,6 +96,24 @@ func scopeRowToDir(r PluginRow, dir string) (PluginRow, bool) {
 	return r, true
 }
 
+// pluginRowValueInProfile 插件行在指定环境里的实际状态：跨环境合并的行（同名同 spec 的 web 与
+// desktop）按该环境的目录重算已装版本与禁用状态（见 scopeRowToDir）。
+//
+// 为什么必须收窄：合并行的 Version 取的是**第一个**目录（见 buildPluginRows），而 profile 按名字
+// 排序时 desktop 在 web 之前，跨环境直接用合并行会把 desktop 的版本当成 web 的（2026-10-16 现场：
+// web 已是 1.6.1、判成 desktop 的 1.5.1 → 账号记录每轮被判「本机状态不一致」，界面常驻待生效）。
+// 拿不到该环境目录（或该行不属于它）时原样返回，保持调用方原有口径。
+func pluginRowValueInProfile(row PluginRow, profile string) PluginRow {
+	dir, ok := profileDirForEnv(profile)
+	if !ok {
+		return row
+	}
+	if scoped, ok := scopeRowToDir(row, dir); ok {
+		return scoped
+	}
+	return row
+}
+
 // rowsInProfile 把插件行收窄到指定环境：只保留在该环境声明/安装的插件，行的 Locs 也只留该
 // 环境目录（行内更新/删除/启用因此只作用于该环境，另一环境的同名插件不受影响）。
 func rowsInProfile(rows []PluginRow, profile string) []PluginRow {

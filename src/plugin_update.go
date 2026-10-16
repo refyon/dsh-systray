@@ -226,6 +226,109 @@ func installedPluginVersion(profileDir, pkgName string) string {
 	return strings.TrimPrefix(strings.TrimSpace(m.Version), "v")
 }
 
+// ---- 已装 git 依赖的解析结果 ----
+// 同步记录把 git 依赖固定在某个 commit 时（spec 形如 github:owner/repo#<sha>），本机声明通常
+// **不带** commit——`pnpm add github:owner/repo#<sha>` 会把 package.json 的声明写回
+// git+https://github.com/owner/repo.git，commit 只落在 pnpm 自己写的解析结果里（2026-10-16 实测）。
+// 所以这类记录不能只比 spec 串，要比「本机解析到的 commit 是否就是它」。
+
+// gitRefMinLen / gitRefMaxLen 视为 commit 的十六进制长度区间（短 sha 也接受，比对时按前缀匹配）。
+const (
+	gitRefMinLen = 7
+	gitRefMaxLen = 40
+)
+
+// isHexCommitRef 该 ref 是否是 commit 形态的十六进制串（分支名 / tag 一律不是）。
+func isHexCommitRef(ref string) bool {
+	if len(ref) < gitRefMinLen || len(ref) > gitRefMaxLen {
+		return false
+	}
+	for _, r := range ref {
+		switch {
+		case r >= '0' && r <= '9', r >= 'a' && r <= 'f', r >= 'A' && r <= 'F':
+		default:
+			return false
+		}
+	}
+	return true
+}
+
+// parseGitDepEntry 解析 pnpm 的 git 依赖条目键（pnpm-lock.yaml 的 packages 键 /
+// node_modules/.modules.yaml 的 hoistedLocations 键）：
+//
+//	restrict-discipline@git+https://github.com/owner/repo.git#<sha>
+//	@scope/pkg@git+ssh://git@github.com/owner/repo.git#<sha>(peer@1.0.0)
+//
+// 返回包名、归一化仓库（owner/repo）与 commit；不是「git 依赖 + commit」形态时 ok=false。
+func parseGitDepEntry(entry string) (name, repo, commit string, ok bool) {
+	entry = strings.TrimSpace(strings.TrimSuffix(strings.TrimSpace(entry), ":"))
+	i := strings.Index(entry, "@git+")
+	if i <= 0 {
+		return "", "", "", false
+	}
+	name = strings.TrimSpace(entry[:i])
+	rest := strings.TrimPrefix(entry[i+1:], "git+")
+	repoPart, refPart, found := strings.Cut(rest, "#")
+	if !found {
+		return "", "", "", false
+	}
+	if j := strings.IndexAny(refPart, "():"); j >= 0 {
+		refPart = refPart[:j] // 去掉 pnpm 附在后面的 peer 后缀
+	}
+	refPart = strings.ToLower(strings.TrimSpace(refPart))
+	if name == "" || !isHexCommitRef(refPart) {
+		return "", "", "", false
+	}
+	repo = normalizeSpecText(repoPart)
+	if !specGitHubShorthandRe.MatchString(repo) {
+		return "", "", "", false
+	}
+	return name, repo, refPart, true
+}
+
+// pluginInstalledGitRef 某 profile 中该插件解析到的 git 仓库与 commit（拿不到返回空串）。
+//
+// 两个数据源都是 pnpm 自己写的解析结果，lockfile 优先（isolated 与 hoisted 布局都会写它）：
+//  1. pnpm-lock.yaml 的 packages 键；
+//  2. node_modules/.modules.yaml 的 hoistedLocations 键（nodeLinker=hoisted 时的实际落地位置，
+//     lockfile 缺失或被清掉时兜底）。
+func pluginInstalledGitRef(dir, pkgName string) (repo, commit string) {
+	if data, err := os.ReadFile(filepath.Join(dir, "pnpm-lock.yaml")); err == nil {
+		for _, line := range strings.Split(string(data), "\n") {
+			if name, r, c, ok := parseGitDepEntry(line); ok && name == pkgName {
+				return r, c
+			}
+		}
+	}
+	if data, err := os.ReadFile(filepath.Join(dir, "node_modules", ".modules.yaml")); err == nil {
+		var m struct {
+			HoistedLocations map[string][]string `json:"hoistedLocations"`
+		}
+		if json.Unmarshal(data, &m) == nil {
+			for key := range m.HoistedLocations {
+				if name, r, c, ok := parseGitDepEntry(key); ok && name == pkgName {
+					return r, c
+				}
+			}
+		}
+	}
+	return "", ""
+}
+
+// splitGitPinSpec 从 spec 里取出归一化仓库（owner/repo）与固定 commit；非「git 源 + commit」形态
+// 返回空串（保守：不认识的写法一律按原 spec 串比对）。
+//
+// 注意 .git 要去在 #ref **之前**的仓库部分上：normalizeSpecText 只去字符串末尾的 .git，
+// 带 #ref 的 spec（…/repo.git#<sha>）末尾是 ref，去不掉。
+func splitGitPinSpec(spec string) (repo, pin string) {
+	base, ref, found := strings.Cut(normalizeSpecText(spec), "#")
+	base = strings.TrimSuffix(base, ".git")
+	if !found || !isHexCommitRef(ref) || !specGitHubShorthandRe.MatchString(base) {
+		return "", ""
+	}
+	return base, strings.ToLower(ref)
+}
+
 // ---- 依赖 spec 来源分类 ----
 
 // specGitHubRe GitHub 依赖 spec 的显式形态：github: / git+https://github.com / git@github.com / git://。
