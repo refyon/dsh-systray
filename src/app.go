@@ -1670,7 +1670,7 @@ func (a *App) OpenWebUI() {
 	}
 }
 
-// projectPages 关于页可打开的项目页面白名单：前端只传键名，URL 由 Go 侧决定，
+// projectPages 帮助页可打开的项目页面白名单：前端只传键名，URL 由 Go 侧决定，
 // 避免网页内容通过绑定注入任意地址交给系统浏览器打开。
 var projectPages = map[string]string{
 	"home":     "https://refyon.github.io/dsh-systray/",
@@ -1679,7 +1679,7 @@ var projectPages = map[string]string{
 	"issues":   "https://github.com/refyon/dsh-systray/issues/new/choose",
 }
 
-// OpenProjectPage 关于页打开项目页面（项目主页 / 仓库 / 发布 / 新建 issue）。
+// OpenProjectPage 帮助页打开项目页面（项目主页 / 仓库 / 发布 / 新建 issue）。
 // 键名不在白名单内直接忽略（不报错：前端写错键不该弹提示打断用户）。
 func (a *App) OpenProjectPage(key string) {
 	u, ok := projectPages[key]

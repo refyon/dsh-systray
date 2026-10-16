@@ -239,20 +239,6 @@
           <div id="plug-list" class="plug-list"></div>
           <div id="plug-empty" class="plug-empty row-sub hidden" data-i18n="plugEmpty">未安装任何插件</div>
         </div>
-
-        <!-- 关于页末位的项目入口：主页 / 发布 / 问题反馈；Star 提示只是末行一行字，不做弹窗或横幅 -->
-        <div class="card">
-          <div class="row-title" data-i18n="abProjectTitle">项目主页</div>
-          <div class="row-sub" data-i18n="abProjectSub">dsh-systray 由社区维护，问题反馈与更新发布都在 GitHub。</div>
-          <div class="about-links">
-            <div id="hint-project" class="update-note" data-i18n="abStarHint">觉得好用的话，欢迎在 GitHub 点个 Star</div>
-            <div class="btn-group">
-              <button id="btn-proj-home" class="btn btn-outline btn-sm" data-i18n="btnProjHome">项目网站</button>
-              <button id="btn-proj-releases" class="btn btn-outline btn-sm" data-i18n="btnProjReleases">发布记录</button>
-              <button id="btn-proj-issues" class="btn btn-outline btn-sm" data-i18n="btnProjIssues">问题反馈</button>
-            </div>
-          </div>
-        </div>
       </section>
 
       <!-- 日志 -->
@@ -498,6 +484,20 @@
             <button id="btn-help-open" class="btn btn-primary" data-i18n="btnOpenWeb">打开 Web UI</button>
           </div>
           <div id="help-busy" class="row-sub help-note hidden" data-i18n="helpRestarting">正在重启后台服务…完成后「复制访问链接」会恢复可用（当前网页端会短暂断开）。</div>
+        </div>
+        <!-- 帮助页末位的项目入口：主页 / 发布 / 问题反馈；两种启动方式都显示（不带 data-only-*），
+             Star 提示只是末行一行字，不做弹窗或横幅 -->
+        <div class="card">
+          <div class="row-title" data-i18n="helpProjectTitle">项目主页</div>
+          <div class="row-sub" data-i18n="helpProjectSub">dsh-systray 由社区维护，问题反馈与更新发布都在 GitHub。</div>
+          <div class="help-links">
+            <div id="hint-project" class="update-note" data-i18n="helpStarHint">觉得好用的话，欢迎在 GitHub 点个 Star</div>
+            <div class="btn-group">
+              <button id="btn-proj-home" class="btn btn-outline btn-sm" data-i18n="btnProjHome">项目网站</button>
+              <button id="btn-proj-releases" class="btn btn-outline btn-sm" data-i18n="btnProjReleases">发布记录</button>
+              <button id="btn-proj-issues" class="btn btn-outline btn-sm" data-i18n="btnProjIssues">问题反馈</button>
+            </div>
+          </div>
         </div>
       </section>
     </main>

@@ -101,9 +101,9 @@ const I18N_EN = {
   btnCheckUpdate: "Check for updates",
   btnUpdateApp: "Update dsh-systray", btnUpdateHarness: "Update Harness",
   abPluginsTitle: "Installed plugins",
-  abProjectTitle: "Project home",
-  abProjectSub: "dsh-systray is community-maintained; issues and releases live on GitHub.",
-  abStarHint: "A Star on GitHub is appreciated",
+  helpProjectTitle: "Project home",
+  helpProjectSub: "dsh-systray is community-maintained; issues and releases live on GitHub.",
+  helpStarHint: "A Star on GitHub is appreciated",
   btnProjHome: "Website",
   btnProjReleases: "Releases",
   btnProjIssues: "Report an issue",
@@ -1430,7 +1430,7 @@ function wireAbout() {
   // dsh-systray / Harness：各自的检查按钮
   $("btn-check-systray").addEventListener("click", () => runModuleCheck("systray"));
   $("btn-check-harness").addEventListener("click", () => runModuleCheck("harness"));
-  // 关于页项目入口：URL 白名单在 Go 侧（OpenProjectPage），前端只传键名
+  // 帮助页项目入口：URL 白名单在 Go 侧（OpenProjectPage），前端只传键名
   ["home", "releases", "issues"].forEach((key) => {
     const btn = $("btn-proj-" + key);
     if (!btn) return;
