@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"testing"
 	"time"
@@ -75,6 +76,137 @@ func TestAccountVerifySessionRefreshesProfile(t *testing.T) {
 	accountMu.Unlock()
 	if email != "new@example.com" || uid != "u-9" {
 		t.Fatalf("账号信息应随服务端刷新：email=%s uid=%s", email, uid)
+	}
+}
+
+// ---------- 令牌静默续期 ----------
+
+func TestAccountRenewsTokenNearExpiry(t *testing.T) {
+	setupAccountTest(t)
+	st := loggedInState()
+	st.TokenExpiresAt = time.Now().Add(10 * 24 * time.Hour).Unix() // 剩余 10 天：进入续期窗口
+	setAccountState(st)
+	if err := saveAccountState(st); err != nil {
+		t.Fatalf("写入登录态失败: %v", err)
+	}
+
+	newExpiry := time.Now().Add(90 * 24 * time.Hour).Unix()
+	var paths []string
+	client, _ := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		paths = append(paths, r.URL.Path)
+		switch r.URL.Path {
+		case "/v1/me":
+			_, _ = w.Write([]byte(`{"user":{"id":"u-1","email":"user@example.com","createdAt":1},"devices":[]}`))
+		case "/v1/auth/refresh":
+			if got := r.Header.Get("Authorization"); got != "Bearer tok-1" {
+				t.Errorf("续期请求应带当前令牌，实际 Authorization=%q", got)
+			}
+			_, _ = fmt.Fprintf(w, `{"token":"tok-1","tokenExpiresAt":%d,"deviceId":"dev-1",`+
+				`"user":{"id":"u-1","email":"user@example.com","createdAt":1}}`, newExpiry)
+		default:
+			t.Errorf("未预期路径: %s", r.URL.Path)
+		}
+	})
+	setAccountAPIBase(client.base)
+
+	accountVerifySession(context.Background())
+
+	if len(paths) != 2 || paths[0] != "/v1/me" || paths[1] != "/v1/auth/refresh" {
+		t.Fatalf("应先校验再续期，实际请求: %v", paths)
+	}
+	accountMu.Lock()
+	gotExp := accountCur.TokenExpiresAt
+	accountMu.Unlock()
+	if gotExp != newExpiry {
+		t.Fatalf("续期后内存有效期应更新: got %d want %d", gotExp, newExpiry)
+	}
+	if st := loadAccountState(); st.TokenExpiresAt != newExpiry {
+		t.Fatalf("续期后的有效期应落盘，实际 %d", st.TokenExpiresAt)
+	}
+	if snap := accountSnapshot(); !snap.LoggedIn {
+		t.Fatalf("续期后仍应是已登录: %+v", snap)
+	}
+}
+
+func TestAccountSkipsRenewalFarFromExpiry(t *testing.T) {
+	setupAccountTest(t)
+	setAccountState(loggedInState()) // 剩余 90 天：不需要续期
+
+	renewed := 0
+	client, _ := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v1/auth/refresh" {
+			renewed++
+		}
+		_, _ = w.Write([]byte(`{"user":{"id":"u-1","email":"user@example.com","createdAt":1},"devices":[]}`))
+	})
+	setAccountAPIBase(client.base)
+
+	accountVerifySession(context.Background())
+
+	if renewed != 0 {
+		t.Fatalf("距到期还早不应调用续期，实际 %d 次", renewed)
+	}
+	if snap := accountSnapshot(); !snap.LoggedIn {
+		t.Fatalf("校验后应保持已登录: %+v", snap)
+	}
+}
+
+func TestAccountRenewalUnauthorizedInvalidatesSession(t *testing.T) {
+	setupAccountTest(t)
+	st := loggedInState()
+	st.TokenExpiresAt = time.Now().Add(5 * 24 * time.Hour).Unix()
+	setAccountState(st)
+
+	client, _ := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v1/me" {
+			_, _ = w.Write([]byte(`{"user":{"id":"u-1","email":"user@example.com","createdAt":1},"devices":[]}`))
+			return
+		}
+		// 服务端已撤销/过期：续期被拒，客户端必须停止拿旧令牌重试
+		w.WriteHeader(http.StatusUnauthorized)
+		_, _ = w.Write([]byte(`{"error":{"code":"unauthorized","message":"登录状态无效，请重新登录"}}`))
+	})
+	setAccountAPIBase(client.base)
+
+	accountVerifySession(context.Background())
+
+	accountMu.Lock()
+	token := accountCur.Token
+	accountMu.Unlock()
+	if token != "" {
+		t.Fatalf("续期被拒（401）应清除令牌，实际仍有 %q", token)
+	}
+	if snap := accountSnapshot(); snap.LoggedIn || snap.ExpireReason != "no_token" {
+		t.Fatalf("快照应回到未登录: %+v", snap)
+	}
+}
+
+func TestAccountRenewalErrorKeepsSession(t *testing.T) {
+	setupAccountTest(t)
+	st := loggedInState()
+	st.TokenExpiresAt = time.Now().Add(5 * 24 * time.Hour).Unix()
+	setAccountState(st)
+
+	client, _ := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v1/me" {
+			_, _ = w.Write([]byte(`{"user":{"id":"u-1","email":"user@example.com","createdAt":1},"devices":[]}`))
+			return
+		}
+		w.WriteHeader(http.StatusInternalServerError)
+		_, _ = w.Write([]byte(`{"error":{"code":"internal_error","message":"服务器内部错误"}}`))
+	})
+	setAccountAPIBase(client.base)
+
+	accountVerifySession(context.Background())
+
+	accountMu.Lock()
+	token := accountCur.Token
+	accountMu.Unlock()
+	if token != "tok-1" {
+		t.Fatalf("续期临时失败不应登出（下轮重试），实际令牌 %q", token)
+	}
+	if snap := accountSnapshot(); !snap.LoggedIn {
+		t.Fatalf("续期临时失败仍应保持已登录: %+v", snap)
 	}
 }
 

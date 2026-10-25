@@ -1,4 +1,7 @@
-// account_store.go：登录态持久化（account.json，0600）与本地 30 天有效期策略。
+// account_store.go：登录态持久化（account.json，0600）与过期判定。
+//
+// 2026-10 起不再使用「签发时间 + N 天」的本地硬过期：令牌在剩余 30 天时由后台静默续期
+// （account_background.go 的 accountMaybeRenewToken），过期只跟随服务端下发的 TokenExpiresAt。
 //
 // 与 config.json 分开存放：令牌属于凭据，权限收紧到 0600；config.json 会被多处整份覆盖写，
 // 且可能随导出包分享（导出包不含本文件）。存储接口化（本文件的 load/save/clear 三个函数），
@@ -13,10 +16,6 @@ import (
 	"sync"
 	"time"
 )
-
-// accountSessionTTLDays 本地登录有效期（用户决策：30 天）。
-// 服务端令牌有效期是 90 天，本地更短，用于「过期后明确提示重新登录」。
-const accountSessionTTLDays = 30
 
 // 可注入覆盖值：启动时写入，之后会被后台同步 goroutine 读取，故用读写锁保护
 // （-race 下曾暴露「测试复位 vs 后台上报读」的竞态）。
@@ -67,7 +66,7 @@ type appliedRecord struct {
 type accountState struct {
 	Token          string `json:"token"`
 	TokenExpiresAt int64  `json:"tokenExpiresAt"`
-	// IssuedAt 本地记录的令牌签发时间：30 天策略的依据（不依赖服务端时钟）。
+	// IssuedAt 登录/最近一次续期的时刻：仅用于诊断与展示，**不再参与过期判定**。
 	IssuedAt int64  `json:"issuedAt"`
 	DeviceID string `json:"deviceId"`
 	UserID   string `json:"userId"`
@@ -210,14 +209,14 @@ func (st accountState) loggedIn(now time.Time) bool {
 	return st.expireReason(now) == ""
 }
 
-// expireReason 登录失效原因："" 有效 / "session_expired"（本地 30 天到期）/
-// "token_expired"（服务端有效期已过）/ "no_token"（从未登录）。
+// expireReason 登录失效原因："" 有效 / "token_expired"（服务端令牌已过期）/
+// "no_token"（从未登录）。
+//
+// 不再有「本地 X 天到期」档：令牌在到期前 30 天由后台静默续期（accountMaybeRenewToken），
+// 过期判定只需跟随服务端给出的 TokenExpiresAt。
 func (st accountState) expireReason(now time.Time) string {
 	if st.Token == "" {
 		return "no_token"
-	}
-	if st.IssuedAt > 0 && now.Unix() >= st.IssuedAt+int64(accountSessionTTLDays)*86400 {
-		return "session_expired"
 	}
 	if st.TokenExpiresAt > 0 && now.Unix() >= st.TokenExpiresAt {
 		return "token_expired"

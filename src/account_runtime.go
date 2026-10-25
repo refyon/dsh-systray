@@ -20,7 +20,7 @@ type AccountStatusInfo struct {
 	LoggedIn     bool   `json:"loggedIn"`
 	Email        string `json:"email"`
 	DeviceID     string `json:"deviceId"`
-	ExpireReason string `json:"expireReason"` // "" 有效 | session_expired | token_expired | no_token
+	ExpireReason string `json:"expireReason"` // "" 有效 | token_expired | no_token（session_expired 为旧版遗留，不再产生）
 	LastSyncedAt int64  `json:"lastSyncedAt"`
 	BaselineDone bool   `json:"baselineDone"`
 	Syncing      bool   `json:"syncing"`

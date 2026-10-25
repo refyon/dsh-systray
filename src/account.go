@@ -307,6 +307,13 @@ func (c *accountClient) Me(ctx context.Context, token string) (accountMe, error)
 	return out, err
 }
 
+// Refresh 滑动续期：延长当前令牌的有效期（服务端不换令牌值，可安全重试）。
+func (c *accountClient) Refresh(ctx context.Context, token string) (accountSession, error) {
+	var out accountSession
+	err := c.do(ctx, http.MethodPost, "/v1/auth/refresh", token, nil, &out)
+	return out, err
+}
+
 // Logout 撤销当前令牌。
 func (c *accountClient) Logout(ctx context.Context, token string) error {
 	return c.do(ctx, http.MethodPost, "/v1/auth/logout", token, nil, nil)

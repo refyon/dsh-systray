@@ -106,8 +106,8 @@ Prerequisites: Go 1.21+ and the [Wails CLI v2](https://wails.io/docs/gettingstar
 
 | Platform | Build command (run inside `src/`) |
 | --- | --- |
-| Windows | `wails build -s -clean -platform windows/amd64 -ldflags "-X main.appVersion=v1.3.7"` |
-| macOS | `wails build -s -clean -platform darwin/universal -ldflags "-X main.appVersion=v1.3.7"` |
+| Windows | `wails build -s -clean -platform windows/amd64 -ldflags "-X main.appVersion=v1.4.0"` |
+| macOS | `wails build -s -clean -platform darwin/universal -ldflags "-X main.appVersion=v1.4.0"` |
 
 Output: `src/build/bin/dsh-systray.exe` / `dsh-systray.app`. The version is injected from the CI tag; when omitted it is `dev`, which skips update checks. On Windows add `-webview2 download` to cover machines without WebView2. Development mode: `cd src && wails dev`.
 

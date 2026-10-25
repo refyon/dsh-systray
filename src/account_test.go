@@ -261,9 +261,11 @@ func TestAccountSessionExpiry(t *testing.T) {
 	}{
 		{"未登录", accountState{}, "no_token"},
 		{"有效", accountState{Token: "t", IssuedAt: now.Unix() - 5*day, TokenExpiresAt: now.Unix() + 60*day}, ""},
-		{"本地 30 天到期", accountState{Token: "t", IssuedAt: now.Unix() - 31*day, TokenExpiresAt: now.Unix() + 60*day}, "session_expired"},
 		{"服务端令牌过期", accountState{Token: "t", IssuedAt: now.Unix() - day, TokenExpiresAt: now.Unix() - 1}, "token_expired"},
-		{"29 天仍有效", accountState{Token: "t", IssuedAt: now.Unix() - 29*day, TokenExpiresAt: now.Unix() + 61*day}, ""},
+		// 登录已超过 30 天但令牌仍在有效期内：不再按本地签发时间强制过期
+		// （旧策略会在这里返回 session_expired，正是用户被要求重新登录的原因）。
+		{"签发已 45 天但令牌有效", accountState{Token: "t", IssuedAt: now.Unix() - 45*day, TokenExpiresAt: now.Unix() + 45*day}, ""},
+		{"续期后重新计时", accountState{Token: "t", IssuedAt: now.Unix() - day, TokenExpiresAt: now.Unix() + 89*day}, ""},
 	}
 	for _, tc := range cases {
 		if got := tc.st.expireReason(now); got != tc.want {
