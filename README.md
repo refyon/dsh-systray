@@ -7,7 +7,7 @@
 <p align="center">
   后台启动
   <a href="https://github.com/deepseek-ai/deepseek-harness">DeepSeek Harness</a>
-  Web 本地服务器，并常驻系统托盘。
+  Web 本地服务器，并常驻系统托盘（system tray）。
 </p>
 
 <p align="center">
@@ -53,7 +53,7 @@
 
 ## 功能
 
-轻量：双击启动（仅监听本机的 harness Web 服务，进度在窗口内显示）；Windows 单 exe、macOS 单 .app，免安装、免管理员权限；托盘常驻（打开 Web UI / 设置 / 退出，深浅色随系统）；单实例，重复启动提示「已在运行中」。
+轻量：双击启动（仅监听本机的 harness Web 服务，进度在窗口内显示）；Windows 单 exe、macOS 单 .app，免安装、免管理员权限；托盘常驻（system tray，打开 Web UI / 设置 / 退出，深浅色随系统）；单实例，重复启动提示「已在运行中」。
 
 可靠：启动自检 node / pnpm / harness 并自动补装；启动失败回退上次正常状态并重启；插件与 harness 不兼容时在关于页标注「已被跳过」与原因；「重启服务」约 4–5 秒，服务进程退出后 5 分钟内自动拉起（最多 3 次）；dsh-systray / Harness / 插件按模块独立检查更新，失败自动回滚；私有仓库插件走 GitHub 设备流授权；日志页跟踪 `dsh-systray.log`（含轮转归档）。
 

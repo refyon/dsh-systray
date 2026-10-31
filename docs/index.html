@@ -3,8 +3,38 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title id="doc-title">dsh-systray · 桌面托盘，静默启动</title>
-<meta name="description" id="doc-desc" content="dsh-systray — Windows / macOS 桌面托盘：双击后台启动 DeepSeek Harness 本地服务，托盘常驻、开机自启、自动更新、数据一键迁移、多机账号同步。">
+<title id="doc-title">dsh-systray · DeepSeek Harness 系统托盘启动器</title>
+<meta name="description" id="doc-desc" content="dsh-systray — DeepSeek Harness 的 Windows / macOS 系统托盘（system tray）启动器：双击后台启动本地服务，托盘常驻、开机自启、自动更新、数据一键迁移、多机账号同步。">
+<link rel="canonical" href="https://refyon.github.io/dsh-systray/">
+<meta property="og:type" content="website">
+<meta property="og:url" content="https://refyon.github.io/dsh-systray/">
+<meta property="og:site_name" content="dsh-systray">
+<meta property="og:title" content="dsh-systray — system tray launcher for DeepSeek Harness (DSH)">
+<meta property="og:description" content="A lightweight Windows / macOS system tray (menu bar) launcher for DeepSeek Harness: start the local web server with a double-click, keep it in the tray, autostart on boot and carry sessions and plugins across machines.">
+<meta property="og:image" content="https://refyon.github.io/dsh-systray/app-icon.png">
+<meta name="twitter:card" content="summary">
+<meta name="twitter:title" content="dsh-systray — system tray launcher for DeepSeek Harness (DSH)">
+<meta name="twitter:description" content="A lightweight Windows / macOS system tray (menu bar) launcher for DeepSeek Harness.">
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "SoftwareApplication",
+  "name": "dsh-systray",
+  "alternateName": ["dsh systray", "DSH system tray", "DeepSeek Harness 系统托盘启动器"],
+  "applicationCategory": "DeveloperApplication",
+  "operatingSystem": "Windows 10, Windows 11, macOS 11+",
+  "description": "A lightweight Windows / macOS system tray (menu bar) launcher for DeepSeek Harness (dsh): starts the local web server in the background, stays in the tray, autostarts on boot, updates itself and migrates sessions and plugins.",
+  "url": "https://refyon.github.io/dsh-systray/",
+  "downloadUrl": "https://github.com/refyon/dsh-systray/releases/latest",
+  "sameAs": ["https://github.com/refyon/dsh-systray"],
+  "license": "https://opensource.org/licenses/MIT",
+  "offers": {
+    "@type": "Offer",
+    "price": "0",
+    "priceCurrency": "USD"
+  }
+}
+</script>
 <style>
 :root{
   --bg:#f8fafc; --surface:#ffffff; --surface-2:#f1f5f9; --text:#0f172a; --muted:#64748b;
@@ -313,8 +343,8 @@ footer .sep{margin:0 8px;color:var(--border)}
   // ==================== i18n（中/英） ====================
   var I18N = {
     zh: {
-      title: "dsh-systray · 桌面托盘，静默启动",
-      desc: "dsh-systray — Windows / macOS 桌面托盘：双击后台启动 DeepSeek Harness 本地服务，托盘常驻、开机自启、自动更新、数据一键迁移、多机账号同步。",
+      title: "dsh-systray · DeepSeek Harness 系统托盘启动器",
+      desc: "dsh-systray — DeepSeek Harness 的 Windows / macOS 系统托盘（system tray）启动器：双击后台启动本地服务，托盘常驻、开机自启、自动更新、数据一键迁移、多机账号同步。",
       logoAlt: "dsh-systray 图标",
       heroSub: "轻量 · 可靠 · 可迁移——双击即启，托盘常驻，多机数据随行。",
       dlWin: "下载 Windows 版", dlMac: "下载 macOS 版",
@@ -350,7 +380,7 @@ footer .sep{margin:0 8px;color:var(--border)}
       n3: "<b>macOS</b>：浏览器下载会给包打上隔离标记（未公证，带标记会被 Gatekeeper 拦下），在解压目录执行 <code>xattr -dr com.apple.quarantine dsh-systray.app</code>，或在「系统设置 → 隐私与安全性」点「仍要打开」",
       n4: "首次启动约需 2-5 分钟完成环境部署，随后自动打开服务；配置保存在用户目录的 <code>config.json</code>",
       n5: "换机迁移：旧机器「导出」打包 zip，新机器「导入」逐项恢复会话、插件与文件目录",
-      fTag: "dsh-systray · DeepSeek Harness 桌面托盘",
+      fTag: "dsh-systray · DeepSeek Harness 系统托盘启动器",
       fLinkRel: "更新日志", fLinkSha: "SHA256 校验和", fLinkSrc: "源码 ↗",
       cap: {
         general: "常规 — 自启与服务状态，一眼掌握",
@@ -364,10 +394,10 @@ footer .sep{margin:0 8px;color:var(--border)}
       }
     },
     en: {
-      title: "dsh-systray · Desktop tray, silent startup",
-      desc: "dsh-systray — a Windows / macOS desktop tray app: launch the DeepSeek Harness local service in the background with a double-click; tray resident, autostart on boot, auto-update, one-click data migration and account sync across machines.",
+      title: "dsh-systray · System tray launcher for DeepSeek Harness (DSH)",
+      desc: "dsh-systray — a lightweight Windows / macOS system tray (menu bar) launcher for DeepSeek Harness (dsh): start the local web server with a double-click; tray resident, autostart on boot, auto-update, one-click data migration and account sync across machines.",
       logoAlt: "dsh-systray logo",
-      heroSub: "Lightweight · Reliable · Portable — double-click to start, lives in the tray, your data follows you across machines.",
+      heroSub: "Lightweight · Reliable · Portable — double-click to start, lives in the system tray, your data follows you across machines.",
       dlWin: "Download for Windows", dlMac: "Download for macOS",
       verLabel: "Version", verSuffix: "· built & released automatically by CI",
       featTitle: "Lightweight, Reliable, Portable",
@@ -401,7 +431,7 @@ footer .sep{margin:0 8px;color:var(--border)}
       n3: "<b>macOS</b>: a browser download flags the app with the quarantine attribute (the build is not notarized, so Gatekeeper blocks a flagged app). In the unzip directory run <code>xattr -dr com.apple.quarantine dsh-systray.app</code>, or click Open Anyway in System Settings → Privacy & Security",
       n4: "First launch takes about 2–5 min to deploy the environment, then opens the service automatically; config is stored in <code>config.json</code> under your user directory",
       n5: "Migrating machines: use Export on the old machine to bundle a zip, then Import on the new one to restore sessions, plugins and folders item by item",
-      fTag: "dsh-systray · Desktop tray for DeepSeek Harness",
+      fTag: "dsh-systray · System tray launcher for DeepSeek Harness",
       fLinkRel: "Release Notes", fLinkSha: "SHA256 checksums", fLinkSrc: "Source ↗",
       cap: {
         general: "General — autostart & service status at a glance",

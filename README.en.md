@@ -7,7 +7,7 @@
 <p align="center">
   Launches the
   <a href="https://github.com/deepseek-ai/deepseek-harness">DeepSeek Harness</a>
-  Web server in the background and lives in the system tray.
+  (dsh) web server in the background and lives in the Windows system tray / macOS menu bar.
 </p>
 
 <p align="center">
@@ -25,7 +25,7 @@
 <img src="docs/demo/settings-en.apng#gh-light-mode-only" alt="dsh-systray settings window: General, About, Data sync, Export and Logs pages" width="880" />
 <img src="docs/demo/settings-en-dark.apng#gh-dark-mode-only" alt="dsh-systray settings window: General, About, Data sync, Export and Logs pages" width="880" />
 
-**Lightweight**: one file, no install, no admin rights — a single exe on Windows, a single .app on macOS, resident in the tray.
+**Lightweight**: one file, no install, no admin rights — a single exe on Windows, a single .app on macOS, resident in the system tray.
 **Reliable**: the environment is checked and provisioned on first start, a failed start rolls back to the last working state, a failed update rolls back automatically, and a service that exits is relaunched.
 **Portable**: bundle sessions, plugins and chosen folders into a zip, or keep several machines consistent through account sync.
 
