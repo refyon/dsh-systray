@@ -1,0 +1,4 @@
+User-agent: *
+Allow: /
+
+Sitemap: https://refyon.github.io/dsh-systray/sitemap.xml
