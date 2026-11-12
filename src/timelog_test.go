@@ -255,13 +255,15 @@ func TestDropHarnessLockfile(t *testing.T) {
 	dropHarnessLockfile() // 不存在时不应 panic/报错
 }
 
-// TestHarnessInstallHint 失败归类：上游分批发布（NO_MATCHING_VERSION）与 registry 抖动
-// （meta fetch fail / socket timeout）给出不同且可执行的提示，其余输出不臆测原因。
+// TestHarnessInstallHint 失败归类：上游分批发布（NO_MATCHING_VERSION）、registry 抖动
+// （meta fetch fail / socket timeout）与 tokenHelper 失效给出不同且可执行的提示，
+// 其余输出不臆测原因。
 func TestHarnessInstallHint(t *testing.T) {
 	cases := []struct {
 		out      string
 		contains string
 	}{
+		{"[ERR_PNPM_TOKEN_HELPER_ERROR_STATUS] Error running \"C:\\tools\\gh-token.cmd\" as a token helper. Exit code 1", "tokenHelper"},
 		{"ERR_PNPM_NO_MATCHING_VERSION No matching version found for @deepseek-ai/dsh-chunked-list@^0.1.5-rc.2", "尚未发布完整"},
 		{"ERR_PNPM_META_FETCH_FAIL GET https://registry.npmjs.org/x: Socket timeout", "超时"},
 		{"request to https://registry.npmjs.org/y failed, reason: read ECONNRESET", "连接被重置"},

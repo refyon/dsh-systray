@@ -278,71 +278,120 @@ func TestWriteCodeloadTokenHelper(t *testing.T) {
 	}
 }
 
-// TestDropLegacyTokenHelperLine 旧格式（值含空白 = 带参数）行删除：它是 pnpm 10.34.5 下
-// 所有 pnpm 命令失败的根因；其它 host 的 tokenHelper 与其它配置必须原样保留。
-func TestDropLegacyTokenHelperLine(t *testing.T) {
+// TestDropPnpmTokenHelperLines 两类必删行：旧格式（值含空白 = 带参数）与指向本程序包装器
+// （任意 host）的 tokenHelper——它们都是 pnpm 全线失败的根因；其它脚本与其它配置必须原样保留。
+func TestDropPnpmTokenHelperLines(t *testing.T) {
+	helper := `C:\tools\gh-token.cmd`
 	legacy := codeloadTokenHelperKey + `C:\tools\gh.exe auth token --hostname github.com`
-	bare := codeloadTokenHelperKey + `C:\tools\gh-token.cmd`
+	own := codeloadTokenHelperKey + helper
+	ownMirror := `//mirror.example.com/:tokenHelper=` + helper
+	other := codeloadTokenHelperKey + `C:\tools\other-token.cmd`
 	cases := []struct {
 		desc, in, want string
 		changed        bool
 	}{
 		{"仅旧行→清空", legacy + "\n", "", true},
 		{"保留其它配置", "registry=x\n" + legacy + "\n", "registry=x\n", true},
-		{"新格式不动", bare + "\n", bare + "\n", false},
-		{"其它 host 不动", "//npm.pkg.github.com/:tokenHelper=/opt/h.sh\n" + legacy + "\n",
-			"//npm.pkg.github.com/:tokenHelper=/opt/h.sh\n", true},
-		{"CRLF 保留", "registry=x\r\n" + legacy + "\r\n", "registry=x\r\n", true},
+		{"本程序包装器：codeload", own + "\n", "", true},
+		{"本程序包装器：中转 host", "registry=x\n" + ownMirror + "\n", "registry=x\n", true},
+		{"其它脚本不动", other + "\n", other + "\n", false},
+		{"其它 host 其它脚本不动", "//npm.pkg.github.com/:tokenHelper=/opt/h.sh\n",
+			"//npm.pkg.github.com/:tokenHelper=/opt/h.sh\n", false},
+		{"CRLF 保留", "registry=x\r\n" + own + "\r\n", "registry=x\r\n", true},
 		{"无该行不动", "registry=x\n", "registry=x\n", false},
 	}
 	for _, c := range cases {
-		got, changed := dropLegacyTokenHelperLine(c.in)
+		got, changed := dropPnpmTokenHelperLines(c.in, helper)
 		if got != c.want || changed != c.changed {
 			t.Errorf("%s: got (%q, %v), want (%q, %v)", c.desc, got, changed, c.want, c.changed)
 		}
 	}
 }
 
-// TestRemoveLegacyCodeloadTokenHelper 无 gh 时的兜底：只删旧行、不动别的；已是新格式则不改文件。
-func TestRemoveLegacyCodeloadTokenHelper(t *testing.T) {
+// TestRemovePnpmTokenHelper 落盘删除：只删本程序的行（旧格式 + 任意 host 指向包装器），
+// 保留用户其它配置；内容已干净时不改写文件；npmrc 不存在时静默成功。
+func TestRemovePnpmTokenHelper(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("USERPROFILE", home)
 	t.Setenv("HOME", home)
 	p := filepath.Join(home, ".npmrc")
 
+	helper := `C:\tools\gh-token.cmd`
 	legacy := codeloadTokenHelperKey + `C:\tools\gh.exe auth token --hostname github.com`
-	if err := os.WriteFile(p, []byte("registry=x\n"+legacy+"\n"), 0o644); err != nil {
+	other := "//npm.pkg.github.com/:tokenHelper=/opt/h.sh\n"
+	content := "registry=x\n" + legacy + "\n" + codeloadTokenHelperKey + helper + "\n" +
+		`//mirror.example.com/:tokenHelper=` + helper + "\n" + other
+	want := "registry=x\n" + other
+	if err := os.WriteFile(p, []byte(content), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if err := removeLegacyCodeloadTokenHelper(); err != nil {
-		t.Fatalf("removeLegacyCodeloadTokenHelper = %v", err)
+	removed, err := removePnpmTokenHelper(helper)
+	if err != nil || !removed {
+		t.Fatalf("removePnpmTokenHelper = (%v, %v), want (true, nil)", removed, err)
 	}
-	if b, _ := os.ReadFile(p); string(b) != "registry=x\n" {
-		t.Fatalf("旧行未清理干净：%q", string(b))
+	if b, _ := os.ReadFile(p); string(b) != want {
+		t.Fatalf("npmrc = %q, want %q", string(b), want)
 	}
 
-	// 已是新格式（裸路径）：不改动文件
-	bare := codeloadTokenHelperKey + `C:\tools\gh-token.cmd` + "\n"
-	if err := os.WriteFile(p, []byte(bare), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	// 内容已干净：不改写文件（mtime 是唯一可观测的「没写」证据）
 	old := time.Unix(1000000, 0)
 	if err := os.Chtimes(p, old, old); err != nil {
 		t.Fatal(err)
 	}
-	if err := removeLegacyCodeloadTokenHelper(); err != nil {
-		t.Fatal(err)
+	if removed, err := removePnpmTokenHelper(helper); err != nil || removed {
+		t.Fatalf("二次调用 = (%v, %v), want (false, nil)", removed, err)
 	}
 	if st, err := os.Stat(p); err != nil || !st.ModTime().Equal(old) {
-		t.Errorf("新格式不应被改写（mtime=%v, err=%v）", st.ModTime(), err)
+		t.Errorf("内容已干净时不应改写文件（mtime=%v, err=%v）", st.ModTime(), err)
 	}
 
 	// npmrc 不存在：静默成功
 	if err := os.Remove(p); err != nil {
 		t.Fatal(err)
 	}
-	if err := removeLegacyCodeloadTokenHelper(); err != nil {
-		t.Errorf("npmrc 不存在时应静默成功：%v", err)
+	if removed, err := removePnpmTokenHelper(helper); err != nil || removed {
+		t.Errorf("npmrc 不存在时应静默成功，得到 (%v, %v)", removed, err)
+	}
+}
+
+// TestSyncPnpmTokenHelper 凭据自愈的核心语义：有 token 才写 tokenHelper，取不到就删。
+// 回归背景（2026-11-12）：gh 令牌失效后 npmrc 里仍留着包装器，pnpm 每次安装都执行它并以
+// ERR_PNPM_TOKEN_HELPER_ERROR_STATUS 失败，账号同步的 harness 重置与插件更新全部卡死。
+func TestSyncPnpmTokenHelper(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("USERPROFILE", home)
+	t.Setenv("HOME", home)
+	p := filepath.Join(home, ".npmrc")
+
+	bin := filepath.Join(t.TempDir(), ghBinName())
+	helper := ghTokenHelperPath(bin)
+	own := codeloadTokenHelperKey + helper + "\n"
+	if err := os.WriteFile(p, []byte("registry=x\n"+own), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	prev := ghCredsToken
+	t.Cleanup(func() { ghCredsToken = prev })
+
+	// 取不到 token（未登录 / 令牌失效）：删掉包装器行，公网 npm 安装不再被拖垮
+	ghCredsToken = func() string { return "" }
+	if err := syncPnpmTokenHelper(bin); err != nil {
+		t.Fatalf("syncPnpmTokenHelper = %v", err)
+	}
+	if b, _ := os.ReadFile(p); string(b) != "registry=x\n" {
+		t.Fatalf("无 token 时应移除 tokenHelper，npmrc = %q", string(b))
+	}
+
+	// 有 token：写回包装器脚本与 npmrc 行
+	ghCredsToken = func() string { return "ghp_probe" }
+	if err := syncPnpmTokenHelper(bin); err != nil {
+		t.Fatalf("syncPnpmTokenHelper = %v", err)
+	}
+	if b, _ := os.ReadFile(p); string(b) != "registry=x\n"+own {
+		t.Fatalf("有 token 时应写入 tokenHelper，npmrc = %q", string(b))
+	}
+	if _, err := os.Stat(helper); err != nil {
+		t.Fatalf("包装器脚本未生成：%v", err)
 	}
 }
 

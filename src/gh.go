@@ -213,14 +213,20 @@ func unpackGHTool(pkgPath, destBinDir string) (string, error) {
 
 // ghAuthToken 取 gh 当前凭据用于访问私有仓库（内存缓存；不可用时返回空串）。
 // 凭据来自 gh 的系统凭据库，本函数不落盘、不写日志。
-func ghAuthToken() string {
+func ghAuthToken() string { return ghAuthTokenCached(false) }
+
+// ghAuthTokenCached fresh=true 时跳过缓存直接问 gh：凭据自愈要看「现在能不能取到 token」，
+// 缓存会把已失效的 token 当成有效，npmrc 里那条会拖垮 pnpm 的 tokenHelper 就永远不修。
+func ghAuthTokenCached(fresh bool) string {
 	ghTokenMu.Lock()
 	defer ghTokenMu.Unlock()
-	if ghTokenCache != "" {
-		return ghTokenCache
-	}
-	if !ghTokenFailedAt.IsZero() && time.Since(ghTokenFailedAt) < ghTokenFailQuiet {
-		return ""
+	if !fresh {
+		if ghTokenCache != "" {
+			return ghTokenCache
+		}
+		if !ghTokenFailedAt.IsZero() && time.Since(ghTokenFailedAt) < ghTokenFailQuiet {
+			return ""
+		}
 	}
 	bin := findGHBinary()
 	if bin == "" {
@@ -234,6 +240,7 @@ func ghAuthToken() string {
 	out, err := cmd.Output()
 	tok := strings.TrimSpace(string(out))
 	if err != nil || tok == "" {
+		ghTokenCache = "" // 已失效的旧 token 不能继续当有效（fresh 路径靠这里纠正）
 		ghTokenFailedAt = time.Now()
 		return ""
 	}
@@ -245,9 +252,15 @@ func ghAuthToken() string {
 // invalidateGHToken 失效 token 缓存（授权完成后调用，强制重新读取）。
 func invalidateGHToken() {
 	ghTokenMu.Lock()
-	defer ghTokenMu.Unlock()
 	ghTokenCache = ""
 	ghTokenFailedAt = time.Time{}
+	ghTokenMu.Unlock()
+	// 重新授权后必须允许再配置一次凭据出口：否则首次调用若在未授权时就把 ghCredsDone
+	// 置位，授权成功也不会再写 npmrc tokenHelper（私有仓库更新会一直失败）。
+	ghCredsMu.Lock()
+	ghCredsDone = false
+	ghCredsOK = false
+	ghCredsMu.Unlock()
 }
 
 // ==================== 私有仓库的拉包凭据（gh → git / pnpm） ====================
@@ -291,9 +304,13 @@ var (
 	ghCredsMu   sync.Mutex
 	ghCredsDone bool // 本进程是否已尝试配置（失败也不反复 spawn gh / 改文件）
 	ghCredsOK   bool
+
+	// ghCredsToken 凭据自愈用的 token 探测：必须看 gh **当前**能不能取到 token（令牌会失效），
+	// 不能用 ghAuthToken 的内存缓存。变量而非函数：单测注入，不真的 spawn gh。
+	ghCredsToken = func() string { return ghAuthTokenCached(true) }
 )
 
-// ensureGitHubPrivateRepoCreds 把 gh 的凭据接给 git 与 pnpm（幂等，进程内只成功/失败一次）。
+// ensureGitHubPrivateRepoCreds 把 gh 的凭据接给 git 与 pnpm（幂等，进程内只尝试一次）。
 // 失败只影响私有仓库的「更新」拉包，不影响检查更新与授权，调用方不必当致命错误处理。
 func ensureGitHubPrivateRepoCreds() bool {
 	ghCredsMu.Lock()
@@ -310,7 +327,7 @@ func ensureGitHubPrivateRepoCreds() bool {
 		logWarn("app", "gh auth setup-git failed: %v", err)
 		ok = false
 	}
-	if err := writeCodeloadTokenHelper(bin); err != nil {
+	if err := syncPnpmTokenHelper(bin); err != nil {
 		logWarn("app", "npmrc codeload credential failed: %v", err)
 		ok = false
 	}
@@ -321,21 +338,50 @@ func ensureGitHubPrivateRepoCreds() bool {
 	return ok
 }
 
-// repairCodeloadTokenHelper 启动期的凭据自愈（幂等，可重复调用）：
-//   - 有 gh：重写 tokenHelper（把历史的「路径 + 参数」旧格式迁移为包装器裸路径）；
-//   - 无 gh：只清理旧格式行——它会让 pnpm 10.34.5 下所有 pnpm 操作失败，留着一定是坏事。
+// syncPnpmTokenHelper 按 gh 当前凭据状态同步用户级 npmrc 的 tokenHelper：
+//   - 能取到 token：写入/更新包装器（私有仓库的 codeload 拉包需要）；
+//   - 取不到（未登录 / 令牌失效 / gh 不可用）：**删除**本程序写入的那几行。
 //
-// 为什么要主动做：旧格式只在下过私有仓插件、且当时 gh 已就位的机器上被写入；那些机器若用
-// 托盘自带的 pnpm 10.34.5，此后连公共包都装不动，却没有任何路径会自动触发修复。
+// 为什么「取不到 token」必须删除而不是留着：pnpm 每次安装都会执行全部已配置的 tokenHelper，
+// 脚本非零退出会让整条 pnpm 命令以 ERR_PNPM_TOKEN_HELPER_ERROR_STATUS 失败——连公网 npm 包
+// 也装不了。2026-11-12 现场：gh 令牌失效后，账号同步「重启生效」的 harness 重置
+// （pnpm add @deepseek-ai/dsh）与插件更新（pnpm add dsh-cost-meter）一起失败，两项永远留在
+// 待生效，界面只显示「安装失败：exit status 1」。token 只用于 codeload 私有仓库下载，删掉后
+// 公网 npm 与公开 GitHub 仓库照常安装；私有仓库更新仍需重新授权 GitHub。
+func syncPnpmTokenHelper(bin string) error {
+	if ghCredsToken() == "" {
+		removed, err := removePnpmTokenHelper(ghTokenHelperPath(bin))
+		if err != nil {
+			return err
+		}
+		if removed {
+			logWarn("app", "GitHub 凭据不可用（未登录或令牌失效）：已移除 npmrc tokenHelper，pnpm 可继续安装公开包；私有仓库更新需重新授权")
+		}
+		return nil
+	}
+	return writeCodeloadTokenHelper(bin)
+}
+
+// repairCodeloadTokenHelper 启动期的凭据自愈（幂等，可重复调用）：
+//   - gh 可用：按当前凭据状态同步 tokenHelper（有 token 写、取不到就删）；
+//   - gh 不可用：删掉本程序写入的 tokenHelper 行——脚本随 gh 一起失效，留着会让所有 pnpm 命令失败。
+//
+// 为什么要主动做：旧格式（「路径 + 参数」）只在下过私有仓插件、且当时 gh 已就位的机器上被写入，
+// 它会让 pnpm 10.34.5 下连公共包都装不动；令牌失效同理且更常见（2026-11-12 现场）。
 func repairCodeloadTokenHelper() {
 	if bin := findGHBinary(); bin != "" {
-		if err := writeCodeloadTokenHelper(bin); err != nil {
+		if err := syncPnpmTokenHelper(bin); err != nil {
 			logWarn("app", "codeload tokenHelper repair failed: %v", err)
 		}
 		return
 	}
-	if err := removeLegacyCodeloadTokenHelper(); err != nil {
-		logWarn("app", "legacy codeload tokenHelper cleanup failed: %v", err)
+	removed, err := removePnpmTokenHelper(filepath.Join(ghToolsDir(), "bin", ghTokenHelperScriptName()))
+	if err != nil {
+		logWarn("app", "codeload tokenHelper cleanup failed: %v", err)
+		return
+	}
+	if removed {
+		logInfo("app", "codeload tokenHelper removed (gh CLI unavailable)")
 	}
 }
 
@@ -355,6 +401,10 @@ func ghSetupGitCredentials(bin string) error {
 
 // writeGHTokenHelperScript 写 tokenHelper 包装器脚本（内容不含 token：脚本内部调 gh 取）。
 // 返回可用于 npmrc 的脚本路径。原子写（同目录临时文件 + 改名），内容一致时不重写。
+//
+// 脚本只在「gh 当前能取到 token」时才允许存在（见 syncPnpmTokenHelper）：pnpm 不容忍
+// 取不到 token 的 helper（退出码非零 = ERR_PNPM_TOKEN_HELPER_ERROR_STATUS，空输出 =
+// ERR_PNPM_TOKEN_HELPER_EMPTY_TOKEN，都会让整条 pnpm 命令失败），所以没有「降级为空」这种写法。
 func writeGHTokenHelperScript(bin string) (string, error) {
 	p := ghTokenHelperPath(bin)
 	var body string
@@ -422,30 +472,34 @@ func mirrorHost() string {
 	return u.Host
 }
 
-// removeLegacyCodeloadTokenHelper 删除旧格式（值含空白 = 带参数）的 codeload tokenHelper 行。
-// 无 gh 时用它兜底：旧格式会让 pnpm 10.34.5 下所有 pnpm 命令失败，必须清掉。
-// 已是新格式（裸路径）或本来就没有该行时不改动文件。
-func removeLegacyCodeloadTokenHelper() error {
+// removePnpmTokenHelper 删除 npmrc 里会拖垮 pnpm 的 tokenHelper 行（见 dropPnpmTokenHelperLines）。
+// 返回是否真的改动了文件：内容已干净时不碰 mtime，也不制造无谓的写盘。
+func removePnpmTokenHelper(helper string) (bool, error) {
 	p, err := userNpmrcPath()
 	if err != nil {
-		return err
+		return false, err
 	}
 	cur, rerr := os.ReadFile(p)
 	if rerr != nil {
 		if os.IsNotExist(rerr) {
-			return nil
+			return false, nil
 		}
-		return rerr
+		return false, rerr
 	}
-	next, changed := dropLegacyTokenHelperLine(string(cur))
+	next, changed := dropPnpmTokenHelperLines(string(cur), helper)
 	if !changed {
-		return nil
+		return false, nil
 	}
-	return writeFileAtomic(p, next)
+	return true, writeFileAtomic(p, next)
 }
 
-// dropLegacyTokenHelperLine 去掉值里含空白（带参数）的 tokenHelper 行，返回新内容与是否变更。
-func dropLegacyTokenHelperLine(content string) (string, bool) {
+// dropPnpmTokenHelperLines 去掉 npmrc 里两类会让 pnpm 全线失败的行：
+//  1. 旧格式（值含空白 = 带参数）的 codeload tokenHelper——pnpm 判 BAD_TOKEN_HELPER_PATH；
+//  2. 任意 host 上指向本程序包装器（helper）的行——凭据不可用时脚本必然非零退出。
+//
+// 值指向其它脚本的 tokenHelper、以及其它配置一律原样保留：这是用户的 ~/.npmrc，写坏它比
+// 漏删更贵。返回新内容与是否变更（换行风格跟随原文件）。
+func dropPnpmTokenHelperLines(content, helper string) (string, bool) {
 	nl := "\n"
 	if strings.Contains(content, "\r\n") {
 		nl = "\r\n"
@@ -458,12 +512,20 @@ func dropLegacyTokenHelperLine(content string) (string, bool) {
 	changed := false
 	for _, ln := range lines {
 		trimmed := strings.TrimSpace(strings.TrimSuffix(ln, "\r"))
+		drop := false
 		if strings.HasPrefix(trimmed, codeloadTokenHelperKey) {
 			value := strings.TrimSpace(strings.TrimPrefix(trimmed, codeloadTokenHelperKey))
-			if strings.ContainsAny(value, " \t") {
-				changed = true
-				continue // 旧格式：删
+			drop = strings.ContainsAny(value, " \t")
+		}
+		if !drop && helper != "" && strings.HasPrefix(trimmed, "//") {
+			// 任意 host（codeload / 自建中转 Worker）上指向本程序包装器的行
+			if i := strings.Index(trimmed, ":tokenHelper="); i > 0 {
+				drop = strings.TrimSpace(trimmed[i+len(":tokenHelper="):]) == helper
 			}
+		}
+		if drop {
+			changed = true
+			continue
 		}
 		out = append(out, strings.TrimSuffix(ln, "\r"))
 	}

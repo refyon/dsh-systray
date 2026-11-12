@@ -1055,6 +1055,8 @@ func dropHarnessLockfile() {
 // 坏网络下一次失败即放弃）。
 func harnessInstallHint(out string) string {
 	switch {
+	case strings.Contains(out, "TOKEN_HELPER"):
+		return "原因判断：npmrc 里的 GitHub tokenHelper 执行失败（gh 未登录或令牌失效），pnpm 因此拒绝运行；重新授权 GitHub，或移除该行配置后重试。"
 	case strings.Contains(out, "ERR_PNPM_NO_MATCHING_VERSION"):
 		return "原因判断：registry 上该版本家族尚未发布完整（或目标版本不存在）。官方分批发布时会出现，稍后重试即可。"
 	case strings.Contains(out, "ERR_PNPM_META_FETCH_FAIL"),
